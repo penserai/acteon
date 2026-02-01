@@ -1,0 +1,25 @@
+[package]
+name = "acteon-provider"
+description = "Provider traits, registry, and webhook provider for Acteon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+webhook = ["reqwest"]
+
+[dependencies]
+acteon-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

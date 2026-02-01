@@ -1,0 +1,34 @@
+version: "3.8"
+
+services:
+  acteon:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - ACTEON_STATE_BACKEND=redis
+      - ACTEON_STATE_URL=redis://redis:6379
+      - ACTEON_SERVER_HOST=0.0.0.0
+      - ACTEON_SERVER_PORT=8080
+    volumes:
+      - ./rules:/etc/acteon/rules:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis-data:

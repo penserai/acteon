@@ -1,0 +1,45 @@
+[package]
+name = "acteon-server"
+description = "Standalone HTTP server for the Acteon action gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "acteon_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "acteon-server"
+path = "src/main.rs"
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-state = { workspace = true }
+acteon-state-memory = { workspace = true }
+acteon-rules = { workspace = true }
+acteon-rules-yaml = { workspace = true }
+acteon-provider = { workspace = true }
+acteon-executor = { workspace = true }
+acteon-gateway = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+axum-test = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

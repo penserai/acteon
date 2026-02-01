@@ -1,0 +1,123 @@
+[workspace]
+resolver = "2"
+members = [
+    "acteon-core",
+    "acteon-state",
+    "acteon-state-memory",
+    "acteon-state-postgres",
+    "acteon-state-redis",
+    "acteon-rules",
+    "acteon-rules-yaml",
+    "acteon-rules-cel",
+    "acteon-provider",
+    "acteon-executor",
+    "acteon-gateway",
+    "acteon-server",
+    "acteon-slack",
+    "acteon-email",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/acteon/acteon"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Internal crates
+acteon-core = { path = "acteon-core" }
+acteon-state = { path = "acteon-state" }
+acteon-state-memory = { path = "acteon-state-memory" }
+acteon-state-postgres = { path = "acteon-state-postgres" }
+acteon-state-redis = { path = "acteon-state-redis" }
+acteon-rules = { path = "acteon-rules" }
+acteon-rules-yaml = { path = "acteon-rules-yaml" }
+acteon-rules-cel = { path = "acteon-rules-cel" }
+acteon-provider = { path = "acteon-provider" }
+acteon-executor = { path = "acteon-executor" }
+acteon-gateway = { path = "acteon-gateway" }
+acteon-server = { path = "acteon-server" }
+acteon-slack = { path = "acteon-slack" }
+acteon-email = { path = "acteon-email" }
+
+# Parsing
+nom = "7"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+
+# Async traits
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2"
+
+# Observability
+tracing = "0.1"
+
+# Time & IDs
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Bytes
+bytes = "1"
+
+# Concurrent data structures
+dashmap = "6"
+
+# Redis
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
+deadpool-redis = "0.18"
+
+# PostgreSQL
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid"] }
+
+# Email / SMTP
+lettre = { version = "0.11", features = ["tokio1-native-tls", "smtp-transport"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# Regex
+regex = "1"
+
+# JSON patching
+json-patch = "3"
+
+# HTTP server
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# File watching
+notify = "7"
+
+# Configuration
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+
+# Tracing subscriber
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Benchmarking
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+# Testing
+axum-test = "16"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

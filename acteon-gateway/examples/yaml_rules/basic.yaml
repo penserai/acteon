@@ -1,0 +1,22 @@
+rules:
+  - name: block-spam
+    priority: 1
+    description: "Block actions with spam action type"
+    condition:
+      field: action.action_type
+      eq: "spam"
+    action:
+      type: suppress
+
+  - name: dedup-email
+    priority: 10
+    description: "Deduplicate email actions within 5 minutes"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - field: action.payload.to
+          contains: "@"
+    action:
+      type: deduplicate
+      ttl_seconds: 300

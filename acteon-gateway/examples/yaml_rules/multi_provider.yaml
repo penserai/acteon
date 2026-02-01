@@ -1,0 +1,33 @@
+rules:
+  - name: reroute-high-priority
+    priority: 1
+    description: "Reroute high-priority notifications to SMS"
+    condition:
+      field: action.payload.priority
+      eq: "urgent"
+    action:
+      type: reroute
+      target_provider: "sms"
+
+  - name: throttle-notifications
+    priority: 5
+    description: "Throttle notifications to 100 per minute"
+    condition:
+      field: action.action_type
+      eq: "send_notification"
+    action:
+      type: throttle
+      max_count: 100
+      window_seconds: 60
+
+  - name: modify-add-tracking
+    priority: 10
+    description: "Add tracking metadata to all email actions"
+    condition:
+      field: action.action_type
+      eq: "send_email"
+    action:
+      type: modify
+      changes:
+        tracking_enabled: true
+        source: "acteon-gateway"

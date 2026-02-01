@@ -1,0 +1,30 @@
+[package]
+name = "acteon-rules"
+description = "Expression IR and async rule evaluation engine for Acteon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-state = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+acteon-state-memory = { workspace = true }
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[[bench]]
+name = "eval"
+harness = false
+
+[lints]
+workspace = true
