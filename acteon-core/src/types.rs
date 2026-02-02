@@ -5,6 +5,8 @@ macro_rules! newtype_string {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+        #[cfg_attr(feature = "openapi", schema(value_type = String))]
         #[serde(transparent)]
         pub struct $name(String);
 

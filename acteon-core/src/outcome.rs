@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// Outcome of dispatching an action through the gateway pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum ActionOutcome {
     /// Action was executed by the provider.
     Executed(ProviderResponse),
@@ -19,17 +20,22 @@ pub enum ActionOutcome {
         response: ProviderResponse,
     },
     /// Action was throttled — caller should retry later.
-    Throttled { retry_after: Duration },
+    Throttled {
+        #[cfg_attr(feature = "openapi", schema(value_type = Object, example = json!({"secs": 60, "nanos": 0})))]
+        retry_after: Duration,
+    },
     /// Action failed after all retries.
     Failed(ActionError),
 }
 
 /// Response from a provider after executing an action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ProviderResponse {
     /// Status of the execution.
     pub status: ResponseStatus,
     /// Provider-specific response body.
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub body: serde_json::Value,
     /// Optional headers or metadata from the provider.
     #[serde(default)]
@@ -60,6 +66,7 @@ impl ProviderResponse {
 
 /// Status of a provider execution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseStatus {
     Success,
@@ -69,6 +76,7 @@ pub enum ResponseStatus {
 
 /// Error detail when an action fails.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ActionError {
     /// Error code or category.
     pub code: String,

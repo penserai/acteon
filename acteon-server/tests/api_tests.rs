@@ -362,3 +362,95 @@ async fn set_rule_enabled_not_found() {
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn swagger_ui_returns_200() {
+    let gateway = build_test_gateway(vec![]);
+    let app = build_app(gateway);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/swagger-ui/")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(&body);
+    assert!(html.contains("swagger"), "expected Swagger UI HTML");
+}
+
+#[tokio::test]
+async fn openapi_json_is_valid() {
+    let gateway = build_test_gateway(vec![]);
+    let app = build_app(gateway);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api-doc/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let spec: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Verify it's an OpenAPI 3.1 document
+    assert!(
+        spec["openapi"].as_str().unwrap().starts_with("3.1"),
+        "expected OpenAPI 3.1.x, got {}",
+        spec["openapi"]
+    );
+
+    // Verify all expected paths are present
+    let paths = spec["paths"]
+        .as_object()
+        .expect("paths should be an object");
+    assert!(paths.contains_key("/health"), "missing /health");
+    assert!(paths.contains_key("/metrics"), "missing /metrics");
+    assert!(paths.contains_key("/v1/dispatch"), "missing /v1/dispatch");
+    assert!(
+        paths.contains_key("/v1/dispatch/batch"),
+        "missing /v1/dispatch/batch"
+    );
+    assert!(paths.contains_key("/v1/rules"), "missing /v1/rules");
+    assert!(
+        paths.contains_key("/v1/rules/reload"),
+        "missing /v1/rules/reload"
+    );
+    assert!(
+        paths.contains_key("/v1/rules/{name}/enabled"),
+        "missing /v1/rules/{{name}}/enabled"
+    );
+
+    // Verify schemas exist
+    let schemas = spec["components"]["schemas"]
+        .as_object()
+        .expect("schemas should be an object");
+    assert!(schemas.contains_key("Action"), "missing Action schema");
+    assert!(
+        schemas.contains_key("ActionOutcome"),
+        "missing ActionOutcome schema"
+    );
+    assert!(
+        schemas.contains_key("HealthResponse"),
+        "missing HealthResponse schema"
+    );
+    assert!(
+        schemas.contains_key("ErrorResponse"),
+        "missing ErrorResponse schema"
+    );
+}

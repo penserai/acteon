@@ -8,14 +8,28 @@ use crate::types::{ActionId, Namespace, ProviderId, TenantId};
 
 /// Metadata attached to an action for routing and observability.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ActionMetadata {
     /// Arbitrary key-value pairs.
     #[serde(flatten)]
+    #[cfg_attr(feature = "openapi", schema(value_type = HashMap<String, String>))]
     pub labels: HashMap<String, String>,
 }
 
 /// An action to be dispatched through the gateway pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(example = json!({
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "namespace": "notifications",
+    "tenant": "tenant-1",
+    "provider": "email",
+    "action_type": "send_email",
+    "payload": {"to": "user@example.com", "subject": "Hello"},
+    "metadata": {},
+    "dedup_key": null,
+    "created_at": "2025-01-01T00:00:00Z"
+})))]
 pub struct Action {
     /// Unique action identifier.
     pub id: ActionId,
@@ -33,6 +47,7 @@ pub struct Action {
     pub action_type: String,
 
     /// Arbitrary JSON payload for the provider.
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub payload: serde_json::Value,
 
     /// Optional metadata labels.

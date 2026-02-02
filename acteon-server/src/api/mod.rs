@@ -1,6 +1,8 @@
 pub mod dispatch;
 pub mod health;
+pub mod openapi;
 pub mod rules;
+pub mod schemas;
 
 use std::sync::Arc;
 
@@ -9,10 +11,14 @@ use axum::Router;
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use acteon_gateway::Gateway;
 
-/// Build the Axum router with all API routes and middleware.
+use self::openapi::ApiDoc;
+
+/// Build the Axum router with all API routes, middleware, and Swagger UI.
 pub fn router(gateway: Arc<RwLock<Gateway>>) -> Router {
     Router::new()
         // Health & metrics
@@ -26,6 +32,8 @@ pub fn router(gateway: Arc<RwLock<Gateway>>) -> Router {
         .route("/v1/rules/reload", post(rules::reload_rules))
         .route("/v1/rules/{name}/enabled", put(rules::set_rule_enabled))
         .with_state(gateway)
+        // Swagger UI
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
 }

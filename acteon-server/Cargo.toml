@@ -15,7 +15,7 @@ name = "acteon-server"
 path = "src/main.rs"
 
 [dependencies]
-acteon-core = { workspace = true }
+acteon-core = { workspace = true, features = ["openapi"] }
 acteon-state = { workspace = true }
 acteon-state-memory = { workspace = true }
 acteon-state-redis = { workspace = true }
@@ -39,6 +39,9 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+utoipa-axum = { workspace = true }
 
 [dev-dependencies]
 axum-test = { workspace = true }
