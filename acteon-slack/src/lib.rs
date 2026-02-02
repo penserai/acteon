@@ -16,10 +16,16 @@
 
 pub mod config;
 pub mod error;
+pub mod image_gen;
 pub mod provider;
 pub mod types;
 
 pub use config::SlackConfig;
 pub use error::SlackError;
+pub use image_gen::ImageSpec;
 pub use provider::SlackProvider;
-pub use types::{SlackApiResponse, SlackAuthTestResponse, SlackPostMessageRequest};
+pub use types::{
+    SlackApiResponse, SlackAuthTestResponse, SlackCompleteUploadRequest,
+    SlackCompleteUploadResponse, SlackFileReference, SlackGetUploadUrlRequest,
+    SlackGetUploadUrlResponse, SlackPostMessageRequest,
+};
