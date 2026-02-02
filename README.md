@@ -8,6 +8,8 @@
 
 Acteon is an action gateway that dispatches actions through a configurable pipeline of rules, providers, and state backends.
 
+The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis into a stag -- the very thing he pursued. Likewise, actions entering Acteon are transformed -- deduplicated, rerouted, throttled, or dispatched -- before they ever reach the outside world.
+
 ## Architecture
 
 | Crate | Description |
