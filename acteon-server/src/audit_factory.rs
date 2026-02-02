@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
 use acteon_audit::store::AuditStore;
+#[cfg(feature = "clickhouse")]
 use acteon_audit_clickhouse::{ClickHouseAuditConfig, ClickHouseAuditStore};
+#[cfg(feature = "elasticsearch")]
 use acteon_audit_elasticsearch::{ElasticsearchAuditConfig, ElasticsearchAuditStore};
 use acteon_audit_memory::MemoryAuditStore;
+#[cfg(feature = "postgres")]
 use acteon_audit_postgres::{PostgresAuditConfig, PostgresAuditStore};
 
 use crate::config::AuditConfig;
@@ -13,6 +16,7 @@ use crate::error::ServerError;
 pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditStore>, ServerError> {
     match config.backend.as_str() {
         "memory" => Ok(Arc::new(MemoryAuditStore::new())),
+        #[cfg(feature = "postgres")]
         "postgres" => {
             let url = config.url.as_deref().ok_or_else(|| {
                 ServerError::Config("audit postgres backend requires [audit] url".into())
@@ -28,6 +32,7 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
 
             Ok(Arc::new(store))
         }
+        #[cfg(feature = "clickhouse")]
         "clickhouse" => {
             let url = config.url.as_deref().ok_or_else(|| {
                 ServerError::Config("audit clickhouse backend requires [audit] url".into())
@@ -43,6 +48,7 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
 
             Ok(Arc::new(store))
         }
+        #[cfg(feature = "elasticsearch")]
         "elasticsearch" => {
             let url = config.url.as_deref().ok_or_else(|| {
                 ServerError::Config("audit elasticsearch backend requires [audit] url".into())
@@ -57,7 +63,7 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
             Ok(Arc::new(store))
         }
         other => Err(ServerError::Config(format!(
-            "unknown audit backend: {other}"
+            "unknown audit backend: {other} (is the feature enabled?)"
         ))),
     }
 }

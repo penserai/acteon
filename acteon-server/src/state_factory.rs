@@ -1,11 +1,16 @@
 use std::sync::Arc;
 
 use acteon_state::{DistributedLock, StateStore};
+#[cfg(feature = "clickhouse")]
 use acteon_state_clickhouse::{ClickHouseConfig, ClickHouseDistributedLock, ClickHouseStateStore};
+#[cfg(feature = "dynamodb")]
 use acteon_state_dynamodb::{build_client, create_table, DynamoConfig, DynamoDistributedLock, DynamoStateStore};
+#[cfg(feature = "etcd")]
 use acteon_state_etcd::{EtcdConfig, EtcdDistributedLock, EtcdStateStore};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+#[cfg(feature = "postgres")]
 use acteon_state_postgres::{PostgresConfig, PostgresDistributedLock, PostgresStateStore};
+#[cfg(feature = "redis")]
 use acteon_state_redis::{RedisConfig, RedisDistributedLock, RedisStateStore};
 
 use crate::config::StateConfig;
@@ -18,13 +23,18 @@ pub type StatePair = (Arc<dyn StateStore>, Arc<dyn DistributedLock>);
 pub async fn create_state(config: &StateConfig) -> Result<StatePair, ServerError> {
     match config.backend.as_str() {
         "memory" => Ok(create_memory()),
+        #[cfg(feature = "redis")]
         "redis" => create_redis(config),
+        #[cfg(feature = "postgres")]
         "postgres" => create_postgres(config).await,
+        #[cfg(feature = "dynamodb")]
         "dynamodb" => create_dynamodb(config).await,
+        #[cfg(feature = "etcd")]
         "etcd" => create_etcd(config).await,
+        #[cfg(feature = "clickhouse")]
         "clickhouse" => create_clickhouse(config).await,
         other => Err(ServerError::Config(format!(
-            "unsupported state backend: {other}"
+            "unsupported state backend: {other} (is the feature enabled?)"
         ))),
     }
 }
@@ -35,6 +45,7 @@ fn create_memory() -> StatePair {
     (store, lock)
 }
 
+#[cfg(feature = "redis")]
 fn create_redis(config: &StateConfig) -> Result<StatePair, ServerError> {
     let url = config.url.as_deref().unwrap_or("redis://127.0.0.1:6379");
     let redis_config = RedisConfig {
@@ -53,6 +64,7 @@ fn create_redis(config: &StateConfig) -> Result<StatePair, ServerError> {
     Ok((store, lock))
 }
 
+#[cfg(feature = "postgres")]
 async fn create_postgres(config: &StateConfig) -> Result<StatePair, ServerError> {
     let url = config
         .url
@@ -79,6 +91,7 @@ async fn create_postgres(config: &StateConfig) -> Result<StatePair, ServerError>
     Ok((store, lock))
 }
 
+#[cfg(feature = "dynamodb")]
 async fn create_dynamodb(config: &StateConfig) -> Result<StatePair, ServerError> {
     let dynamo_config = DynamoConfig {
         table_name: config
@@ -115,6 +128,7 @@ async fn create_dynamodb(config: &StateConfig) -> Result<StatePair, ServerError>
     Ok((store, lock))
 }
 
+#[cfg(feature = "etcd")]
 async fn create_etcd(config: &StateConfig) -> Result<StatePair, ServerError> {
     let endpoint = config
         .url
@@ -138,6 +152,7 @@ async fn create_etcd(config: &StateConfig) -> Result<StatePair, ServerError> {
     Ok((store, lock))
 }
 
+#[cfg(feature = "clickhouse")]
 async fn create_clickhouse(config: &StateConfig) -> Result<StatePair, ServerError> {
     let url = config.url.as_deref().unwrap_or("http://localhost:8123");
     let ch_config = ClickHouseConfig {

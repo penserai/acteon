@@ -14,20 +14,30 @@ path = "src/lib.rs"
 name = "acteon-server"
 path = "src/main.rs"
 
+[features]
+default = ["redis"]
+redis = ["dep:acteon-state-redis"]
+postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
+clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
+dynamodb = ["dep:acteon-state-dynamodb"]
+etcd = ["dep:acteon-state-etcd"]
+elasticsearch = ["dep:acteon-audit-elasticsearch"]
+all-backends = ["redis", "postgres", "clickhouse", "dynamodb", "etcd", "elasticsearch"]
+
 [dependencies]
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
-acteon-audit-postgres = { workspace = true }
-acteon-audit-clickhouse = { workspace = true }
-acteon-audit-elasticsearch = { workspace = true }
+acteon-audit-postgres = { workspace = true, optional = true }
+acteon-audit-clickhouse = { workspace = true, optional = true }
+acteon-audit-elasticsearch = { workspace = true, optional = true }
 acteon-core = { workspace = true, features = ["openapi"] }
 acteon-state = { workspace = true }
 acteon-state-memory = { workspace = true }
-acteon-state-redis = { workspace = true }
-acteon-state-postgres = { workspace = true }
-acteon-state-dynamodb = { workspace = true }
-acteon-state-etcd = { workspace = true }
-acteon-state-clickhouse = { workspace = true }
+acteon-state-redis = { workspace = true, optional = true }
+acteon-state-postgres = { workspace = true, optional = true }
+acteon-state-dynamodb = { workspace = true, optional = true }
+acteon-state-etcd = { workspace = true, optional = true }
+acteon-state-clickhouse = { workspace = true, optional = true }
 acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true }

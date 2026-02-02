@@ -110,10 +110,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn audit cleanup background task if audit is enabled.
     let _cleanup_handle = if let Some(ref audit) = audit_store {
         let interval = Duration::from_secs(config.audit.cleanup_interval_seconds);
-        Some(acteon_audit_postgres::spawn_cleanup_task(
-            Arc::clone(audit),
-            interval,
-        ))
+        let store = Arc::clone(audit);
+        Some(tokio::spawn(async move {
+            let mut timer = tokio::time::interval(interval);
+            // The first tick completes immediately; skip it so we don't run
+            // cleanup at startup.
+            timer.tick().await;
+            loop {
+                timer.tick().await;
+                match store.cleanup_expired().await {
+                    Ok(0) => {}
+                    Ok(n) => info!(removed = n, "audit cleanup removed expired records"),
+                    Err(e) => tracing::warn!(error = %e, "audit cleanup failed"),
+                }
+            }
+        }))
     } else {
         None
     };
