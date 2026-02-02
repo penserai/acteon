@@ -1,0 +1,30 @@
+[package]
+name = "acteon-state-etcd"
+description = "etcd state store and distributed lock backend for Acteon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+integration = []
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-state = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+etcd-client = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

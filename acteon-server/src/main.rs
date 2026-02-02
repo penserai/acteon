@@ -65,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Create the state backend.
-    let (store, lock) = acteon_server::state_factory::create_state(&config.state)?;
+    let (store, lock) = acteon_server::state_factory::create_state(&config.state).await?;
 
     // Build the gateway.
     let mut gateway = GatewayBuilder::new()
