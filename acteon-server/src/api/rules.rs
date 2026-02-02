@@ -1,20 +1,18 @@
 use std::path::Path;
-use std::sync::Arc;
 
 use axum::extract::{self, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use tokio::sync::RwLock;
 use tracing::info;
 
-use acteon_gateway::Gateway;
 use acteon_rules_yaml::YamlFrontend;
 
 use super::schemas::{
     ErrorResponse, ReloadRequest, ReloadResponse, RuleSummary, SetEnabledRequest,
     SetEnabledResponse,
 };
+use super::AppState;
 
 /// `GET /v1/rules` -- list all loaded rules.
 ///
@@ -29,8 +27,8 @@ use super::schemas::{
         (status = 200, description = "List of loaded rules", body = Vec<RuleSummary>)
     )
 )]
-pub async fn list_rules(State(gateway): State<Arc<RwLock<Gateway>>>) -> impl IntoResponse {
-    let gw = gateway.read().await;
+pub async fn list_rules(State(state): State<AppState>) -> impl IntoResponse {
+    let gw = state.gateway.read().await;
     let rules = gw.rules();
 
     let body: Vec<RuleSummary> = rules
@@ -63,7 +61,7 @@ pub async fn list_rules(State(gateway): State<Arc<RwLock<Gateway>>>) -> impl Int
     )
 )]
 pub async fn reload_rules(
-    State(gateway): State<Arc<RwLock<Gateway>>>,
+    State(state): State<AppState>,
     body: Option<Json<ReloadRequest>>,
 ) -> impl IntoResponse {
     let dir = body.and_then(|b| b.0.directory.clone());
@@ -90,7 +88,7 @@ pub async fn reload_rules(
     let yaml_frontend = YamlFrontend;
     let frontends: Vec<&dyn acteon_rules::RuleFrontend> = vec![&yaml_frontend];
 
-    let mut gw = gateway.write().await;
+    let mut gw = state.gateway.write().await;
     match gw.load_rules_from_directory(path, &frontends) {
         Ok(count) => {
             info!(count, directory = %dir, "rules reloaded");
@@ -128,11 +126,11 @@ pub async fn reload_rules(
     )
 )]
 pub async fn set_rule_enabled(
-    State(gateway): State<Arc<RwLock<Gateway>>>,
+    State(state): State<AppState>,
     extract::Path(name): extract::Path<String>,
     Json(body): Json<SetEnabledRequest>,
 ) -> impl IntoResponse {
-    let mut gw = gateway.write().await;
+    let mut gw = state.gateway.write().await;
 
     let found = if body.enabled {
         gw.enable_rule(&name)

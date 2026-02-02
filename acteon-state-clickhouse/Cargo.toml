@@ -1,0 +1,28 @@
+[package]
+name = "acteon-state-clickhouse"
+description = "ClickHouse state store backend for Acteon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-state = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+clickhouse = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[features]
+integration = []
+
+[lints]
+workspace = true

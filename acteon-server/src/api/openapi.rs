@@ -1,5 +1,6 @@
 #![allow(clippy::needless_for_each)]
 
+use acteon_audit::{AuditPage, AuditQuery, AuditRecord};
 use acteon_core::{
     Action, ActionError, ActionMetadata, ActionOutcome, ProviderResponse, ResponseStatus,
 };
@@ -20,7 +21,8 @@ use super::schemas::{
     tags(
         (name = "Health", description = "Service health and metrics"),
         (name = "Dispatch", description = "Action dispatch through the gateway pipeline"),
-        (name = "Rules", description = "Rule management and lifecycle")
+        (name = "Rules", description = "Rule management and lifecycle"),
+        (name = "Audit", description = "Audit trail query and lookup")
     ),
     paths(
         super::health::health,
@@ -30,6 +32,8 @@ use super::schemas::{
         super::rules::list_rules,
         super::rules::reload_rules,
         super::rules::set_rule_enabled,
+        super::audit::query_audit,
+        super::audit::get_audit_by_action,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -37,6 +41,7 @@ use super::schemas::{
         HealthResponse, MetricsResponse, RuleSummary,
         ReloadRequest, ReloadResponse, SetEnabledRequest, SetEnabledResponse,
         ErrorResponse,
+        AuditRecord, AuditQuery, AuditPage,
     ))
 )]
 pub struct ApiDoc;

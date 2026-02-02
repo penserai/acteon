@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use acteon_audit::store::AuditStore;
 use acteon_executor::ExecutorConfig;
 use acteon_provider::{DynProvider, ProviderRegistry};
 use acteon_rules::{Rule, RuleEngine};
@@ -22,6 +23,9 @@ pub struct GatewayBuilder {
     providers: ProviderRegistry,
     executor_config: ExecutorConfig,
     environment: HashMap<String, String>,
+    audit: Option<Arc<dyn AuditStore>>,
+    audit_ttl_seconds: Option<u64>,
+    audit_store_payload: bool,
 }
 
 impl GatewayBuilder {
@@ -34,6 +38,9 @@ impl GatewayBuilder {
             providers: ProviderRegistry::new(),
             executor_config: ExecutorConfig::default(),
             environment: HashMap::new(),
+            audit: None,
+            audit_ttl_seconds: None,
+            audit_store_payload: true,
         }
     }
 
@@ -79,6 +86,27 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the audit store for recording dispatch events.
+    #[must_use]
+    pub fn audit(mut self, store: Arc<dyn AuditStore>) -> Self {
+        self.audit = Some(store);
+        self
+    }
+
+    /// Set the TTL (in seconds) for audit records.
+    #[must_use]
+    pub fn audit_ttl_seconds(mut self, seconds: u64) -> Self {
+        self.audit_ttl_seconds = Some(seconds);
+        self
+    }
+
+    /// Set whether to store the action payload in audit records.
+    #[must_use]
+    pub fn audit_store_payload(mut self, store: bool) -> Self {
+        self.audit_store_payload = store;
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -103,6 +131,9 @@ impl GatewayBuilder {
             executor,
             environment: self.environment,
             metrics: Arc::new(GatewayMetrics::default()),
+            audit: self.audit,
+            audit_ttl_seconds: self.audit_ttl_seconds,
+            audit_store_payload: self.audit_store_payload,
         })
     }
 }

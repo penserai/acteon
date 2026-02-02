@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+acteon-audit = { workspace = true }
 acteon-core = { workspace = true }
 acteon-state = { workspace = true }
 acteon-state-memory = { workspace = true }
@@ -14,12 +15,14 @@ acteon-rules = { workspace = true }
 acteon-provider = { workspace = true }
 acteon-executor = { workspace = true }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 serde_json = { workspace = true }
 json-patch = { workspace = true }
 notify = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 acteon-rules-yaml = { workspace = true }

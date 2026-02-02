@@ -15,6 +15,11 @@ name = "acteon-server"
 path = "src/main.rs"
 
 [dependencies]
+acteon-audit = { workspace = true }
+acteon-audit-memory = { workspace = true }
+acteon-audit-postgres = { workspace = true }
+acteon-audit-clickhouse = { workspace = true }
+acteon-audit-elasticsearch = { workspace = true }
 acteon-core = { workspace = true, features = ["openapi"] }
 acteon-state = { workspace = true }
 acteon-state-memory = { workspace = true }
@@ -22,6 +27,7 @@ acteon-state-redis = { workspace = true }
 acteon-state-postgres = { workspace = true }
 acteon-state-dynamodb = { workspace = true }
 acteon-state-etcd = { workspace = true }
+acteon-state-clickhouse = { workspace = true }
 acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true }
@@ -29,6 +35,7 @@ acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+chrono = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -44,6 +51,8 @@ utoipa-swagger-ui = { workspace = true }
 utoipa-axum = { workspace = true }
 
 [dev-dependencies]
+acteon-audit = { workspace = true }
+acteon-audit-memory = { workspace = true }
 axum-test = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

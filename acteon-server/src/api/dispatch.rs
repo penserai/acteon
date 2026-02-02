@@ -1,15 +1,12 @@
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use tokio::sync::RwLock;
 
 use acteon_core::{Action, ActionOutcome};
-use acteon_gateway::Gateway;
 
 use super::schemas::ErrorResponse;
+use super::AppState;
 
 /// `POST /v1/dispatch` -- dispatch a single action through the gateway pipeline.
 ///
@@ -28,10 +25,10 @@ use super::schemas::ErrorResponse;
     )
 )]
 pub async fn dispatch(
-    State(gateway): State<Arc<RwLock<Gateway>>>,
+    State(state): State<AppState>,
     Json(action): Json<Action>,
 ) -> impl IntoResponse {
-    let gw = gateway.read().await;
+    let gw = state.gateway.read().await;
     match gw.dispatch(action).await {
         Ok(outcome) => (StatusCode::OK, Json(serde_json::json!(outcome))),
         Err(e) => (
@@ -59,10 +56,10 @@ pub async fn dispatch(
     )
 )]
 pub async fn dispatch_batch(
-    State(gateway): State<Arc<RwLock<Gateway>>>,
+    State(state): State<AppState>,
     Json(actions): Json<Vec<Action>>,
 ) -> impl IntoResponse {
-    let gw = gateway.read().await;
+    let gw = state.gateway.read().await;
     let results = gw.dispatch_batch(actions).await;
 
     let body: Vec<serde_json::Value> = results

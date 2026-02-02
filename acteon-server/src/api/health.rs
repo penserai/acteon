@@ -1,14 +1,10 @@
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
-use tokio::sync::RwLock;
-
-use acteon_gateway::Gateway;
 
 use super::schemas::{HealthResponse, MetricsResponse};
+use super::AppState;
 
 /// `GET /health` -- returns service status together with a metrics snapshot.
 #[utoipa::path(
@@ -21,8 +17,8 @@ use super::schemas::{HealthResponse, MetricsResponse};
         (status = 200, description = "Service is healthy", body = HealthResponse)
     )
 )]
-pub async fn health(State(gateway): State<Arc<RwLock<Gateway>>>) -> impl IntoResponse {
-    let gw = gateway.read().await;
+pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let gw = state.gateway.read().await;
     let snap = gw.metrics().snapshot();
 
     let body = HealthResponse {
@@ -52,8 +48,8 @@ pub async fn health(State(gateway): State<Arc<RwLock<Gateway>>>) -> impl IntoRes
         (status = 200, description = "Current metric counters", body = MetricsResponse)
     )
 )]
-pub async fn metrics(State(gateway): State<Arc<RwLock<Gateway>>>) -> impl IntoResponse {
-    let gw = gateway.read().await;
+pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let gw = state.gateway.read().await;
     let snap = gw.metrics().snapshot();
 
     let body = MetricsResponse {

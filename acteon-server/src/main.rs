@@ -9,6 +9,7 @@ use tracing::info;
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_rules_yaml::YamlFrontend;
+use acteon_server::api::AppState;
 use acteon_server::config::ActeonConfig;
 
 /// Acteon gateway HTTP server.
@@ -67,12 +68,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create the state backend.
     let (store, lock) = acteon_server::state_factory::create_state(&config.state).await?;
 
+    // Create the audit store if enabled.
+    let audit_store = if config.audit.enabled {
+        let store = acteon_server::audit_factory::create_audit_store(&config.audit).await?;
+        info!(backend = %config.audit.backend, "audit store initialized");
+        Some(store)
+    } else {
+        None
+    };
+
     // Build the gateway.
-    let mut gateway = GatewayBuilder::new()
+    let mut builder = GatewayBuilder::new()
         .state(store)
         .lock(lock)
-        .executor_config(exec_config)
-        .build()?;
+        .executor_config(exec_config);
+
+    if let Some(ref audit) = audit_store {
+        builder = builder
+            .audit(Arc::clone(audit))
+            .audit_store_payload(config.audit.store_payload);
+        if let Some(ttl) = config.audit.ttl_seconds {
+            builder = builder.audit_ttl_seconds(ttl);
+        }
+    }
+
+    let mut gateway = builder.build()?;
 
     // Optionally load rules from a directory.
     if let Some(ref dir) = config.rules.directory {
@@ -87,8 +107,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let gateway = Arc::new(RwLock::new(gateway));
-    let app = acteon_server::api::router(Arc::clone(&gateway));
+    // Spawn audit cleanup background task if audit is enabled.
+    let _cleanup_handle = if let Some(ref audit) = audit_store {
+        let interval = Duration::from_secs(config.audit.cleanup_interval_seconds);
+        Some(acteon_audit_postgres::spawn_cleanup_task(
+            Arc::clone(audit),
+            interval,
+        ))
+    } else {
+        None
+    };
+
+    let state = AppState {
+        gateway: Arc::new(RwLock::new(gateway)),
+        audit: audit_store,
+    };
+    let app = acteon_server::api::router(state);
 
     // Resolve the bind address (CLI overrides take precedence).
     let host = cli.host.unwrap_or(config.server.host);

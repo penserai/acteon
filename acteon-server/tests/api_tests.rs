@@ -7,12 +7,15 @@ use axum::http::{self, Request, StatusCode};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 
+use acteon_audit::store::AuditStore;
+use acteon_audit_memory::MemoryAuditStore;
 use acteon_core::{Action, ProviderResponse};
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_provider::{DynProvider, ProviderError};
 use acteon_rules::ir::expr::Expr;
 use acteon_rules::ir::rule::{Rule, RuleAction};
+use acteon_server::api::AppState;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 
 // -- Mock provider --------------------------------------------------------
@@ -46,11 +49,15 @@ impl DynProvider for MockProvider {
 
 // -- Helpers --------------------------------------------------------------
 
-fn build_test_gateway(rules: Vec<Rule>) -> Arc<RwLock<acteon_gateway::Gateway>> {
+fn build_test_state(rules: Vec<Rule>) -> AppState {
+    build_test_state_with_audit(rules, None)
+}
+
+fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStore>>) -> AppState {
     let store = Arc::new(MemoryStateStore::new());
     let lock = Arc::new(MemoryDistributedLock::new());
 
-    let gw = GatewayBuilder::new()
+    let mut builder = GatewayBuilder::new()
         .state(store)
         .lock(lock)
         .rules(rules)
@@ -60,11 +67,18 @@ fn build_test_gateway(rules: Vec<Rule>) -> Arc<RwLock<acteon_gateway::Gateway>> 
             execution_timeout: Duration::from_secs(5),
             max_concurrent: 10,
             ..ExecutorConfig::default()
-        })
-        .build()
-        .expect("gateway should build");
+        });
 
-    Arc::new(RwLock::new(gw))
+    if let Some(ref a) = audit {
+        builder = builder.audit(Arc::clone(a)).audit_store_payload(true);
+    }
+
+    let gw = builder.build().expect("gateway should build");
+
+    AppState {
+        gateway: Arc::new(RwLock::new(gw)),
+        audit,
+    }
 }
 
 fn test_action() -> Action {
@@ -77,16 +91,16 @@ fn test_action() -> Action {
     )
 }
 
-fn build_app(gateway: Arc<RwLock<acteon_gateway::Gateway>>) -> axum::Router {
-    acteon_server::api::router(gateway)
+fn build_app(state: AppState) -> axum::Router {
+    acteon_server::api::router(state)
 }
 
 // -- Tests ----------------------------------------------------------------
 
 #[tokio::test]
 async fn health_returns_200() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     let response = app
         .oneshot(
@@ -110,8 +124,8 @@ async fn health_returns_200() {
 
 #[tokio::test]
 async fn metrics_returns_200() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     let response = app
         .oneshot(
@@ -134,8 +148,8 @@ async fn metrics_returns_200() {
 
 #[tokio::test]
 async fn dispatch_returns_valid_outcome() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     let action = test_action();
     let body = serde_json::to_string(&action).unwrap();
@@ -167,8 +181,8 @@ async fn dispatch_returns_valid_outcome() {
 
 #[tokio::test]
 async fn dispatch_batch_returns_array() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     let actions = vec![test_action(), test_action()];
     let body = serde_json::to_string(&actions).unwrap();
@@ -203,8 +217,8 @@ async fn list_rules_returns_rule_list() {
             .with_description("First rule"),
         Rule::new("rule-b", Expr::Bool(false), RuleAction::Deny).with_priority(5),
     ];
-    let gateway = build_test_gateway(rules);
-    let app = build_app(gateway);
+    let state = build_test_state(rules);
+    let app = build_app(state);
 
     let response = app
         .oneshot(
@@ -232,8 +246,8 @@ async fn list_rules_returns_rule_list() {
 
 #[tokio::test]
 async fn reload_rules_returns_200() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     // Create a temporary directory with a YAML rule file.
     let tmpdir = std::env::temp_dir().join("acteon-test-rules");
@@ -285,10 +299,10 @@ rules:
 #[tokio::test]
 async fn set_rule_enabled_toggles() {
     let rules = vec![Rule::new("toggle-me", Expr::Bool(true), RuleAction::Allow)];
-    let gateway = build_test_gateway(rules);
+    let state = build_test_state(rules);
 
     // First, disable the rule.
-    let app = build_app(Arc::clone(&gateway));
+    let app = build_app(state.clone());
     let response = app
         .oneshot(
             Request::builder()
@@ -311,12 +325,12 @@ async fn set_rule_enabled_toggles() {
 
     // Verify the rule is actually disabled.
     {
-        let gw = gateway.read().await;
+        let gw = state.gateway.read().await;
         assert!(!gw.rules()[0].enabled);
     }
 
     // Re-enable -- rebuild the router since `oneshot` consumes it.
-    let app2 = build_app(Arc::clone(&gateway));
+    let app2 = build_app(state.clone());
     let response = app2
         .oneshot(
             Request::builder()
@@ -338,15 +352,15 @@ async fn set_rule_enabled_toggles() {
 
     // Verify the rule is enabled again.
     {
-        let gw = gateway.read().await;
+        let gw = state.gateway.read().await;
         assert!(gw.rules()[0].enabled);
     }
 }
 
 #[tokio::test]
 async fn set_rule_enabled_not_found() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     let response = app
         .oneshot(
@@ -365,8 +379,8 @@ async fn set_rule_enabled_not_found() {
 
 #[tokio::test]
 async fn swagger_ui_returns_200() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     let response = app
         .oneshot(
@@ -388,8 +402,8 @@ async fn swagger_ui_returns_200() {
 
 #[tokio::test]
 async fn openapi_json_is_valid() {
-    let gateway = build_test_gateway(vec![]);
-    let app = build_app(gateway);
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
 
     let response = app
         .oneshot(
@@ -435,6 +449,12 @@ async fn openapi_json_is_valid() {
         paths.contains_key("/v1/rules/{name}/enabled"),
         "missing /v1/rules/{{name}}/enabled"
     );
+    // Audit paths
+    assert!(paths.contains_key("/v1/audit"), "missing /v1/audit");
+    assert!(
+        paths.contains_key("/v1/audit/{action_id}"),
+        "missing /v1/audit/{{action_id}}"
+    );
 
     // Verify schemas exist
     let schemas = spec["components"]["schemas"]
@@ -453,4 +473,237 @@ async fn openapi_json_is_valid() {
         schemas.contains_key("ErrorResponse"),
         "missing ErrorResponse schema"
     );
+    assert!(
+        schemas.contains_key("AuditRecord"),
+        "missing AuditRecord schema"
+    );
+    assert!(
+        schemas.contains_key("AuditPage"),
+        "missing AuditPage schema"
+    );
+}
+
+// -- Audit-specific tests -------------------------------------------------
+
+#[tokio::test]
+async fn audit_disabled_returns_404() {
+    let state = build_test_state(vec![]); // no audit
+    let app = build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/audit")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn audit_query_returns_records_after_dispatch() {
+    let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
+    let state = build_test_state_with_audit(vec![], Some(Arc::clone(&audit)));
+
+    // Dispatch an action.
+    let action = test_action();
+    let action_body = serde_json::to_string(&action).unwrap();
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(action_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Give the async audit task time to complete.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Query audit records.
+    let app2 = build_app(state);
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .uri("/v1/audit")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["total"].as_u64().unwrap() >= 1);
+    let records = json["records"].as_array().unwrap();
+    assert!(!records.is_empty());
+    assert_eq!(records[0]["verdict"], "allow");
+    assert_eq!(records[0]["outcome"], "executed");
+}
+
+#[tokio::test]
+async fn audit_get_by_action_id() {
+    let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
+    let state = build_test_state_with_audit(vec![], Some(Arc::clone(&audit)));
+
+    let action = test_action();
+    let action_id = action.id.to_string();
+    let action_body = serde_json::to_string(&action).unwrap();
+
+    // Dispatch the action.
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(action_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Give the async audit task time to complete.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Look up by action ID.
+    let app2 = build_app(state);
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/audit/{action_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["action_id"], action_id);
+    assert_eq!(json["namespace"], "notifications");
+    assert_eq!(json["provider"], "email");
+}
+
+#[tokio::test]
+async fn audit_get_nonexistent_returns_404() {
+    let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
+    let state = build_test_state_with_audit(vec![], Some(audit));
+
+    let app = build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/audit/nonexistent-action-id")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn audit_query_filters_work() {
+    let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
+    let state = build_test_state_with_audit(vec![], Some(Arc::clone(&audit)));
+
+    // Dispatch an action.
+    let action = test_action();
+    let action_body = serde_json::to_string(&action).unwrap();
+    let app = build_app(state.clone());
+    let _ = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(action_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Query with matching filter.
+    let app2 = build_app(state.clone());
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .uri("/v1/audit?namespace=notifications")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json["total"].as_u64().unwrap() >= 1);
+
+    // Query with non-matching filter.
+    let app3 = build_app(state);
+    let response = app3
+        .oneshot(
+            Request::builder()
+                .uri("/v1/audit?namespace=other-ns")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["total"].as_u64().unwrap(), 0);
+}
+
+#[tokio::test]
+async fn dispatch_without_audit_still_works() {
+    let state = build_test_state(vec![]); // no audit
+    let app = build_app(state);
+
+    let action = test_action();
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(json.get("Executed").is_some());
 }

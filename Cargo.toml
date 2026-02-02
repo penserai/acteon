@@ -8,6 +8,7 @@ members = [
     "acteon-state-postgres",
     "acteon-state-redis",
     "acteon-state-dynamodb",
+    "acteon-state-clickhouse",
     "acteon-rules",
     "acteon-rules-yaml",
     "acteon-rules-cel",
@@ -17,6 +18,11 @@ members = [
     "acteon-server",
     "acteon-slack",
     "acteon-email",
+    "acteon-audit",
+    "acteon-audit-memory",
+    "acteon-audit-postgres",
+    "acteon-audit-clickhouse",
+    "acteon-audit-elasticsearch",
 ]
 
 [workspace.package]
@@ -44,6 +50,12 @@ acteon-gateway = { path = "acteon-gateway" }
 acteon-server = { path = "acteon-server" }
 acteon-slack = { path = "acteon-slack" }
 acteon-email = { path = "acteon-email" }
+acteon-audit = { path = "acteon-audit" }
+acteon-audit-memory = { path = "acteon-audit-memory" }
+acteon-audit-postgres = { path = "acteon-audit-postgres" }
+acteon-audit-clickhouse = { path = "acteon-audit-clickhouse" }
+acteon-audit-elasticsearch = { path = "acteon-audit-elasticsearch" }
+acteon-state-clickhouse = { path = "acteon-state-clickhouse" }
 
 # Parsing
 nom = "7"
@@ -88,6 +100,9 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 # PostgreSQL
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid"] }
+
+# ClickHouse
+clickhouse = "0.13"
 
 # Email / SMTP
 lettre = { version = "0.11", features = ["tokio1-native-tls", "smtp-transport"] }

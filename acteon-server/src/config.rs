@@ -15,12 +15,15 @@ pub struct ActeonConfig {
     /// HTTP server bind configuration.
     #[serde(default)]
     pub server: ServerConfig,
+    /// Audit trail configuration.
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 /// Configuration for the state store backend.
 #[derive(Debug, Deserialize)]
 pub struct StateConfig {
-    /// Which backend to use: `"memory"`, `"redis"`, `"postgres"`, `"dynamodb"`, or `"etcd"`.
+    /// Which backend to use: `"memory"`, `"redis"`, `"postgres"`, `"dynamodb"`, `"etcd"`, or `"clickhouse"`.
     #[serde(default = "default_backend")]
     pub backend: String,
 
@@ -98,4 +101,59 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8080
+}
+
+/// Configuration for the audit trail system.
+#[derive(Debug, Deserialize)]
+pub struct AuditConfig {
+    /// Whether audit recording is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Which backend to use: `"memory"`, `"postgres"`, `"clickhouse"`, or `"elasticsearch"`.
+    #[serde(default = "default_audit_backend")]
+    pub backend: String,
+    /// Connection URL for the audit backend (used by postgres).
+    pub url: Option<String>,
+    /// Table prefix for the audit backend.
+    #[serde(default = "default_audit_prefix")]
+    pub prefix: String,
+    /// TTL for audit records in seconds (default: 30 days).
+    #[serde(default)]
+    pub ttl_seconds: Option<u64>,
+    /// Background cleanup interval in seconds (default: 1 hour).
+    #[serde(default = "default_cleanup_interval")]
+    pub cleanup_interval_seconds: u64,
+    /// Whether to store action payloads in audit records.
+    #[serde(default = "default_store_payload")]
+    pub store_payload: bool,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: default_audit_backend(),
+            url: None,
+            prefix: default_audit_prefix(),
+            ttl_seconds: Some(2_592_000), // 30 days
+            cleanup_interval_seconds: default_cleanup_interval(),
+            store_payload: true,
+        }
+    }
+}
+
+fn default_audit_backend() -> String {
+    "memory".to_owned()
+}
+
+fn default_audit_prefix() -> String {
+    "acteon_".to_owned()
+}
+
+fn default_cleanup_interval() -> u64 {
+    3600 // 1 hour
+}
+
+fn default_store_payload() -> bool {
+    true
 }

@@ -2,8 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{info, instrument};
+use chrono::Utc;
+use tracing::{info, instrument, warn};
 
+use acteon_audit::store::AuditStore;
+use acteon_audit::AuditRecord;
 use acteon_core::{Action, ActionOutcome};
 use acteon_executor::ActionExecutor;
 use acteon_provider::ProviderRegistry;
@@ -29,6 +32,9 @@ pub struct Gateway {
     pub(crate) executor: ActionExecutor,
     pub(crate) environment: HashMap<String, String>,
     pub(crate) metrics: Arc<GatewayMetrics>,
+    pub(crate) audit: Option<Arc<dyn AuditStore>>,
+    pub(crate) audit_ttl_seconds: Option<u64>,
+    pub(crate) audit_store_payload: bool,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -55,6 +61,8 @@ impl Gateway {
     )]
     pub async fn dispatch(&self, action: Action) -> Result<ActionOutcome, GatewayError> {
         self.metrics.increment_dispatched();
+        let start = std::time::Instant::now();
+        let dispatched_at = Utc::now();
 
         // 1. Build a lock name scoped to this specific action.
         let lock_name = format!(
@@ -78,19 +86,19 @@ impl Gateway {
         info!(?verdict, "rule evaluation complete");
 
         // 4. Handle the verdict.
-        let outcome = match verdict {
+        let outcome = match &verdict {
             RuleVerdict::Allow => self.execute_action(&action).await,
             RuleVerdict::Deduplicate { ttl_seconds } => {
-                self.handle_dedup(&action, ttl_seconds).await?
+                self.handle_dedup(&action, *ttl_seconds).await?
             }
             RuleVerdict::Suppress(rule) | RuleVerdict::Deny(rule) => {
                 self.metrics.increment_suppressed();
-                ActionOutcome::Suppressed { rule }
+                ActionOutcome::Suppressed { rule: rule.clone() }
             }
             RuleVerdict::Reroute {
                 rule: _,
                 target_provider,
-            } => self.handle_reroute(&action, &target_provider).await?,
+            } => self.handle_reroute(&action, target_provider).await?,
             RuleVerdict::Throttle {
                 rule: _,
                 max_count: _,
@@ -98,17 +106,36 @@ impl Gateway {
             } => {
                 self.metrics.increment_throttled();
                 ActionOutcome::Throttled {
-                    retry_after: Duration::from_secs(window_seconds),
+                    retry_after: Duration::from_secs(*window_seconds),
                 }
             }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
-                json_patch::merge(&mut modified.payload, &changes);
+                json_patch::merge(&mut modified.payload, changes);
                 self.execute_action(&modified).await
             }
         };
 
-        // 5. Release the lock explicitly.
+        // 5. Emit audit record (best-effort, async fire-and-forget).
+        if let Some(ref audit) = self.audit {
+            let record = build_audit_record(
+                &action,
+                &verdict,
+                &outcome,
+                dispatched_at,
+                start.elapsed(),
+                self.audit_ttl_seconds,
+                self.audit_store_payload,
+            );
+            let audit = Arc::clone(audit);
+            tokio::spawn(async move {
+                if let Err(e) = audit.record(record).await {
+                    warn!(error = %e, "audit recording failed");
+                }
+            });
+        }
+
+        // 6. Release the lock explicitly.
         guard
             .release()
             .await
@@ -246,6 +273,111 @@ impl Gateway {
             }
             _ => Ok(result),
         }
+    }
+}
+
+// -- Audit helpers -----------------------------------------------------------
+
+/// Extract a string tag from a `RuleVerdict`.
+fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
+    match verdict {
+        RuleVerdict::Allow => "allow",
+        RuleVerdict::Deny(_) => "deny",
+        RuleVerdict::Deduplicate { .. } => "deduplicate",
+        RuleVerdict::Suppress(_) => "suppress",
+        RuleVerdict::Reroute { .. } => "reroute",
+        RuleVerdict::Throttle { .. } => "throttle",
+        RuleVerdict::Modify { .. } => "modify",
+    }
+}
+
+/// Extract the matched rule name from a `RuleVerdict`, if any.
+fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
+    match verdict {
+        RuleVerdict::Allow | RuleVerdict::Deduplicate { .. } => None,
+        RuleVerdict::Deny(rule)
+        | RuleVerdict::Suppress(rule)
+        | RuleVerdict::Reroute { rule, .. }
+        | RuleVerdict::Throttle { rule, .. }
+        | RuleVerdict::Modify { rule, .. } => Some(rule.clone()),
+    }
+}
+
+/// Extract a string tag from an `ActionOutcome`.
+fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
+    match outcome {
+        ActionOutcome::Executed(_) => "executed",
+        ActionOutcome::Deduplicated => "deduplicated",
+        ActionOutcome::Suppressed { .. } => "suppressed",
+        ActionOutcome::Rerouted { .. } => "rerouted",
+        ActionOutcome::Throttled { .. } => "throttled",
+        ActionOutcome::Failed(_) => "failed",
+    }
+}
+
+/// Build an `AuditRecord` from the dispatch context.
+fn build_audit_record(
+    action: &Action,
+    verdict: &RuleVerdict,
+    outcome: &ActionOutcome,
+    dispatched_at: chrono::DateTime<chrono::Utc>,
+    elapsed: Duration,
+    ttl_seconds: Option<u64>,
+    store_payload: bool,
+) -> AuditRecord {
+    let completed_at = Utc::now();
+    #[allow(clippy::cast_possible_wrap)]
+    let expires_at = ttl_seconds.map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
+
+    let action_payload = if store_payload {
+        Some(action.payload.clone())
+    } else {
+        None
+    };
+
+    let outcome_details = match outcome {
+        ActionOutcome::Executed(resp) => serde_json::json!({
+            "status": format!("{:?}", resp.status),
+        }),
+        ActionOutcome::Failed(err) => serde_json::json!({
+            "code": err.code,
+            "message": err.message,
+            "retryable": err.retryable,
+            "attempts": err.attempts,
+        }),
+        ActionOutcome::Suppressed { rule } => serde_json::json!({ "rule": rule }),
+        ActionOutcome::Rerouted {
+            original_provider,
+            new_provider,
+            ..
+        } => serde_json::json!({
+            "original_provider": original_provider,
+            "new_provider": new_provider,
+        }),
+        ActionOutcome::Throttled { retry_after } => {
+            serde_json::json!({ "retry_after_secs": retry_after.as_secs() })
+        }
+        ActionOutcome::Deduplicated => serde_json::json!({}),
+    };
+
+    AuditRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        action_id: action.id.to_string(),
+        namespace: action.namespace.to_string(),
+        tenant: action.tenant.to_string(),
+        provider: action.provider.to_string(),
+        action_type: action.action_type.clone(),
+        verdict: verdict_tag(verdict).to_owned(),
+        matched_rule: matched_rule_name(verdict),
+        outcome: outcome_tag(outcome).to_owned(),
+        action_payload,
+        verdict_details: serde_json::json!({ "verdict": verdict_tag(verdict) }),
+        outcome_details,
+        metadata: serde_json::to_value(&action.metadata).unwrap_or_default(),
+        dispatched_at,
+        completed_at,
+        duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+        expires_at,
     }
 }
 
