@@ -1,0 +1,57 @@
+# Full Acteon configuration with all sections and options.
+# Every field is shown with its default value. All sections are optional.
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+[state]
+# Backend type: "memory", "redis", "postgres", "dynamodb", "etcd", or "clickhouse"
+backend = "memory"
+
+# Connection URL (used by redis, postgres, clickhouse, etcd, and dynamodb-local)
+# url = "redis://localhost:6379"
+
+# Key / table prefix
+# prefix = "acteon"
+
+# DynamoDB only
+# region = "us-east-1"
+# table_name = "acteon_state"
+
+[audit]
+# Set to true to enable audit trail recording
+enabled = false
+
+# Backend type: "memory", "postgres", "clickhouse", or "elasticsearch"
+backend = "memory"
+
+# Connection URL (required for postgres, clickhouse, elasticsearch)
+# url = "postgres://acteon:acteon@localhost:5432/acteon"
+
+# Table / index prefix
+prefix = "acteon_"
+
+# Time-to-live for audit records in seconds (default: 30 days)
+# Not used by the elasticsearch backend (use ES index lifecycle management instead)
+ttl_seconds = 2592000
+
+# How often the background cleanup job runs, in seconds
+cleanup_interval_seconds = 3600
+
+# Whether to store the full action payload in audit records
+store_payload = true
+
+[rules]
+# Path to directory containing YAML rule files
+# directory = "./rules"
+
+[executor]
+# Maximum retry attempts per action
+max_retries = 3
+
+# Per-action execution timeout in seconds
+timeout_seconds = 30
+
+# Maximum number of concurrent action executions
+max_concurrent = 10

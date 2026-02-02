@@ -1,0 +1,11 @@
+# ClickHouse state + audit
+# Start with: docker compose --profile clickhouse up -d
+
+[state]
+backend = "clickhouse"
+url = "http://localhost:8123"
+
+[audit]
+enabled = true
+backend = "clickhouse"
+url = "http://localhost:8123"

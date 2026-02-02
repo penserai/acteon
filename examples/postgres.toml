@@ -1,0 +1,11 @@
+# PostgreSQL state + audit
+# Start with: docker compose --profile postgres up -d
+
+[state]
+backend = "postgres"
+url = "postgres://acteon:acteon@localhost:5432/acteon"
+
+[audit]
+enabled = true
+backend = "postgres"
+url = "postgres://acteon:acteon@localhost:5432/acteon"

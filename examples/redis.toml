@@ -1,0 +1,6 @@
+# Redis state backend
+# Start with: docker compose up -d
+
+[state]
+backend = "redis"
+url = "redis://localhost:6379"

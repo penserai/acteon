@@ -1,0 +1,11 @@
+# Redis state + Elasticsearch audit
+# Start with: docker compose --profile elasticsearch up -d
+
+[state]
+backend = "redis"
+url = "redis://localhost:6379"
+
+[audit]
+enabled = true
+backend = "elasticsearch"
+url = "http://localhost:9200"

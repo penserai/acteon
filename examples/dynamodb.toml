@@ -1,0 +1,8 @@
+# DynamoDB Local state
+# Start with: docker compose --profile dynamodb up -d
+
+[state]
+backend = "dynamodb"
+url = "http://localhost:8000"
+region = "us-east-1"
+table_name = "acteon_state"
