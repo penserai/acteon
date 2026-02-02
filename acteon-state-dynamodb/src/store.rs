@@ -412,8 +412,11 @@ fn parse_counter_value(
     }
 }
 
-/// Build a `DynamoDB` [`Client`] from the provided configuration.
-pub(crate) async fn build_client(config: &DynamoConfig) -> Client {
+/// Build an AWS `DynamoDB` [`Client`] from the provided configuration.
+///
+/// Uses the standard AWS SDK environment credential chain and optionally
+/// overrides the endpoint URL for local development.
+pub async fn build_client(config: &DynamoConfig) -> Client {
     let mut aws_config =
         aws_config::from_env().region(aws_config::Region::new(config.region.clone()));
 

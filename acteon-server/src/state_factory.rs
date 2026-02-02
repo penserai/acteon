@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use acteon_state::{DistributedLock, StateStore};
 use acteon_state_clickhouse::{ClickHouseConfig, ClickHouseDistributedLock, ClickHouseStateStore};
-use acteon_state_dynamodb::{DynamoConfig, DynamoDistributedLock, DynamoStateStore};
+use acteon_state_dynamodb::{build_client, create_table, DynamoConfig, DynamoDistributedLock, DynamoStateStore};
 use acteon_state_etcd::{EtcdConfig, EtcdDistributedLock, EtcdStateStore};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use acteon_state_postgres::{PostgresConfig, PostgresDistributedLock, PostgresStateStore};
@@ -92,6 +92,16 @@ async fn create_dynamodb(config: &StateConfig) -> Result<StatePair, ServerError>
         endpoint_url: config.url.clone(),
         key_prefix: config.prefix.clone().unwrap_or_else(|| "acteon".to_owned()),
     };
+
+    // When a custom endpoint is configured (DynamoDB Local) auto-create the
+    // table so `docker compose --profile dynamodb up` works out of the box.
+    if dynamo_config.endpoint_url.is_some() {
+        let client = build_client(&dynamo_config).await;
+        create_table(&client, &dynamo_config.table_name)
+            .await
+            .map_err(|e| ServerError::Config(format!("dynamodb create table: {e}")))?;
+    }
+
     let store = Arc::new(
         DynamoStateStore::new(&dynamo_config)
             .await
