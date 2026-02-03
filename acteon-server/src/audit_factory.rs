@@ -13,6 +13,7 @@ use crate::config::AuditConfig;
 use crate::error::ServerError;
 
 /// Create an audit store from the given configuration.
+#[allow(clippy::unused_async)]
 pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditStore>, ServerError> {
     match config.backend.as_str() {
         "memory" => Ok(Arc::new(MemoryAuditStore::new())),

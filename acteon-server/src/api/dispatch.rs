@@ -59,15 +59,13 @@ pub async fn dispatch(
     }
 
     // Check per-tenant rate limit if enabled.
-    if let Some(ref limiter) = state.rate_limiter {
-        if limiter.config().tenants.enabled {
-            if let Err(e) = limiter.check_tenant_limit(&action.tenant).await {
+    if let Some(ref limiter) = state.rate_limiter
+        && limiter.config().tenants.enabled
+            && let Err(e) = limiter.check_tenant_limit(&action.tenant).await {
                 return Err(ServerError::RateLimited {
                     retry_after: e.retry_after,
                 });
             }
-        }
-    }
 
     let caller = identity.to_caller();
     let gw = state.gateway.read().await;
@@ -128,21 +126,19 @@ pub async fn dispatch_batch(
     }
 
     // Check per-tenant rate limits for all tenants in the batch if enabled.
-    if let Some(ref limiter) = state.rate_limiter {
-        if limiter.config().tenants.enabled {
+    if let Some(ref limiter) = state.rate_limiter
+        && limiter.config().tenants.enabled {
             // Collect unique tenants to avoid duplicate checks.
             let mut checked_tenants = std::collections::HashSet::new();
             for action in &actions {
-                if checked_tenants.insert(&action.tenant) {
-                    if let Err(e) = limiter.check_tenant_limit(&action.tenant).await {
+                if checked_tenants.insert(&action.tenant)
+                    && let Err(e) = limiter.check_tenant_limit(&action.tenant).await {
                         return Err(ServerError::RateLimited {
                             retry_after: e.retry_after,
                         });
                     }
-                }
             }
         }
-    }
 
     let caller = identity.to_caller();
     let gw = state.gateway.read().await;

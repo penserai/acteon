@@ -40,7 +40,7 @@ pub struct RateLimitExceeded {
 /// Distributed rate limiter using the sliding window approximation algorithm.
 ///
 /// Uses `StateStore::increment()` for atomic counters, making it work across
-/// multiple server instances with any backend (Redis, DynamoDB, PostgreSQL, etc.).
+/// multiple server instances with any backend (Redis, `DynamoDB`, `PostgreSQL`, etc.).
 pub struct RateLimiter {
     store: Arc<dyn StateStore>,
     config: RateLimitFileConfig,
@@ -75,7 +75,7 @@ impl RateLimiter {
         caller_id: &str,
     ) -> Result<RateLimitResult, RateLimitExceeded> {
         let tier = self.resolve_caller_tier(caller_id);
-        let bucket = format!("caller:{}", caller_id);
+        let bucket = format!("caller:{caller_id}");
         self.check_limit(&bucket, tier).await
     }
 
@@ -87,7 +87,7 @@ impl RateLimiter {
         tenant_id: &str,
     ) -> Result<RateLimitResult, RateLimitExceeded> {
         let tier = self.resolve_tenant_tier(tenant_id);
-        let bucket = format!("tenant:{}", tenant_id);
+        let bucket = format!("tenant:{tenant_id}");
         self.check_limit(&bucket, tier).await
     }
 
@@ -122,6 +122,7 @@ impl RateLimiter {
     ///    `effective = prev_count * weight + curr_count`
     ///    where `weight = (window_seconds - elapsed) / window_seconds`
     /// 4. If effective < limit, increment current window and allow
+    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     async fn check_limit(
         &self,
         bucket: &str,
@@ -141,8 +142,8 @@ impl RateLimiter {
         let elapsed = now - current_window_start;
 
         // Build state keys
-        let current_key = self.build_key(bucket, current_window_start);
-        let previous_key = self.build_key(bucket, previous_window_start);
+        let current_key = Self::build_key(bucket, current_window_start);
+        let previous_key = Self::build_key(bucket, previous_window_start);
 
         // Get previous window count (for sliding window approximation)
         let prev_count = match self.store.get(&previous_key).await {
@@ -199,12 +200,12 @@ impl RateLimiter {
     }
 
     /// Build a state key for a rate limit bucket and window.
-    fn build_key(&self, bucket: &str, window_start: u64) -> StateKey {
+    fn build_key(bucket: &str, window_start: u64) -> StateKey {
         StateKey::new(
             SYSTEM_NAMESPACE,
             SYSTEM_TENANT,
             KeyKind::RateLimit,
-            format!("{}:{}", bucket, window_start),
+            format!("{bucket}:{window_start}"),
         )
     }
 

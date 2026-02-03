@@ -7,23 +7,20 @@ use base64::Engine;
 pub fn parse_master_key(raw: &str) -> Result<[u8; 32], String> {
     let trimmed = raw.trim();
     // Try hex first (64 hex chars = 32 bytes).
-    if trimmed.len() == 64 {
-        if let Ok(bytes) = hex::decode(trimmed) {
-            if bytes.len() == 32 {
+    if trimmed.len() == 64
+        && let Ok(bytes) = hex::decode(trimmed)
+            && bytes.len() == 32 {
                 let mut key = [0u8; 32];
                 key.copy_from_slice(&bytes);
                 return Ok(key);
             }
-        }
-    }
     // Try base64.
-    if let Ok(bytes) = B64.decode(trimmed) {
-        if bytes.len() == 32 {
+    if let Ok(bytes) = B64.decode(trimmed)
+        && bytes.len() == 32 {
             let mut key = [0u8; 32];
             key.copy_from_slice(&bytes);
             return Ok(key);
         }
-    }
     Err("ACTEON_AUTH_KEY must be 32 bytes encoded as 64 hex chars or base64".to_owned())
 }
 

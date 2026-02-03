@@ -66,9 +66,9 @@ where
             };
 
             // Try Bearer token first.
-            if let Some(auth_header) = req.headers().get("authorization") {
-                if let Ok(header_str) = auth_header.to_str() {
-                    if let Some(token) = header_str.strip_prefix("Bearer ") {
+            if let Some(auth_header) = req.headers().get("authorization")
+                && let Ok(header_str) = auth_header.to_str()
+                    && let Some(token) = header_str.strip_prefix("Bearer ") {
                         match provider.validate_jwt(token).await {
                             Ok(identity) => {
                                 req.extensions_mut().insert(identity);
@@ -79,12 +79,10 @@ where
                             }
                         }
                     }
-                }
-            }
 
             // Try API key.
-            if let Some(api_key_header) = req.headers().get("x-api-key") {
-                if let Ok(key_str) = api_key_header.to_str() {
+            if let Some(api_key_header) = req.headers().get("x-api-key")
+                && let Ok(key_str) = api_key_header.to_str() {
                     match provider.authenticate_api_key(key_str) {
                         Some(identity) => {
                             req.extensions_mut().insert(identity);
@@ -95,7 +93,6 @@ where
                         }
                     }
                 }
-            }
 
             Ok(unauthorized("missing authentication credentials"))
         })

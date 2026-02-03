@@ -69,14 +69,16 @@ where
             let caller_id = req
                 .extensions()
                 .get::<CallerIdentity>()
-                .map(|id| {
-                    if id.id.is_empty() {
-                        ANONYMOUS_BUCKET.to_owned()
-                    } else {
-                        id.id.clone()
-                    }
-                })
-                .unwrap_or_else(|| ANONYMOUS_BUCKET.to_owned());
+                .map_or_else(
+                    || ANONYMOUS_BUCKET.to_owned(),
+                    |id| {
+                        if id.id.is_empty() {
+                            ANONYMOUS_BUCKET.to_owned()
+                        } else {
+                            id.id.clone()
+                        }
+                    },
+                );
 
             // Check rate limit for the caller.
             match limiter.check_caller_limit(&caller_id).await {

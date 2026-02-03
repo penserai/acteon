@@ -18,6 +18,7 @@ use crate::error::ServerError;
 pub type StatePair = (Arc<dyn StateStore>, Arc<dyn DistributedLock>);
 
 /// Construct a `StateStore` and `DistributedLock` pair from configuration.
+#[allow(clippy::unused_async)]
 pub async fn create_state(config: &StateConfig) -> Result<StatePair, ServerError> {
     match config.backend.as_str() {
         "memory" => Ok(create_memory()),

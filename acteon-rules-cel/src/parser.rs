@@ -412,13 +412,13 @@ fn parse_unary(input: &str) -> IResult<&str, Expr> {
         // - '!' (nested unary)
         // - a digit (negative number literal)
         // - '-' (nested unary minus)
-        if let Some(c) = after_ws.chars().next() {
-            if c.is_alphanumeric() || c == '_' || c == '(' || c == '!' || c == '-' {
-                let (rest, _) = char('-')(input)?;
-                let (rest, _) = multispace0(rest)?;
-                let (rest, operand) = parse_unary(rest)?;
-                return Ok((rest, Expr::Unary(UnaryOp::Neg, Box::new(operand))));
-            }
+        if let Some(c) = after_ws.chars().next()
+            && (c.is_alphanumeric() || c == '_' || c == '(' || c == '!' || c == '-')
+        {
+            let (rest, _) = char('-')(input)?;
+            let (rest, _) = multispace0(rest)?;
+            let (rest, operand) = parse_unary(rest)?;
+            return Ok((rest, Expr::Unary(UnaryOp::Neg, Box::new(operand))));
         }
     }
 

@@ -41,6 +41,7 @@ pub fn hash_api_key(raw_key: &str) -> String {
 }
 
 /// Look up an API key and return a `CallerIdentity` if found.
+#[allow(clippy::implicit_hasher)]
 pub fn authenticate_api_key(
     raw_key: &str,
     table: &HashMap<String, ApiKeyEntry>,

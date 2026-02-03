@@ -56,7 +56,7 @@ impl AuditStore for MemoryAuditStore {
                 let rec = rec.value();
                 if best
                     .as_ref()
-                    .map_or(true, |b| rec.dispatched_at > b.dispatched_at)
+                    .is_none_or(|b| rec.dispatched_at > b.dispatched_at)
                 {
                     best = Some(rec.clone());
                 }
@@ -97,20 +97,20 @@ impl AuditStore for MemoryAuditStore {
                 if !matches_filter(query.verdict.as_ref(), &rec.verdict) {
                     return None;
                 }
-                if let Some(ref rule) = query.matched_rule {
-                    if rec.matched_rule.as_deref() != Some(rule.as_str()) {
-                        return None;
-                    }
+                if let Some(ref rule) = query.matched_rule
+                    && rec.matched_rule.as_deref() != Some(rule.as_str())
+                {
+                    return None;
                 }
-                if let Some(ref from) = query.from {
-                    if rec.dispatched_at < *from {
-                        return None;
-                    }
+                if let Some(ref from) = query.from
+                    && rec.dispatched_at < *from
+                {
+                    return None;
                 }
-                if let Some(ref to) = query.to {
-                    if rec.dispatched_at > *to {
-                        return None;
-                    }
+                if let Some(ref to) = query.to
+                    && rec.dispatched_at > *to
+                {
+                    return None;
                 }
                 Some(rec.clone())
             })
@@ -144,10 +144,10 @@ impl AuditStore for MemoryAuditStore {
             .iter()
             .filter_map(|entry| {
                 let rec = entry.value();
-                if let Some(expires) = rec.expires_at {
-                    if expires <= now {
-                        return Some(rec.id.clone());
-                    }
+                if let Some(expires) = rec.expires_at
+                    && expires <= now
+                {
+                    return Some(rec.id.clone());
                 }
                 None
             })
@@ -169,7 +169,7 @@ impl AuditStore for MemoryAuditStore {
 
 /// Check if a filter matches a value. `None` filter matches everything.
 fn matches_filter(filter: Option<&String>, value: &str) -> bool {
-    filter.map_or(true, |f| f == value)
+    filter.is_none_or(|f| f == value)
 }
 
 #[cfg(test)]

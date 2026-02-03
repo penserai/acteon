@@ -52,8 +52,8 @@ pub async fn query_audit(
     // Restrict query to only tenants the caller has access to.
     // If the caller has a specific tenant filter, verify it's covered by grants.
     if let Some(ref requested_tenant) = query.tenant {
-        if let Some(allowed) = identity.allowed_tenants() {
-            if !allowed.contains(&requested_tenant.as_str()) {
+        if let Some(allowed) = identity.allowed_tenants()
+            && !allowed.contains(&requested_tenant.as_str()) {
                 return (
                     StatusCode::FORBIDDEN,
                     Json(serde_json::json!(ErrorResponse {
@@ -61,7 +61,6 @@ pub async fn query_audit(
                     })),
                 );
             }
-        }
     } else if let Some(allowed) = identity.allowed_tenants() {
         // No tenant filter requested but caller is scoped — inject first allowed tenant.
         // For multi-tenant callers, the API requires an explicit tenant filter.
