@@ -11,6 +11,7 @@ pub enum KeyKind {
     Lock,
     State,
     History,
+    RateLimit,
     Custom(String),
 }
 
@@ -24,6 +25,7 @@ impl KeyKind {
             Self::Lock => "lock",
             Self::State => "state",
             Self::History => "history",
+            Self::RateLimit => "rate_limit",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -99,6 +101,7 @@ mod tests {
         assert_eq!(KeyKind::Lock.as_str(), "lock");
         assert_eq!(KeyKind::State.as_str(), "state");
         assert_eq!(KeyKind::History.as_str(), "history");
+        assert_eq!(KeyKind::RateLimit.as_str(), "rate_limit");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 
