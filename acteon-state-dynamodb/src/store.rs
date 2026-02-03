@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use aws_sdk_dynamodb::types::AttributeValue;
 use aws_sdk_dynamodb::Client;
+use aws_sdk_dynamodb::types::AttributeValue;
 
 use acteon_state::error::StateError;
 use acteon_state::key::StateKey;
@@ -67,10 +67,10 @@ impl DynamoStateStore {
 
     /// Check if an item is expired based on its `expires_at` attribute.
     fn is_expired(item: &std::collections::HashMap<String, AttributeValue>) -> bool {
-        if let Some(AttributeValue::N(expires_str)) = item.get("expires_at") {
-            if let Ok(expires_at) = expires_str.parse::<i64>() {
-                return expires_at <= Self::now_epoch();
-            }
+        if let Some(AttributeValue::N(expires_str)) = item.get("expires_at")
+            && let Ok(expires_at) = expires_str.parse::<i64>()
+        {
+            return expires_at <= Self::now_epoch();
         }
         false
     }
@@ -133,12 +133,12 @@ impl StateStore for DynamoStateStore {
                         .await
                         .map_err(|e| StateError::Backend(e.to_string()))?;
 
-                    if let Some(item) = get_result.item() {
-                        if Self::is_expired(item) {
-                            // Item is expired, delete it and retry.
-                            self.delete_item(&pk, &sk).await?;
-                            return self.check_and_set(key, value, ttl).await;
-                        }
+                    if let Some(item) = get_result.item()
+                        && Self::is_expired(item)
+                    {
+                        // Item is expired, delete it and retry.
+                        self.delete_item(&pk, &sk).await?;
+                        return self.check_and_set(key, value, ttl).await;
                     }
 
                     // Item exists and is not expired.
@@ -271,10 +271,10 @@ impl StateStore for DynamoStateStore {
             .await
             .map_err(|e| StateError::Backend(e.to_string()))?;
 
-        if let Some(item) = get_result.item() {
-            if Self::is_expired(item) {
-                self.delete_item(&pk, &sk).await?;
-            }
+        if let Some(item) = get_result.item()
+            && Self::is_expired(item)
+        {
+            self.delete_item(&pk, &sk).await?;
         }
 
         // Use ADD to atomically increment (or create from 0).

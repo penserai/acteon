@@ -78,6 +78,8 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
     AppState {
         gateway: Arc::new(RwLock::new(gw)),
         audit,
+        auth: None,
+        rate_limiter: None,
     }
 }
 

@@ -1,6 +1,6 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::provider::Provider;
 use acteon_provider::ProviderError;
+use acteon_provider::provider::Provider;
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
@@ -152,7 +152,7 @@ fn build_transport(
 
     let builder = builder.port(config.smtp_port);
 
-    let builder = if let (Some(ref user), Some(ref pass)) = (&config.username, &config.password) {
+    let builder = if let (Some(user), Some(pass)) = (&config.username, &config.password) {
         builder.credentials(Credentials::new(user.clone(), pass.clone()))
     } else {
         builder

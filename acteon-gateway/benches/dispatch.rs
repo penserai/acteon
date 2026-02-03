@@ -2,15 +2,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use acteon_core::{Action, ProviderResponse};
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_provider::{DynProvider, ProviderError};
+use acteon_rules::RuleFrontend;
 use acteon_rules::ir::expr::{BinaryOp, Expr};
 use acteon_rules::ir::rule::{Rule, RuleAction};
-use acteon_rules::RuleFrontend;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 
@@ -82,7 +82,7 @@ fn bench_dispatch_no_rules(c: &mut Criterion) {
         b.iter(|| {
             let action = test_action();
             rt.block_on(async {
-                let result = gateway.dispatch(black_box(action)).await;
+                let result = gateway.dispatch(black_box(action), None).await;
                 black_box(result)
             })
         });
@@ -158,7 +158,7 @@ rules:
         b.iter(|| {
             let action = test_action();
             rt.block_on(async {
-                let result = gateway.dispatch(black_box(action)).await;
+                let result = gateway.dispatch(black_box(action), None).await;
                 black_box(result)
             })
         });
@@ -201,7 +201,7 @@ fn bench_dispatch_batch(c: &mut Criterion) {
         b.iter(|| {
             let actions: Vec<Action> = (0..10).map(|_| test_action()).collect();
             rt.block_on(async {
-                let results = gateway.dispatch_batch(black_box(actions)).await;
+                let results = gateway.dispatch_batch(black_box(actions), None).await;
                 black_box(results)
             })
         });

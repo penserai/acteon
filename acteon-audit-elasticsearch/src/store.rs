@@ -82,7 +82,9 @@ impl ElasticsearchAuditStore {
                     "dispatched_at":    { "type": "date" },
                     "completed_at":     { "type": "date" },
                     "duration_ms":      { "type": "long" },
-                    "expires_at":       { "type": "date" }
+                    "expires_at":       { "type": "date" },
+                    "caller_id":        { "type": "keyword" },
+                    "auth_method":      { "type": "keyword" }
                 }
             }
         });
@@ -340,6 +342,7 @@ fn build_es_query(query: &AuditQuery) -> serde_json::Value {
         (&query.outcome, "outcome"),
         (&query.verdict, "verdict"),
         (&query.matched_rule, "matched_rule"),
+        (&query.caller_id, "caller_id"),
     ];
 
     for (value, field) in fields {

@@ -1,6 +1,0 @@
-# etcd state
-# Start with: docker compose --profile etcd up -d
-
-[state]
-backend = "etcd"
-url = "http://localhost:2379"

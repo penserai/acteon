@@ -75,7 +75,6 @@ Acteon is organized as a workspace of interconnected crates, each responsible fo
 | acteon-state-redis | Redis/Valkey/DragonflyDB backend |
 | acteon-state-dynamodb | AWS DynamoDB backend |
 | acteon-state-zookeeper | Apache Zookeeper backend |
-| acteon-state-etcd | etcd backend |
 | acteon-state-postgres | PostgreSQL backend |
 | acteon-rules | Rule engine core and IR |
 | acteon-rules-cel | CEL DSL frontend |
@@ -269,7 +268,6 @@ impl StateKey {
 | Redis | Linearizable (single key) | Low latency, simple deployments |
 | DynamoDB | Eventually consistent / Strong | AWS-native, serverless |
 | Zookeeper | Strong (CP) | Coordination-heavy workloads |
-| etcd | Strong (Raft) | Kubernetes environments |
 | PostgreSQL | Strong (ACID) | Existing Postgres infrastructure |
 | Memory | N/A | Testing and single-node development |
 
@@ -661,8 +659,7 @@ acteon/
 ├── acteon-state-memory/          \# In-memory backend  
 ├── acteon-state-redis/           \# Redis backend  
 ├── acteon-state-dynamodb/        \# DynamoDB backend  
-├── acteon-state-zookeeper/       \# Zookeeper backend  
-├── acteon-state-etcd/            \# etcd backend  
+├── acteon-state-zookeeper/       \# Zookeeper backend
 ├── acteon-state-postgres/        \# PostgreSQL backend  
 │  
 ├── acteon-rules/                 \# Rule engine core  

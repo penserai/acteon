@@ -90,10 +90,10 @@ async fn main() {
     )
     .with_dedup_key("email-user@example.com-hello");
 
-    let outcome1 = gateway.dispatch(email_action.clone()).await.unwrap();
+    let outcome1 = gateway.dispatch(email_action.clone(), None).await.unwrap();
     println!("  First dispatch: {}", outcome_label(&outcome1));
 
-    let outcome2 = gateway.dispatch(email_action).await.unwrap();
+    let outcome2 = gateway.dispatch(email_action, None).await.unwrap();
     println!("  Second dispatch: {}", outcome_label(&outcome2));
     println!();
 
@@ -107,7 +107,7 @@ async fn main() {
         serde_json::json!({"to": "victim@example.com"}),
     );
 
-    let outcome3 = gateway.dispatch(spam_action).await.unwrap();
+    let outcome3 = gateway.dispatch(spam_action, None).await.unwrap();
     println!("  Result: {}", outcome_label(&outcome3));
     println!();
 

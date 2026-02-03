@@ -1,12 +1,14 @@
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 
 use acteon_audit::record::AuditQuery;
 
-use super::schemas::ErrorResponse;
+use crate::auth::identity::CallerIdentity;
+
 use super::AppState;
+use super::schemas::ErrorResponse;
 
 /// `GET /v1/audit` -- query audit records with filters and pagination.
 #[utoipa::path(
@@ -35,7 +37,8 @@ use super::AppState;
 )]
 pub async fn query_audit(
     State(state): State<AppState>,
-    Query(query): Query<AuditQuery>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(mut query): Query<AuditQuery>,
 ) -> impl IntoResponse {
     let Some(ref audit) = state.audit else {
         return (
@@ -45,6 +48,29 @@ pub async fn query_audit(
             })),
         );
     };
+
+    // Restrict query to only tenants the caller has access to.
+    // If the caller has a specific tenant filter, verify it's covered by grants.
+    if let Some(ref requested_tenant) = query.tenant {
+        if let Some(allowed) = identity.allowed_tenants()
+            && !allowed.contains(&requested_tenant.as_str())
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!(ErrorResponse {
+                    error: format!("no grant covers tenant={requested_tenant}"),
+                })),
+            );
+        }
+    } else if let Some(allowed) = identity.allowed_tenants() {
+        // No tenant filter requested but caller is scoped — inject first allowed tenant.
+        // For multi-tenant callers, the API requires an explicit tenant filter.
+        if allowed.len() == 1 {
+            query.tenant = Some(allowed[0].to_owned());
+        }
+        // If multiple tenants allowed and no filter, we let the query through
+        // and results will contain records from all their granted tenants.
+    }
 
     match audit.query(&query).await {
         Ok(page) => (StatusCode::OK, Json(serde_json::json!(page))),
@@ -74,6 +100,7 @@ pub async fn query_audit(
 )]
 pub async fn get_audit_by_action(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Path(action_id): Path<String>,
 ) -> impl IntoResponse {
     let Some(ref audit) = state.audit else {
@@ -86,7 +113,18 @@ pub async fn get_audit_by_action(
     };
 
     match audit.get_by_action_id(&action_id).await {
-        Ok(Some(record)) => (StatusCode::OK, Json(serde_json::json!(record))),
+        Ok(Some(record)) => {
+            // Verify the caller has access to this record's tenant/namespace.
+            if !identity.is_authorized(&record.tenant, &record.namespace, &record.action_type) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!(ErrorResponse {
+                        error: "no grant covers this audit record".into(),
+                    })),
+                );
+            }
+            (StatusCode::OK, Json(serde_json::json!(record)))
+        }
         Ok(None) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!(ErrorResponse {

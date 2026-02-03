@@ -5,9 +5,9 @@ use std::time::Duration;
 use chrono::Utc;
 use tracing::{info, instrument, warn};
 
-use acteon_audit::store::AuditStore;
 use acteon_audit::AuditRecord;
-use acteon_core::{Action, ActionOutcome};
+use acteon_audit::store::AuditStore;
+use acteon_core::{Action, ActionOutcome, Caller};
 use acteon_executor::ActionExecutor;
 use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
@@ -59,7 +59,11 @@ impl Gateway {
             action.provider = %action.provider,
         )
     )]
-    pub async fn dispatch(&self, action: Action) -> Result<ActionOutcome, GatewayError> {
+    pub async fn dispatch(
+        &self,
+        action: Action,
+        caller: Option<&Caller>,
+    ) -> Result<ActionOutcome, GatewayError> {
         self.metrics.increment_dispatched();
         let start = std::time::Instant::now();
         let dispatched_at = Utc::now();
@@ -126,6 +130,7 @@ impl Gateway {
                 start.elapsed(),
                 self.audit_ttl_seconds,
                 self.audit_store_payload,
+                caller,
             );
             let audit = Arc::clone(audit);
             tokio::spawn(async move {
@@ -150,10 +155,11 @@ impl Gateway {
     pub async fn dispatch_batch(
         &self,
         actions: Vec<Action>,
+        caller: Option<&Caller>,
     ) -> Vec<Result<ActionOutcome, GatewayError>> {
         let mut results = Vec::with_capacity(actions.len());
         for action in actions {
-            results.push(self.dispatch(action).await);
+            results.push(self.dispatch(action, caller).await);
         }
         results
     }
@@ -316,6 +322,7 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
 }
 
 /// Build an `AuditRecord` from the dispatch context.
+#[allow(clippy::too_many_arguments)]
 fn build_audit_record(
     action: &Action,
     verdict: &RuleVerdict,
@@ -324,6 +331,7 @@ fn build_audit_record(
     elapsed: Duration,
     ttl_seconds: Option<u64>,
     store_payload: bool,
+    caller: Option<&Caller>,
 ) -> AuditRecord {
     let completed_at = Utc::now();
     #[allow(clippy::cast_possible_wrap)]
@@ -378,6 +386,8 @@ fn build_audit_record(
         completed_at,
         duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
         expires_at,
+        caller_id: caller.map_or_else(String::new, |c| c.id.clone()),
+        auth_method: caller.map_or_else(String::new, |c| c.auth_method.clone()),
     }
 }
 
@@ -523,7 +533,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_allow_no_rules() {
         let gw = build_gateway(vec![]);
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         assert!(
             matches!(outcome, ActionOutcome::Executed(_)),
             "no rules should default to Allow and execute"
@@ -549,11 +559,11 @@ mod tests {
         action.dedup_key = Some("unique-key".into());
 
         // First dispatch should execute.
-        let outcome1 = gw.dispatch(action.clone()).await.unwrap();
+        let outcome1 = gw.dispatch(action.clone(), None).await.unwrap();
         assert!(matches!(outcome1, ActionOutcome::Executed(_)));
 
         // Second dispatch with same dedup key should be deduplicated.
-        let outcome2 = gw.dispatch(action).await.unwrap();
+        let outcome2 = gw.dispatch(action, None).await.unwrap();
         assert!(matches!(outcome2, ActionOutcome::Deduplicated));
 
         let snap = gw.metrics().snapshot();
@@ -571,7 +581,7 @@ mod tests {
         )];
         let gw = build_gateway(rules);
 
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
 
         let snap = gw.metrics().snapshot();
@@ -583,7 +593,7 @@ mod tests {
         let rules = vec![Rule::new("deny-all", Expr::Bool(true), RuleAction::Deny)];
         let gw = build_gateway(rules);
 
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         match outcome {
             ActionOutcome::Suppressed { rule } => {
                 assert_eq!(rule, "deny-all");
@@ -603,7 +613,7 @@ mod tests {
         )];
         let gw = build_gateway(rules);
 
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         match outcome {
             ActionOutcome::Rerouted {
                 original_provider,
@@ -632,7 +642,7 @@ mod tests {
         )];
         let gw = build_gateway(rules);
 
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         match outcome {
             ActionOutcome::Throttled { retry_after } => {
                 assert_eq!(retry_after, Duration::from_secs(60));
@@ -652,7 +662,7 @@ mod tests {
         let mut action = test_action();
         action.provider = "nonexistent".into();
 
-        let outcome = gw.dispatch(action).await.unwrap();
+        let outcome = gw.dispatch(action, None).await.unwrap();
         assert!(
             matches!(outcome, ActionOutcome::Failed(_)),
             "missing provider should produce Failed outcome"
@@ -673,7 +683,7 @@ mod tests {
         )];
         let gw = build_gateway(rules);
 
-        let result = gw.dispatch(test_action()).await;
+        let result = gw.dispatch(test_action(), None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -693,7 +703,7 @@ mod tests {
         )];
         let (gw, captured) = build_capturing_gateway(rules);
 
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         assert!(
             matches!(outcome, ActionOutcome::Executed(_)),
             "modify should execute the action"
@@ -716,7 +726,7 @@ mod tests {
         )];
         let (gw, captured) = build_capturing_gateway(rules);
 
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         assert!(
             matches!(outcome, ActionOutcome::Executed(_)),
             "modify should execute the action"
@@ -735,7 +745,7 @@ mod tests {
         let gw = build_gateway(vec![]);
 
         let actions = vec![test_action(), test_action(), test_action()];
-        let results = gw.dispatch_batch(actions).await;
+        let results = gw.dispatch_batch(actions, None).await;
 
         assert_eq!(results.len(), 3);
         for result in &results {
@@ -752,7 +762,7 @@ mod tests {
         let mut gw = build_gateway(vec![]);
 
         // Initially no rules -- action is executed.
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         assert!(matches!(outcome, ActionOutcome::Executed(_)));
 
         // Reload with a suppress rule.
@@ -762,7 +772,7 @@ mod tests {
             RuleAction::Suppress,
         )]);
 
-        let outcome = gw.dispatch(test_action()).await.unwrap();
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
         assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
     }
 
@@ -772,7 +782,7 @@ mod tests {
 
         // Dispatch several actions.
         for _ in 0..5 {
-            let _ = gw.dispatch(test_action()).await;
+            let _ = gw.dispatch(test_action(), None).await;
         }
 
         let snap = gw.metrics().snapshot();

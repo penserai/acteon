@@ -20,9 +20,8 @@ redis = ["dep:acteon-state-redis"]
 postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
 clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
 dynamodb = ["dep:acteon-state-dynamodb"]
-etcd = ["dep:acteon-state-etcd"]
 elasticsearch = ["dep:acteon-audit-elasticsearch"]
-all-backends = ["redis", "postgres", "clickhouse", "dynamodb", "etcd", "elasticsearch"]
+all-backends = ["redis", "postgres", "clickhouse", "dynamodb", "elasticsearch"]
 
 [dependencies]
 acteon-audit = { workspace = true }
@@ -36,7 +35,6 @@ acteon-state-memory = { workspace = true }
 acteon-state-redis = { workspace = true, optional = true }
 acteon-state-postgres = { workspace = true, optional = true }
 acteon-state-dynamodb = { workspace = true, optional = true }
-acteon-state-etcd = { workspace = true, optional = true }
 acteon-state-clickhouse = { workspace = true, optional = true }
 acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
@@ -59,6 +57,13 @@ tracing-subscriber = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 utoipa-axum = { workspace = true }
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 acteon-audit = { workspace = true }

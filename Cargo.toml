@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "acteon-core",
     "acteon-state",
-    "acteon-state-etcd",
     "acteon-state-memory",
     "acteon-state-postgres",
     "acteon-state-redis",
@@ -27,10 +26,10 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/acteon/acteon"
-rust-version = "1.75"
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Internal crates
@@ -39,7 +38,6 @@ acteon-state = { path = "acteon-state" }
 acteon-state-memory = { path = "acteon-state-memory" }
 acteon-state-postgres = { path = "acteon-state-postgres" }
 acteon-state-redis = { path = "acteon-state-redis" }
-acteon-state-etcd = { path = "acteon-state-etcd" }
 acteon-state-dynamodb = { path = "acteon-state-dynamodb" }
 acteon-rules = { path = "acteon-rules" }
 acteon-rules-yaml = { path = "acteon-rules-yaml" }
@@ -91,9 +89,6 @@ dashmap = "6"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 deadpool-redis = "0.18"
 
-# etcd
-etcd-client = "0.14"
-
 # DynamoDB
 aws-sdk-dynamodb = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
@@ -132,6 +127,14 @@ notify = "7"
 # Configuration
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
+
+# Auth
+jsonwebtoken = "9"
+argon2 = "0.5"
+sha2 = "0.10"
+hex = "0.4"
+aes-gcm = "0.10"
+base64 = "0.22"
 
 # Tracing subscriber
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

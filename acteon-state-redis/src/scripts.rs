@@ -1,13 +1,16 @@
 /// Lua script for atomic check-and-set (set-if-not-exists).
 ///
-/// KEYS\[1\] = the data key
+/// KEYS\[1\] = the plain string key
+/// KEYS\[2\] = the hash key (`:h` suffix, used by `set`/`compare_and_swap`)
 /// ARGV\[1\] = value to set
 /// ARGV\[2\] = TTL in milliseconds (0 means no expiry)
 ///
-/// Returns 1 if the key was newly set, 0 if it already existed.
+/// Returns 1 if the key was newly set, 0 if it already existed in either form.
 pub const CHECK_AND_SET: &str = r"
-local existed = redis.call('EXISTS', KEYS[1])
-if existed == 1 then
+-- Check both plain string key and hash key for existence.
+local str_exists = redis.call('EXISTS', KEYS[1])
+local hash_exists = redis.call('EXISTS', KEYS[2])
+if str_exists == 1 or hash_exists == 1 then
     return 0
 end
 redis.call('SET', KEYS[1], ARGV[1])

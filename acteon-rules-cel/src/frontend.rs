@@ -225,8 +225,8 @@ rules:
         // Verify the condition is a Binary(Eq, Field, String)
         match &rules[0].condition {
             Expr::Binary(BinaryOp::Eq, lhs, rhs) => {
-                assert!(matches!(lhs.as_ref(), Expr::Field(_, ref f) if f == "action_type"));
-                assert!(matches!(rhs.as_ref(), Expr::String(ref s) if s == "spam"));
+                assert!(matches!(lhs.as_ref(), Expr::Field(_, f) if f == "action_type"));
+                assert!(matches!(rhs.as_ref(), Expr::String(s) if s == "spam"));
             }
             other => panic!("expected Binary(Eq, ...), got {other:?}"),
         }

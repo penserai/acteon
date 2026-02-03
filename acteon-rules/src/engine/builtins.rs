@@ -171,7 +171,7 @@ fn builtin_format(args: &[Value]) -> Result<Value, RuleError> {
             return Err(RuleError::TypeError(format!(
                 "format() first argument must be string, got {}",
                 other.type_name()
-            )))
+            )));
         }
     };
 

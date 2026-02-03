@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
 use tracing::info;
 
@@ -10,7 +10,10 @@ use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_server::api::AppState;
+use acteon_server::auth::AuthProvider;
+use acteon_server::auth::crypto::{decrypt_auth_config, encrypt_value, parse_master_key};
 use acteon_server::config::ActeonConfig;
+use acteon_server::ratelimit::{RateLimitFileConfig, RateLimiter};
 
 /// Acteon gateway HTTP server.
 #[derive(Parser, Debug)]
@@ -27,9 +30,19 @@ struct Cli {
     /// Override the bind port.
     #[arg(long)]
     port: Option<u16>,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Encrypt a value for use in auth.toml. Reads plaintext from stdin.
+    Encrypt,
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing subscriber from RUST_LOG or default to info.
     tracing_subscriber::fmt()
@@ -40,6 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = Cli::parse();
+
+    // Handle subcommands.
+    if let Some(Commands::Encrypt) = cli.command {
+        return run_encrypt();
+    }
 
     // Load configuration from TOML file, or use defaults if the file does not exist.
     let config: ActeonConfig = if Path::new(&cli.config).exists() {
@@ -77,9 +95,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Build the auth provider if enabled.
+    let auth_provider = if config.auth.enabled {
+        let master_key_raw = std::env::var("ACTEON_AUTH_KEY")
+            .map_err(|_| "ACTEON_AUTH_KEY environment variable is required when auth is enabled")?;
+        let master_key = parse_master_key(&master_key_raw)
+            .map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}"))?;
+
+        let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
+
+        // Resolve relative to the config file's directory.
+        let auth_path = if Path::new(auth_path).is_relative() {
+            Path::new(&cli.config)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(auth_path)
+        } else {
+            Path::new(auth_path).to_path_buf()
+        };
+
+        let auth_contents = std::fs::read_to_string(&auth_path)
+            .map_err(|e| format!("failed to read auth config at {}: {e}", auth_path.display()))?;
+        let mut auth_config: acteon_server::auth::config::AuthFileConfig =
+            toml::from_str(&auth_contents)
+                .map_err(|e| format!("failed to parse auth config: {e}"))?;
+
+        decrypt_auth_config(&mut auth_config, &master_key)?;
+
+        let provider = AuthProvider::new(&auth_config, Arc::clone(&store))?;
+        info!("auth provider initialized");
+        Some(Arc::new(provider))
+    } else {
+        None
+    };
+
+    // Build the rate limiter if enabled.
+    let rate_limiter = if config.rate_limit.enabled {
+        let rl_path = config
+            .rate_limit
+            .config_path
+            .as_deref()
+            .unwrap_or("ratelimit.toml");
+
+        // Resolve relative to the config file's directory.
+        let rl_path = if Path::new(rl_path).is_relative() {
+            Path::new(&cli.config)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(rl_path)
+        } else {
+            Path::new(rl_path).to_path_buf()
+        };
+
+        let rl_contents = std::fs::read_to_string(&rl_path).map_err(|e| {
+            format!(
+                "failed to read rate limit config at {}: {e}",
+                rl_path.display()
+            )
+        })?;
+        let rl_config: RateLimitFileConfig = toml::from_str(&rl_contents)
+            .map_err(|e| format!("failed to parse rate limit config: {e}"))?;
+
+        info!(path = %rl_path.display(), "rate limiter initialized");
+        Some(Arc::new(RateLimiter::new(
+            Arc::clone(&store),
+            rl_config,
+            config.rate_limit.on_error,
+        )))
+    } else {
+        None
+    };
+
     // Build the gateway.
     let mut builder = GatewayBuilder::new()
-        .state(store)
+        .state(Arc::clone(&store))
         .lock(lock)
         .executor_config(exec_config);
 
@@ -132,6 +221,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = AppState {
         gateway: Arc::new(RwLock::new(gateway)),
         audit: audit_store,
+        auth: auth_provider,
+        rate_limiter,
     };
     let app = acteon_server::api::router(state);
 
@@ -149,6 +240,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     info!("acteon-server shut down");
+    Ok(())
+}
+
+/// Run the `encrypt` subcommand: read plaintext from stdin, output ENC[...] to stdout.
+fn run_encrypt() -> Result<(), Box<dyn std::error::Error>> {
+    let master_key_raw = std::env::var("ACTEON_AUTH_KEY")
+        .map_err(|_| "ACTEON_AUTH_KEY environment variable is required for the encrypt command")?;
+    let master_key =
+        parse_master_key(&master_key_raw).map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}"))?;
+
+    let mut plaintext = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut plaintext)?;
+    let plaintext = plaintext.trim_end_matches('\n');
+
+    let encrypted = encrypt_value(plaintext, &master_key)?;
+    println!("{encrypted}");
     Ok(())
 }
 

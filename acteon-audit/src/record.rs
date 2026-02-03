@@ -51,6 +51,14 @@ pub struct AuditRecord {
     // -- TTL --
     /// When this record expires (for automatic cleanup).
     pub expires_at: Option<DateTime<Utc>>,
+
+    // -- Caller identity --
+    /// Identity of the caller who triggered the action (empty if auth disabled).
+    #[serde(default)]
+    pub caller_id: String,
+    /// Authentication method used (`"jwt"`, `"api_key"`, `"anonymous"`).
+    #[serde(default)]
+    pub auth_method: String,
 }
 
 /// Query parameters for searching audit records.
@@ -70,6 +78,8 @@ pub struct AuditQuery {
     pub verdict: Option<String>,
     /// Filter by matched rule name.
     pub matched_rule: Option<String>,
+    /// Filter by caller identity.
+    pub caller_id: Option<String>,
     /// Only records dispatched at or after this time.
     pub from: Option<DateTime<Utc>>,
     /// Only records dispatched at or before this time.

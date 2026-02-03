@@ -5,17 +5,17 @@
 //! `acteon-rules`.
 
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, multispace0},
     combinator::{opt, recognize},
     multi::separated_list0,
     sequence::{delimited, tuple},
-    IResult,
 };
 
-use acteon_rules::ir::expr::{BinaryOp, Expr, UnaryOp};
 use acteon_rules::RuleError;
+use acteon_rules::ir::expr::{BinaryOp, Expr, UnaryOp};
 
 /// Parse a complete CEL expression string into an [`Expr`].
 ///
@@ -412,13 +412,13 @@ fn parse_unary(input: &str) -> IResult<&str, Expr> {
         // - '!' (nested unary)
         // - a digit (negative number literal)
         // - '-' (nested unary minus)
-        if let Some(c) = after_ws.chars().next() {
-            if c.is_alphanumeric() || c == '_' || c == '(' || c == '!' || c == '-' {
-                let (rest, _) = char('-')(input)?;
-                let (rest, _) = multispace0(rest)?;
-                let (rest, operand) = parse_unary(rest)?;
-                return Ok((rest, Expr::Unary(UnaryOp::Neg, Box::new(operand))));
-            }
+        if let Some(c) = after_ws.chars().next()
+            && (c.is_alphanumeric() || c == '_' || c == '(' || c == '!' || c == '-')
+        {
+            let (rest, _) = char('-')(input)?;
+            let (rest, _) = multispace0(rest)?;
+            let (rest, operand) = parse_unary(rest)?;
+            return Ok((rest, Expr::Unary(UnaryOp::Neg, Box::new(operand))));
         }
     }
 
@@ -689,19 +689,19 @@ mod tests {
     #[test]
     fn parse_string() {
         let expr = parse_cel_expr(r#""hello world""#).unwrap();
-        assert!(matches!(expr, Expr::String(ref s) if s == "hello world"));
+        assert!(matches!(expr, Expr::String(s) if s == "hello world"));
     }
 
     #[test]
     fn parse_string_with_escapes() {
         let expr = parse_cel_expr(r#""line1\nline2""#).unwrap();
-        assert!(matches!(expr, Expr::String(ref s) if s == "line1\nline2"));
+        assert!(matches!(expr, Expr::String(s) if s == "line1\nline2"));
     }
 
     #[test]
     fn parse_empty_string() {
         let expr = parse_cel_expr(r#""""#).unwrap();
-        assert!(matches!(expr, Expr::String(ref s) if s.is_empty()));
+        assert!(matches!(expr, Expr::String(s) if s.is_empty()));
     }
 
     // --- Identifier tests ---
@@ -709,13 +709,13 @@ mod tests {
     #[test]
     fn parse_identifier() {
         let expr = parse_cel_expr("action").unwrap();
-        assert!(matches!(expr, Expr::Ident(ref s) if s == "action"));
+        assert!(matches!(expr, Expr::Ident(s) if s == "action"));
     }
 
     #[test]
     fn parse_identifier_with_underscore() {
         let expr = parse_cel_expr("my_var").unwrap();
-        assert!(matches!(expr, Expr::Ident(ref s) if s == "my_var"));
+        assert!(matches!(expr, Expr::Ident(s) if s == "my_var"));
     }
 
     // --- Field access ---
@@ -725,7 +725,7 @@ mod tests {
         let expr = parse_cel_expr("action.action_type").unwrap();
         match expr {
             Expr::Field(base, field) => {
-                assert!(matches!(*base, Expr::Ident(ref s) if s == "action"));
+                assert!(matches!(*base, Expr::Ident(s) if s == "action"));
                 assert_eq!(field, "action_type");
             }
             other => panic!("expected Field, got {other:?}"),
@@ -740,7 +740,7 @@ mod tests {
                 assert_eq!(field, "to");
                 match *base {
                     Expr::Field(inner, ref mid) => {
-                        assert!(matches!(*inner, Expr::Ident(ref s) if s == "action"));
+                        assert!(matches!(*inner, Expr::Ident(s) if s == "action"));
                         assert_eq!(mid, "payload");
                     }
                     other => panic!("expected inner Field, got {other:?}"),
@@ -757,7 +757,7 @@ mod tests {
         let expr = parse_cel_expr("items[0]").unwrap();
         match expr {
             Expr::Index(base, index) => {
-                assert!(matches!(*base, Expr::Ident(ref s) if s == "items"));
+                assert!(matches!(*base, Expr::Ident(s) if s == "items"));
                 assert!(matches!(*index, Expr::Int(0)));
             }
             other => panic!("expected Index, got {other:?}"),
@@ -769,8 +769,8 @@ mod tests {
         let expr = parse_cel_expr(r#"map["key"]"#).unwrap();
         match expr {
             Expr::Index(base, index) => {
-                assert!(matches!(*base, Expr::Ident(ref s) if s == "map"));
-                assert!(matches!(*index, Expr::String(ref s) if s == "key"));
+                assert!(matches!(*base, Expr::Ident(s) if s == "map"));
+                assert!(matches!(*index, Expr::String(s) if s == "key"));
             }
             other => panic!("expected Index, got {other:?}"),
         }
@@ -878,7 +878,7 @@ mod tests {
         let expr = parse_cel_expr("x == 5").unwrap();
         match expr {
             Expr::Binary(BinaryOp::Eq, lhs, rhs) => {
-                assert!(matches!(*lhs, Expr::Ident(ref s) if s == "x"));
+                assert!(matches!(*lhs, Expr::Ident(s) if s == "x"));
                 assert!(matches!(*rhs, Expr::Int(5)));
             }
             other => panic!("expected Binary(Eq, ...), got {other:?}"),
@@ -920,8 +920,8 @@ mod tests {
         let expr = parse_cel_expr("a && b").unwrap();
         match expr {
             Expr::Binary(BinaryOp::And, lhs, rhs) => {
-                assert!(matches!(*lhs, Expr::Ident(ref s) if s == "a"));
-                assert!(matches!(*rhs, Expr::Ident(ref s) if s == "b"));
+                assert!(matches!(*lhs, Expr::Ident(s) if s == "a"));
+                assert!(matches!(*rhs, Expr::Ident(s) if s == "b"));
             }
             other => panic!("expected Binary(And, ...), got {other:?}"),
         }
@@ -932,8 +932,8 @@ mod tests {
         let expr = parse_cel_expr("a || b").unwrap();
         match expr {
             Expr::Binary(BinaryOp::Or, lhs, rhs) => {
-                assert!(matches!(*lhs, Expr::Ident(ref s) if s == "a"));
-                assert!(matches!(*rhs, Expr::Ident(ref s) if s == "b"));
+                assert!(matches!(*lhs, Expr::Ident(s) if s == "a"));
+                assert!(matches!(*rhs, Expr::Ident(s) if s == "b"));
             }
             other => panic!("expected Binary(Or, ...), got {other:?}"),
         }
@@ -944,8 +944,8 @@ mod tests {
         let expr = parse_cel_expr("x in [1, 2, 3]").unwrap();
         match expr {
             Expr::Binary(BinaryOp::In, lhs, rhs) => {
-                assert!(matches!(*lhs, Expr::Ident(ref s) if s == "x"));
-                assert!(matches!(*rhs, Expr::List(ref items) if items.len() == 3));
+                assert!(matches!(*lhs, Expr::Ident(s) if s == "x"));
+                assert!(matches!(*rhs, Expr::List(items) if items.len() == 3));
             }
             other => panic!("expected Binary(In, ...), got {other:?}"),
         }
@@ -972,7 +972,7 @@ mod tests {
         let expr = parse_cel_expr("a || b && c").unwrap();
         match expr {
             Expr::Binary(BinaryOp::Or, lhs, rhs) => {
-                assert!(matches!(*lhs, Expr::Ident(ref s) if s == "a"));
+                assert!(matches!(*lhs, Expr::Ident(s) if s == "a"));
                 assert!(matches!(*rhs, Expr::Binary(BinaryOp::And, _, _)));
             }
             other => panic!("expected Or(a, And(b, c)), got {other:?}"),
@@ -1026,7 +1026,7 @@ mod tests {
         match expr {
             Expr::Ternary(cond, then_expr, else_expr) => {
                 assert!(matches!(*cond, Expr::Binary(BinaryOp::Gt, _, _)));
-                assert!(matches!(*then_expr, Expr::Ident(ref s) if s == "x"));
+                assert!(matches!(*then_expr, Expr::Ident(s) if s == "x"));
                 assert!(matches!(*else_expr, Expr::Int(0)));
             }
             other => panic!("expected Ternary, got {other:?}"),
@@ -1052,8 +1052,8 @@ mod tests {
         let expr = parse_cel_expr(r#"name.contains("test")"#).unwrap();
         match expr {
             Expr::Binary(BinaryOp::Contains, lhs, rhs) => {
-                assert!(matches!(*lhs, Expr::Ident(ref s) if s == "name"));
-                assert!(matches!(*rhs, Expr::String(ref s) if s == "test"));
+                assert!(matches!(*lhs, Expr::Ident(s) if s == "name"));
+                assert!(matches!(*rhs, Expr::String(s) if s == "test"));
             }
             other => panic!("expected Binary(Contains, ...), got {other:?}"),
         }
@@ -1084,7 +1084,7 @@ mod tests {
             Expr::Call(name, args) => {
                 assert_eq!(name, "len");
                 assert_eq!(args.len(), 1);
-                assert!(matches!(args[0], Expr::Ident(ref s) if s == "items"));
+                assert!(matches!(&args[0], Expr::Ident(s) if s == "items"));
             }
             other => panic!("expected Call(len, ...), got {other:?}"),
         }
@@ -1096,7 +1096,7 @@ mod tests {
         match expr {
             Expr::Binary(BinaryOp::Contains, lhs, _) => {
                 // lhs should be action.payload.to
-                assert!(matches!(*lhs, Expr::Field(_, ref f) if f == "to"));
+                assert!(matches!(*lhs, Expr::Field(_, f) if f == "to"));
             }
             other => panic!("expected Binary(Contains, ...), got {other:?}"),
         }
@@ -1145,7 +1145,7 @@ mod tests {
     #[test]
     fn parse_empty_list() {
         let expr = parse_cel_expr("[]").unwrap();
-        assert!(matches!(expr, Expr::List(ref items) if items.is_empty()));
+        assert!(matches!(expr, Expr::List(items) if items.is_empty()));
     }
 
     #[test]
@@ -1165,7 +1165,7 @@ mod tests {
     #[test]
     fn parse_empty_map() {
         let expr = parse_cel_expr("{}").unwrap();
-        assert!(matches!(expr, Expr::Map(ref items) if items.is_empty()));
+        assert!(matches!(expr, Expr::Map(items) if items.is_empty()));
     }
 
     #[test]
@@ -1254,8 +1254,8 @@ mod tests {
         let expr = parse_cel_expr("a - b").unwrap();
         match expr {
             Expr::Binary(BinaryOp::Sub, lhs, rhs) => {
-                assert!(matches!(*lhs, Expr::Ident(ref s) if s == "a"));
-                assert!(matches!(*rhs, Expr::Ident(ref s) if s == "b"));
+                assert!(matches!(*lhs, Expr::Ident(s) if s == "a"));
+                assert!(matches!(*rhs, Expr::Ident(s) if s == "b"));
             }
             other => panic!("expected Binary(Sub, ...), got {other:?}"),
         }
@@ -1293,21 +1293,21 @@ mod tests {
     fn parse_ident_starting_with_in() {
         // "index" should parse as an identifier, not "in" + "dex"
         let expr = parse_cel_expr("index").unwrap();
-        assert!(matches!(expr, Expr::Ident(ref s) if s == "index"));
+        assert!(matches!(expr, Expr::Ident(s) if s == "index"));
     }
 
     #[test]
     fn parse_null_not_prefix() {
         // "nullable" should parse as an identifier
         let expr = parse_cel_expr("nullable").unwrap();
-        assert!(matches!(expr, Expr::Ident(ref s) if s == "nullable"));
+        assert!(matches!(expr, Expr::Ident(s) if s == "nullable"));
     }
 
     #[test]
     fn parse_true_not_prefix() {
         // "trueval" should parse as an identifier
         let expr = parse_cel_expr("trueval").unwrap();
-        assert!(matches!(expr, Expr::Ident(ref s) if s == "trueval"));
+        assert!(matches!(expr, Expr::Ident(s) if s == "trueval"));
     }
 
     // --- Associativity ---

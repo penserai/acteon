@@ -62,10 +62,10 @@ impl StateStore for MemoryStateStore {
         let rendered = Self::render_key(key);
 
         // Check if a live entry already exists.
-        if let Some(existing) = self.data.get(&rendered) {
-            if !existing.is_expired() {
-                return Ok(false);
-            }
+        if let Some(existing) = self.data.get(&rendered)
+            && !existing.is_expired()
+        {
+            return Ok(false);
         }
         // Drop the read guard before writing.
         // Remove any expired entry, then try to insert.

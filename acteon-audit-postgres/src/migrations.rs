@@ -24,7 +24,9 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
             dispatched_at   TIMESTAMPTZ NOT NULL,
             completed_at    TIMESTAMPTZ NOT NULL,
             duration_ms     BIGINT NOT NULL,
-            expires_at      TIMESTAMPTZ
+            expires_at      TIMESTAMPTZ,
+            caller_id       TEXT NOT NULL DEFAULT '',
+            auth_method     TEXT NOT NULL DEFAULT ''
         )
         "
     );
@@ -41,9 +43,7 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
         format!(
             "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_provider ON {table} (provider, dispatched_at DESC)"
         ),
-        format!(
-            "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_action_id ON {table} (action_id)"
-        ),
+        format!("CREATE INDEX IF NOT EXISTS idx_{prefix}audit_action_id ON {table} (action_id)"),
         format!(
             "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_expires ON {table} (expires_at) WHERE expires_at IS NOT NULL"
         ),
@@ -54,6 +54,17 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
 
     for idx in &indexes {
         sqlx::query(idx).execute(pool).await?;
+    }
+
+    // Add caller columns to existing tables (idempotent).
+    let add_columns = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS caller_id TEXT NOT NULL DEFAULT ''"),
+        format!(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS auth_method TEXT NOT NULL DEFAULT ''"
+        ),
+    ];
+    for stmt in &add_columns {
+        sqlx::query(stmt).execute(pool).await?;
     }
 
     Ok(())

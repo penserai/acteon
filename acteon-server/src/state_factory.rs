@@ -4,9 +4,9 @@ use acteon_state::{DistributedLock, StateStore};
 #[cfg(feature = "clickhouse")]
 use acteon_state_clickhouse::{ClickHouseConfig, ClickHouseDistributedLock, ClickHouseStateStore};
 #[cfg(feature = "dynamodb")]
-use acteon_state_dynamodb::{build_client, create_table, DynamoConfig, DynamoDistributedLock, DynamoStateStore};
-#[cfg(feature = "etcd")]
-use acteon_state_etcd::{EtcdConfig, EtcdDistributedLock, EtcdStateStore};
+use acteon_state_dynamodb::{
+    DynamoConfig, DynamoDistributedLock, DynamoStateStore, build_client, create_table,
+};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 #[cfg(feature = "postgres")]
 use acteon_state_postgres::{PostgresConfig, PostgresDistributedLock, PostgresStateStore};
@@ -20,6 +20,7 @@ use crate::error::ServerError;
 pub type StatePair = (Arc<dyn StateStore>, Arc<dyn DistributedLock>);
 
 /// Construct a `StateStore` and `DistributedLock` pair from configuration.
+#[allow(clippy::unused_async)]
 pub async fn create_state(config: &StateConfig) -> Result<StatePair, ServerError> {
     match config.backend.as_str() {
         "memory" => Ok(create_memory()),
@@ -29,8 +30,6 @@ pub async fn create_state(config: &StateConfig) -> Result<StatePair, ServerError
         "postgres" => create_postgres(config).await,
         #[cfg(feature = "dynamodb")]
         "dynamodb" => create_dynamodb(config).await,
-        #[cfg(feature = "etcd")]
-        "etcd" => create_etcd(config).await,
         #[cfg(feature = "clickhouse")]
         "clickhouse" => create_clickhouse(config).await,
         other => Err(ServerError::Config(format!(
@@ -124,30 +123,6 @@ async fn create_dynamodb(config: &StateConfig) -> Result<StatePair, ServerError>
         DynamoDistributedLock::new(&dynamo_config)
             .await
             .map_err(|e| ServerError::Config(format!("dynamodb lock: {e}")))?,
-    );
-    Ok((store, lock))
-}
-
-#[cfg(feature = "etcd")]
-async fn create_etcd(config: &StateConfig) -> Result<StatePair, ServerError> {
-    let endpoint = config
-        .url
-        .clone()
-        .unwrap_or_else(|| "http://localhost:2379".to_owned());
-    let etcd_config = EtcdConfig {
-        endpoints: vec![endpoint],
-        prefix: config.prefix.clone().unwrap_or_else(|| "acteon".to_owned()),
-        ..EtcdConfig::default()
-    };
-    let store = Arc::new(
-        EtcdStateStore::new(etcd_config.clone())
-            .await
-            .map_err(|e| ServerError::Config(format!("etcd store: {e}")))?,
-    );
-    let lock = Arc::new(
-        EtcdDistributedLock::new(etcd_config)
-            .await
-            .map_err(|e| ServerError::Config(format!("etcd lock: {e}")))?,
     );
     Ok((store, lock))
 }

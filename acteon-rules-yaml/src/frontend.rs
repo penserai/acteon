@@ -374,7 +374,7 @@ rules:
         match &rules[0].condition {
             Expr::Binary(BinaryOp::Eq, lhs, rhs) => {
                 assert!(matches!(rhs.as_ref(), Expr::String(s) if s == "send_email"));
-                assert!(matches!(lhs.as_ref(), Expr::Field(_, ref f) if f == "action_type"));
+                assert!(matches!(lhs.as_ref(), Expr::Field(_, f) if f == "action_type"));
             }
             other => panic!("expected Binary(Eq, ...), got {other:?}"),
         }
@@ -434,7 +434,7 @@ rules:
         // Should be: Binary(Lt, StateTimeSince("last-email"), Int(600))
         match &rules[0].condition {
             Expr::Binary(BinaryOp::Lt, lhs, rhs) => {
-                assert!(matches!(lhs.as_ref(), Expr::StateTimeSince(ref k) if k == "last-email"));
+                assert!(matches!(lhs.as_ref(), Expr::StateTimeSince(k) if k == "last-email"));
                 assert!(matches!(rhs.as_ref(), Expr::Int(600)));
             }
             other => panic!("expected Binary(Lt, StateTimeSince, Int), got {other:?}"),
@@ -455,7 +455,7 @@ rules:
         let rules = fe.parse(yaml).unwrap();
         match &rules[0].condition {
             Expr::Binary(BinaryOp::Lt, lhs, rhs) => {
-                assert!(matches!(lhs.as_ref(), Expr::StateTimeSince(ref k) if k == "any-key"));
+                assert!(matches!(lhs.as_ref(), Expr::StateTimeSince(k) if k == "any-key"));
                 assert!(matches!(rhs.as_ref(), Expr::Int(i) if *i == i64::MAX));
             }
             other => panic!("expected Binary(Lt, ...), got {other:?}"),
@@ -477,7 +477,7 @@ rules:
         let rules = fe.parse(yaml).unwrap();
         match &rules[0].condition {
             Expr::Binary(BinaryOp::Gt, lhs, rhs) => {
-                assert!(matches!(lhs.as_ref(), Expr::StateCounter(ref k) if k == "email-count"));
+                assert!(matches!(lhs.as_ref(), Expr::StateCounter(k) if k == "email-count"));
                 assert!(matches!(rhs.as_ref(), Expr::Int(100)));
             }
             other => panic!("expected Binary(Gt, StateCounter, Int), got {other:?}"),

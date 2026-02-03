@@ -75,13 +75,15 @@ impl StateStore for RedisStateStore {
         value: &str,
         ttl: Option<Duration>,
     ) -> Result<bool, StateError> {
-        let redis_key = self.string_key(key);
+        let string_key = self.string_key(key);
+        let hash_key = self.hash_key(key);
         let ttl_ms = ttl.map_or(0i64, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
 
         let mut conn = self.conn().await?;
         let script = Script::new(scripts::CHECK_AND_SET);
         let result: i64 = script
-            .key(&redis_key)
+            .key(&string_key)
+            .key(&hash_key)
             .arg(value)
             .arg(ttl_ms)
             .invoke_async(&mut conn)

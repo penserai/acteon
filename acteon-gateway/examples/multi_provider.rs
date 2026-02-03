@@ -97,7 +97,7 @@ async fn main() {
         "send_notification",
         serde_json::json!({"to": "admin@example.com", "priority": "urgent", "body": "Server down!"}),
     );
-    let outcome = gateway.dispatch(urgent).await.unwrap();
+    let outcome = gateway.dispatch(urgent, None).await.unwrap();
     println!("  Result: {}", describe_outcome(&outcome));
     println!();
 
@@ -110,7 +110,7 @@ async fn main() {
         "send_notification",
         serde_json::json!({"to": "user@example.com", "body": "Weekly digest"}),
     );
-    let outcome = gateway.dispatch(normal).await.unwrap();
+    let outcome = gateway.dispatch(normal, None).await.unwrap();
     println!("  Result: {}", describe_outcome(&outcome));
     println!();
 
@@ -123,7 +123,7 @@ async fn main() {
         "send_email",
         serde_json::json!({"to": "user@example.com", "subject": "Newsletter"}),
     );
-    let outcome = gateway.dispatch(email).await.unwrap();
+    let outcome = gateway.dispatch(email, None).await.unwrap();
     println!("  Result: {}", describe_outcome(&outcome));
     println!();
 
