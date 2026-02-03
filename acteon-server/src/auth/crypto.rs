@@ -105,7 +105,7 @@ pub fn encrypt_value(plaintext: &str, master_key: &[u8; 32]) -> Result<String, S
     ))
 }
 
-/// Decrypt all `ENC[...]` values in an [`AuthFileConfig`] in place.
+/// Decrypt all `ENC[...]` values in an [`super::config::AuthFileConfig`] in place.
 pub fn decrypt_auth_config(
     config: &mut super::config::AuthFileConfig,
     master_key: &[u8; 32],

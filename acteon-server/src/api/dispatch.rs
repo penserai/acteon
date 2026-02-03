@@ -15,7 +15,7 @@ use super::schemas::ErrorResponse;
 /// `POST /v1/dispatch` -- dispatch a single action through the gateway pipeline.
 ///
 /// Expects a JSON body that deserializes to an [`Action`]. Returns the
-/// resulting [`ActionOutcome`](acteon_core::ActionOutcome) as JSON.
+/// resulting [`ActionOutcome`] as JSON.
 #[utoipa::path(
     post,
     path = "/v1/dispatch",
