@@ -6,6 +6,10 @@
 
 <p align="center">Actions forged in Rust</p>
 
+<p align="center">
+  <a href="https://github.com/penserai/acteon/actions/workflows/ci.yml"><img src="https://github.com/penserai/acteon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+</p>
+
 Acteon is an action gateway that dispatches actions through a configurable pipeline of rules, providers, and state backends.
 
 The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis into a stag -- the very thing he pursued. Likewise, actions entering Acteon are transformed -- deduplicated, rerouted, throttled, or dispatched -- before they ever reach the outside world.
