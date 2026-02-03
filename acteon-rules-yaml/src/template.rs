@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn parse_single_ident() {
         let expr = parse_field_path("action").unwrap();
-        assert!(matches!(expr, Expr::Ident(ref s) if s == "action"));
+        assert!(matches!(expr, Expr::Ident(s) if s == "action"));
     }
 
     #[test]
@@ -112,7 +112,7 @@ mod tests {
         match expr {
             Expr::Field(base, field) => {
                 assert_eq!(field, "payload");
-                assert!(matches!(*base, Expr::Ident(ref s) if s == "action"));
+                assert!(matches!(*base, Expr::Ident(s) if s == "action"));
             }
             other => panic!("expected Field, got {other:?}"),
         }
@@ -127,7 +127,7 @@ mod tests {
                 match *base {
                     Expr::Field(inner_base, inner_field) => {
                         assert_eq!(inner_field, "payload");
-                        assert!(matches!(*inner_base, Expr::Ident(ref s) if s == "action"));
+                        assert!(matches!(*inner_base, Expr::Ident(s) if s == "action"));
                     }
                     other => panic!("expected nested Field, got {other:?}"),
                 }
@@ -149,7 +149,7 @@ mod tests {
     #[test]
     fn template_plain_string() {
         let expr = compile_template("hello world").unwrap();
-        assert!(matches!(expr, Expr::String(ref s) if s == "hello world"));
+        assert!(matches!(expr, Expr::String(s) if s == "hello world"));
     }
 
     #[test]
@@ -168,7 +168,7 @@ mod tests {
         // Should be: Add(Add(String("Hello "), Field(...)), String("!"))
         match expr {
             Expr::Binary(BinaryOp::Add, _, rhs) => {
-                assert!(matches!(*rhs, Expr::String(ref s) if s == "!"));
+                assert!(matches!(*rhs, Expr::String(s) if s == "!"));
             }
             other => panic!("expected Binary(Add, ...), got {other:?}"),
         }
