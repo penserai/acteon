@@ -40,7 +40,7 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 
 ### Prerequisites
 
-- Rust 1.85+
+- Rust 1.88+
 - Cargo
 
 ### Quick start (in-memory, no config file needed)
