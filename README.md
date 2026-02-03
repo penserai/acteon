@@ -20,7 +20,6 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 | `acteon-state-redis` | Redis state backend |
 | `acteon-state-postgres` | PostgreSQL state backend |
 | `acteon-state-dynamodb` | DynamoDB state backend |
-| `acteon-state-etcd` | etcd state backend |
 | `acteon-state-clickhouse` | ClickHouse state backend |
 | `acteon-audit` | Abstract audit trail trait |
 | `acteon-audit-memory` | In-memory audit backend |
@@ -41,7 +40,7 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 
 ### Prerequisites
 
-- Rust 1.75+
+- Rust 1.85+
 - Cargo
 
 ### Quick start (in-memory, no config file needed)
@@ -87,7 +86,7 @@ host = "127.0.0.1"
 port = 8080
 
 [state]
-backend = "memory"   # "memory", "redis", "postgres", "dynamodb", "etcd", or "clickhouse"
+backend = "memory"   # "memory", "redis", "postgres", "dynamodb", or "clickhouse"
 # url = "redis://localhost:6379"
 # prefix = "acteon"
 # region = "us-east-1"       # DynamoDB only
@@ -133,7 +132,6 @@ The `docker-compose.yml` ships with profiles for every supported backend. Redis 
 | ClickHouse | state, audit | `clickhouse` | `http://localhost:8123` |
 | Elasticsearch | audit | `elasticsearch` | `http://localhost:9200` |
 | DynamoDB Local | state | `dynamodb` | `http://localhost:8000` |
-| etcd | state | `etcd` | `http://localhost:2379` |
 
 ### Starting backends
 
@@ -172,10 +170,6 @@ cargo run -p acteon-server -- -c examples/elasticsearch-audit.toml
 # DynamoDB Local state
 docker compose --profile dynamodb up -d
 cargo run -p acteon-server -- -c examples/dynamodb.toml
-
-# etcd state
-docker compose --profile etcd up -d
-cargo run -p acteon-server -- -c examples/etcd.toml
 ```
 
 ### Combining backends
