@@ -4,7 +4,9 @@ use acteon_state::{DistributedLock, StateStore};
 #[cfg(feature = "clickhouse")]
 use acteon_state_clickhouse::{ClickHouseConfig, ClickHouseDistributedLock, ClickHouseStateStore};
 #[cfg(feature = "dynamodb")]
-use acteon_state_dynamodb::{build_client, create_table, DynamoConfig, DynamoDistributedLock, DynamoStateStore};
+use acteon_state_dynamodb::{
+    DynamoConfig, DynamoDistributedLock, DynamoStateStore, build_client, create_table,
+};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 #[cfg(feature = "postgres")]
 use acteon_state_postgres::{PostgresConfig, PostgresDistributedLock, PostgresStateStore};

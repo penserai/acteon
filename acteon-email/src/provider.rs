@@ -1,6 +1,6 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::provider::Provider;
 use acteon_provider::ProviderError;
+use acteon_provider::provider::Provider;
 use lettre::message::{Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};

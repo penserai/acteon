@@ -38,10 +38,7 @@ pub struct AuthProvider {
 
 impl AuthProvider {
     /// Build the auth provider from a decrypted config and a state store reference.
-    pub fn new(
-        config: &AuthFileConfig,
-        state_store: Arc<dyn StateStore>,
-    ) -> Result<Self, String> {
+    pub fn new(config: &AuthFileConfig, state_store: Arc<dyn StateStore>) -> Result<Self, String> {
         let jwt_manager = JwtManager::new(
             &config.settings.jwt_secret,
             config.settings.jwt_expiry_seconds,

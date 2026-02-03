@@ -1,5 +1,5 @@
-use acteon_rules::ir::expr::{BinaryOp, Expr};
 use acteon_rules::RuleError;
+use acteon_rules::ir::expr::{BinaryOp, Expr};
 
 /// Parse a dotted field path string into a chain of `Expr::Ident` and `Expr::Field`.
 ///

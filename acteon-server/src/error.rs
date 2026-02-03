@@ -41,9 +41,11 @@ impl IntoResponse for ServerError {
             Self::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone(), None),
             Self::Io(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
             Self::Gateway(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-            Self::RateLimited { retry_after } => {
-                (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded".to_owned(), Some(*retry_after))
-            }
+            Self::RateLimited { retry_after } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate limit exceeded".to_owned(),
+                Some(*retry_after),
+            ),
         };
 
         let body = if let Some(retry) = retry_after {
@@ -55,10 +57,9 @@ impl IntoResponse for ServerError {
         let mut response = (status, axum::Json(body)).into_response();
 
         if let Some(retry) = retry_after {
-            response.headers_mut().insert(
-                axum::http::header::RETRY_AFTER,
-                retry.into(),
-            );
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, retry.into());
         }
 
         response

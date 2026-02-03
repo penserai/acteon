@@ -1,12 +1,12 @@
+use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use axum::Json;
 use serde::Deserialize;
 use utoipa::ToSchema;
 
-use super::schemas::ErrorResponse;
 use super::AppState;
+use super::schemas::ErrorResponse;
 
 #[derive(Deserialize, ToSchema)]
 pub struct LoginRequest {
@@ -67,10 +67,7 @@ pub async fn login(
         (status = 401, description = "Invalid or missing token", body = ErrorResponse)
     )
 )]
-pub async fn logout(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(ref auth) = state.auth else {
         return (
             StatusCode::NOT_FOUND,

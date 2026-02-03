@@ -10,8 +10,8 @@ use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_server::api::AppState;
-use acteon_server::auth::crypto::{decrypt_auth_config, encrypt_value, parse_master_key};
 use acteon_server::auth::AuthProvider;
+use acteon_server::auth::crypto::{decrypt_auth_config, encrypt_value, parse_master_key};
 use acteon_server::config::ActeonConfig;
 use acteon_server::ratelimit::{RateLimitFileConfig, RateLimiter};
 
@@ -97,17 +97,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the auth provider if enabled.
     let auth_provider = if config.auth.enabled {
-        let master_key_raw = std::env::var("ACTEON_AUTH_KEY").map_err(|_| {
-            "ACTEON_AUTH_KEY environment variable is required when auth is enabled"
-        })?;
+        let master_key_raw = std::env::var("ACTEON_AUTH_KEY")
+            .map_err(|_| "ACTEON_AUTH_KEY environment variable is required when auth is enabled")?;
         let master_key = parse_master_key(&master_key_raw)
             .map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}"))?;
 
-        let auth_path = config
-            .auth
-            .config_path
-            .as_deref()
-            .unwrap_or("auth.toml");
+        let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
 
         // Resolve relative to the config file's directory.
         let auth_path = if Path::new(auth_path).is_relative() {
@@ -119,13 +114,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Path::new(auth_path).to_path_buf()
         };
 
-        let auth_contents = std::fs::read_to_string(&auth_path).map_err(|e| {
-            format!("failed to read auth config at {}: {e}", auth_path.display())
-        })?;
+        let auth_contents = std::fs::read_to_string(&auth_path)
+            .map_err(|e| format!("failed to read auth config at {}: {e}", auth_path.display()))?;
         let mut auth_config: acteon_server::auth::config::AuthFileConfig =
-            toml::from_str(&auth_contents).map_err(|e| {
-                format!("failed to parse auth config: {e}")
-            })?;
+            toml::from_str(&auth_contents)
+                .map_err(|e| format!("failed to parse auth config: {e}"))?;
 
         decrypt_auth_config(&mut auth_config, &master_key)?;
 
@@ -155,11 +148,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let rl_contents = std::fs::read_to_string(&rl_path).map_err(|e| {
-            format!("failed to read rate limit config at {}: {e}", rl_path.display())
+            format!(
+                "failed to read rate limit config at {}: {e}",
+                rl_path.display()
+            )
         })?;
-        let rl_config: RateLimitFileConfig = toml::from_str(&rl_contents).map_err(|e| {
-            format!("failed to parse rate limit config: {e}")
-        })?;
+        let rl_config: RateLimitFileConfig = toml::from_str(&rl_contents)
+            .map_err(|e| format!("failed to parse rate limit config: {e}"))?;
 
         info!(path = %rl_path.display(), "rate limiter initialized");
         Some(Arc::new(RateLimiter::new(
@@ -250,9 +245,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Run the `encrypt` subcommand: read plaintext from stdin, output ENC[...] to stdout.
 fn run_encrypt() -> Result<(), Box<dyn std::error::Error>> {
-    let master_key_raw = std::env::var("ACTEON_AUTH_KEY").map_err(|_| {
-        "ACTEON_AUTH_KEY environment variable is required for the encrypt command"
-    })?;
+    let master_key_raw = std::env::var("ACTEON_AUTH_KEY")
+        .map_err(|_| "ACTEON_AUTH_KEY environment variable is required for the encrypt command")?;
     let master_key =
         parse_master_key(&master_key_raw).map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}"))?;
 

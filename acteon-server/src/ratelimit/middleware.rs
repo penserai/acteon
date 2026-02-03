@@ -2,13 +2,13 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use tower::{Layer, Service};
 
 use crate::auth::identity::CallerIdentity;
 
-use super::limiter::{RateLimitResult, RateLimiter, ANONYMOUS_BUCKET};
+use super::limiter::{ANONYMOUS_BUCKET, RateLimitResult, RateLimiter};
 
 /// Tower layer that adds rate limiting middleware.
 #[derive(Clone)]
@@ -66,19 +66,16 @@ where
             };
 
             // Get caller ID from request extensions (set by AuthMiddleware).
-            let caller_id = req
-                .extensions()
-                .get::<CallerIdentity>()
-                .map_or_else(
-                    || ANONYMOUS_BUCKET.to_owned(),
-                    |id| {
-                        if id.id.is_empty() {
-                            ANONYMOUS_BUCKET.to_owned()
-                        } else {
-                            id.id.clone()
-                        }
-                    },
-                );
+            let caller_id = req.extensions().get::<CallerIdentity>().map_or_else(
+                || ANONYMOUS_BUCKET.to_owned(),
+                |id| {
+                    if id.id.is_empty() {
+                        ANONYMOUS_BUCKET.to_owned()
+                    } else {
+                        id.id.clone()
+                    }
+                },
+            );
 
             // Check rate limit for the caller.
             match limiter.check_caller_limit(&caller_id).await {
@@ -106,10 +103,9 @@ fn add_rate_limit_headers(response: Response, result: &RateLimitResult) -> Respo
     parts
         .headers
         .insert("X-RateLimit-Remaining", result.remaining.into());
-    parts.headers.insert(
-        "X-RateLimit-Reset",
-        result.reset_after.into(),
-    );
+    parts
+        .headers
+        .insert("X-RateLimit-Reset", result.reset_after.into());
 
     Response::from_parts(parts, body)
 }
@@ -124,10 +120,9 @@ fn rate_limited_response(retry_after: u64, limit: u64) -> Response {
 
     let mut response = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
 
-    response.headers_mut().insert(
-        header::RETRY_AFTER,
-        retry_after.into(),
-    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, retry_after.into());
     response
         .headers_mut()
         .insert("X-RateLimit-Limit", limit.into());

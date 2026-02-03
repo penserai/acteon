@@ -2,15 +2,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use acteon_core::{Action, ProviderResponse};
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_provider::{DynProvider, ProviderError};
+use acteon_rules::RuleFrontend;
 use acteon_rules::ir::expr::{BinaryOp, Expr};
 use acteon_rules::ir::rule::{Rule, RuleAction};
-use acteon_rules::RuleFrontend;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 

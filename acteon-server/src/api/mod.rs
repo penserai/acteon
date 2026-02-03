@@ -8,8 +8,8 @@ pub mod schemas;
 
 use std::sync::Arc;
 
-use axum::routing::{get, post, put};
 use axum::Router;
+use axum::routing::{get, post, put};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -19,10 +19,10 @@ use utoipa_swagger_ui::SwaggerUi;
 use acteon_audit::store::AuditStore;
 use acteon_gateway::Gateway;
 
-use crate::auth::middleware::AuthLayer;
 use crate::auth::AuthProvider;
-use crate::ratelimit::middleware::RateLimitLayer;
+use crate::auth::middleware::AuthLayer;
 use crate::ratelimit::RateLimiter;
+use crate::ratelimit::middleware::RateLimitLayer;
 
 use self::openapi::ApiDoc;
 

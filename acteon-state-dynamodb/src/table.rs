@@ -1,7 +1,7 @@
+use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::types::{
     AttributeDefinition, KeySchemaElement, KeyType, ProvisionedThroughput, ScalarAttributeType,
 };
-use aws_sdk_dynamodb::Client;
 
 use acteon_state::key::StateKey;
 

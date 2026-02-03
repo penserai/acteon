@@ -1,9 +1,9 @@
 use std::path::Path;
 
+use axum::Json;
 use axum::extract::{self, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use tracing::info;
 
 use acteon_rules_yaml::YamlFrontend;
@@ -11,11 +11,11 @@ use acteon_rules_yaml::YamlFrontend;
 use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
 
+use super::AppState;
 use super::schemas::{
     ErrorResponse, ReloadRequest, ReloadResponse, RuleSummary, SetEnabledRequest,
     SetEnabledResponse,
 };
-use super::AppState;
 
 /// `GET /v1/rules` -- list all loaded rules.
 ///

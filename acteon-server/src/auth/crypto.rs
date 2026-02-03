@@ -1,7 +1,7 @@
 use aes_gcm::aead::{Aead, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Nonce};
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 
 /// Parse a 32-byte master key from hex or base64.
 pub fn parse_master_key(raw: &str) -> Result<[u8; 32], String> {
@@ -9,18 +9,20 @@ pub fn parse_master_key(raw: &str) -> Result<[u8; 32], String> {
     // Try hex first (64 hex chars = 32 bytes).
     if trimmed.len() == 64
         && let Ok(bytes) = hex::decode(trimmed)
-            && bytes.len() == 32 {
-                let mut key = [0u8; 32];
-                key.copy_from_slice(&bytes);
-                return Ok(key);
-            }
+        && bytes.len() == 32
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        return Ok(key);
+    }
     // Try base64.
     if let Ok(bytes) = B64.decode(trimmed)
-        && bytes.len() == 32 {
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&bytes);
-            return Ok(key);
-        }
+        && bytes.len() == 32
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        return Ok(key);
+    }
     Err("ACTEON_AUTH_KEY must be 32 bytes encoded as 64 hex chars or base64".to_owned())
 }
 
@@ -69,8 +71,8 @@ pub fn decrypt_value(value: &str, master_key: &[u8; 32]) -> Result<String, Strin
     let mut ciphertext = data;
     ciphertext.extend_from_slice(&tag);
 
-    let cipher = Aes256Gcm::new_from_slice(master_key)
-        .map_err(|e| format!("invalid AES key: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(master_key).map_err(|e| format!("invalid AES key: {e}"))?;
     let nonce = Nonce::from_slice(&iv);
 
     let plaintext = cipher
@@ -84,8 +86,8 @@ pub fn decrypt_value(value: &str, master_key: &[u8; 32]) -> Result<String, Strin
 pub fn encrypt_value(plaintext: &str, master_key: &[u8; 32]) -> Result<String, String> {
     use aes_gcm::AeadCore;
 
-    let cipher = Aes256Gcm::new_from_slice(master_key)
-        .map_err(|e| format!("invalid AES key: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(master_key).map_err(|e| format!("invalid AES key: {e}"))?;
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
     let ciphertext = cipher

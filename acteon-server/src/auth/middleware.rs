@@ -68,31 +68,33 @@ where
             // Try Bearer token first.
             if let Some(auth_header) = req.headers().get("authorization")
                 && let Ok(header_str) = auth_header.to_str()
-                    && let Some(token) = header_str.strip_prefix("Bearer ") {
-                        match provider.validate_jwt(token).await {
-                            Ok(identity) => {
-                                req.extensions_mut().insert(identity);
-                                return inner.call(req).await;
-                            }
-                            Err(e) => {
-                                return Ok(unauthorized(&e));
-                            }
-                        }
+                && let Some(token) = header_str.strip_prefix("Bearer ")
+            {
+                match provider.validate_jwt(token).await {
+                    Ok(identity) => {
+                        req.extensions_mut().insert(identity);
+                        return inner.call(req).await;
                     }
+                    Err(e) => {
+                        return Ok(unauthorized(&e));
+                    }
+                }
+            }
 
             // Try API key.
             if let Some(api_key_header) = req.headers().get("x-api-key")
-                && let Ok(key_str) = api_key_header.to_str() {
-                    match provider.authenticate_api_key(key_str) {
-                        Some(identity) => {
-                            req.extensions_mut().insert(identity);
-                            return inner.call(req).await;
-                        }
-                        None => {
-                            return Ok(unauthorized("invalid API key"));
-                        }
+                && let Ok(key_str) = api_key_header.to_str()
+            {
+                match provider.authenticate_api_key(key_str) {
+                    Some(identity) => {
+                        req.extensions_mut().insert(identity);
+                        return inner.call(req).await;
+                    }
+                    None => {
+                        return Ok(unauthorized("invalid API key"));
                     }
                 }
+            }
 
             Ok(unauthorized("missing authentication credentials"))
         })

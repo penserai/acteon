@@ -1,7 +1,7 @@
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 
 use acteon_core::{Action, ActionOutcome};
 
@@ -9,8 +9,8 @@ use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
 use crate::error::ServerError;
 
-use super::schemas::ErrorResponse;
 use super::AppState;
+use super::schemas::ErrorResponse;
 
 /// `POST /v1/dispatch` -- dispatch a single action through the gateway pipeline.
 ///
@@ -61,11 +61,12 @@ pub async fn dispatch(
     // Check per-tenant rate limit if enabled.
     if let Some(ref limiter) = state.rate_limiter
         && limiter.config().tenants.enabled
-            && let Err(e) = limiter.check_tenant_limit(&action.tenant).await {
-                return Err(ServerError::RateLimited {
-                    retry_after: e.retry_after,
-                });
-            }
+        && let Err(e) = limiter.check_tenant_limit(&action.tenant).await
+    {
+        return Err(ServerError::RateLimited {
+            retry_after: e.retry_after,
+        });
+    }
 
     let caller = identity.to_caller();
     let gw = state.gateway.read().await;
@@ -127,18 +128,20 @@ pub async fn dispatch_batch(
 
     // Check per-tenant rate limits for all tenants in the batch if enabled.
     if let Some(ref limiter) = state.rate_limiter
-        && limiter.config().tenants.enabled {
-            // Collect unique tenants to avoid duplicate checks.
-            let mut checked_tenants = std::collections::HashSet::new();
-            for action in &actions {
-                if checked_tenants.insert(&action.tenant)
-                    && let Err(e) = limiter.check_tenant_limit(&action.tenant).await {
-                        return Err(ServerError::RateLimited {
-                            retry_after: e.retry_after,
-                        });
-                    }
+        && limiter.config().tenants.enabled
+    {
+        // Collect unique tenants to avoid duplicate checks.
+        let mut checked_tenants = std::collections::HashSet::new();
+        for action in &actions {
+            if checked_tenants.insert(&action.tenant)
+                && let Err(e) = limiter.check_tenant_limit(&action.tenant).await
+            {
+                return Err(ServerError::RateLimited {
+                    retry_after: e.retry_after,
+                });
             }
         }
+    }
 
     let caller = identity.to_caller();
     let gw = state.gateway.read().await;

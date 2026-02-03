@@ -1,10 +1,10 @@
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 
-use super::schemas::{HealthResponse, MetricsResponse};
 use super::AppState;
+use super::schemas::{HealthResponse, MetricsResponse};
 
 /// `GET /health` -- returns service status together with a metrics snapshot.
 #[utoipa::path(

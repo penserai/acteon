@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 use acteon_state::{KeyKind, StateKey, StateStore};
@@ -89,8 +89,12 @@ impl JwtManager {
         let claims = token_data.claims;
 
         // Check revocation: jti must exist in state store.
-        let state_key =
-            StateKey::new("auth", "tokens", KeyKind::Custom("token".to_owned()), &claims.jti);
+        let state_key = StateKey::new(
+            "auth",
+            "tokens",
+            KeyKind::Custom("token".to_owned()),
+            &claims.jti,
+        );
         let exists = state_store
             .get(&state_key)
             .await

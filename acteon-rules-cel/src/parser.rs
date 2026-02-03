@@ -5,17 +5,17 @@
 //! `acteon-rules`.
 
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{char, multispace0},
     combinator::{opt, recognize},
     multi::separated_list0,
     sequence::{delimited, tuple},
-    IResult,
 };
 
-use acteon_rules::ir::expr::{BinaryOp, Expr, UnaryOp};
 use acteon_rules::RuleError;
+use acteon_rules::ir::expr::{BinaryOp, Expr, UnaryOp};
 
 /// Parse a complete CEL expression string into an [`Expr`].
 ///

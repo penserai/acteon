@@ -446,7 +446,7 @@ fn eval_compare(
                 "cannot compare {} and {}",
                 left.type_name(),
                 right.type_name()
-            )))
+            )));
         }
     };
     Ok(Value::Bool(predicate(ordering)))
@@ -1754,12 +1754,9 @@ mod tests {
 
     #[test]
     fn engine_add_rules_batch() {
-        let mut engine = RuleEngine::new(vec![Rule::new(
-            "existing",
-            Expr::Bool(true),
-            RuleAction::Allow,
-        )
-        .with_priority(10)]);
+        let mut engine = RuleEngine::new(vec![
+            Rule::new("existing", Expr::Bool(true), RuleAction::Allow).with_priority(10),
+        ]);
 
         engine.add_rules(vec![
             Rule::new("new1", Expr::Bool(true), RuleAction::Deny).with_priority(5),
@@ -1807,12 +1804,9 @@ mod tests {
 
     #[tokio::test]
     async fn engine_disabled_rule_not_evaluated() {
-        let mut engine = RuleEngine::new(vec![Rule::new(
-            "deny-all",
-            Expr::Bool(true),
-            RuleAction::Deny,
-        )
-        .with_priority(1)]);
+        let mut engine = RuleEngine::new(vec![
+            Rule::new("deny-all", Expr::Bool(true), RuleAction::Deny).with_priority(1),
+        ]);
 
         let action = test_action();
         let store = MemoryStateStore::new();
@@ -1860,35 +1854,23 @@ mod tests {
 
     #[test]
     fn rules_version_changes_with_version_field() {
-        let engine1 = RuleEngine::new(vec![Rule::new(
-            "rule-a",
-            Expr::Bool(true),
-            RuleAction::Allow,
-        )
-        .with_version(1)]);
-        let engine2 = RuleEngine::new(vec![Rule::new(
-            "rule-a",
-            Expr::Bool(true),
-            RuleAction::Allow,
-        )
-        .with_version(2)]);
+        let engine1 = RuleEngine::new(vec![
+            Rule::new("rule-a", Expr::Bool(true), RuleAction::Allow).with_version(1),
+        ]);
+        let engine2 = RuleEngine::new(vec![
+            Rule::new("rule-a", Expr::Bool(true), RuleAction::Allow).with_version(2),
+        ]);
         assert_ne!(engine1.rules_version(), engine2.rules_version());
     }
 
     #[test]
     fn rules_version_changes_with_enabled() {
-        let engine1 = RuleEngine::new(vec![Rule::new(
-            "rule-a",
-            Expr::Bool(true),
-            RuleAction::Allow,
-        )
-        .with_enabled(true)]);
-        let engine2 = RuleEngine::new(vec![Rule::new(
-            "rule-a",
-            Expr::Bool(true),
-            RuleAction::Allow,
-        )
-        .with_enabled(false)]);
+        let engine1 = RuleEngine::new(vec![
+            Rule::new("rule-a", Expr::Bool(true), RuleAction::Allow).with_enabled(true),
+        ]);
+        let engine2 = RuleEngine::new(vec![
+            Rule::new("rule-a", Expr::Bool(true), RuleAction::Allow).with_enabled(false),
+        ]);
         assert_ne!(engine1.rules_version(), engine2.rules_version());
     }
 

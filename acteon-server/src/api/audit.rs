@@ -1,14 +1,14 @@
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 
 use acteon_audit::record::AuditQuery;
 
 use crate::auth::identity::CallerIdentity;
 
-use super::schemas::ErrorResponse;
 use super::AppState;
+use super::schemas::ErrorResponse;
 
 /// `GET /v1/audit` -- query audit records with filters and pagination.
 #[utoipa::path(
@@ -53,14 +53,15 @@ pub async fn query_audit(
     // If the caller has a specific tenant filter, verify it's covered by grants.
     if let Some(ref requested_tenant) = query.tenant {
         if let Some(allowed) = identity.allowed_tenants()
-            && !allowed.contains(&requested_tenant.as_str()) {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!(ErrorResponse {
-                        error: format!("no grant covers tenant={requested_tenant}"),
-                    })),
-                );
-            }
+            && !allowed.contains(&requested_tenant.as_str())
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!(ErrorResponse {
+                    error: format!("no grant covers tenant={requested_tenant}"),
+                })),
+            );
+        }
     } else if let Some(allowed) = identity.allowed_tenants() {
         // No tenant filter requested but caller is scoped — inject first allowed tenant.
         // For multi-tenant callers, the API requires an explicit tenant filter.

@@ -109,11 +109,13 @@ mod tests {
 
         let unhealthy = statuses.iter().find(|s| s.provider == "unhealthy").unwrap();
         assert!(!unhealthy.healthy);
-        assert!(unhealthy
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("connection refused"));
+        assert!(
+            unhealthy
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("connection refused")
+        );
     }
 
     #[tokio::test]
