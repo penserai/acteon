@@ -53,12 +53,14 @@ impl AuditStore for PostgresAuditStore {
                 id, action_id, namespace, tenant, provider, action_type,
                 verdict, matched_rule, outcome,
                 action_payload, verdict_details, outcome_details, metadata,
-                dispatched_at, completed_at, duration_ms, expires_at
+                dispatched_at, completed_at, duration_ms, expires_at,
+                caller_id, auth_method
             ) VALUES (
                 $1, $2, $3, $4, $5, $6,
                 $7, $8, $9,
                 $10, $11, $12, $13,
-                $14, $15, $16, $17
+                $14, $15, $16, $17,
+                $18, $19
             )
             ",
             self.table
@@ -85,6 +87,8 @@ impl AuditStore for PostgresAuditStore {
             .bind(entry.completed_at)
             .bind(duration)
             .bind(entry.expires_at)
+            .bind(&entry.caller_id)
+            .bind(&entry.auth_method)
             .execute(&self.pool)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
@@ -210,6 +214,7 @@ fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>, Option<u32>, 
         (&query.outcome, "outcome"),
         (&query.verdict, "verdict"),
         (&query.matched_rule, "matched_rule"),
+        (&query.caller_id, "caller_id"),
     ];
 
     for (value, col) in fields {
@@ -267,6 +272,8 @@ struct AuditRow {
     completed_at: chrono::DateTime<chrono::Utc>,
     duration_ms: i64,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    caller_id: String,
+    auth_method: String,
 }
 
 impl From<AuditRow> for AuditRecord {
@@ -292,6 +299,8 @@ impl From<AuditRow> for AuditRecord {
             completed_at: row.completed_at,
             duration_ms,
             expires_at: row.expires_at,
+            caller_id: row.caller_id,
+            auth_method: row.auth_method,
         }
     }
 }

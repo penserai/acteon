@@ -39,6 +39,8 @@ struct AuditInsertRow {
     duration_ms: u64,
     /// Milliseconds since the Unix epoch, if set.
     expires_at: Option<i64>,
+    caller_id: String,
+    auth_method: String,
 }
 
 /// Row layout used when reading audit records from `ClickHouse`.
@@ -61,6 +63,8 @@ struct AuditSelectRow {
     completed_at: i64,
     duration_ms: u64,
     expires_at: Option<i64>,
+    caller_id: String,
+    auth_method: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +93,8 @@ impl From<AuditRecord> for AuditInsertRow {
             completed_at: r.completed_at.timestamp_millis(),
             duration_ms: r.duration_ms,
             expires_at: r.expires_at.map(|dt| dt.timestamp_millis()),
+            caller_id: r.caller_id,
+            auth_method: r.auth_method,
         }
     }
 }
@@ -117,6 +123,8 @@ impl From<AuditSelectRow> for AuditRecord {
             completed_at: millis_to_datetime(row.completed_at),
             duration_ms: row.duration_ms,
             expires_at: row.expires_at.map(millis_to_datetime),
+            caller_id: row.caller_id,
+            auth_method: row.auth_method,
         }
     }
 }
@@ -135,7 +143,8 @@ fn millis_to_datetime(ms: i64) -> DateTime<Utc> {
 const SELECT_COLUMNS: &str = "\
     id, action_id, namespace, tenant, provider, action_type, verdict, \
     matched_rule, outcome, action_payload, verdict_details, outcome_details, \
-    metadata, dispatched_at, completed_at, duration_ms, expires_at";
+    metadata, dispatched_at, completed_at, duration_ms, expires_at, \
+    caller_id, auth_method";
 
 /// Escape a string value for safe interpolation inside a `ClickHouse` SQL
 /// single-quoted literal.  `ClickHouse` uses backslash escaping by default.
@@ -157,6 +166,7 @@ fn build_where_clause(query: &AuditQuery) -> String {
         (&query.outcome, "outcome"),
         (&query.verdict, "verdict"),
         (&query.matched_rule, "matched_rule"),
+        (&query.caller_id, "caller_id"),
     ];
 
     for (value, col) in string_filters {

@@ -8,6 +8,9 @@ use tracing::info;
 
 use acteon_rules_yaml::YamlFrontend;
 
+use crate::auth::identity::CallerIdentity;
+use crate::auth::role::Permission;
+
 use super::schemas::{
     ErrorResponse, ReloadRequest, ReloadResponse, RuleSummary, SetEnabledRequest,
     SetEnabledResponse,
@@ -27,7 +30,10 @@ use super::AppState;
         (status = 200, description = "List of loaded rules", body = Vec<RuleSummary>)
     )
 )]
-pub async fn list_rules(State(state): State<AppState>) -> impl IntoResponse {
+pub async fn list_rules(
+    State(state): State<AppState>,
+    axum::Extension(_identity): axum::Extension<CallerIdentity>,
+) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let rules = gw.rules();
 
@@ -57,13 +63,25 @@ pub async fn list_rules(State(state): State<AppState>) -> impl IntoResponse {
     responses(
         (status = 200, description = "Rules reloaded successfully", body = ReloadResponse),
         (status = 400, description = "Missing or invalid directory", body = ErrorResponse),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 500, description = "Failed to parse rules", body = ErrorResponse)
     )
 )]
 pub async fn reload_rules(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     body: Option<Json<ReloadRequest>>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::RulesManage) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: "insufficient permissions: rules management requires admin or operator role"
+                    .into(),
+            })),
+        );
+    }
+
     let dir = body.and_then(|b| b.0.directory.clone());
 
     let Some(dir) = dir else {
@@ -122,14 +140,26 @@ pub async fn reload_rules(
     request_body(content = SetEnabledRequest, description = "Desired enabled state"),
     responses(
         (status = 200, description = "Rule toggled successfully", body = SetEnabledResponse),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 404, description = "Rule not found", body = ErrorResponse)
     )
 )]
 pub async fn set_rule_enabled(
     State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     extract::Path(name): extract::Path<String>,
     Json(body): Json<SetEnabledRequest>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::RulesManage) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: "insufficient permissions: rules management requires admin or operator role"
+                    .into(),
+            })),
+        );
+    }
+
     let mut gw = state.gateway.write().await;
 
     let found = if body.enabled {

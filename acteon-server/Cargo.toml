@@ -59,6 +59,13 @@ tracing-subscriber = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 utoipa-axum = { workspace = true }
+jsonwebtoken = { workspace = true }
+argon2 = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 acteon-audit = { workspace = true }

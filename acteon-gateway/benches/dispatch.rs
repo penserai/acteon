@@ -82,7 +82,7 @@ fn bench_dispatch_no_rules(c: &mut Criterion) {
         b.iter(|| {
             let action = test_action();
             rt.block_on(async {
-                let result = gateway.dispatch(black_box(action)).await;
+                let result = gateway.dispatch(black_box(action), None).await;
                 black_box(result)
             })
         });
@@ -158,7 +158,7 @@ rules:
         b.iter(|| {
             let action = test_action();
             rt.block_on(async {
-                let result = gateway.dispatch(black_box(action)).await;
+                let result = gateway.dispatch(black_box(action), None).await;
                 black_box(result)
             })
         });
@@ -201,7 +201,7 @@ fn bench_dispatch_batch(c: &mut Criterion) {
         b.iter(|| {
             let actions: Vec<Action> = (0..10).map(|_| test_action()).collect();
             rt.block_on(async {
-                let results = gateway.dispatch_batch(black_box(actions)).await;
+                let results = gateway.dispatch_batch(black_box(actions), None).await;
                 black_box(results)
             })
         });

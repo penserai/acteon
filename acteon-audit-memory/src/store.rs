@@ -201,6 +201,8 @@ mod tests {
             completed_at: now,
             duration_ms: 10,
             expires_at: None,
+            caller_id: String::new(),
+            auth_method: String::new(),
         }
     }
 

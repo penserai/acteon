@@ -37,12 +37,23 @@ pub async fn run_migrations(
             dispatched_at   DateTime64(3, 'UTC'),
             completed_at    DateTime64(3, 'UTC'),
             duration_ms     UInt64,
-            expires_at      Nullable(DateTime64(3, 'UTC'))
+            expires_at      Nullable(DateTime64(3, 'UTC')),
+            caller_id       String DEFAULT '',
+            auth_method     String DEFAULT ''
         ) ENGINE = MergeTree()
         ORDER BY (namespace, tenant, dispatched_at)"
     );
 
     client.query(&create_table).execute().await?;
+
+    // Add caller columns to existing tables (idempotent).
+    let add_columns = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS caller_id String DEFAULT ''"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS auth_method String DEFAULT ''"),
+    ];
+    for stmt in &add_columns {
+        client.query(stmt).execute().await?;
+    }
 
     Ok(())
 }

@@ -133,6 +133,14 @@ notify = "7"
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
 
+# Auth
+jsonwebtoken = "9"
+argon2 = "0.5"
+sha2 = "0.10"
+hex = "0.4"
+aes-gcm = "0.10"
+base64 = "0.22"
+
 # Tracing subscriber
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
