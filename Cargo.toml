@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "acteon-core",
     "acteon-state",
-    "acteon-state-etcd",
     "acteon-state-memory",
     "acteon-state-postgres",
     "acteon-state-redis",
@@ -39,7 +38,6 @@ acteon-state = { path = "acteon-state" }
 acteon-state-memory = { path = "acteon-state-memory" }
 acteon-state-postgres = { path = "acteon-state-postgres" }
 acteon-state-redis = { path = "acteon-state-redis" }
-acteon-state-etcd = { path = "acteon-state-etcd" }
 acteon-state-dynamodb = { path = "acteon-state-dynamodb" }
 acteon-rules = { path = "acteon-rules" }
 acteon-rules-yaml = { path = "acteon-rules-yaml" }
@@ -90,9 +88,6 @@ dashmap = "6"
 # Redis
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 deadpool-redis = "0.18"
-
-# etcd
-etcd-client = "0.14"
 
 # DynamoDB
 aws-sdk-dynamodb = "1"
