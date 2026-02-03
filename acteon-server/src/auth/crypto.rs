@@ -3,6 +3,9 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 
+/// A 32-byte AES-256 master key for encrypting/decrypting sensitive config values.
+pub type MasterKey = [u8; 32];
+
 /// Parse a 32-byte master key from hex or base64.
 pub fn parse_master_key(raw: &str) -> Result<[u8; 32], String> {
     let trimmed = raw.trim();

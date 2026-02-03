@@ -7,6 +7,7 @@ use acteon_core::{Action, ActionError, ActionOutcome};
 use acteon_provider::{DynProvider, ProviderError};
 
 use crate::config::ExecutorConfig;
+use crate::dlq::DeadLetterSink;
 
 /// Executes actions against a provider with retry logic and bounded concurrency.
 ///
@@ -15,9 +16,13 @@ use crate::config::ExecutorConfig;
 /// Failed attempts that yield a retryable error are retried up to
 /// [`ExecutorConfig::max_retries`] times with delays computed by the
 /// configured [`RetryStrategy`](crate::RetryStrategy).
+///
+/// When a dead-letter queue sink is configured, actions that exhaust all retries
+/// are pushed to the sink before returning [`ActionOutcome::Failed`].
 pub struct ActionExecutor {
     config: ExecutorConfig,
     semaphore: Arc<Semaphore>,
+    dlq: Option<Arc<dyn DeadLetterSink>>,
 }
 
 impl ActionExecutor {
@@ -32,12 +37,45 @@ impl ActionExecutor {
     /// ```
     pub fn new(config: ExecutorConfig) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
-        Self { config, semaphore }
+        Self {
+            config,
+            semaphore,
+            dlq: None,
+        }
+    }
+
+    /// Create a new executor with a dead-letter queue sink.
+    ///
+    /// Actions that exhaust all retry attempts will be pushed to the sink.
+    pub fn with_dlq(config: ExecutorConfig, dlq: Arc<dyn DeadLetterSink>) -> Self {
+        let semaphore = Arc::new(Semaphore::new(config.max_concurrent));
+        Self {
+            config,
+            semaphore,
+            dlq: Some(dlq),
+        }
     }
 
     /// Return a reference to the executor configuration.
     pub fn config(&self) -> &ExecutorConfig {
         &self.config
+    }
+
+    /// Return a reference to the dead-letter queue sink, if configured.
+    pub fn dlq(&self) -> Option<&Arc<dyn DeadLetterSink>> {
+        self.dlq.as_ref()
+    }
+
+    /// Push an action to the dead-letter queue if configured.
+    async fn push_to_dlq(&self, action: &Action, error: &str, attempts: u32) {
+        if let Some(ref dlq) = self.dlq {
+            debug!(
+                action_id = %action.id,
+                attempts,
+                "pushing failed action to dead-letter queue"
+            );
+            dlq.push(action.clone(), error.to_owned(), attempts).await;
+        }
     }
 
     /// Execute an action against the given provider.
@@ -93,18 +131,24 @@ impl ActionExecutor {
                         last_error = Some(err);
                     } else {
                         // Non-retryable or final attempt.
+                        let attempts = attempt + 1;
+                        let is_retryable = err.is_retryable();
                         warn!(
                             action_id = %action.id,
                             attempt,
                             error = %err,
-                            retryable = err.is_retryable(),
+                            retryable = is_retryable,
                             "action failed"
                         );
+                        // Push to DLQ only if retries were exhausted (not for non-retryable errors).
+                        if is_retryable {
+                            self.push_to_dlq(action, &err.to_string(), attempts).await;
+                        }
                         return ActionOutcome::Failed(ActionError {
                             code: error_code(&err),
                             message: err.to_string(),
-                            retryable: err.is_retryable(),
-                            attempts: attempt + 1,
+                            retryable: is_retryable,
+                            attempts,
                         });
                     }
                 }
@@ -122,16 +166,18 @@ impl ActionExecutor {
                         tokio::time::sleep(delay).await;
                         last_error = Some(err);
                     } else {
+                        let attempts = attempt + 1;
                         warn!(
                             action_id = %action.id,
                             attempt,
                             "execution timed out, no retries left"
                         );
+                        self.push_to_dlq(action, &err.to_string(), attempts).await;
                         return ActionOutcome::Failed(ActionError {
                             code: error_code(&err),
                             message: err.to_string(),
                             retryable: true,
-                            attempts: attempt + 1,
+                            attempts,
                         });
                     }
                 }
@@ -141,11 +187,13 @@ impl ActionExecutor {
         // Should only be reached if max_retries > 0 and every attempt was
         // retryable.  Turn the last seen error into a final failure.
         let err = last_error.expect("at least one error must have occurred");
+        let attempts = self.config.max_retries + 1;
+        self.push_to_dlq(action, &err.to_string(), attempts).await;
         ActionOutcome::Failed(ActionError {
             code: error_code(&err),
             message: err.to_string(),
             retryable: err.is_retryable(),
-            attempts: self.config.max_retries + 1,
+            attempts,
         })
     }
 }

@@ -88,6 +88,7 @@ Create an `acteon.toml` file (all sections are optional -- defaults are shown):
 [server]
 host = "127.0.0.1"
 port = 8080
+# shutdown_timeout_seconds = 30  # Max time to wait for pending tasks during shutdown
 
 [state]
 backend = "memory"   # "memory", "redis", "postgres", "dynamodb", or "clickhouse"
@@ -112,6 +113,16 @@ backend = "memory"   # "memory", "redis", "postgres", "dynamodb", or "clickhouse
 # max_retries = 3
 # timeout_seconds = 30
 # max_concurrent = 100
+
+[auth]
+# enabled = false
+# config_path = "auth.toml"   # Path to auth config file
+# watch = true                # Hot-reload on file changes
+
+[audit.redact]
+# enabled = false
+# fields = ["password", "token", "api_key", "secret"]
+# placeholder = "[REDACTED]"
 ```
 
 ### Environment
@@ -212,6 +223,20 @@ cargo run -p acteon-server -- -c acteon.toml
 | GET | `/v1/audit/{action_id}` | Get audit record by action ID |
 
 Full request/response schemas are available in the Swagger UI.
+
+## Lock consistency
+
+Acteon uses distributed locks to ensure only one instance processes a given action at a time. The consistency guarantees vary by backend:
+
+| Backend | Failover Behavior | Recommendation |
+|---------|-------------------|----------------|
+| Redis (single) | Strong mutual exclusion | Good for development, single-node production |
+| Redis (Sentinel/Cluster) | Lock may be lost during failover | Use only if occasional duplicates are acceptable |
+| PostgreSQL | Locks survive failover (ACID) | Recommended for strong consistency |
+| DynamoDB | Strong consistency available | Recommended for strong consistency |
+| Memory | Single-process only | Development/testing only |
+
+If your application requires strict mutual exclusion guarantees (e.g., financial transactions), use PostgreSQL or DynamoDB as your state backend. The Redis backend is suitable for scenarios where occasional duplicate processing during rare failover events is acceptable.
 
 ## Tests
 

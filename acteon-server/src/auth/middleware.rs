@@ -85,7 +85,7 @@ where
             if let Some(api_key_header) = req.headers().get("x-api-key")
                 && let Ok(key_str) = api_key_header.to_str()
             {
-                match provider.authenticate_api_key(key_str) {
+                match provider.authenticate_api_key(key_str).await {
                     Some(identity) => {
                         req.extensions_mut().insert(identity);
                         return inner.call(req).await;

@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod auth;
 pub mod dispatch;
+pub mod dlq;
 pub mod health;
 pub mod openapi;
 pub mod rules;
@@ -59,6 +60,9 @@ pub fn router(state: AppState) -> Router {
         // Audit
         .route("/v1/audit", get(audit::query_audit))
         .route("/v1/audit/{action_id}", get(audit::get_audit_by_action))
+        // Dead-letter queue
+        .route("/v1/dlq/stats", get(dlq::dlq_stats))
+        .route("/v1/dlq/drain", post(dlq::dlq_drain))
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
         // Rate limiting runs after auth (so CallerIdentity is available)

@@ -1,3 +1,94 @@
+//! Redis-backed distributed locking.
+//!
+//! This module provides a [`RedisDistributedLock`] implementation that uses
+//! Redis `SET NX PX` commands (via Lua scripts) to implement distributed locks.
+//!
+//! # Safety Warning
+//!
+//! **This lock provides at-most-once delivery guarantees only in non-clustered,
+//! non-failover scenarios.** In Redis Cluster or Sentinel deployments, mutual
+//! exclusion can be violated during failover events. See the [Guarantees](#guarantees)
+//! section for details.
+//!
+//! For strict mutual exclusion requirements, use the `PostgreSQL` or `DynamoDB`
+//! backends instead.
+//!
+//! # How It Works
+//!
+//! Locks are acquired using the Redis `SET key value NX PX milliseconds` pattern:
+//!
+//! - **NX** (Not eXists): The key is only set if it doesn't already exist.
+//! - **PX** (expiration): The key automatically expires after the TTL to prevent
+//!   deadlocks if the lock holder crashes.
+//! - **Owner token**: A UUID owner token is stored as the value, ensuring that
+//!   only the lock holder can release or extend the lock.
+//!
+//! All lock operations (acquire, extend, release) use Lua scripts to ensure
+//! atomicity at the Redis level.
+//!
+//! # Guarantees
+//!
+//! ## Single Redis Instance
+//!
+//! When using a single Redis instance (standalone mode), this implementation
+//! provides **full mutual exclusion**: at most one client can hold a given lock
+//! at any time, assuming the lock TTL is longer than the critical section.
+//!
+//! ## Redis Cluster / Sentinel
+//!
+//! **Important:** When using Redis Cluster or Redis Sentinel, this lock
+//! implementation does **not** provide strong mutual exclusion guarantees
+//! during failover events.
+//!
+//! The issue is that Redis replication is asynchronous. If the master fails
+//! immediately after a lock is acquired but before the write is replicated to
+//! a replica, the newly promoted master will not have the lock key. This allows
+//! a second client to acquire the "same" lock, violating mutual exclusion.
+//!
+//! ## When to Use This Lock
+//!
+//! This implementation is appropriate when:
+//!
+//! - **Development/testing**: Simplicity and ease of setup are priorities.
+//! - **Single Redis instance**: No replication or clustering is involved.
+//! - **Idempotent operations**: Your application can tolerate occasional
+//!   duplicate execution (e.g., sending the same notification twice during
+//!   a rare failover is acceptable).
+//! - **Best-effort coordination**: The lock is used for optimization (e.g.,
+//!   reducing duplicate work) rather than strict correctness requirements.
+//!
+//! ## When to Use Alternatives
+//!
+//! If you require strong consistency guarantees, consider these alternatives:
+//!
+//! - **`PostgreSQL` advisory locks**: Uses database transactions for ACID
+//!   guarantees. Locks survive failover with synchronous replication.
+//! - **`DynamoDB` with conditional writes**: Provides strong consistency when
+//!   using consistent reads and conditional expressions.
+//! - **Redlock algorithm**: A distributed lock algorithm using multiple
+//!   independent Redis instances. Note: Redlock has been criticized for
+//!   not providing the guarantees it claims; evaluate carefully.
+//! - **`ZooKeeper` / etcd**: Purpose-built coordination services with strong
+//!   consistency guarantees.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use std::time::Duration;
+//! use acteon_state::DistributedLock;
+//! use acteon_state_redis::{RedisConfig, RedisDistributedLock};
+//!
+//! let config = RedisConfig::new("redis://localhost:6379");
+//! let lock = RedisDistributedLock::new(&config)?;
+//!
+//! // Acquire lock with 30s TTL and 5s timeout
+//! let guard = lock.acquire("my-lock", Duration::from_secs(30), Duration::from_secs(5)).await?;
+//!
+//! // Critical section...
+//!
+//! guard.release().await?;
+//! ```
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -12,7 +103,9 @@ use crate::scripts;
 
 /// Redis-backed implementation of [`DistributedLock`].
 ///
-/// Uses `SET NX PX` via Lua scripts to guarantee atomicity.
+/// Uses `SET NX PX` via Lua scripts to guarantee atomicity. See the
+/// [module-level documentation](self) for important information about
+/// consistency guarantees and failover behavior.
 pub struct RedisDistributedLock {
     pool: Pool,
     prefix: String,

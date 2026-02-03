@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use acteon_audit::store::AuditStore;
+use acteon_audit::{RedactConfig, RedactingAuditStore};
 #[cfg(feature = "clickhouse")]
 use acteon_audit_clickhouse::{ClickHouseAuditConfig, ClickHouseAuditStore};
 #[cfg(feature = "elasticsearch")]
@@ -15,8 +16,8 @@ use crate::error::ServerError;
 /// Create an audit store from the given configuration.
 #[allow(clippy::unused_async)]
 pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditStore>, ServerError> {
-    match config.backend.as_str() {
-        "memory" => Ok(Arc::new(MemoryAuditStore::new())),
+    let store: Arc<dyn AuditStore> = match config.backend.as_str() {
+        "memory" => Arc::new(MemoryAuditStore::new()),
         #[cfg(feature = "postgres")]
         "postgres" => {
             let url = config.url.as_deref().ok_or_else(|| {
@@ -31,7 +32,7 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
                 .await
                 .map_err(|e| ServerError::Config(format!("audit postgres: {e}")))?;
 
-            Ok(Arc::new(store))
+            Arc::new(store)
         }
         #[cfg(feature = "clickhouse")]
         "clickhouse" => {
@@ -47,7 +48,7 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
                 .await
                 .map_err(|e| ServerError::Config(format!("audit clickhouse: {e}")))?;
 
-            Ok(Arc::new(store))
+            Arc::new(store)
         }
         #[cfg(feature = "elasticsearch")]
         "elasticsearch" => {
@@ -61,10 +62,23 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
                 .await
                 .map_err(|e| ServerError::Config(format!("audit elasticsearch: {e}")))?;
 
-            Ok(Arc::new(store))
+            Arc::new(store)
         }
-        other => Err(ServerError::Config(format!(
-            "unknown audit backend: {other} (is the feature enabled?)"
-        ))),
+        other => {
+            return Err(ServerError::Config(format!(
+                "unknown audit backend: {other} (is the feature enabled?)"
+            )));
+        }
+    };
+
+    // Wrap with redaction if enabled.
+    if config.redact.enabled && !config.redact.fields.is_empty() {
+        let redact_config = RedactConfig {
+            fields: config.redact.fields.clone(),
+            placeholder: config.redact.placeholder.clone(),
+        };
+        Ok(Arc::new(RedactingAuditStore::new(store, &redact_config)))
+    } else {
+        Ok(store)
     }
 }

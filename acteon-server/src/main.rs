@@ -12,6 +12,7 @@ use acteon_rules_yaml::YamlFrontend;
 use acteon_server::api::AppState;
 use acteon_server::auth::AuthProvider;
 use acteon_server::auth::crypto::{decrypt_auth_config, encrypt_value, parse_master_key};
+use acteon_server::auth::watcher::AuthWatcher;
 use acteon_server::config::ActeonConfig;
 use acteon_server::ratelimit::{RateLimitFileConfig, RateLimiter};
 
@@ -96,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Build the auth provider if enabled.
-    let auth_provider = if config.auth.enabled {
+    let (auth_provider, _auth_watcher_handle) = if config.auth.enabled {
         let master_key_raw = std::env::var("ACTEON_AUTH_KEY")
             .map_err(|_| "ACTEON_AUTH_KEY environment variable is required when auth is enabled")?;
         let master_key = parse_master_key(&master_key_raw)
@@ -122,11 +123,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         decrypt_auth_config(&mut auth_config, &master_key)?;
 
-        let provider = AuthProvider::new(&auth_config, Arc::clone(&store))?;
+        let provider = Arc::new(AuthProvider::new(&auth_config, Arc::clone(&store))?);
         info!("auth provider initialized");
-        Some(Arc::new(provider))
+
+        // Spawn the auth watcher for hot-reload.
+        let watcher_handle = if config.auth.watch.unwrap_or(true) {
+            let watcher = AuthWatcher::new(Arc::clone(&provider), auth_path.clone(), master_key);
+            Some(watcher.spawn())
+        } else {
+            None
+        };
+
+        (Some(provider), watcher_handle)
     } else {
-        None
+        (None, None)
     };
 
     // Build the rate limiter if enabled.
@@ -170,7 +180,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = GatewayBuilder::new()
         .state(Arc::clone(&store))
         .lock(lock)
-        .executor_config(exec_config);
+        .executor_config(exec_config)
+        .dlq_enabled(config.executor.dlq_enabled);
 
     if let Some(ref audit) = audit_store {
         builder = builder
@@ -182,6 +193,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut gateway = builder.build()?;
+
+    if config.executor.dlq_enabled {
+        info!("dead-letter queue enabled");
+    }
 
     // Optionally load rules from a directory.
     if let Some(ref dir) = config.rules.directory {
@@ -218,8 +233,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let gateway = Arc::new(RwLock::new(gateway));
     let state = AppState {
-        gateway: Arc::new(RwLock::new(gateway)),
+        gateway: Arc::clone(&gateway),
         audit: audit_store,
         auth: auth_provider,
         rate_limiter,
@@ -238,6 +254,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Wait for pending audit tasks to complete (with configurable timeout).
+    let shutdown_timeout = Duration::from_secs(config.server.shutdown_timeout_seconds);
+    info!(
+        timeout_secs = config.server.shutdown_timeout_seconds,
+        "waiting for pending audit tasks..."
+    );
+    let gw = gateway.read().await;
+    if tokio::time::timeout(shutdown_timeout, gw.shutdown())
+        .await
+        .is_err()
+    {
+        tracing::warn!(
+            timeout_secs = config.server.shutdown_timeout_seconds,
+            "shutdown timeout exceeded, some audit tasks may be lost"
+        );
+    }
 
     info!("acteon-server shut down");
     Ok(())

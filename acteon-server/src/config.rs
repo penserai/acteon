@@ -79,6 +79,9 @@ pub struct ExecutorConfig {
     pub timeout_seconds: Option<u64>,
     /// Maximum number of actions executing concurrently.
     pub max_concurrent: Option<usize>,
+    /// Whether to enable the dead-letter queue for failed actions.
+    #[serde(default)]
+    pub dlq_enabled: bool,
 }
 
 /// HTTP server bind configuration.
@@ -90,6 +93,13 @@ pub struct ServerConfig {
     /// Port to listen on.
     #[serde(default = "default_port")]
     pub port: u16,
+    /// Graceful shutdown timeout in seconds.
+    ///
+    /// This is the maximum time to wait for in-flight requests and pending
+    /// audit tasks to complete during shutdown. Should be longer than any
+    /// individual audit backend connection timeout.
+    #[serde(default = "default_shutdown_timeout")]
+    pub shutdown_timeout_seconds: u64,
 }
 
 impl Default for ServerConfig {
@@ -97,8 +107,13 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
+            shutdown_timeout_seconds: default_shutdown_timeout(),
         }
     }
+}
+
+fn default_shutdown_timeout() -> u64 {
+    30
 }
 
 fn default_host() -> String {
@@ -132,6 +147,39 @@ pub struct AuditConfig {
     /// Whether to store action payloads in audit records.
     #[serde(default = "default_store_payload")]
     pub store_payload: bool,
+    /// Field redaction configuration.
+    #[serde(default)]
+    pub redact: AuditRedactConfig,
+}
+
+/// Configuration for redacting sensitive fields from audit payloads.
+#[derive(Debug, Deserialize)]
+pub struct AuditRedactConfig {
+    /// Whether field redaction is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// List of field names or paths to redact (case-insensitive).
+    ///
+    /// Supports nested paths using dot notation (e.g., `"credentials.password"`).
+    #[serde(default)]
+    pub fields: Vec<String>,
+    /// Placeholder text to replace redacted values with.
+    #[serde(default = "default_redact_placeholder")]
+    pub placeholder: String,
+}
+
+impl Default for AuditRedactConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fields: Vec::new(),
+            placeholder: default_redact_placeholder(),
+        }
+    }
+}
+
+fn default_redact_placeholder() -> String {
+    "[REDACTED]".to_owned()
 }
 
 impl Default for AuditConfig {
@@ -144,6 +192,7 @@ impl Default for AuditConfig {
             ttl_seconds: Some(2_592_000), // 30 days
             cleanup_interval_seconds: default_cleanup_interval(),
             store_payload: true,
+            redact: AuditRedactConfig::default(),
         }
     }
 }
@@ -172,6 +221,8 @@ pub struct AuthRefConfig {
     pub enabled: bool,
     /// Path to the auth config file (`auth.toml`), relative to `acteon.toml` or absolute.
     pub config_path: Option<String>,
+    /// Whether to watch the auth config file for changes (hot-reload). Defaults to `true`.
+    pub watch: Option<bool>,
 }
 
 /// Reference to the rate limit config file from `acteon.toml`.

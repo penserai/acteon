@@ -3,12 +3,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use tokio_util::task::TaskTracker;
 use tracing::{info, instrument, warn};
 
 use acteon_audit::AuditRecord;
 use acteon_audit::store::AuditStore;
 use acteon_core::{Action, ActionOutcome, Caller};
-use acteon_executor::ActionExecutor;
+use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
 use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
 use acteon_state::{DistributedLock, KeyKind, StateKey, StateStore};
@@ -35,6 +36,8 @@ pub struct Gateway {
     pub(crate) audit: Option<Arc<dyn AuditStore>>,
     pub(crate) audit_ttl_seconds: Option<u64>,
     pub(crate) audit_store_payload: bool,
+    pub(crate) audit_tracker: TaskTracker,
+    pub(crate) dlq: Option<Arc<dyn DeadLetterSink>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -120,7 +123,7 @@ impl Gateway {
             }
         };
 
-        // 5. Emit audit record (best-effort, async fire-and-forget).
+        // 5. Emit audit record (tracked async task for graceful shutdown).
         if let Some(ref audit) = self.audit {
             let record = build_audit_record(
                 &action,
@@ -133,7 +136,7 @@ impl Gateway {
                 caller,
             );
             let audit = Arc::clone(audit);
-            tokio::spawn(async move {
+            self.audit_tracker.spawn(async move {
                 if let Err(e) = audit.record(record).await {
                     warn!(error = %e, "audit recording failed");
                 }
@@ -187,6 +190,53 @@ impl Gateway {
     /// Disable a rule by name. Returns `true` if the rule was found.
     pub fn disable_rule(&mut self, name: &str) -> bool {
         self.engine.disable_rule(name)
+    }
+
+    /// Gracefully shut down the gateway, waiting for all pending audit tasks.
+    ///
+    /// This method closes the audit task tracker (preventing new tasks from
+    /// being spawned) and waits for all in-flight audit recording tasks to
+    /// complete. Call this during server shutdown to avoid losing audit data.
+    pub async fn shutdown(&self) {
+        self.audit_tracker.close();
+        self.audit_tracker.wait().await;
+        info!("gateway shutdown complete");
+    }
+
+    /// Return the number of entries in the dead-letter queue.
+    ///
+    /// Returns `None` if the DLQ is not enabled.
+    pub async fn dlq_len(&self) -> Option<usize> {
+        if let Some(ref dlq) = self.dlq {
+            Some(dlq.len().await)
+        } else {
+            None
+        }
+    }
+
+    /// Return `true` if the dead-letter queue is empty or not enabled.
+    pub async fn dlq_is_empty(&self) -> bool {
+        if let Some(ref dlq) = self.dlq {
+            dlq.is_empty().await
+        } else {
+            true
+        }
+    }
+
+    /// Drain all entries from the dead-letter queue.
+    ///
+    /// Returns an empty vector if the DLQ is not enabled.
+    pub async fn dlq_drain(&self) -> Vec<DeadLetterEntry> {
+        if let Some(ref dlq) = self.dlq {
+            dlq.drain().await
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Return `true` if the dead-letter queue is enabled.
+    pub fn dlq_enabled(&self) -> bool {
+        self.dlq.is_some()
     }
 
     /// Load rules from a directory using the given frontends, replacing current rules.

@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use acteon_audit::store::AuditStore;
-use acteon_executor::ExecutorConfig;
+use acteon_executor::{DeadLetterQueue, DeadLetterSink, ExecutorConfig};
 use acteon_provider::{DynProvider, ProviderRegistry};
 use acteon_rules::{Rule, RuleEngine};
 use acteon_state::{DistributedLock, StateStore};
+use tokio_util::task::TaskTracker;
 
 use crate::error::GatewayError;
 use crate::gateway::Gateway;
@@ -26,6 +27,8 @@ pub struct GatewayBuilder {
     audit: Option<Arc<dyn AuditStore>>,
     audit_ttl_seconds: Option<u64>,
     audit_store_payload: bool,
+    dlq: Option<Arc<dyn DeadLetterSink>>,
+    dlq_enabled: bool,
 }
 
 impl GatewayBuilder {
@@ -41,6 +44,8 @@ impl GatewayBuilder {
             audit: None,
             audit_ttl_seconds: None,
             audit_store_payload: true,
+            dlq: None,
+            dlq_enabled: false,
         }
     }
 
@@ -107,6 +112,28 @@ impl GatewayBuilder {
         self
     }
 
+    /// Enable the dead-letter queue for failed actions.
+    ///
+    /// When enabled, actions that exhaust all retry attempts are stored in the
+    /// DLQ for later inspection or reprocessing. By default, an in-memory DLQ
+    /// is used. Use [`dlq_sink`](Self::dlq_sink) to provide a custom implementation.
+    #[must_use]
+    pub fn dlq_enabled(mut self, enabled: bool) -> Self {
+        self.dlq_enabled = enabled;
+        self
+    }
+
+    /// Set a custom dead-letter queue sink.
+    ///
+    /// This also enables the DLQ. Use this to provide a persistent DLQ
+    /// implementation (e.g., Redis, `PostgreSQL`).
+    #[must_use]
+    pub fn dlq_sink(mut self, sink: Arc<dyn DeadLetterSink>) -> Self {
+        self.dlq = Some(sink);
+        self.dlq_enabled = true;
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -121,7 +148,20 @@ impl GatewayBuilder {
             .ok_or_else(|| GatewayError::Configuration("distributed lock is required".into()))?;
 
         let engine = RuleEngine::new(self.rules);
-        let executor = acteon_executor::ActionExecutor::new(self.executor_config);
+
+        // Create the DLQ if enabled.
+        let dlq: Option<Arc<dyn DeadLetterSink>> = if self.dlq_enabled {
+            self.dlq.or_else(|| Some(Arc::new(DeadLetterQueue::new())))
+        } else {
+            None
+        };
+
+        // Create the executor with optional DLQ.
+        let executor = if let Some(ref dlq_sink) = dlq {
+            acteon_executor::ActionExecutor::with_dlq(self.executor_config, Arc::clone(dlq_sink))
+        } else {
+            acteon_executor::ActionExecutor::new(self.executor_config)
+        };
 
         Ok(Gateway {
             state,
@@ -134,6 +174,8 @@ impl GatewayBuilder {
             audit: self.audit,
             audit_ttl_seconds: self.audit_ttl_seconds,
             audit_store_payload: self.audit_store_payload,
+            audit_tracker: TaskTracker::new(),
+            dlq,
         })
     }
 }
