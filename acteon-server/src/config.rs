@@ -29,12 +29,12 @@ pub struct ActeonConfig {
 /// Configuration for the state store backend.
 #[derive(Debug, Deserialize)]
 pub struct StateConfig {
-    /// Which backend to use: `"memory"`, `"redis"`, `"postgres"`, `"dynamodb"`, `"etcd"`, or `"clickhouse"`.
+    /// Which backend to use: `"memory"`, `"redis"`, `"postgres"`, `"dynamodb"`, or `"clickhouse"`.
     #[serde(default = "default_backend")]
     pub backend: String,
 
     /// Connection URL for the backend (e.g. `redis://localhost:6379`,
-    /// `postgres://user:pass@localhost/acteon`, or `http://localhost:2379` for etcd).
+    /// `postgres://user:pass@localhost/acteon`).
     pub url: Option<String>,
 
     /// Key prefix for backends that support it. Defaults to `"acteon"`.
