@@ -246,6 +246,26 @@ cargo run -p acteon-simulation --example mixed_backends_simulation \
   --features "clickhouse" -- memory-clickhouse
 ```
 
+#### Polyglot Client Simulation
+
+Tests all language client libraries (Rust, Python, Node.js, Go, Java) against a running server:
+
+```sh
+cargo run -p acteon-simulation --example polyglot_client_simulation
+```
+
+Prerequisites:
+- Python 3.11+ with httpx (`pip install httpx`)
+- Node.js 18+ (`npm install` in `clients/nodejs`)
+- Go 1.22+
+- Java 21+ with jbang (optional)
+
+The simulation:
+1. Starts an in-memory Acteon HTTP server
+2. Runs each client's test suite against the server
+3. Verifies health, dispatch, batch, rules, and audit endpoints
+4. Reports pass/fail for each client
+
 ## Test Scenarios
 
 The simulations cover the following scenarios:

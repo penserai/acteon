@@ -136,15 +136,15 @@ export class ActeonClient {
       body: actionToRequest(action),
     });
 
-    const data = await response.json();
+    const data = (await response.json()) as Record<string, unknown>;
 
     if (response.ok) {
       return parseActionOutcome(data);
     } else {
       throw new ApiError(
-        data.code ?? "UNKNOWN",
-        data.message ?? "Unknown error",
-        data.retryable ?? false
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
       );
     }
   }
@@ -157,15 +157,15 @@ export class ActeonClient {
       body: actions.map(actionToRequest),
     });
 
-    const data = await response.json();
-
     if (response.ok) {
-      return (data as unknown[]).map(parseBatchResult);
+      const data = (await response.json()) as unknown[];
+      return data.map((item) => parseBatchResult(item as Record<string, unknown>));
     } else {
+      const data = (await response.json()) as Record<string, unknown>;
       throw new ApiError(
-        data.code ?? "UNKNOWN",
-        data.message ?? "Unknown error",
-        data.retryable ?? false
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
       );
     }
   }
@@ -225,7 +225,8 @@ export class ActeonClient {
     const response = await this.request("GET", "/v1/audit", { params });
 
     if (response.ok) {
-      return parseAuditPage(await response.json());
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseAuditPage(data);
     } else {
       throw new HttpError(response.status, "Failed to query audit");
     }
@@ -238,7 +239,8 @@ export class ActeonClient {
     const response = await this.request("GET", `/v1/audit/${actionId}`);
 
     if (response.ok) {
-      return parseAuditRecord(await response.json());
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseAuditRecord(data);
     } else if (response.status === 404) {
       return null;
     } else {

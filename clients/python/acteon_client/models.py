@@ -19,6 +19,7 @@ class Action:
         id: Unique action identifier (auto-generated if not provided).
         dedup_key: Optional deduplication key.
         metadata: Optional key-value metadata.
+        created_at: Timestamp when the action was created.
     """
     namespace: str
     tenant: str
@@ -28,6 +29,7 @@ class Action:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     dedup_key: Optional[str] = None
     metadata: Optional[dict[str, str]] = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -38,6 +40,7 @@ class Action:
             "provider": self.provider,
             "action_type": self.action_type,
             "payload": self.payload,
+            "created_at": self.created_at.isoformat() + "Z",
         }
         if self.dedup_key:
             result["dedup_key"] = self.dedup_key

@@ -24,6 +24,8 @@ export interface Action {
   dedupKey?: string;
   /** Optional key-value metadata. */
   metadata?: Record<string, string>;
+  /** Timestamp when the action was created. */
+  createdAt: string;
 }
 
 /**
@@ -39,6 +41,7 @@ export function createAction(
     id?: string;
     dedupKey?: string;
     metadata?: Record<string, string>;
+    createdAt?: string;
   }
 ): Action {
   return {
@@ -50,6 +53,7 @@ export function createAction(
     payload,
     dedupKey: options?.dedupKey,
     metadata: options?.metadata,
+    createdAt: options?.createdAt ?? new Date().toISOString(),
   };
 }
 
@@ -64,6 +68,7 @@ export function actionToRequest(action: Action): Record<string, unknown> {
     provider: action.provider,
     action_type: action.actionType,
     payload: action.payload,
+    created_at: action.createdAt,
   };
   if (action.dedupKey) {
     result.dedup_key = action.dedupKey;
@@ -113,6 +118,11 @@ export interface ActionError {
  * Parse an ActionOutcome from API response.
  */
 export function parseActionOutcome(data: unknown): ActionOutcome {
+  // Handle string variant (e.g., "Deduplicated")
+  if (data === "Deduplicated") {
+    return { type: "deduplicated" };
+  }
+
   if (typeof data !== "object" || data === null) {
     return { type: "failed", error: { code: "UNKNOWN", message: "Invalid response", retryable: false, attempts: 0 } };
   }
@@ -131,7 +141,7 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
     };
   }
 
-  if (obj === "Deduplicated" || "Deduplicated" in obj) {
+  if ("Deduplicated" in obj) {
     return { type: "deduplicated" };
   }
 

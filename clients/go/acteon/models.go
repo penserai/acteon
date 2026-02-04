@@ -10,14 +10,15 @@ import (
 
 // Action represents an action to be dispatched through Acteon.
 type Action struct {
-	ID         string            `json:"id"`
-	Namespace  string            `json:"namespace"`
-	Tenant     string            `json:"tenant"`
-	Provider   string            `json:"provider"`
-	ActionType string            `json:"action_type"`
-	Payload    map[string]any    `json:"payload"`
-	DedupKey   string            `json:"dedup_key,omitempty"`
-	Metadata   *ActionMetadata   `json:"metadata,omitempty"`
+	ID         string          `json:"id"`
+	Namespace  string          `json:"namespace"`
+	Tenant     string          `json:"tenant"`
+	Provider   string          `json:"provider"`
+	ActionType string          `json:"action_type"`
+	Payload    map[string]any  `json:"payload"`
+	DedupKey   string          `json:"dedup_key,omitempty"`
+	Metadata   *ActionMetadata `json:"metadata,omitempty"`
+	CreatedAt  time.Time       `json:"created_at"`
 }
 
 // ActionMetadata contains optional metadata for an action.
@@ -34,6 +35,7 @@ func NewAction(namespace, tenant, provider, actionType string, payload map[strin
 		Provider:   provider,
 		ActionType: actionType,
 		Payload:    payload,
+		CreatedAt:  time.Now().UTC(),
 	}
 }
 

@@ -3,6 +3,7 @@ package com.acteon.client.models;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
@@ -21,9 +22,12 @@ public class Action {
     @JsonProperty("dedup_key")
     private String dedupKey;
     private ActionMetadata metadata;
+    @JsonProperty("created_at")
+    private String createdAt;
 
     public Action() {
         this.id = UUID.randomUUID().toString();
+        this.createdAt = Instant.now().toString();
     }
 
     public Action(String namespace, String tenant, String provider, String actionType, Map<String, Object> payload) {
@@ -33,6 +37,7 @@ public class Action {
         this.provider = provider;
         this.actionType = actionType;
         this.payload = payload;
+        this.createdAt = Instant.now().toString();
     }
 
     public static Builder builder() {
@@ -64,6 +69,9 @@ public class Action {
     public ActionMetadata getMetadata() { return metadata; }
     public void setMetadata(ActionMetadata metadata) { this.metadata = metadata; }
 
+    public String getCreatedAt() { return createdAt; }
+    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+
     public Action withDedupKey(String dedupKey) {
         this.dedupKey = dedupKey;
         return this;
@@ -83,6 +91,7 @@ public class Action {
         private Map<String, Object> payload;
         private String dedupKey;
         private Map<String, String> labels;
+        private String createdAt = Instant.now().toString();
 
         public Builder id(String id) { this.id = id; return this; }
         public Builder namespace(String namespace) { this.namespace = namespace; return this; }
@@ -92,6 +101,7 @@ public class Action {
         public Builder payload(Map<String, Object> payload) { this.payload = payload; return this; }
         public Builder dedupKey(String dedupKey) { this.dedupKey = dedupKey; return this; }
         public Builder labels(Map<String, String> labels) { this.labels = labels; return this; }
+        public Builder createdAt(String createdAt) { this.createdAt = createdAt; return this; }
 
         public Action build() {
             Action action = new Action();
@@ -102,6 +112,7 @@ public class Action {
             action.actionType = this.actionType;
             action.payload = this.payload;
             action.dedupKey = this.dedupKey;
+            action.createdAt = this.createdAt;
             if (this.labels != null) {
                 action.metadata = new ActionMetadata(this.labels);
             }
