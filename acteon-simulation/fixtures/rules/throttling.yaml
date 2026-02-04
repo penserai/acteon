@@ -1,0 +1,64 @@
+# Throttling rules for testing
+#
+# These rules demonstrate various rate limiting patterns.
+
+rules:
+  # Global rate limit for bulk actions
+  - name: throttle-bulk-send
+    priority: 1
+    description: "Limit bulk sends to 100 per minute"
+    condition:
+      field: action.action_type
+      eq: "bulk_send"
+    action:
+      type: throttle
+      max_count: 100
+      window_seconds: 60
+
+  # Per-tenant email rate limit
+  - name: throttle-email-per-minute
+    priority: 2
+    description: "Limit email sends to 1000 per minute per tenant"
+    condition:
+      field: action.action_type
+      eq: "send_email"
+    action:
+      type: throttle
+      max_count: 1000
+      window_seconds: 60
+
+  # Strict SMS rate limit
+  - name: throttle-sms
+    priority: 3
+    description: "Limit SMS to 50 per hour"
+    condition:
+      field: action.provider
+      eq: "sms"
+    action:
+      type: throttle
+      max_count: 50
+      window_seconds: 3600
+
+  # API webhook rate limit
+  - name: throttle-webhook
+    priority: 4
+    description: "Limit webhooks to 500 per second"
+    condition:
+      field: action.action_type
+      eq: "webhook"
+    action:
+      type: throttle
+      max_count: 500
+      window_seconds: 1
+
+  # Aggressive limit for new tenants
+  - name: throttle-new-tenant
+    priority: 5
+    description: "Stricter limits for new tenants"
+    condition:
+      field: action.metadata.tier
+      eq: "free"
+    action:
+      type: throttle
+      max_count: 100
+      window_seconds: 3600

@@ -1,0 +1,82 @@
+[package]
+name = "acteon-simulation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Simulation and testing framework for Acteon"
+
+[dependencies]
+acteon-core.workspace = true
+acteon-gateway.workspace = true
+acteon-state.workspace = true
+acteon-state-memory.workspace = true
+acteon-state-redis = { workspace = true, optional = true }
+acteon-state-dynamodb = { workspace = true, optional = true }
+acteon-state-postgres = { workspace = true, optional = true }
+acteon-state-clickhouse = { workspace = true, optional = true }
+acteon-audit.workspace = true
+acteon-audit-memory.workspace = true
+acteon-audit-postgres = { workspace = true, optional = true }
+acteon-audit-clickhouse = { workspace = true, optional = true }
+acteon-provider.workspace = true
+acteon-executor.workspace = true
+acteon-rules.workspace = true
+acteon-rules-yaml.workspace = true
+acteon-client.workspace = true
+
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+parking_lot = "0.12"
+rand = "0.8"
+
+[dev-dependencies]
+criterion.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[features]
+default = []
+redis = ["dep:acteon-state-redis"]
+dynamodb = ["dep:acteon-state-dynamodb"]
+postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
+clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[[bench]]
+name = "latency"
+harness = false
+
+[[example]]
+name = "redis_simulation"
+required-features = ["redis"]
+
+[[example]]
+name = "dynamodb_simulation"
+required-features = ["dynamodb"]
+
+[[example]]
+name = "postgres_simulation"
+required-features = ["postgres"]
+
+[[example]]
+name = "clickhouse_simulation"
+required-features = ["clickhouse"]
+
+[[example]]
+name = "mixed_backends_simulation"
+# No required-features - uses conditional compilation
+
+[lints]
+workspace = true

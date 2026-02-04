@@ -22,6 +22,8 @@ members = [
     "acteon-audit-postgres",
     "acteon-audit-clickhouse",
     "acteon-audit-elasticsearch",
+    "acteon-client",
+    "acteon-simulation",
 ]
 
 [workspace.package]
@@ -54,6 +56,8 @@ acteon-audit-postgres = { path = "acteon-audit-postgres" }
 acteon-audit-clickhouse = { path = "acteon-audit-clickhouse" }
 acteon-audit-elasticsearch = { path = "acteon-audit-elasticsearch" }
 acteon-state-clickhouse = { path = "acteon-state-clickhouse" }
+acteon-client = { path = "acteon-client" }
+acteon-simulation = { path = "acteon-simulation" }
 
 # Parsing
 nom = "7"

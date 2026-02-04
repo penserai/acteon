@@ -39,6 +39,8 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 | `acteon-server` | HTTP server (Axum) with Swagger UI |
 | `acteon-email` | Email/SMTP provider |
 | `acteon-slack` | Slack provider |
+| [`acteon-client`](acteon-client/README.md) | Native Rust HTTP client for the Acteon API |
+| [`acteon-simulation`](acteon-simulation/README.md) | Testing framework with mock providers and failure injection |
 
 ## Running locally
 
@@ -237,6 +239,86 @@ Acteon uses distributed locks to ensure only one instance processes a given acti
 | Memory | Single-process only | Development/testing only |
 
 If your application requires strict mutual exclusion guarantees (e.g., financial transactions), use PostgreSQL or DynamoDB as your state backend. The Redis backend is suitable for scenarios where occasional duplicate processing during rare failover events is acceptable.
+
+## Testing & Simulation
+
+The `acteon-simulation` crate provides comprehensive testing tools:
+
+```rust
+use acteon_simulation::prelude::*;
+use acteon_core::Action;
+
+#[tokio::test]
+async fn test_deduplication() {
+    let harness = SimulationHarness::start(
+        SimulationConfig::builder()
+            .nodes(1)
+            .add_recording_provider("email")
+            .add_rule_yaml(DEDUP_RULE)
+            .build()
+    ).await.unwrap();
+
+    let action = Action::new("ns", "tenant", "email", "notify", json!({}))
+        .with_dedup_key("unique-key");
+
+    harness.dispatch(&action).await.unwrap().assert_executed();
+    harness.dispatch(&action).await.unwrap().assert_deduplicated();
+
+    harness.provider("email").unwrap().assert_called(1);
+    harness.teardown().await.unwrap();
+}
+```
+
+### Features
+
+- **RecordingProvider**: Captures all provider calls for verification
+- **FailingProvider**: Simulates timeouts, connection errors, rate limiting
+- **Mixed Backends**: Test any combination of state and audit backends
+- **Failure Injection**: `FailureMode::EveryN`, `FirstN`, `Probabilistic`
+- **End-to-End Audit**: Verify all outcomes are recorded (executed, suppressed, deduplicated, throttled, failed)
+
+### Running Simulations
+
+```sh
+# Single backend simulations
+cargo run -p acteon-simulation --example redis_simulation --features redis
+cargo run -p acteon-simulation --example postgres_simulation --features postgres
+
+# Mixed backend simulations (e.g., Redis state + PostgreSQL audit)
+cargo run -p acteon-simulation --example mixed_backends_simulation \
+  --features "redis,postgres" -- redis-postgres
+```
+
+See the [acteon-simulation README](acteon-simulation/README.md) for full documentation.
+
+## Client Libraries
+
+### Rust
+
+The `acteon-client` crate provides a native Rust HTTP client:
+
+```rust
+use acteon_client::ActeonClient;
+use acteon_core::Action;
+
+let client = ActeonClient::new("http://localhost:8080");
+
+// Check health
+assert!(client.health().await?);
+
+// Dispatch an action
+let action = Action::new("ns", "tenant", "email", "send", json!({"to": "user@example.com"}));
+let outcome = client.dispatch(&action).await?;
+
+// Query audit trail
+let audit = client.query_audit(&AuditQuery {
+    tenant: Some("tenant".to_string()),
+    limit: Some(10),
+    ..Default::default()
+}).await?;
+```
+
+See the [acteon-client README](acteon-client/README.md) for full documentation.
 
 ## Tests
 
