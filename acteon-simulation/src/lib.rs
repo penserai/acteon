@@ -133,7 +133,9 @@ pub mod prelude {
     };
     pub use crate::error::SimulationError;
     pub use crate::harness::{SimulationHarness, SimulationHarnessBuilder};
-    pub use crate::provider::{CapturedCall, FailingProvider, FailureMode, FailureType, RecordingProvider};
+    pub use crate::provider::{
+        CapturedCall, FailingProvider, FailureMode, FailureType, RecordingProvider,
+    };
     pub use crate::{skip_without_postgres, skip_without_redis};
 }
 
@@ -203,7 +205,8 @@ rules:
         harness.provider("email").unwrap().assert_not_called();
 
         // Action that should execute
-        let normal_action = Action::new("ns", "tenant", "email", "send_email", serde_json::json!({}));
+        let normal_action =
+            Action::new("ns", "tenant", "email", "send_email", serde_json::json!({}));
         let outcome = harness.dispatch(&normal_action).await.unwrap();
 
         outcome.assert_executed();

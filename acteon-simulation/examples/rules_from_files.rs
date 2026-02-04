@@ -22,21 +22,29 @@ use acteon_state::store::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 
 /// Load rules from a YAML file.
-fn load_rules_from_file(path: &Path) -> Result<Vec<acteon_rules::Rule>, Box<dyn std::error::Error>> {
+fn load_rules_from_file(
+    path: &Path,
+) -> Result<Vec<acteon_rules::Rule>, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let frontend = YamlFrontend;
     Ok(frontend.parse(&content)?)
 }
 
 /// Load all YAML rules from a directory.
-fn load_rules_from_directory(dir: &Path) -> Result<Vec<acteon_rules::Rule>, Box<dyn std::error::Error>> {
+fn load_rules_from_directory(
+    dir: &Path,
+) -> Result<Vec<acteon_rules::Rule>, Box<dyn std::error::Error>> {
     let mut all_rules = Vec::new();
 
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
 
-        if path.extension().map(|e| e == "yaml" || e == "yml").unwrap_or(false) {
+        if path
+            .extension()
+            .map(|e| e == "yaml" || e == "yml")
+            .unwrap_or(false)
+        {
             println!("  Loading: {}", path.display());
             let rules = load_rules_from_file(&path)?;
             println!("    → {} rules loaded", rules.len());
@@ -143,17 +151,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spam = Action::new("ns", "t1", "email", "spam", serde_json::json!({}));
     let outcome = gateway.dispatch(spam, None).await?;
     println!("    Action type 'spam' → {:?}", outcome);
-    println!("    Email provider calls: {} (should be 0)\n", email.call_count());
+    println!(
+        "    Email provider calls: {} (should be 0)\n",
+        email.call_count()
+    );
 
     // Test rerouting rule (from rerouting.yaml)
     println!("  Testing rerouting rule (reroute-urgent-to-sms):");
-    let urgent = Action::new("ns", "t1", "email", "send_notification", serde_json::json!({
-        "priority": "urgent",
-        "message": "Server down!"
-    }));
+    let urgent = Action::new(
+        "ns",
+        "t1",
+        "email",
+        "send_notification",
+        serde_json::json!({
+            "priority": "urgent",
+            "message": "Server down!"
+        }),
+    );
     let outcome = gateway.dispatch(urgent, None).await?;
     println!("    Urgent notification → {:?}", outcome);
-    println!("    Email calls: {}, SMS calls: {}", email.call_count(), sms.call_count());
+    println!(
+        "    Email calls: {}, SMS calls: {}",
+        email.call_count(),
+        sms.call_count()
+    );
 
     gateway.shutdown().await;
 

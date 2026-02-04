@@ -67,10 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Loaded suppression rule: block-spam\n");
 
     // Try to send spam - should be suppressed
-    let spam_action = Action::new("notifications", "tenant-1", "email", "spam", serde_json::json!({
-        "to": "user@example.com",
-        "subject": "Buy now!!!",
-    }));
+    let spam_action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "spam",
+        serde_json::json!({
+            "to": "user@example.com",
+            "subject": "Buy now!!!",
+        }),
+    );
 
     println!("→ Dispatching SPAM action (action_type='spam')...");
     let outcome = harness.dispatch(&spam_action).await?;
@@ -79,13 +85,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Provider: {}", spam_action.provider);
     println!("  Action Type: {}", spam_action.action_type);
     println!("  Outcome: {:?}", outcome);
-    println!("  Provider called: {} times\n", harness.provider("email").unwrap().call_count());
+    println!(
+        "  Provider called: {} times\n",
+        harness.provider("email").unwrap().call_count()
+    );
 
     // Try to send legitimate email - should execute
-    let legit_action = Action::new("notifications", "tenant-1", "email", "send_email", serde_json::json!({
-        "to": "user@example.com",
-        "subject": "Your order has shipped",
-    }));
+    let legit_action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "send_email",
+        serde_json::json!({
+            "to": "user@example.com",
+            "subject": "Your order has shipped",
+        }),
+    );
 
     println!("→ Dispatching LEGITIMATE action (action_type='send_email')...");
     let outcome = harness.dispatch(&legit_action).await?;
@@ -94,7 +109,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Provider: {}", legit_action.provider);
     println!("  Action Type: {}", legit_action.action_type);
     println!("  Outcome: {:?}", outcome);
-    println!("  Provider called: {} times", harness.provider("email").unwrap().call_count());
+    println!(
+        "  Provider called: {} times",
+        harness.provider("email").unwrap().call_count()
+    );
 
     harness.teardown().await?;
     println!("\n✓ Simulation cluster shut down\n");
@@ -119,37 +137,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Loaded deduplication rule: dedup-notifications\n");
 
     // Send first notification
-    let notify1 = Action::new("notifications", "tenant-1", "push", "notify", serde_json::json!({
-        "user_id": "user-123",
-        "message": "You have a new message",
-    })).with_dedup_key("user-123-new-message");
+    let notify1 = Action::new(
+        "notifications",
+        "tenant-1",
+        "push",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-123",
+            "message": "You have a new message",
+        }),
+    )
+    .with_dedup_key("user-123-new-message");
 
     println!("→ Dispatching FIRST notification (dedup_key='user-123-new-message')...");
     let outcome1 = harness.dispatch(&notify1).await?;
     println!("  Outcome: {:?}", outcome1);
-    println!("  Provider called: {} times\n", harness.provider("push").unwrap().call_count());
+    println!(
+        "  Provider called: {} times\n",
+        harness.provider("push").unwrap().call_count()
+    );
 
     // Send duplicate notification
-    let notify2 = Action::new("notifications", "tenant-1", "push", "notify", serde_json::json!({
-        "user_id": "user-123",
-        "message": "You have a new message",
-    })).with_dedup_key("user-123-new-message");
+    let notify2 = Action::new(
+        "notifications",
+        "tenant-1",
+        "push",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-123",
+            "message": "You have a new message",
+        }),
+    )
+    .with_dedup_key("user-123-new-message");
 
     println!("→ Dispatching DUPLICATE notification (same dedup_key)...");
     let outcome2 = harness.dispatch(&notify2).await?;
     println!("  Outcome: {:?}", outcome2);
-    println!("  Provider called: {} times (still 1 - duplicate blocked!)", harness.provider("push").unwrap().call_count());
+    println!(
+        "  Provider called: {} times (still 1 - duplicate blocked!)",
+        harness.provider("push").unwrap().call_count()
+    );
 
     // Send different notification
-    let notify3 = Action::new("notifications", "tenant-1", "push", "notify", serde_json::json!({
-        "user_id": "user-123",
-        "message": "Your order shipped",
-    })).with_dedup_key("user-123-order-shipped");
+    let notify3 = Action::new(
+        "notifications",
+        "tenant-1",
+        "push",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-123",
+            "message": "Your order shipped",
+        }),
+    )
+    .with_dedup_key("user-123-order-shipped");
 
     println!("\n→ Dispatching DIFFERENT notification (dedup_key='user-123-order-shipped')...");
     let outcome3 = harness.dispatch(&notify3).await?;
     println!("  Outcome: {:?}", outcome3);
-    println!("  Provider called: {} times", harness.provider("push").unwrap().call_count());
+    println!(
+        "  Provider called: {} times",
+        harness.provider("push").unwrap().call_count()
+    );
 
     harness.teardown().await?;
     println!("\n✓ Simulation cluster shut down\n");
@@ -176,28 +224,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Loaded reroute rule: reroute-urgent\n");
 
     // Send normal priority - should go to email
-    let normal = Action::new("notifications", "tenant-1", "email", "alert", serde_json::json!({
-        "priority": "normal",
-        "message": "Monthly report ready",
-    }));
+    let normal = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "alert",
+        serde_json::json!({
+            "priority": "normal",
+            "message": "Monthly report ready",
+        }),
+    );
 
     println!("→ Dispatching NORMAL priority action to 'email' provider...");
     let outcome = harness.dispatch(&normal).await?;
     println!("  Outcome: {:?}", outcome);
-    println!("  Email provider called: {}", harness.provider("email").unwrap().call_count());
-    println!("  SMS provider called: {}\n", harness.provider("sms").unwrap().call_count());
+    println!(
+        "  Email provider called: {}",
+        harness.provider("email").unwrap().call_count()
+    );
+    println!(
+        "  SMS provider called: {}\n",
+        harness.provider("sms").unwrap().call_count()
+    );
 
     // Send urgent priority - should reroute to SMS
-    let urgent = Action::new("notifications", "tenant-1", "email", "alert", serde_json::json!({
-        "priority": "urgent",
-        "message": "Server down!",
-    }));
+    let urgent = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "alert",
+        serde_json::json!({
+            "priority": "urgent",
+            "message": "Server down!",
+        }),
+    );
 
     println!("→ Dispatching URGENT priority action to 'email' provider...");
     let outcome = harness.dispatch(&urgent).await?;
     println!("  Outcome: {:?}", outcome);
-    println!("  Email provider called: {} (still 1 - rerouted!)", harness.provider("email").unwrap().call_count());
-    println!("  SMS provider called: {} (received the rerouted action!)", harness.provider("sms").unwrap().call_count());
+    println!(
+        "  Email provider called: {} (still 1 - rerouted!)",
+        harness.provider("email").unwrap().call_count()
+    );
+    println!(
+        "  SMS provider called: {} (received the rerouted action!)",
+        harness.provider("sms").unwrap().call_count()
+    );
 
     harness.teardown().await?;
     println!("\n✓ Simulation cluster shut down\n");
@@ -226,34 +298,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Send to node 0
-    let action = Action::new("notifications", "tenant-1", "email", "send_email", serde_json::json!({
-        "to": "user@example.com",
-    })).with_dedup_key("cross-node-dedup");
+    let action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "send_email",
+        serde_json::json!({
+            "to": "user@example.com",
+        }),
+    )
+    .with_dedup_key("cross-node-dedup");
 
     println!("→ Dispatching to NODE 0...");
     let outcome0 = harness.dispatch_to(0, &action).await?;
     println!("  Outcome: {:?}", outcome0);
 
     // Send same dedup_key to node 1
-    let action = Action::new("notifications", "tenant-1", "email", "send_email", serde_json::json!({
-        "to": "user@example.com",
-    })).with_dedup_key("cross-node-dedup");
+    let action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "send_email",
+        serde_json::json!({
+            "to": "user@example.com",
+        }),
+    )
+    .with_dedup_key("cross-node-dedup");
 
     println!("\n→ Dispatching SAME dedup_key to NODE 1...");
     let outcome1 = harness.dispatch_to(1, &action).await?;
     println!("  Outcome: {:?} (deduplicated across nodes!)", outcome1);
 
     // Send same dedup_key to node 2
-    let action = Action::new("notifications", "tenant-1", "email", "send_email", serde_json::json!({
-        "to": "user@example.com",
-    })).with_dedup_key("cross-node-dedup");
+    let action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "send_email",
+        serde_json::json!({
+            "to": "user@example.com",
+        }),
+    )
+    .with_dedup_key("cross-node-dedup");
 
     println!("\n→ Dispatching SAME dedup_key to NODE 2...");
     let outcome2 = harness.dispatch_to(2, &action).await?;
     println!("  Outcome: {:?}", outcome2);
 
-    println!("\n  Total provider calls: {} (only 1 despite 3 dispatches!)",
-             harness.provider("email").unwrap().call_count());
+    println!(
+        "\n  Total provider calls: {} (only 1 despite 3 dispatches!)",
+        harness.provider("email").unwrap().call_count()
+    );
 
     harness.teardown().await?;
     println!("\n✓ Simulation cluster shut down\n");
@@ -293,13 +388,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start.elapsed();
 
     let successful = outcomes.iter().filter(|r| r.is_ok()).count();
-    let executed = outcomes.iter().filter(|r| matches!(r, Ok(acteon_core::ActionOutcome::Executed(_)))).count();
+    let executed = outcomes
+        .iter()
+        .filter(|r| matches!(r, Ok(acteon_core::ActionOutcome::Executed(_))))
+        .count();
 
     println!("  Completed in: {:?}", elapsed);
     println!("  Successful: {}/100", successful);
     println!("  Executed: {}/100", executed);
-    println!("  Provider calls: {}", harness.provider("email").unwrap().call_count());
-    println!("  Throughput: {:.0} actions/sec", 100.0 / elapsed.as_secs_f64());
+    println!(
+        "  Provider calls: {}",
+        harness.provider("email").unwrap().call_count()
+    );
+    println!(
+        "  Throughput: {:.0} actions/sec",
+        100.0 / elapsed.as_secs_f64()
+    );
 
     harness.teardown().await?;
     println!("\n✓ Simulation cluster shut down\n");

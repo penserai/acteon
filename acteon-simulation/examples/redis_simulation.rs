@@ -103,41 +103,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clear any previous state
     println!("→ Clearing previous dedup state from Redis...");
 
-    let action1 = Action::new("notifications", "tenant-1", "email", "notify", serde_json::json!({
-        "user_id": "user-123",
-        "message": "You have a new message",
-    })).with_dedup_key("redis-dedup-test-1");
+    let action1 = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-123",
+            "message": "You have a new message",
+        }),
+    )
+    .with_dedup_key("redis-dedup-test-1");
 
     println!("\n→ Dispatching FIRST notification (dedup_key='redis-dedup-test-1')...");
     let outcome1 = gateway.dispatch(action1.clone(), None).await?;
     println!("  Outcome: {:?}", outcome1);
-    println!("  Email provider called: {} times", email_provider.call_count());
+    println!(
+        "  Email provider called: {} times",
+        email_provider.call_count()
+    );
 
     // Check Redis state
     println!("\n→ Checking Redis state...");
     // The dedup key should now be stored in Redis
 
     // Try duplicate
-    let action2 = Action::new("notifications", "tenant-1", "email", "notify", serde_json::json!({
-        "user_id": "user-123",
-        "message": "You have a new message (duplicate)",
-    })).with_dedup_key("redis-dedup-test-1");
+    let action2 = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-123",
+            "message": "You have a new message (duplicate)",
+        }),
+    )
+    .with_dedup_key("redis-dedup-test-1");
 
     println!("\n→ Dispatching DUPLICATE notification (same dedup_key)...");
     let outcome2 = gateway.dispatch(action2, None).await?;
     println!("  Outcome: {:?}", outcome2);
-    println!("  Email provider called: {} times (should still be 1)", email_provider.call_count());
+    println!(
+        "  Email provider called: {} times (should still be 1)",
+        email_provider.call_count()
+    );
 
     // Try different key
-    let action3 = Action::new("notifications", "tenant-1", "email", "notify", serde_json::json!({
-        "user_id": "user-456",
-        "message": "Different notification",
-    })).with_dedup_key("redis-dedup-test-2");
+    let action3 = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-456",
+            "message": "Different notification",
+        }),
+    )
+    .with_dedup_key("redis-dedup-test-2");
 
     println!("\n→ Dispatching DIFFERENT notification (dedup_key='redis-dedup-test-2')...");
     let outcome3 = gateway.dispatch(action3, None).await?;
     println!("  Outcome: {:?}", outcome3);
-    println!("  Email provider called: {} times", email_provider.call_count());
+    println!(
+        "  Email provider called: {} times",
+        email_provider.call_count()
+    );
 
     // =========================================================================
     // DEMO 2: Suppression
@@ -148,14 +178,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     email_provider.clear();
 
-    let spam_action = Action::new("notifications", "tenant-1", "email", "spam", serde_json::json!({
-        "subject": "Buy now!!!",
-    }));
+    let spam_action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "spam",
+        serde_json::json!({
+            "subject": "Buy now!!!",
+        }),
+    );
 
     println!("→ Dispatching SPAM action...");
     let outcome = gateway.dispatch(spam_action, None).await?;
     println!("  Outcome: {:?}", outcome);
-    println!("  Email provider called: {} times (should be 0)", email_provider.call_count());
+    println!(
+        "  Email provider called: {} times (should be 0)",
+        email_provider.call_count()
+    );
 
     // =========================================================================
     // DEMO 3: Concurrent Dispatch with Redis Locking
@@ -176,10 +215,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..10 {
         let gw = Arc::clone(&gateway_arc);
         let handle = tokio::spawn(async move {
-            let action = Action::new("notifications", "tenant-1", "email", "notify", serde_json::json!({
-                "worker": i,
-                "message": "Concurrent test",
-            })).with_dedup_key("concurrent-dedup-key");
+            let action = Action::new(
+                "notifications",
+                "tenant-1",
+                "email",
+                "notify",
+                serde_json::json!({
+                    "worker": i,
+                    "message": "Concurrent test",
+                }),
+            )
+            .with_dedup_key("concurrent-dedup-key");
 
             gw.dispatch(action, None).await
         });
@@ -207,7 +253,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    Executed: {}", executed);
     println!("    Deduplicated: {}", deduplicated);
     println!("    Failed: {}", failed);
-    println!("    Email provider called: {} times", email_provider.call_count());
+    println!(
+        "    Email provider called: {} times",
+        email_provider.call_count()
+    );
     println!("\n  (With proper locking, exactly 1 should execute, 9 deduplicated)");
 
     // =========================================================================
@@ -225,7 +274,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "bulk",
                 "tenant-1",
                 "email",
-                "bulk_send",  // Not a "notify" action, so no dedup rule applies
+                "bulk_send", // Not a "notify" action, so no dedup rule applies
                 serde_json::json!({"recipient_id": i}),
             )
         })
@@ -241,8 +290,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = start.elapsed();
 
     println!("  Completed in: {:?}", elapsed);
-    println!("  Email provider called: {} times", email_provider.call_count());
-    println!("  Throughput: {:.0} actions/sec", 500.0 / elapsed.as_secs_f64());
+    println!(
+        "  Email provider called: {} times",
+        email_provider.call_count()
+    );
+    println!(
+        "  Throughput: {:.0} actions/sec",
+        500.0 / elapsed.as_secs_f64()
+    );
 
     // =========================================================================
     // Verify Redis State

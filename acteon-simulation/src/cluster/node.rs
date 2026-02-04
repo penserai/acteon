@@ -3,12 +3,12 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use acteon_audit::AuditStore;
 use acteon_core::{Action, ActionOutcome};
 use acteon_gateway::{Gateway, GatewayBuilder, GatewayError};
 use acteon_provider::DynProvider;
 use acteon_rules::Rule;
 use acteon_state::{DistributedLock, StateStore};
-use acteon_audit::AuditStore;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -44,10 +44,7 @@ impl ServerNode {
         audit: Option<Arc<dyn AuditStore>>,
         environment: std::collections::HashMap<String, String>,
     ) -> Result<Self, SimulationError> {
-        let mut builder = GatewayBuilder::new()
-            .state(state)
-            .lock(lock)
-            .rules(rules);
+        let mut builder = GatewayBuilder::new().state(state).lock(lock).rules(rules);
 
         for provider in providers {
             builder = builder.provider(provider);
@@ -61,7 +58,9 @@ impl ServerNode {
             builder = builder.env_var(key, value);
         }
 
-        let gateway = builder.build().map_err(|e| SimulationError::Gateway(e.to_string()))?;
+        let gateway = builder
+            .build()
+            .map_err(|e| SimulationError::Gateway(e.to_string()))?;
 
         Ok(Self {
             id: id.into(),
@@ -199,9 +198,9 @@ impl ServerNodeBuilder {
     /// Build the `ServerNode`.
     pub fn build(self) -> Result<ServerNode, SimulationError> {
         let id = self.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let addr = self.addr.ok_or(SimulationError::Configuration(
-            "address is required".into(),
-        ))?;
+        let addr = self
+            .addr
+            .ok_or(SimulationError::Configuration("address is required".into()))?;
         let state = self.state.ok_or(SimulationError::Configuration(
             "state store is required".into(),
         ))?;

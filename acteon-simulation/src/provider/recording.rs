@@ -1,7 +1,7 @@
 //! Recording provider that captures all calls for verification.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use acteon_core::{Action, ProviderResponse, ResponseStatus};
@@ -282,7 +282,9 @@ mod tests {
     #[tokio::test]
     async fn custom_response_fn() {
         let provider = RecordingProvider::new("test").with_response_fn(|_action| {
-            Ok(ProviderResponse::success(serde_json::json!({"custom": true})))
+            Ok(ProviderResponse::success(
+                serde_json::json!({"custom": true}),
+            ))
         });
 
         let response = provider.execute(&test_action()).await.unwrap();

@@ -40,15 +40,24 @@ mod shared_state {
             .with_dedup_key("shared-key");
 
         // Dispatch to node 0 - should execute
-        let outcome0 = harness.dispatch_to(0, &action).await.expect("dispatch to node 0");
+        let outcome0 = harness
+            .dispatch_to(0, &action)
+            .await
+            .expect("dispatch to node 0");
         outcome0.assert_executed();
 
         // Dispatch to node 1 with same dedup key - should be deduplicated
-        let outcome1 = harness.dispatch_to(1, &action).await.expect("dispatch to node 1");
+        let outcome1 = harness
+            .dispatch_to(1, &action)
+            .await
+            .expect("dispatch to node 1");
         outcome1.assert_deduplicated();
 
         // Dispatch to node 2 with same dedup key - should also be deduplicated
-        let outcome2 = harness.dispatch_to(2, &action).await.expect("dispatch to node 2");
+        let outcome2 = harness
+            .dispatch_to(2, &action)
+            .await
+            .expect("dispatch to node 2");
         outcome2.assert_deduplicated();
 
         // Provider should only be called once
@@ -120,10 +129,16 @@ mod isolated_state {
         // - Dispatch to node 1 would also execute (different state)
 
         // With current implementation (shared state for multi-node):
-        let outcome0 = harness.dispatch_to(0, &action).await.expect("dispatch to node 0");
+        let outcome0 = harness
+            .dispatch_to(0, &action)
+            .await
+            .expect("dispatch to node 0");
         outcome0.assert_executed();
 
-        let outcome1 = harness.dispatch_to(1, &action).await.expect("dispatch to node 1");
+        let outcome1 = harness
+            .dispatch_to(1, &action)
+            .await
+            .expect("dispatch to node 1");
         // This will be deduplicated because state is actually shared
         // If truly isolated, this would assert_executed()
         outcome1.assert_deduplicated();
@@ -261,9 +276,9 @@ mod load_balancing {
                 serde_json::json!({"id": i}),
             );
 
-            handles.push(tokio::spawn(async move {
-                gateway.dispatch(action, None).await
-            }));
+            handles.push(tokio::spawn(
+                async move { gateway.dispatch(action, None).await },
+            ));
         }
 
         // Wait for all dispatches to complete

@@ -9,8 +9,8 @@ use acteon_gateway::GatewayError;
 use acteon_provider::DynProvider;
 use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
-use acteon_state::StateStore;
 use acteon_state::DistributedLock;
+use acteon_state::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 
 use crate::cluster::{
@@ -182,9 +182,10 @@ impl SimulationHarness {
         node_index: usize,
         action: &Action,
     ) -> Result<ActionOutcome, GatewayError> {
-        let node = self.nodes.get(node_index).ok_or_else(|| {
-            GatewayError::Configuration(format!("node {node_index} not found"))
-        })?;
+        let node = self
+            .nodes
+            .get(node_index)
+            .ok_or_else(|| GatewayError::Configuration(format!("node {node_index} not found")))?;
 
         node.dispatch(action.clone()).await
     }
@@ -403,7 +404,11 @@ mod tests {
         .await
         .unwrap();
 
-        let actions = vec![test_action("email"), test_action("email"), test_action("email")];
+        let actions = vec![
+            test_action("email"),
+            test_action("email"),
+            test_action("email"),
+        ];
         let outcomes = harness.dispatch_batch(&actions).await;
 
         assert_eq!(outcomes.len(), 3);

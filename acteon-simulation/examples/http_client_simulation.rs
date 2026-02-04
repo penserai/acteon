@@ -27,8 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // Create HTTP client
-    let base_url = std::env::var("ACTEON_URL")
-        .unwrap_or_else(|_| "http://localhost:8080".to_string());
+    let base_url =
+        std::env::var("ACTEON_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
 
     println!("→ Connecting to Acteon server at {}\n", base_url);
 
@@ -72,7 +72,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  {} rules loaded:", rules.len());
                 for rule in &rules {
                     let status = if rule.enabled { "enabled" } else { "disabled" };
-                    println!("    - {} (priority: {}, {})", rule.name, rule.priority, status);
+                    println!(
+                        "    - {} (priority: {}, {})",
+                        rule.name, rule.priority, status
+                    );
                 }
                 println!();
             }
@@ -135,7 +138,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("  → POST /v1/dispatch/batch ({} actions)", batch_actions.len());
+    println!(
+        "  → POST /v1/dispatch/batch ({} actions)",
+        batch_actions.len()
+    );
 
     match client.dispatch_batch(&batch_actions).await {
         Ok(results) => {

@@ -14,8 +14,8 @@
 
 use std::sync::Arc;
 
-use acteon_audit::store::AuditStore;
 use acteon_audit::AuditQuery;
+use acteon_audit::store::AuditStore;
 use acteon_audit_postgres::{PostgresAuditConfig, PostgresAuditStore};
 use acteon_core::Action;
 use acteon_gateway::GatewayBuilder;
@@ -69,8 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Audit backend config
-    let audit_config = PostgresAuditConfig::new(&database_url)
-        .with_prefix("acteon_sim_");
+    let audit_config = PostgresAuditConfig::new(&database_url).with_prefix("acteon_sim_");
 
     println!("→ Connecting to PostgreSQL...");
 
@@ -120,10 +119,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  DEMO 1: ACTION EXECUTION WITH AUDIT TRAIL");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let action1 = Action::new("notifications", "tenant-1", "email", "notify", serde_json::json!({
-        "user_id": "user-123",
-        "message": "You have a new message",
-    })).with_dedup_key("pg-audit-test-1");
+    let action1 = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-123",
+            "message": "You have a new message",
+        }),
+    )
+    .with_dedup_key("pg-audit-test-1");
 
     println!("→ Dispatching notification action...");
     let outcome1 = gateway.dispatch(action1.clone(), None).await?;
@@ -161,9 +167,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  DEMO 2: SUPPRESSED ACTION AUDIT TRAIL");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let spam_action = Action::new("notifications", "tenant-1", "email", "spam", serde_json::json!({
-        "subject": "Buy now!!!",
-    }));
+    let spam_action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "spam",
+        serde_json::json!({
+            "subject": "Buy now!!!",
+        }),
+    );
 
     println!("→ Dispatching SPAM action...");
     let outcome = gateway.dispatch(spam_action.clone(), None).await?;
@@ -190,10 +202,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  DEMO 3: DEDUPLICATED ACTION AUDIT TRAIL");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    let dup_action = Action::new("notifications", "tenant-1", "email", "notify", serde_json::json!({
-        "user_id": "user-123",
-        "message": "Duplicate message",
-    })).with_dedup_key("pg-audit-test-1"); // Same dedup key as action1
+    let dup_action = Action::new(
+        "notifications",
+        "tenant-1",
+        "email",
+        "notify",
+        serde_json::json!({
+            "user_id": "user-123",
+            "message": "Duplicate message",
+        }),
+    )
+    .with_dedup_key("pg-audit-test-1"); // Same dedup key as action1
 
     println!("→ Dispatching DUPLICATE action (same dedup_key)...");
     let outcome = gateway.dispatch(dup_action.clone(), None).await?;
@@ -233,11 +252,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Records in page: {}\n", page.records.len());
 
     for record in &page.records {
-        println!("  - {} | {} | {} | {}",
+        println!(
+            "  - {} | {} | {} | {}",
             &record.action_id[..8],
             record.action_type,
             record.outcome,
-            record.dispatched_at.format("%H:%M:%S"));
+            record.dispatched_at.format("%H:%M:%S")
+        );
     }
 
     // Query suppressed actions only
@@ -291,7 +312,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let elapsed = start.elapsed();
     println!("  Completed in: {:?}", elapsed);
-    println!("  Throughput: {:.0} actions/sec", 100.0 / elapsed.as_secs_f64());
+    println!(
+        "  Throughput: {:.0} actions/sec",
+        100.0 / elapsed.as_secs_f64()
+    );
 
     // Wait for audit records to be written
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -318,9 +342,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let all_page = audit.query(&all_query).await?;
 
-    let executed_count = all_page.records.iter().filter(|r| r.outcome == "executed").count();
-    let suppressed_count = all_page.records.iter().filter(|r| r.outcome == "suppressed").count();
-    let deduplicated_count = all_page.records.iter().filter(|r| r.outcome == "deduplicated").count();
+    let executed_count = all_page
+        .records
+        .iter()
+        .filter(|r| r.outcome == "executed")
+        .count();
+    let suppressed_count = all_page
+        .records
+        .iter()
+        .filter(|r| r.outcome == "suppressed")
+        .count();
+    let deduplicated_count = all_page
+        .records
+        .iter()
+        .filter(|r| r.outcome == "deduplicated")
+        .count();
 
     println!("  Total audit records: {}", all_page.total);
     println!("    - Executed: {}", executed_count);

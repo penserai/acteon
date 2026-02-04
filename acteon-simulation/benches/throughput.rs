@@ -7,7 +7,7 @@ use acteon_gateway::GatewayBuilder;
 use acteon_provider::DynProvider;
 use acteon_simulation::RecordingProvider;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 fn create_gateway(provider: Arc<dyn DynProvider>) -> acteon_gateway::Gateway {
     let state = Arc::new(MemoryStateStore::new());

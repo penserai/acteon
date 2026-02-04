@@ -693,9 +693,9 @@ mod tests {
     fn batch_result_helpers() {
         use acteon_core::ProviderResponse;
 
-        let success = BatchResult::Success(ActionOutcome::Executed(
-            ProviderResponse::success(serde_json::json!({})),
-        ));
+        let success = BatchResult::Success(ActionOutcome::Executed(ProviderResponse::success(
+            serde_json::json!({}),
+        )));
         assert!(success.is_success());
         assert!(!success.is_error());
         assert!(success.outcome().is_some());

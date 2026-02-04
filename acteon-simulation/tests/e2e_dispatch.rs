@@ -27,7 +27,10 @@ async fn single_action_dispatch() {
     .expect("harness should start");
 
     let action = test_action("email");
-    let outcome = harness.dispatch(&action).await.expect("dispatch should succeed");
+    let outcome = harness
+        .dispatch(&action)
+        .await
+        .expect("dispatch should succeed");
 
     outcome.assert_executed();
     harness.provider("email").unwrap().assert_called(1);
@@ -78,7 +81,10 @@ async fn provider_execution_verification() {
         }),
     );
 
-    harness.dispatch(&action).await.expect("dispatch should succeed");
+    harness
+        .dispatch(&action)
+        .await
+        .expect("dispatch should succeed");
 
     let provider = harness.provider("email").unwrap();
     provider.assert_called(1);
@@ -104,10 +110,22 @@ async fn multiple_providers() {
     .expect("harness should start");
 
     // Dispatch to each provider
-    harness.dispatch(&test_action("email")).await.expect("email dispatch");
-    harness.dispatch(&test_action("sms")).await.expect("sms dispatch");
-    harness.dispatch(&test_action("push")).await.expect("push dispatch");
-    harness.dispatch(&test_action("email")).await.expect("email dispatch 2");
+    harness
+        .dispatch(&test_action("email"))
+        .await
+        .expect("email dispatch");
+    harness
+        .dispatch(&test_action("sms"))
+        .await
+        .expect("sms dispatch");
+    harness
+        .dispatch(&test_action("push"))
+        .await
+        .expect("push dispatch");
+    harness
+        .dispatch(&test_action("email"))
+        .await
+        .expect("email dispatch 2");
 
     harness.provider("email").unwrap().assert_called(2);
     harness.provider("sms").unwrap().assert_called(1);
@@ -128,7 +146,10 @@ async fn dispatch_to_unknown_provider_fails() {
     .expect("harness should start");
 
     let action = test_action("unknown");
-    let outcome = harness.dispatch(&action).await.expect("dispatch should return outcome");
+    let outcome = harness
+        .dispatch(&action)
+        .await
+        .expect("dispatch should return outcome");
 
     outcome.assert_failed();
 
@@ -147,8 +168,14 @@ async fn reset_recordings_clears_all_providers() {
     .await
     .expect("harness should start");
 
-    harness.dispatch(&test_action("email")).await.expect("dispatch");
-    harness.dispatch(&test_action("sms")).await.expect("dispatch");
+    harness
+        .dispatch(&test_action("email"))
+        .await
+        .expect("dispatch");
+    harness
+        .dispatch(&test_action("sms"))
+        .await
+        .expect("dispatch");
 
     harness.provider("email").unwrap().assert_called(1);
     harness.provider("sms").unwrap().assert_called(1);
@@ -215,7 +242,10 @@ async fn action_with_metadata() {
     )
     .with_metadata(metadata);
 
-    let outcome = harness.dispatch(&action).await.expect("dispatch should succeed");
+    let outcome = harness
+        .dispatch(&action)
+        .await
+        .expect("dispatch should succeed");
     outcome.assert_executed();
 
     let provider = harness.provider("email").unwrap();

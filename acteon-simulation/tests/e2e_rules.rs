@@ -412,7 +412,10 @@ rules:
             "spam",
             serde_json::json!({"priority": "high"}),
         );
-        let outcome = harness.dispatch(&high_priority_spam).await.expect("dispatch");
+        let outcome = harness
+            .dispatch(&high_priority_spam)
+            .await
+            .expect("dispatch");
         outcome.assert_suppressed();
 
         // Low priority spam should be allowed (rule priority 10)
@@ -423,7 +426,10 @@ rules:
             "spam",
             serde_json::json!({"priority": "low"}),
         );
-        let outcome = harness.dispatch(&low_priority_spam).await.expect("dispatch");
+        let outcome = harness
+            .dispatch(&low_priority_spam)
+            .await
+            .expect("dispatch");
         outcome.assert_executed();
 
         harness.teardown().await.unwrap();

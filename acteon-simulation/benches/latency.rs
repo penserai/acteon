@@ -2,8 +2,8 @@
 //!
 //! These benchmarks measure dispatch latency under various load conditions.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use acteon_core::Action;
@@ -11,7 +11,7 @@ use acteon_gateway::GatewayBuilder;
 use acteon_provider::DynProvider;
 use acteon_simulation::RecordingProvider;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 
 fn create_gateway(provider: Arc<dyn DynProvider>) -> acteon_gateway::Gateway {
     let state = Arc::new(MemoryStateStore::new());
