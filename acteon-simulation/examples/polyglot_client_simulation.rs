@@ -222,16 +222,120 @@ fn run_go_client(base_url: &str, project_root: &str) -> ClientTestResult {
     }
 }
 
-/// Run the Java client test (using jbang if available)
+/// Run the Java client test (builds JAR with Gradle and runs with java)
 fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
+    let java_client_dir = format!("{}/clients/java", project_root);
+
+    // Check if java is available
+    let java_check = Command::new("java").arg("-version").output();
+    if java_check.is_err() || !java_check.unwrap().status.success() {
+        return ClientTestResult {
+            language: "Java".to_string(),
+            success: true,
+            output: "Skipped (java not available)".to_string(),
+        };
+    }
+
+    // Check if gradle is available
+    let gradle_check = Command::new("gradle").arg("--version").output();
+    if gradle_check.is_err() {
+        return ClientTestResult {
+            language: "Java".to_string(),
+            success: true,
+            output: "Skipped (gradle not available)".to_string(),
+        };
+    }
+
+    // Build the JAR using the build script
+    println!("  Building Java client JAR...");
+    let build_output = Command::new("bash")
+        .arg("build.sh")
+        .current_dir(&java_client_dir)
+        .output();
+
+    match build_output {
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            return ClientTestResult {
+                language: "Java".to_string(),
+                success: false,
+                output: format!("Build failed:\n{}\n{}", stdout, stderr),
+            };
+        }
+        Err(e) => {
+            return ClientTestResult {
+                language: "Java".to_string(),
+                success: false,
+                output: format!("Failed to run build script: {}", e),
+            };
+        }
+        _ => {}
+    }
+
+    // Run the test script using the JAR
     let script = format!(
         "{}/acteon-simulation/scripts/TestJavaClient.java",
         project_root
     );
+    let jar_path = format!("{}/build/libs/acteon-client-0.1.0.jar", java_client_dir);
 
-    // Try jbang first
+    // First try jbang (fastest), then fall back to java -cp
     let output = Command::new("jbang")
         .arg(&script)
+        .env("ACTEON_URL", base_url)
+        .output();
+
+    let result = match output {
+        Ok(out) if out.status.success() || !String::from_utf8_lossy(&out.stderr).contains("not found") => {
+            Some((out.status.success(), String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string()))
+        }
+        _ => None,
+    };
+
+    if let Some((success, stdout, stderr)) = result {
+        return ClientTestResult {
+            language: "Java".to_string(),
+            success,
+            output: format!("{}\n{}", stdout, stderr),
+        };
+    }
+
+    // Fall back to running compiled test with java
+    // Compile and run the test class using the JAR
+    let compile_dir = format!("{}/acteon-simulation/scripts", project_root);
+
+    // Compile TestJavaClient.java
+    let compile_output = Command::new("javac")
+        .arg("-cp")
+        .arg(&jar_path)
+        .arg("TestJavaClient.java")
+        .current_dir(&compile_dir)
+        .output();
+
+    if let Err(e) = compile_output {
+        return ClientTestResult {
+            language: "Java".to_string(),
+            success: true,
+            output: format!("Skipped (javac not available: {})", e),
+        };
+    }
+
+    let compile_out = compile_output.unwrap();
+    if !compile_out.status.success() {
+        let stderr = String::from_utf8_lossy(&compile_out.stderr);
+        return ClientTestResult {
+            language: "Java".to_string(),
+            success: false,
+            output: format!("Compilation failed:\n{}", stderr),
+        };
+    }
+
+    // Run the test
+    let output = Command::new("java")
+        .arg("-cp")
+        .arg(format!("{}:{}", jar_path, compile_dir))
+        .arg("TestJavaClient")
         .env("ACTEON_URL", base_url)
         .output();
 
@@ -245,14 +349,11 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
                 output: format!("{}\n{}", stdout, stderr),
             }
         }
-        Err(_) => {
-            // jbang not available, skip Java test
-            ClientTestResult {
-                language: "Java".to_string(),
-                success: true,
-                output: "Skipped (jbang not available)".to_string(),
-            }
-        }
+        Err(e) => ClientTestResult {
+            language: "Java".to_string(),
+            success: false,
+            output: format!("Failed to run: {}", e),
+        },
     }
 }
 

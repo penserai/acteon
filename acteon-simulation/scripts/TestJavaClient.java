@@ -77,11 +77,11 @@ public class TestJavaClient {
                 throw new RuntimeException("Dispatch returned " + response.statusCode() + ": " + response.body());
             }
 
-            Map<String, Object> result = mapper.readValue(response.body(), new TypeReference<>() {});
-            String type = (String) result.get("type");
-            List<String> validTypes = List.of("executed", "deduplicated", "suppressed", "rerouted", "throttled", "failed");
-            if (!validTypes.contains(type)) {
-                throw new RuntimeException("Unexpected outcome type: " + type);
+            // API returns {"Executed": {...}}, "Deduplicated", {"Suppressed": {...}}, etc.
+            String outcomeType = getOutcomeType(response.body());
+            List<String> validTypes = List.of("Executed", "Deduplicated", "Suppressed", "Rerouted", "Throttled", "Failed");
+            if (!validTypes.contains(outcomeType)) {
+                throw new RuntimeException("Unexpected outcome type: " + outcomeType + " from " + response.body());
             }
         });
 
@@ -179,9 +179,8 @@ public class TestJavaClient {
                 throw new RuntimeException("Second dispatch returned " + response2.statusCode());
             }
 
-            Map<String, Object> result1 = mapper.readValue(response1.body(), new TypeReference<>() {});
-            String type1 = (String) result1.get("type");
-            if (!type1.equals("executed") && !type1.equals("failed")) {
+            String type1 = getOutcomeType(response1.body());
+            if (!type1.equals("Executed") && !type1.equals("Failed")) {
                 throw new RuntimeException("Unexpected first outcome: " + type1);
             }
         });
@@ -211,6 +210,25 @@ public class TestJavaClient {
         System.out.println("Results: " + passed + "/" + total + " passed");
 
         System.exit(failed > 0 ? 1 : 0);
+    }
+
+    /**
+     * Extract outcome type from API response body.
+     * API returns: {"Executed": {...}}, "Deduplicated", {"Suppressed": {...}}, etc.
+     */
+    private static String getOutcomeType(String responseBody) {
+        String trimmed = responseBody.trim();
+        // Handle string response like "Deduplicated"
+        if (trimmed.equals("\"Deduplicated\"")) {
+            return "Deduplicated";
+        }
+        // Handle object response like {"Executed": {...}}
+        for (String key : List.of("Executed", "Suppressed", "Rerouted", "Throttled", "Failed")) {
+            if (trimmed.startsWith("{\"" + key + "\"")) {
+                return key;
+            }
+        }
+        return "Unknown";
     }
 
     @FunctionalInterface
