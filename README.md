@@ -14,6 +14,36 @@ Acteon is an action gateway that dispatches actions through a configurable pipel
 
 The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis into a stag -- the very thing he pursued. Likewise, actions entering Acteon are transformed -- deduplicated, rerouted, throttled, or dispatched -- before they ever reach the outside world.
 
+## Features
+
+### Rule-Based Action Processing
+
+- **Suppression** — Block actions matching specific conditions (e.g., spam filtering, maintenance windows)
+- **Deduplication** — Prevent duplicate processing using configurable keys and TTLs
+- **Throttling** — Rate-limit actions per tenant, provider, or action type with automatic retry-after hints
+- **Rerouting** — Dynamically redirect actions to different providers based on priority, load, or content
+- **Payload Modification** — Transform action payloads before execution (redaction, enrichment, normalization)
+
+### Pluggable Backends
+
+- **State Storage** — Memory, Redis, PostgreSQL, DynamoDB, or ClickHouse for distributed locks and deduplication state
+- **Audit Trail** — Memory, PostgreSQL, ClickHouse, or Elasticsearch for searchable action history with configurable retention
+
+### Enterprise Ready
+
+- **Multi-Tenant** — Namespace and tenant isolation with per-tenant rate limiting
+- **Authentication** — API key and JWT support with role-based access control and grant-level authorization
+- **Hot Reload** — Update rules and auth configuration without restarts
+- **Graceful Shutdown** — Drain in-flight requests before stopping
+- **Observability** — Prometheus metrics, structured logging, and comprehensive audit trails
+
+### Developer Experience
+
+- **OpenAPI/Swagger** — Auto-generated API documentation with interactive UI
+- **Polyglot Clients** — Official SDKs for Rust, Python, Node.js/TypeScript, Go, and Java
+- **Simulation Framework** — Test harness with mock providers, failure injection, and multi-node scenarios
+- **YAML Rules** — Human-readable rule definitions with CEL expression support
+
 ## Architecture
 
 | Crate | Description |
@@ -293,32 +323,54 @@ See the [acteon-simulation README](acteon-simulation/README.md) for full documen
 
 ## Client Libraries
 
-### Rust
+Official client libraries are available for multiple languages:
 
-The `acteon-client` crate provides a native Rust HTTP client:
+| Language | Package | Documentation |
+|----------|---------|---------------|
+| Rust | `acteon-client` | [README](acteon-client/README.md) |
+| Python | `acteon-client` | [README](clients/python/README.md) |
+| Node.js/TypeScript | `@acteon/client` | [README](clients/nodejs/README.md) |
+| Go | `github.com/penserai/acteon/clients/go/acteon` | [README](clients/go/README.md) |
+| Java | `com.acteon:acteon-client` | [README](clients/java/README.md) |
 
+### Quick Examples
+
+**Rust:**
 ```rust
-use acteon_client::ActeonClient;
-use acteon_core::Action;
-
 let client = ActeonClient::new("http://localhost:8080");
-
-// Check health
-assert!(client.health().await?);
-
-// Dispatch an action
 let action = Action::new("ns", "tenant", "email", "send", json!({"to": "user@example.com"}));
 let outcome = client.dispatch(&action).await?;
-
-// Query audit trail
-let audit = client.query_audit(&AuditQuery {
-    tenant: Some("tenant".to_string()),
-    limit: Some(10),
-    ..Default::default()
-}).await?;
 ```
 
-See the [acteon-client README](acteon-client/README.md) for full documentation.
+**Python:**
+```python
+client = ActeonClient("http://localhost:8080")
+action = Action("ns", "tenant", "email", "send", {"to": "user@example.com"})
+outcome = client.dispatch(action)
+```
+
+**Node.js/TypeScript:**
+```typescript
+const client = new ActeonClient("http://localhost:8080");
+const action = createAction("ns", "tenant", "email", "send", { to: "user@example.com" });
+const outcome = await client.dispatch(action);
+```
+
+**Go:**
+```go
+client := acteon.NewClient("http://localhost:8080")
+action := acteon.NewAction("ns", "tenant", "email", "send", map[string]any{"to": "user@example.com"})
+outcome, _ := client.Dispatch(ctx, action)
+```
+
+**Java:**
+```java
+ActeonClient client = new ActeonClient("http://localhost:8080");
+Action action = new Action("ns", "tenant", "email", "send", Map.of("to", "user@example.com"));
+ActionOutcome outcome = client.dispatch(action);
+```
+
+See the [clients directory](clients/README.md) for full documentation.
 
 ## Tests
 

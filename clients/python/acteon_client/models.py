@@ -1,0 +1,279 @@
+"""Data models for the Acteon client."""
+
+from dataclasses import dataclass, field
+from typing import Any, Optional
+from datetime import datetime
+import uuid
+
+
+@dataclass
+class Action:
+    """An action to be dispatched through Acteon.
+
+    Attributes:
+        namespace: Logical grouping for the action.
+        tenant: Tenant identifier for multi-tenancy.
+        provider: Target provider name (e.g., "email", "sms").
+        action_type: Type of action (e.g., "send_notification").
+        payload: Action-specific data.
+        id: Unique action identifier (auto-generated if not provided).
+        dedup_key: Optional deduplication key.
+        metadata: Optional key-value metadata.
+        created_at: Timestamp when the action was created.
+    """
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+    payload: dict[str, Any]
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    dedup_key: Optional[str] = None
+    metadata: Optional[dict[str, str]] = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result = {
+            "id": self.id,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "provider": self.provider,
+            "action_type": self.action_type,
+            "payload": self.payload,
+            "created_at": self.created_at.isoformat() + "Z",
+        }
+        if self.dedup_key:
+            result["dedup_key"] = self.dedup_key
+        if self.metadata:
+            result["metadata"] = {"labels": self.metadata}
+        return result
+
+
+@dataclass
+class ProviderResponse:
+    """Response from a provider after executing an action."""
+    status: str
+    body: dict[str, Any]
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ActionOutcome:
+    """Outcome of dispatching an action.
+
+    Attributes:
+        outcome_type: One of "executed", "deduplicated", "suppressed",
+                      "rerouted", "throttled", "failed".
+        response: Provider response (for executed/rerouted).
+        rule: Rule name (for suppressed).
+        original_provider: Original provider (for rerouted).
+        new_provider: New provider (for rerouted).
+        retry_after_secs: Seconds to wait (for throttled).
+        error: Error details (for failed).
+    """
+    outcome_type: str
+    response: Optional[ProviderResponse] = None
+    rule: Optional[str] = None
+    original_provider: Optional[str] = None
+    new_provider: Optional[str] = None
+    retry_after_secs: Optional[float] = None
+    error: Optional[dict[str, Any]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ActionOutcome":
+        """Parse from API response."""
+        if "Executed" in data:
+            resp_data = data["Executed"]
+            return cls(
+                outcome_type="executed",
+                response=ProviderResponse(
+                    status=resp_data.get("status", "success"),
+                    body=resp_data.get("body", {}),
+                    headers=resp_data.get("headers", {}),
+                ),
+            )
+        elif data == "Deduplicated" or "Deduplicated" in data:
+            return cls(outcome_type="deduplicated")
+        elif "Suppressed" in data:
+            return cls(outcome_type="suppressed", rule=data["Suppressed"].get("rule"))
+        elif "Rerouted" in data:
+            rerouted = data["Rerouted"]
+            resp_data = rerouted.get("response", {})
+            return cls(
+                outcome_type="rerouted",
+                original_provider=rerouted.get("original_provider"),
+                new_provider=rerouted.get("new_provider"),
+                response=ProviderResponse(
+                    status=resp_data.get("status", "success"),
+                    body=resp_data.get("body", {}),
+                    headers=resp_data.get("headers", {}),
+                ),
+            )
+        elif "Throttled" in data:
+            retry_after = data["Throttled"].get("retry_after", {})
+            secs = retry_after.get("secs", 0) + retry_after.get("nanos", 0) / 1e9
+            return cls(outcome_type="throttled", retry_after_secs=secs)
+        elif "Failed" in data:
+            return cls(outcome_type="failed", error=data["Failed"])
+        else:
+            return cls(outcome_type="unknown")
+
+    def is_executed(self) -> bool:
+        return self.outcome_type == "executed"
+
+    def is_deduplicated(self) -> bool:
+        return self.outcome_type == "deduplicated"
+
+    def is_suppressed(self) -> bool:
+        return self.outcome_type == "suppressed"
+
+    def is_rerouted(self) -> bool:
+        return self.outcome_type == "rerouted"
+
+    def is_throttled(self) -> bool:
+        return self.outcome_type == "throttled"
+
+    def is_failed(self) -> bool:
+        return self.outcome_type == "failed"
+
+
+@dataclass
+class ErrorResponse:
+    """Error response from the API."""
+    code: str
+    message: str
+    retryable: bool = False
+
+
+@dataclass
+class BatchResult:
+    """Result from a batch dispatch operation."""
+    success: bool
+    outcome: Optional[ActionOutcome] = None
+    error: Optional[ErrorResponse] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BatchResult":
+        """Parse from API response."""
+        if "error" in data:
+            err = data["error"]
+            return cls(
+                success=False,
+                error=ErrorResponse(
+                    code=err.get("code", "UNKNOWN"),
+                    message=err.get("message", "Unknown error"),
+                    retryable=err.get("retryable", False),
+                ),
+            )
+        else:
+            return cls(success=True, outcome=ActionOutcome.from_dict(data))
+
+
+@dataclass
+class RuleInfo:
+    """Information about a loaded rule."""
+    name: str
+    priority: int
+    enabled: bool
+    description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RuleInfo":
+        return cls(
+            name=data["name"],
+            priority=data["priority"],
+            enabled=data["enabled"],
+            description=data.get("description"),
+        )
+
+
+@dataclass
+class ReloadResult:
+    """Result of reloading rules."""
+    loaded: int
+    errors: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ReloadResult":
+        return cls(loaded=data["loaded"], errors=data.get("errors", []))
+
+
+@dataclass
+class AuditQuery:
+    """Query parameters for audit search."""
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    provider: Optional[str] = None
+    action_type: Optional[str] = None
+    outcome: Optional[str] = None
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+
+    def to_params(self) -> dict[str, Any]:
+        """Convert to query parameters."""
+        params = {}
+        if self.namespace:
+            params["namespace"] = self.namespace
+        if self.tenant:
+            params["tenant"] = self.tenant
+        if self.provider:
+            params["provider"] = self.provider
+        if self.action_type:
+            params["action_type"] = self.action_type
+        if self.outcome:
+            params["outcome"] = self.outcome
+        if self.limit is not None:
+            params["limit"] = self.limit
+        if self.offset is not None:
+            params["offset"] = self.offset
+        return params
+
+
+@dataclass
+class AuditRecord:
+    """An audit record."""
+    id: str
+    action_id: str
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+    verdict: str
+    outcome: str
+    matched_rule: Optional[str]
+    duration_ms: int
+    dispatched_at: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AuditRecord":
+        return cls(
+            id=data["id"],
+            action_id=data["action_id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            provider=data["provider"],
+            action_type=data["action_type"],
+            verdict=data["verdict"],
+            outcome=data["outcome"],
+            matched_rule=data.get("matched_rule"),
+            duration_ms=data["duration_ms"],
+            dispatched_at=data["dispatched_at"],
+        )
+
+
+@dataclass
+class AuditPage:
+    """Paginated audit results."""
+    records: list[AuditRecord]
+    total: int
+    limit: int
+    offset: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AuditPage":
+        return cls(
+            records=[AuditRecord.from_dict(r) for r in data["records"]],
+            total=data["total"],
+            limit=data["limit"],
+            offset=data["offset"],
+        )
