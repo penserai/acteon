@@ -86,6 +86,124 @@ fn default_limit() -> usize {
     100
 }
 
+/// Response for listing events.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ListEventsResponse {
+    /// List of events.
+    pub events: Vec<EventStateResponse>,
+    /// Total number of events returned.
+    #[schema(example = 10)]
+    pub count: usize,
+}
+
+/// `GET /v1/events` -- list events, optionally filtered by status.
+#[utoipa::path(
+    get,
+    path = "/v1/events",
+    tag = "Events",
+    summary = "List events",
+    description = "Lists events filtered by namespace, tenant, and optionally status.",
+    params(
+        ("namespace" = String, Query, description = "Event namespace"),
+        ("tenant" = String, Query, description = "Event tenant"),
+        ("status" = Option<String>, Query, description = "Filter by status (e.g., 'open', 'closed')"),
+        ("limit" = Option<usize>, Query, description = "Maximum results to return (default: 100)"),
+    ),
+    responses(
+        (status = 200, description = "List of events", body = ListEventsResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+    )
+)]
+pub async fn list_events(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(params): Query<EventQueryParams>,
+) -> Result<impl IntoResponse, ServerError> {
+    // Check role permission.
+    if !identity.role.has_permission(Permission::AuditRead) {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: "insufficient permissions".into(),
+            })),
+        ));
+    }
+
+    let gw = state.gateway.read().await;
+    let state_store = gw.state_store();
+
+    // Scan for all EventState keys in the namespace/tenant
+    let results = match state_store
+        .scan_keys(
+            params.namespace.as_str(),
+            params.tenant.as_str(),
+            KeyKind::EventState,
+            None,
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!(ErrorResponse {
+                    error: e.to_string(),
+                })),
+            ));
+        }
+    };
+
+    let mut events = Vec::new();
+    let status_filter = params.status.as_deref();
+    let limit = params.limit;
+
+    for (key, value) in results {
+        if events.len() >= limit {
+            break;
+        }
+
+        // Extract fingerprint from key (format: namespace:tenant:event_state:fingerprint)
+        let fingerprint = key.rsplit(':').next().unwrap_or(&key).to_string();
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&value).unwrap_or(serde_json::json!({"state": value}));
+
+        let event_state = parsed
+            .get("state")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        // Apply status filter if provided
+        if let Some(filter) = status_filter
+            && event_state != filter
+        {
+            continue;
+        }
+
+        events.push(EventStateResponse {
+            fingerprint,
+            state: event_state,
+            action_type: parsed
+                .get("action_type")
+                .and_then(|s| s.as_str())
+                .map(String::from),
+            updated_at: parsed
+                .get("updated_at")
+                .and_then(|s| s.as_str())
+                .map(String::from),
+        });
+    }
+
+    let response = ListEventsResponse {
+        count: events.len(),
+        events,
+    };
+
+    Ok((StatusCode::OK, Json(serde_json::json!(response))))
+}
+
 /// `GET /v1/events/{fingerprint}` -- get the current state of an event.
 #[utoipa::path(
     get,

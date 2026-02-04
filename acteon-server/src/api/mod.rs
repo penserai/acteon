@@ -66,6 +66,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/dlq/stats", get(dlq::dlq_stats))
         .route("/v1/dlq/drain", post(dlq::dlq_drain))
         // Events (state machine lifecycle)
+        .route("/v1/events", get(events::list_events))
         .route("/v1/events/{fingerprint}", get(events::get_event))
         .route(
             "/v1/events/{fingerprint}/transition",

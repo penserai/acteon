@@ -6,7 +6,9 @@ use acteon_core::{
 };
 
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
-use super::events::{EventStateResponse, TransitionRequest, TransitionResponse};
+use super::events::{
+    EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
+};
 use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
 use super::schemas::{
     ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest, ReloadResponse, RuleSummary,
@@ -42,6 +44,7 @@ use super::schemas::{
         super::audit::get_audit_by_action,
         super::dlq::dlq_stats,
         super::dlq::dlq_drain,
+        super::events::list_events,
         super::events::get_event,
         super::events::transition_event,
         super::groups::list_groups,
@@ -56,7 +59,7 @@ use super::schemas::{
         ErrorResponse,
         AuditRecord, AuditQuery, AuditPage,
         DlqStatsResponse, DlqEntry, DlqDrainResponse,
-        EventStateResponse, TransitionRequest, TransitionResponse,
+        EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
         GroupSummary, ListGroupsResponse, GroupDetailResponse, FlushGroupResponse,
     ))
 )]
