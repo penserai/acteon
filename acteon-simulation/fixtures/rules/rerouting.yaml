@@ -1,0 +1,57 @@
+# Rerouting rules for testing
+#
+# These rules demonstrate various rerouting patterns.
+
+rules:
+  # Reroute high-priority notifications to SMS
+  - name: reroute-urgent-to-sms
+    priority: 1
+    description: "Reroute urgent notifications to SMS provider"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_notification"
+        - field: action.payload.priority
+          eq: "urgent"
+    action:
+      type: reroute
+      target_provider: sms
+
+  # Reroute after-hours emails to slack
+  - name: reroute-after-hours
+    priority: 2
+    description: "Reroute emails during non-business hours to slack"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - field: action.metadata.after_hours
+          eq: "true"
+    action:
+      type: reroute
+      target_provider: slack
+
+  # Reroute failed deliveries to backup provider
+  - name: reroute-retry-to-backup
+    priority: 3
+    description: "Reroute retries to backup email provider"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - field: action.metadata.retry_count
+          gt: 2
+    action:
+      type: reroute
+      target_provider: email-backup
+
+  # Reroute premium tier to dedicated provider
+  - name: reroute-premium
+    priority: 4
+    description: "Route premium tenant traffic to dedicated provider"
+    condition:
+      field: action.metadata.tier
+      eq: "premium"
+    action:
+      type: reroute
+      target_provider: premium-provider

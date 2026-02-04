@@ -1,0 +1,65 @@
+# Deduplication rules for testing
+#
+# These rules demonstrate various deduplication patterns.
+
+rules:
+  # Deduplicate all notification actions
+  - name: dedup-notifications
+    priority: 1
+    description: "Deduplicate all notifications within 5 minute window"
+    condition:
+      field: action.action_type
+      eq: "send_notification"
+    action:
+      type: deduplicate
+      ttl_seconds: 300
+
+  # Deduplicate password reset emails (longer window)
+  - name: dedup-password-reset
+    priority: 2
+    description: "Deduplicate password reset emails for 1 hour"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - field: action.payload.template
+          eq: "password_reset"
+    action:
+      type: deduplicate
+      ttl_seconds: 3600
+
+  # Deduplicate welcome emails
+  - name: dedup-welcome-email
+    priority: 3
+    description: "Deduplicate welcome emails for 24 hours"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - field: action.payload.template
+          eq: "welcome"
+    action:
+      type: deduplicate
+      ttl_seconds: 86400
+
+  # Deduplicate webhook deliveries (short window)
+  - name: dedup-webhook
+    priority: 4
+    description: "Deduplicate webhooks within 30 second window"
+    condition:
+      field: action.action_type
+      eq: "webhook"
+    action:
+      type: deduplicate
+      ttl_seconds: 30
+
+  # Deduplicate all SMS messages
+  - name: dedup-sms
+    priority: 5
+    description: "Deduplicate SMS messages for 10 minutes"
+    condition:
+      field: action.provider
+      eq: "sms"
+    action:
+      type: deduplicate
+      ttl_seconds: 600

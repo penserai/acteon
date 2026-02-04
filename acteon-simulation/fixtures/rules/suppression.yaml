@@ -1,0 +1,47 @@
+# Suppression rules for testing
+#
+# These rules demonstrate various suppression patterns.
+
+rules:
+  # Suppress spam-type actions
+  - name: block-spam
+    priority: 1
+    description: "Block all actions with action_type 'spam'"
+    condition:
+      field: action.action_type
+      eq: "spam"
+    action:
+      type: suppress
+
+  # Suppress actions from banned tenants
+  - name: block-banned-tenant
+    priority: 2
+    description: "Block actions from tenant 'banned-tenant'"
+    condition:
+      field: action.tenant
+      eq: "banned-tenant"
+    action:
+      type: suppress
+
+  # Suppress actions with blacklisted recipients
+  - name: block-blacklisted-recipient
+    priority: 3
+    description: "Block emails to blacklisted domains"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - field: action.payload.to
+          ends_with: "@blacklisted.com"
+    action:
+      type: suppress
+
+  # Suppress high-volume senders (using metadata)
+  - name: block-suspicious-volume
+    priority: 4
+    description: "Block senders marked as suspicious"
+    condition:
+      field: action.metadata.suspicious
+      eq: "true"
+    action:
+      type: suppress

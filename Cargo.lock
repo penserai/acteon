@@ -67,6 +67,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-client"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "acteon-core"
 version = "0.1.0"
 dependencies = [
@@ -238,6 +250,41 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "utoipa-swagger-ui",
+ "uuid",
+]
+
+[[package]]
+name = "acteon-simulation"
+version = "0.1.0"
+dependencies = [
+ "acteon-audit",
+ "acteon-audit-clickhouse",
+ "acteon-audit-memory",
+ "acteon-audit-postgres",
+ "acteon-client",
+ "acteon-core",
+ "acteon-executor",
+ "acteon-gateway",
+ "acteon-provider",
+ "acteon-rules",
+ "acteon-rules-yaml",
+ "acteon-state",
+ "acteon-state-clickhouse",
+ "acteon-state-dynamodb",
+ "acteon-state-memory",
+ "acteon-state-postgres",
+ "acteon-state-redis",
+ "async-trait",
+ "chrono",
+ "criterion",
+ "parking_lot",
+ "rand",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

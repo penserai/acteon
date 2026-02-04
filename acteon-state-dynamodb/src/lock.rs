@@ -163,7 +163,8 @@ impl LockGuard for DynamoLockGuard {
             .key("pk", AttributeValue::S(self.pk.clone()))
             .key("sk", AttributeValue::S(self.sk.clone()))
             .update_expression("SET expires_at = :new_exp")
-            .condition_expression("owner = :owner AND expires_at > :now")
+            .condition_expression("#owner = :owner AND expires_at > :now")
+            .expression_attribute_names("#owner", "owner")
             .expression_attribute_values(":owner", AttributeValue::S(self.owner.clone()))
             .expression_attribute_values(
                 ":now",
@@ -196,7 +197,8 @@ impl LockGuard for DynamoLockGuard {
             .table_name(&self.table_name)
             .key("pk", AttributeValue::S(self.pk.clone()))
             .key("sk", AttributeValue::S(self.sk.clone()))
-            .condition_expression("owner = :owner")
+            .condition_expression("#owner = :owner")
+            .expression_attribute_names("#owner", "owner")
             .expression_attribute_values(":owner", AttributeValue::S(self.owner.clone()))
             .send()
             .await;
