@@ -11,12 +11,28 @@ import {
   BatchResult,
   ReloadResult,
   RuleInfo,
+  EventQuery,
+  EventState,
+  EventListResponse,
+  TransitionResponse,
+  GroupSummary,
+  GroupListResponse,
+  GroupDetail,
+  FlushGroupResponse,
   actionToRequest,
   auditQueryToParams,
+  eventQueryToParams,
   parseActionOutcome,
   parseAuditPage,
   parseAuditRecord,
   parseBatchResult,
+  parseEventState,
+  parseEventListResponse,
+  parseTransitionResponse,
+  parseGroupSummary,
+  parseGroupListResponse,
+  parseGroupDetail,
+  parseFlushGroupResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -245,6 +261,131 @@ export class ActeonClient {
       return null;
     } else {
       throw new HttpError(response.status, "Failed to get audit record");
+    }
+  }
+
+  // =========================================================================
+  // Events (State Machine Lifecycle)
+  // =========================================================================
+
+  /**
+   * List events filtered by namespace, tenant, and optionally status.
+   */
+  async listEvents(query: EventQuery): Promise<EventListResponse> {
+    const params = eventQueryToParams(query);
+    const response = await this.request("GET", "/v1/events", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseEventListResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list events");
+    }
+  }
+
+  /**
+   * Get the current state of an event by fingerprint.
+   */
+  async getEvent(
+    fingerprint: string,
+    namespace: string,
+    tenant: string
+  ): Promise<EventState | null> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/events/${fingerprint}`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseEventState(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get event");
+    }
+  }
+
+  /**
+   * Transition an event to a new state.
+   */
+  async transitionEvent(
+    fingerprint: string,
+    toState: string,
+    namespace: string,
+    tenant: string
+  ): Promise<TransitionResponse> {
+    const response = await this.request("PUT", `/v1/events/${fingerprint}/transition`, {
+      body: { to: toState, namespace, tenant },
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTransitionResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Event not found: ${fingerprint}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  // =========================================================================
+  // Groups (Event Batching)
+  // =========================================================================
+
+  /**
+   * List all active event groups.
+   */
+  async listGroups(): Promise<GroupListResponse> {
+    const response = await this.request("GET", "/v1/groups");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseGroupListResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list groups");
+    }
+  }
+
+  /**
+   * Get details of a specific group.
+   */
+  async getGroup(groupKey: string): Promise<GroupDetail | null> {
+    const response = await this.request("GET", `/v1/groups/${groupKey}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseGroupDetail(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get group");
+    }
+  }
+
+  /**
+   * Force flush a group, triggering immediate notification.
+   */
+  async flushGroup(groupKey: string): Promise<FlushGroupResponse> {
+    const response = await this.request("DELETE", `/v1/groups/${groupKey}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseFlushGroupResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Group not found: ${groupKey}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
     }
   }
 }

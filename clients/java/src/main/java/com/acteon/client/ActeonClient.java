@@ -335,4 +335,186 @@ public class ActeonClient implements AutoCloseable {
             throw new ConnectionException("Request interrupted", e);
         }
     }
+
+    // =========================================================================
+    // Events (State Machine Lifecycle)
+    // =========================================================================
+
+    /**
+     * Lists events filtered by namespace, tenant, and optionally status.
+     */
+    public EventListResponse listEvents(EventQuery query) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
+            params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+            if (query.getStatus() != null) {
+                params.add("status=" + URLEncoder.encode(query.getStatus(), StandardCharsets.UTF_8));
+            }
+            if (query.getLimit() != null) {
+                params.add("limit=" + query.getLimit());
+            }
+
+            String path = "/v1/events?" + String.join("&", params);
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, EventListResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list events");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets the current state of an event by fingerprint.
+     */
+    public Optional<EventState> getEvent(String fingerprint, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/events/" + URLEncoder.encode(fingerprint, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, EventState.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get event");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Transitions an event to a new state.
+     */
+    public TransitionResponse transitionEvent(String fingerprint, String toState, String namespace, String tenant) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(Map.of(
+                "to", toState,
+                "namespace", namespace,
+                "tenant", tenant
+            ));
+            HttpRequest request = requestBuilder("/v1/events/" + URLEncoder.encode(fingerprint, StandardCharsets.UTF_8) + "/transition")
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, TransitionResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Event not found: " + fingerprint);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Groups (Event Batching)
+    // =========================================================================
+
+    /**
+     * Lists all active event groups.
+     */
+    public GroupListResponse listGroups() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/groups")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, GroupListResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list groups");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets details of a specific group.
+     */
+    public Optional<GroupDetail> getGroup(String groupKey) throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/groups/" + URLEncoder.encode(groupKey, StandardCharsets.UTF_8))
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, GroupDetail.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get group");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Forces a group to flush, triggering immediate notification.
+     */
+    public FlushGroupResponse flushGroup(String groupKey) throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/groups/" + URLEncoder.encode(groupKey, StandardCharsets.UTF_8))
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, FlushGroupResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Group not found: " + groupKey);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
 }

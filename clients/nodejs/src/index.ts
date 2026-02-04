@@ -36,5 +36,13 @@ export {
   type AuditQuery,
   type AuditRecord,
   type AuditPage,
+  type EventQuery,
+  type EventState,
+  type EventListResponse,
+  type TransitionResponse,
+  type GroupSummary,
+  type GroupListResponse,
+  type GroupDetail,
+  type FlushGroupResponse,
   createAction,
 } from "./models.js";

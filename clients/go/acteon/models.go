@@ -281,3 +281,71 @@ type AuditPage struct {
 	Limit   int64         `json:"limit"`
 	Offset  int64         `json:"offset"`
 }
+
+// =============================================================================
+// Event Types (State Machine Lifecycle)
+// =============================================================================
+
+// EventQuery contains query parameters for listing events.
+type EventQuery struct {
+	Namespace string
+	Tenant    string
+	Status    string
+	Limit     int
+}
+
+// EventState represents the current state of an event.
+type EventState struct {
+	Fingerprint string  `json:"fingerprint"`
+	State       string  `json:"state"`
+	ActionType  *string `json:"action_type,omitempty"`
+	UpdatedAt   *string `json:"updated_at,omitempty"`
+}
+
+// EventListResponse represents the response from listing events.
+type EventListResponse struct {
+	Events []EventState `json:"events"`
+	Count  int          `json:"count"`
+}
+
+// TransitionResponse represents the response from transitioning an event.
+type TransitionResponse struct {
+	Fingerprint   string `json:"fingerprint"`
+	PreviousState string `json:"previous_state"`
+	NewState      string `json:"new_state"`
+	Notify        bool   `json:"notify"`
+}
+
+// =============================================================================
+// Group Types (Event Batching)
+// =============================================================================
+
+// GroupSummary represents a summary of an event group.
+type GroupSummary struct {
+	GroupID    string  `json:"group_id"`
+	GroupKey   string  `json:"group_key"`
+	EventCount int     `json:"event_count"`
+	State      string  `json:"state"`
+	NotifyAt   *string `json:"notify_at,omitempty"`
+	CreatedAt  *string `json:"created_at,omitempty"`
+}
+
+// GroupListResponse represents the response from listing groups.
+type GroupListResponse struct {
+	Groups []GroupSummary `json:"groups"`
+	Total  int            `json:"total"`
+}
+
+// GroupDetail represents detailed information about a group.
+type GroupDetail struct {
+	Group  GroupSummary      `json:"group"`
+	Events []string          `json:"events"`
+	Labels map[string]string `json:"labels"`
+}
+
+// FlushGroupResponse represents the response from flushing a group.
+type FlushGroupResponse struct {
+	GroupID    string `json:"group_id"`
+	EventCount int    `json:"event_count"`
+	Notified   bool   `json:"notified"`
+}

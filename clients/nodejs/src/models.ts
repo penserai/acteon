@@ -332,3 +332,181 @@ export function parseAuditPage(data: Record<string, unknown>): AuditPage {
     offset: data.offset as number,
   };
 }
+
+// =============================================================================
+// Event Types (State Machine Lifecycle)
+// =============================================================================
+
+/**
+ * Query parameters for listing events.
+ */
+export interface EventQuery {
+  namespace: string;
+  tenant: string;
+  status?: string;
+  limit?: number;
+}
+
+/**
+ * Convert EventQuery to URL search params.
+ */
+export function eventQueryToParams(query: EventQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  params.set("namespace", query.namespace);
+  params.set("tenant", query.tenant);
+  if (query.status) params.set("status", query.status);
+  if (query.limit !== undefined) params.set("limit", query.limit.toString());
+  return params;
+}
+
+/**
+ * Current state of an event.
+ */
+export interface EventState {
+  fingerprint: string;
+  state: string;
+  actionType?: string;
+  updatedAt?: string;
+}
+
+/**
+ * Parse an EventState from API response.
+ */
+export function parseEventState(data: Record<string, unknown>): EventState {
+  return {
+    fingerprint: data.fingerprint as string,
+    state: data.state as string,
+    actionType: data.action_type as string | undefined,
+    updatedAt: data.updated_at as string | undefined,
+  };
+}
+
+/**
+ * Response from listing events.
+ */
+export interface EventListResponse {
+  events: EventState[];
+  count: number;
+}
+
+/**
+ * Parse an EventListResponse from API response.
+ */
+export function parseEventListResponse(data: Record<string, unknown>): EventListResponse {
+  const events = data.events as Record<string, unknown>[];
+  return {
+    events: events.map(parseEventState),
+    count: data.count as number,
+  };
+}
+
+/**
+ * Response from transitioning an event.
+ */
+export interface TransitionResponse {
+  fingerprint: string;
+  previousState: string;
+  newState: string;
+  notify: boolean;
+}
+
+/**
+ * Parse a TransitionResponse from API response.
+ */
+export function parseTransitionResponse(data: Record<string, unknown>): TransitionResponse {
+  return {
+    fingerprint: data.fingerprint as string,
+    previousState: data.previous_state as string,
+    newState: data.new_state as string,
+    notify: data.notify as boolean,
+  };
+}
+
+// =============================================================================
+// Group Types (Event Batching)
+// =============================================================================
+
+/**
+ * Summary of an event group.
+ */
+export interface GroupSummary {
+  groupId: string;
+  groupKey: string;
+  eventCount: number;
+  state: string;
+  notifyAt?: string;
+  createdAt?: string;
+}
+
+/**
+ * Parse a GroupSummary from API response.
+ */
+export function parseGroupSummary(data: Record<string, unknown>): GroupSummary {
+  return {
+    groupId: data.group_id as string,
+    groupKey: data.group_key as string,
+    eventCount: data.event_count as number,
+    state: data.state as string,
+    notifyAt: data.notify_at as string | undefined,
+    createdAt: data.created_at as string | undefined,
+  };
+}
+
+/**
+ * Response from listing groups.
+ */
+export interface GroupListResponse {
+  groups: GroupSummary[];
+  total: number;
+}
+
+/**
+ * Parse a GroupListResponse from API response.
+ */
+export function parseGroupListResponse(data: Record<string, unknown>): GroupListResponse {
+  const groups = data.groups as Record<string, unknown>[];
+  return {
+    groups: groups.map(parseGroupSummary),
+    total: data.total as number,
+  };
+}
+
+/**
+ * Detailed information about a group.
+ */
+export interface GroupDetail {
+  group: GroupSummary;
+  events: string[];
+  labels: Record<string, string>;
+}
+
+/**
+ * Parse a GroupDetail from API response.
+ */
+export function parseGroupDetail(data: Record<string, unknown>): GroupDetail {
+  return {
+    group: parseGroupSummary(data.group as Record<string, unknown>),
+    events: (data.events as string[]) ?? [],
+    labels: (data.labels as Record<string, string>) ?? {},
+  };
+}
+
+/**
+ * Response from flushing a group.
+ */
+export interface FlushGroupResponse {
+  groupId: string;
+  eventCount: number;
+  notified: boolean;
+}
+
+/**
+ * Parse a FlushGroupResponse from API response.
+ */
+export function parseFlushGroupResponse(data: Record<string, unknown>): FlushGroupResponse {
+  return {
+    groupId: data.group_id as string,
+    eventCount: data.event_count as number,
+    notified: data.notified as boolean,
+  };
+}

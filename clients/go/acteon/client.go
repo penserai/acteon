@@ -277,3 +277,183 @@ func (c *Client) GetAuditRecord(ctx context.Context, actionID string) (*AuditRec
 	}
 	return &record, nil
 }
+
+// =============================================================================
+// Events (State Machine Lifecycle)
+// =============================================================================
+
+// ListEvents lists events filtered by namespace, tenant, and optionally status.
+func (c *Client) ListEvents(ctx context.Context, query *EventQuery) (*EventListResponse, error) {
+	path := "/v1/events"
+	if query != nil {
+		params := url.Values{}
+		params.Set("namespace", query.Namespace)
+		params.Set("tenant", query.Tenant)
+		if query.Status != "" {
+			params.Set("status", query.Status)
+		}
+		if query.Limit > 0 {
+			params.Set("limit", strconv.Itoa(query.Limit))
+		}
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list events"}
+	}
+
+	var result EventListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetEvent gets the current state of an event by fingerprint.
+func (c *Client) GetEvent(ctx context.Context, fingerprint, namespace, tenant string) (*EventState, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/events/%s?%s", fingerprint, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get event"}
+	}
+
+	var event EventState
+	if err := json.NewDecoder(resp.Body).Decode(&event); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &event, nil
+}
+
+// TransitionEvent transitions an event to a new state.
+func (c *Client) TransitionEvent(ctx context.Context, fingerprint, toState, namespace, tenant string) (*TransitionResponse, error) {
+	body := map[string]string{
+		"to":        toState,
+		"namespace": namespace,
+		"tenant":    tenant,
+	}
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/events/%s/transition", fingerprint), body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result TransitionResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Event not found: %s", fingerprint)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(respBody, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to transition event"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// =============================================================================
+// Groups (Event Batching)
+// =============================================================================
+
+// ListGroups lists all active event groups.
+func (c *Client) ListGroups(ctx context.Context) (*GroupListResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/groups", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list groups"}
+	}
+
+	var result GroupListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetGroup gets details of a specific group.
+func (c *Client) GetGroup(ctx context.Context, groupKey string) (*GroupDetail, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/groups/%s", groupKey), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get group"}
+	}
+
+	var detail GroupDetail
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &detail, nil
+}
+
+// FlushGroup forces a group to flush, triggering immediate notification.
+func (c *Client) FlushGroup(ctx context.Context, groupKey string) (*FlushGroupResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/groups/%s", groupKey), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result FlushGroupResponse
+		if err := json.Unmarshal(respBody, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Group not found: %s", groupKey)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(respBody, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to flush group"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
