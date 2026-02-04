@@ -24,6 +24,14 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 - **Rerouting** — Dynamically redirect actions to different providers based on priority, load, or content
 - **Payload Modification** — Transform action payloads before execution (redaction, enrichment, normalization)
 
+### Event Grouping & State Machines
+
+- **Event Grouping** — Batch related events together for consolidated notifications with configurable wait times and group sizes
+- **State Machines** — Track event lifecycle through configurable states (e.g., open → investigating → resolved) with automatic timeout transitions
+- **Inhibition** — Suppress child alerts when parent alerts are active (e.g., suppress pod alerts during cluster outages)
+- **Fingerprinting** — Correlate related events using configurable field-based fingerprints
+- **Background Processing** — Automatic group flushing, timeout processing, and state cleanup
+
 ### Pluggable Backends
 
 - **State Storage** — Memory, Redis, PostgreSQL, DynamoDB, or ClickHouse for distributed locks and deduplication state
@@ -65,7 +73,7 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 | `acteon-rules-cel` | CEL expression support |
 | `acteon-provider` | Provider trait and registry |
 | `acteon-executor` | Action execution with retries and concurrency |
-| `acteon-gateway` | Orchestrates lock, rules, execution |
+| `acteon-gateway` | Orchestrates lock, rules, execution, grouping, and state machines |
 | `acteon-server` | HTTP server (Axum) with Swagger UI |
 | `acteon-email` | Email/SMTP provider |
 | `acteon-slack` | Slack provider |
@@ -253,8 +261,101 @@ cargo run -p acteon-server -- -c acteon.toml
 | PUT | `/v1/rules/{name}/enabled` | Enable or disable a rule |
 | GET | `/v1/audit` | Query audit records with filters |
 | GET | `/v1/audit/{action_id}` | Get audit record by action ID |
+| GET | `/v1/events` | List events filtered by status |
+| GET | `/v1/events/{fingerprint}` | Get event lifecycle state |
+| PUT | `/v1/events/{fingerprint}/transition` | Transition event to new state |
+| GET | `/v1/groups` | List active event groups |
+| GET | `/v1/groups/{group_key}` | Get group details |
+| DELETE | `/v1/groups/{group_key}` | Force flush/close a group |
 
 Full request/response schemas are available in the Swagger UI.
+
+## Event Grouping & State Machines
+
+### State Machine Rules
+
+Track event lifecycle through configurable states with automatic timeout transitions:
+
+```yaml
+# rules/alert-lifecycle.yaml
+rules:
+  - name: alert-state-machine
+    condition:
+      field: action.action_type
+      eq: alert
+    action:
+      type: state_machine
+      state_machine: alert
+      fingerprint_fields:
+        - action_type
+        - metadata.cluster
+        - metadata.service
+```
+
+Configure state machines in your `acteon.toml`:
+
+```toml
+[[state_machines]]
+name = "alert"
+initial_state = "firing"
+states = ["firing", "acknowledged", "resolved"]
+
+[[state_machines.transitions]]
+from = "firing"
+to = "acknowledged"
+
+[[state_machines.transitions]]
+from = "acknowledged"
+to = "resolved"
+
+[[state_machines.timeouts]]
+state = "firing"
+after_seconds = 3600
+transition_to = "stale"
+```
+
+### Event Grouping
+
+Batch related events for consolidated notifications:
+
+```yaml
+rules:
+  - name: group-cluster-alerts
+    condition:
+      field: action.action_type
+      starts_with: cluster_
+    action:
+      type: group
+      group_by:
+        - metadata.cluster
+        - metadata.severity
+      group_wait_seconds: 60      # Wait before first notification
+      group_interval_seconds: 300 # Min time between notifications
+      max_group_size: 100
+```
+
+### Inhibition (Alert Suppression)
+
+Suppress child alerts when parent alerts are active using expression functions:
+
+```yaml
+rules:
+  - name: inhibit-pod-alerts-on-cluster-down
+    condition:
+      all:
+        - field: action.action_type
+          starts_with: pod_
+        - call: has_active_event
+          args: [cluster_down, action.metadata.cluster]
+    action:
+      type: suppress
+      reason: "Cluster is down"
+```
+
+Available expression functions for state lookups:
+- `has_active_event(event_type, label_value)` — Check if an active event exists
+- `get_event_state(fingerprint)` — Get current state of an event
+- `event_in_state(fingerprint, state)` — Check if event is in a specific state
 
 ## Lock consistency
 

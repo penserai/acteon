@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use acteon_state::error::StateError;
-use acteon_state::key::StateKey;
+use acteon_state::key::{KeyKind, StateKey};
 use acteon_state::store::{CasResult, StateStore};
 
 use crate::config::ClickHouseConfig;
@@ -28,6 +28,13 @@ struct VersionRow {
     version: u64,
 }
 
+/// Row type used for key-value pairs in scan results.
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct KeyValueRow {
+    key: String,
+    value: String,
+}
+
 /// Row type used when inserting into the state table.
 #[derive(clickhouse::Row, serde::Serialize)]
 struct StateRow {
@@ -36,6 +43,27 @@ struct StateRow {
     version: u64,
     is_deleted: u8,
     expires_at: Option<i64>,
+}
+
+/// Row type used when inserting into the timeout index table.
+#[derive(clickhouse::Row, serde::Serialize)]
+struct TimeoutIndexRow {
+    key: String,
+    expires_at_ms: i64,
+    version: u64,
+    is_deleted: u8,
+}
+
+/// Row type used for reading keys from timeout index.
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct TimeoutKeyRow {
+    key: String,
+}
+
+/// Row type used for reading version from timeout index.
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct TimeoutVersionRow {
+    version: u64,
 }
 
 /// `ClickHouse`-backed implementation of [`StateStore`].
@@ -52,6 +80,7 @@ struct StateRow {
 pub struct ClickHouseStateStore {
     client: clickhouse::Client,
     state_table: String,
+    timeout_index_table: String,
 }
 
 impl ClickHouseStateStore {
@@ -76,6 +105,7 @@ impl ClickHouseStateStore {
         Ok(Self {
             client,
             state_table: config.state_table(),
+            timeout_index_table: config.timeout_index_table(),
         })
     }
 
@@ -98,6 +128,7 @@ impl ClickHouseStateStore {
         Ok(Self {
             client,
             state_table: config.state_table(),
+            timeout_index_table: config.timeout_index_table(),
         })
     }
 
@@ -344,6 +375,155 @@ impl StateStore for ClickHouseStateStore {
 
         self.insert_row(&new_row).await?;
         Ok(CasResult::Ok)
+    }
+
+    async fn scan_keys(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StateError> {
+        let key_prefix = match prefix {
+            Some(p) => format!("{namespace}:{tenant}:{kind}:{p}%"),
+            None => format!("{namespace}:{tenant}:{kind}:%"),
+        };
+
+        let query = format!(
+            "SELECT key, value FROM {} FINAL \
+             WHERE key LIKE ? AND is_deleted = 0 \
+             AND (expires_at IS NULL OR expires_at > now64(3)) \
+             ORDER BY key",
+            self.state_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(&key_prefix)
+            .fetch_all::<KeyValueRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| (r.key, r.value)).collect())
+    }
+
+    async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
+        // Match keys where the third colon-separated segment is the kind.
+        // Pattern: %:*:{kind}:%
+        let pattern = format!("%:%:{kind}:%");
+
+        let query = format!(
+            "SELECT key, value FROM {} FINAL \
+             WHERE key LIKE ? AND is_deleted = 0 \
+             AND (expires_at IS NULL OR expires_at > now64(3)) \
+             ORDER BY key",
+            self.state_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(&pattern)
+            .fetch_all::<KeyValueRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| (r.key, r.value)).collect())
+    }
+
+    async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+
+        // Insert with version 1 (ReplacingMergeTree will keep the latest version)
+        let row = TimeoutIndexRow {
+            key: canonical,
+            expires_at_ms,
+            version: 1,
+            is_deleted: 0,
+        };
+
+        let mut insert = self
+            .client
+            .insert(&self.timeout_index_table)
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .write(&row)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .end()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+
+        // Insert a tombstone row with is_deleted = 1
+        // First, get the current row to increment version
+        let query = format!(
+            "SELECT max(version) as version FROM {} FINAL WHERE key = ?",
+            self.timeout_index_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(&canonical)
+            .fetch_all::<TimeoutVersionRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        let current_version = rows.first().map_or(0, |r| r.version);
+
+        let tombstone = TimeoutIndexRow {
+            key: canonical,
+            expires_at_ms: 0,
+            version: current_version + 1,
+            is_deleted: 1,
+        };
+
+        let mut insert = self
+            .client
+            .insert(&self.timeout_index_table)
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .write(&tombstone)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .end()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        // Query using the ORDER BY (expires_at_ms, key) index - O(log N + M)
+        let query = format!(
+            "SELECT key FROM {} FINAL \
+             WHERE expires_at_ms <= ? AND is_deleted = 0 \
+             ORDER BY expires_at_ms",
+            self.timeout_index_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(now_ms)
+            .fetch_all::<TimeoutKeyRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| r.key).collect())
     }
 }
 

@@ -19,6 +19,7 @@ pub async fn run_migrations(
 ) -> Result<(), clickhouse::error::Error> {
     let state_table = config.state_table();
     let locks_table = config.locks_table();
+    let timeout_index_table = config.timeout_index_table();
 
     let create_state = format!(
         "CREATE TABLE IF NOT EXISTS {state_table} (
@@ -41,8 +42,22 @@ pub async fn run_migrations(
         ORDER BY name"
     );
 
+    // Timeout index table for efficient O(log N) queries on expired timeouts.
+    // Uses ReplacingMergeTree with version for upsert semantics.
+    // ORDER BY expires_at_ms allows efficient range queries.
+    let create_timeout_index = format!(
+        "CREATE TABLE IF NOT EXISTS {timeout_index_table} (
+            key String,
+            expires_at_ms Int64,
+            version UInt64 DEFAULT 1,
+            is_deleted UInt8 DEFAULT 0
+        ) ENGINE = ReplacingMergeTree(version)
+        ORDER BY (expires_at_ms, key)"
+    );
+
     client.query(&create_state).execute().await?;
     client.query(&create_locks).execute().await?;
+    client.query(&create_timeout_index).execute().await?;
 
     Ok(())
 }

@@ -35,6 +35,11 @@ impl PostgresConfig {
     pub(crate) fn locks_table(&self) -> String {
         format!("{}.{}locks", self.schema, self.table_prefix)
     }
+
+    /// Return the fully-qualified timeout index table name (`schema.prefix_timeout_index`).
+    pub(crate) fn timeout_index_table(&self) -> String {
+        format!("{}.{}timeout_index", self.schema, self.table_prefix)
+    }
 }
 
 #[cfg(test)]

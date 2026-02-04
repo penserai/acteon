@@ -6,8 +6,11 @@ use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
 use tracing::info;
 
+use acteon_core::Action;
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
+use acteon_gateway::background::{BackgroundConfig, BackgroundProcessorBuilder};
+use acteon_gateway::group_manager::GroupManager;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_server::api::AppState;
 use acteon_server::auth::AuthProvider;
@@ -176,12 +179,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Create a shared group manager for the gateway and background processor.
+    let group_manager = Arc::new(GroupManager::new());
+
     // Build the gateway.
     let mut builder = GatewayBuilder::new()
         .state(Arc::clone(&store))
-        .lock(lock)
+        .lock(Arc::clone(&lock))
         .executor_config(exec_config)
-        .dlq_enabled(config.executor.dlq_enabled);
+        .dlq_enabled(config.executor.dlq_enabled)
+        .group_manager(Arc::clone(&group_manager));
 
     if let Some(ref audit) = audit_store {
         builder = builder
@@ -211,6 +218,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Recover pending groups from state store on startup.
+    if config.background.enabled
+        && !config.background.namespace.is_empty()
+        && !config.background.tenant.is_empty()
+    {
+        match group_manager
+            .recover_groups(
+                store.as_ref(),
+                &config.background.namespace,
+                &config.background.tenant,
+            )
+            .await
+        {
+            Ok(count) if count > 0 => {
+                info!(count, "recovered pending groups from state store");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to recover groups from state store");
+            }
+        }
+    }
+
     // Spawn audit cleanup background task if audit is enabled.
     let _cleanup_handle = if let Some(ref audit) = audit_store {
         let interval = Duration::from_secs(config.audit.cleanup_interval_seconds);
@@ -234,6 +264,173 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let gateway = Arc::new(RwLock::new(gateway));
+
+    // Spawn background processor for group flushing and timeout processing.
+    // This must be after gateway Arc is created so handlers can dispatch notifications.
+    let _background_shutdown_tx = if config.background.enabled {
+        let bg_config = BackgroundConfig {
+            group_flush_interval: Duration::from_secs(
+                config.background.group_flush_interval_seconds,
+            ),
+            timeout_check_interval: Duration::from_secs(
+                config.background.timeout_check_interval_seconds,
+            ),
+            cleanup_interval: Duration::from_secs(config.background.cleanup_interval_seconds),
+            enable_group_flush: config.background.enable_group_flush,
+            enable_timeout_processing: config.background.enable_timeout_processing,
+            namespace: config.background.namespace.clone(),
+            tenant: config.background.tenant.clone(),
+        };
+
+        // Create channels for receiving flush and timeout events.
+        let (flush_tx, mut flush_rx) = tokio::sync::mpsc::channel(100);
+        let (timeout_tx, mut timeout_rx) = tokio::sync::mpsc::channel(100);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(bg_config)
+            .group_manager(Arc::clone(&group_manager))
+            .state(Arc::clone(&store))
+            .group_flush_channel(flush_tx)
+            .timeout_channel(timeout_tx)
+            .build()
+            .map_err(|e| format!("failed to build background processor: {e}"))?;
+
+        // Spawn the background processor.
+        tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Spawn consumer for group flush events.
+        // Creates a summary notification action and dispatches it through the gateway.
+        let flush_gateway = Arc::clone(&gateway);
+        tokio::spawn(async move {
+            while let Some(event) = flush_rx.recv().await {
+                let group = &event.group;
+                info!(
+                    group_id = %group.group_id,
+                    event_count = group.size(),
+                    flushed_at = %event.flushed_at,
+                    "group flushed - dispatching notification"
+                );
+
+                // Build a summary notification action from the grouped events.
+                // Uses the first event's metadata and aggregates the payloads.
+                let payloads: Vec<_> = group.events.iter().map(|e| e.payload.clone()).collect();
+                let summary_payload = serde_json::json!({
+                    "group_id": group.group_id,
+                    "group_key": group.group_key,
+                    "event_count": group.size(),
+                    "events": payloads,
+                    "labels": group.labels,
+                    "flushed_at": event.flushed_at.to_rfc3339(),
+                });
+
+                // Extract namespace/tenant from labels or use defaults.
+                let namespace = group
+                    .labels
+                    .get("namespace")
+                    .cloned()
+                    .unwrap_or_else(|| "default".to_string());
+                let tenant = group
+                    .labels
+                    .get("tenant")
+                    .cloned()
+                    .unwrap_or_else(|| "default".to_string());
+                let provider = group
+                    .labels
+                    .get("provider")
+                    .cloned()
+                    .unwrap_or_else(|| "webhook".to_string());
+
+                let action = Action::new(
+                    namespace.as_str(),
+                    tenant.as_str(),
+                    provider.as_str(),
+                    "group_notification",
+                    summary_payload,
+                );
+
+                // Dispatch the notification through the gateway.
+                let gw = flush_gateway.read().await;
+                match gw.dispatch(action, None).await {
+                    Ok(outcome) => {
+                        info!(
+                            group_id = %group.group_id,
+                            ?outcome,
+                            "group notification dispatched"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            group_id = %group.group_id,
+                            error = %e,
+                            "failed to dispatch group notification"
+                        );
+                    }
+                }
+            }
+        });
+
+        // Spawn consumer for timeout events.
+        // Creates a timeout notification action and dispatches it through the gateway.
+        let timeout_gateway = Arc::clone(&gateway);
+        let timeout_namespace = config.background.namespace.clone();
+        let timeout_tenant = config.background.tenant.clone();
+        tokio::spawn(async move {
+            while let Some(event) = timeout_rx.recv().await {
+                info!(
+                    fingerprint = %event.fingerprint,
+                    state_machine = %event.state_machine,
+                    previous_state = %event.previous_state,
+                    new_state = %event.new_state,
+                    fired_at = %event.fired_at,
+                    "timeout fired - dispatching notification"
+                );
+
+                // Build a timeout notification action.
+                let timeout_payload = serde_json::json!({
+                    "fingerprint": event.fingerprint,
+                    "state_machine": event.state_machine,
+                    "previous_state": event.previous_state,
+                    "new_state": event.new_state,
+                    "fired_at": event.fired_at.to_rfc3339(),
+                });
+
+                let action = Action::new(
+                    timeout_namespace.as_str(),
+                    timeout_tenant.as_str(),
+                    "webhook",
+                    "timeout_notification",
+                    timeout_payload,
+                );
+
+                // Dispatch the notification through the gateway.
+                let gw = timeout_gateway.read().await;
+                match gw.dispatch(action, None).await {
+                    Ok(outcome) => {
+                        info!(
+                            fingerprint = %event.fingerprint,
+                            ?outcome,
+                            "timeout notification dispatched"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            fingerprint = %event.fingerprint,
+                            error = %e,
+                            "failed to dispatch timeout notification"
+                        );
+                    }
+                }
+            }
+        });
+
+        info!("background processor started");
+        Some(shutdown_tx)
+    } else {
+        None
+    };
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,

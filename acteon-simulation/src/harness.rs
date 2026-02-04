@@ -96,6 +96,7 @@ impl SimulationHarness {
                 provider_refs.clone(),
                 audit,
                 config.environment.clone(),
+                config.state_machines.clone(),
             )?;
 
             nodes.push(node);
@@ -307,6 +308,13 @@ impl SimulationHarnessBuilder {
     #[must_use]
     pub fn env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.config.environment.insert(key.into(), value.into());
+        self
+    }
+
+    /// Add a state machine configuration.
+    #[must_use]
+    pub fn add_state_machine(mut self, config: acteon_core::StateMachineConfig) -> Self {
+        self.config.state_machines.push(config);
         self
     }
 

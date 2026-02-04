@@ -2,6 +2,8 @@ pub mod audit;
 pub mod auth;
 pub mod dispatch;
 pub mod dlq;
+pub mod events;
+pub mod groups;
 pub mod health;
 pub mod openapi;
 pub mod rules;
@@ -10,7 +12,7 @@ pub mod schemas;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -63,6 +65,17 @@ pub fn router(state: AppState) -> Router {
         // Dead-letter queue
         .route("/v1/dlq/stats", get(dlq::dlq_stats))
         .route("/v1/dlq/drain", post(dlq::dlq_drain))
+        // Events (state machine lifecycle)
+        .route("/v1/events", get(events::list_events))
+        .route("/v1/events/{fingerprint}", get(events::get_event))
+        .route(
+            "/v1/events/{fingerprint}/transition",
+            put(events::transition_event),
+        )
+        // Groups (event batching)
+        .route("/v1/groups", get(groups::list_groups))
+        .route("/v1/groups/{group_key}", get(groups::get_group))
+        .route("/v1/groups/{group_key}", delete(groups::flush_group))
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
         // Rate limiting runs after auth (so CallerIdentity is available)

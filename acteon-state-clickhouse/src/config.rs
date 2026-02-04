@@ -31,6 +31,11 @@ impl ClickHouseConfig {
     pub(crate) fn locks_table(&self) -> String {
         format!("{}locks", self.table_prefix)
     }
+
+    /// Return the timeout index table name (`{prefix}timeout_index`).
+    pub(crate) fn timeout_index_table(&self) -> String {
+        format!("{}timeout_index", self.table_prefix)
+    }
 }
 
 #[cfg(test)]

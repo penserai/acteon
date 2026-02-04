@@ -24,6 +24,9 @@ pub struct ActeonConfig {
     /// Rate limiting configuration.
     #[serde(default)]
     pub rate_limit: RateLimitRefConfig,
+    /// Background processing configuration.
+    #[serde(default)]
+    pub background: BackgroundProcessingConfig,
 }
 
 /// Configuration for the state store backend.
@@ -247,4 +250,72 @@ pub enum RateLimitErrorBehavior {
     Allow,
     /// Deny requests (fail-closed).
     Deny,
+}
+
+/// Configuration for background processing (group flushing, timeouts).
+#[derive(Debug, Deserialize)]
+pub struct BackgroundProcessingConfig {
+    /// Whether background processing is enabled.
+    #[serde(default = "default_background_enabled")]
+    pub enabled: bool,
+    /// How often to check for ready groups (seconds).
+    #[serde(default = "default_group_flush_interval")]
+    pub group_flush_interval_seconds: u64,
+    /// How often to check for state machine timeouts (seconds).
+    #[serde(default = "default_timeout_check_interval")]
+    pub timeout_check_interval_seconds: u64,
+    /// How often to run cleanup tasks (seconds).
+    #[serde(default = "default_cleanup_interval_bg")]
+    pub cleanup_interval_seconds: u64,
+    /// Whether to flush groups automatically.
+    #[serde(default = "default_enable_group_flush")]
+    pub enable_group_flush: bool,
+    /// Whether to process state machine timeouts.
+    #[serde(default = "default_enable_timeout_processing")]
+    pub enable_timeout_processing: bool,
+    /// Namespace to scan for timeouts (required for timeout processing).
+    #[serde(default)]
+    pub namespace: String,
+    /// Tenant to scan for timeouts (required for timeout processing).
+    #[serde(default)]
+    pub tenant: String,
+}
+
+impl Default for BackgroundProcessingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_background_enabled(),
+            group_flush_interval_seconds: default_group_flush_interval(),
+            timeout_check_interval_seconds: default_timeout_check_interval(),
+            cleanup_interval_seconds: default_cleanup_interval_bg(),
+            enable_group_flush: default_enable_group_flush(),
+            enable_timeout_processing: default_enable_timeout_processing(),
+            namespace: String::new(),
+            tenant: String::new(),
+        }
+    }
+}
+
+fn default_background_enabled() -> bool {
+    false
+}
+
+fn default_group_flush_interval() -> u64 {
+    5
+}
+
+fn default_timeout_check_interval() -> u64 {
+    10
+}
+
+fn default_cleanup_interval_bg() -> u64 {
+    60
+}
+
+fn default_enable_group_flush() -> bool {
+    true
+}
+
+fn default_enable_timeout_processing() -> bool {
+    true
 }

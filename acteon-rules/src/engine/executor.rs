@@ -225,6 +225,15 @@ pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError
         Expr::StateGet(key_pattern) => eval_state_get(key_pattern, ctx).await,
         Expr::StateCounter(key_pattern) => eval_state_counter(key_pattern, ctx).await,
         Expr::StateTimeSince(key_pattern) => eval_state_time_since(key_pattern, ctx).await,
+
+        Expr::HasActiveEvent {
+            event_type,
+            label_value,
+        } => eval_has_active_event(event_type, label_value.as_deref(), ctx).await,
+        Expr::GetEventState(fingerprint_expr) => eval_get_event_state(fingerprint_expr, ctx).await,
+        Expr::EventInState { fingerprint, state } => {
+            eval_event_in_state(fingerprint, state, ctx).await
+        }
     }
 }
 
@@ -598,6 +607,105 @@ async fn eval_state_time_since(
     }
 }
 
+/// Check if an active event exists with the given type and optional label value.
+///
+/// This is used for inhibition: suppressing alerts when a parent alert is active.
+/// For example, suppress pod alerts when a `cluster_down` event is active.
+async fn eval_has_active_event(
+    event_type: &str,
+    label_value_expr: Option<&Expr>,
+    ctx: &EvalContext<'_>,
+) -> Result<Value, RuleError> {
+    // Build the key for looking up active events
+    // Format: {ns}:{tenant}:active_events:{type}:{hash}
+    // where hash is derived from the label value if provided
+
+    let label_suffix = if let Some(expr) = label_value_expr {
+        let val = Box::pin(eval(expr, ctx)).await?;
+        match val {
+            Value::String(s) => format!(":{s}"),
+            Value::Null => String::new(),
+            other => format!(":{}", other.display_string()),
+        }
+    } else {
+        String::new()
+    };
+
+    let key_id = format!("{event_type}{label_suffix}");
+    let state_key = StateKey::new(
+        ctx.action.namespace.as_str(),
+        ctx.action.tenant.as_str(),
+        KeyKind::ActiveEvents,
+        &key_id,
+    );
+
+    match ctx.state.get(&state_key).await {
+        Ok(Some(val)) => {
+            // Check if the stored state indicates an active (non-resolved) event
+            // We store JSON like: {"state": "firing", "fingerprint": "..."}
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val)
+                && let Some(state) = parsed.get("state").and_then(|s| s.as_str())
+            {
+                // Consider "resolved" and "closed" as inactive
+                let is_active = !matches!(state, "resolved" | "closed");
+                return Ok(Value::Bool(is_active));
+            }
+            // If we can't parse, assume it's active
+            Ok(Value::Bool(true))
+        }
+        Ok(None) => Ok(Value::Bool(false)),
+        Err(e) => Err(RuleError::StateAccess(e.to_string())),
+    }
+}
+
+/// Get the current state of an event by fingerprint.
+async fn eval_get_event_state(
+    fingerprint_expr: &Expr,
+    ctx: &EvalContext<'_>,
+) -> Result<Value, RuleError> {
+    let fingerprint = Box::pin(eval(fingerprint_expr, ctx)).await?;
+    let fingerprint_str = match fingerprint {
+        Value::String(s) => s,
+        Value::Null => return Ok(Value::Null),
+        other => other.display_string(),
+    };
+
+    let state_key = StateKey::new(
+        ctx.action.namespace.as_str(),
+        ctx.action.tenant.as_str(),
+        KeyKind::EventState,
+        &fingerprint_str,
+    );
+
+    match ctx.state.get(&state_key).await {
+        Ok(Some(val)) => {
+            // The stored value may be JSON with state info or just the state name
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val)
+                && let Some(state) = parsed.get("state").and_then(|s| s.as_str())
+            {
+                return Ok(Value::String(state.to_string()));
+            }
+            // If not JSON, return the raw value as the state
+            Ok(Value::String(val))
+        }
+        Ok(None) => Ok(Value::Null),
+        Err(e) => Err(RuleError::StateAccess(e.to_string())),
+    }
+}
+
+/// Check if an event is in a specific state.
+async fn eval_event_in_state(
+    fingerprint_expr: &Expr,
+    expected_state: &str,
+    ctx: &EvalContext<'_>,
+) -> Result<Value, RuleError> {
+    let current_state = eval_get_event_state(fingerprint_expr, ctx).await?;
+    match current_state {
+        Value::String(s) => Ok(Value::Bool(s == expected_state)),
+        _ => Ok(Value::Bool(false)),
+    }
+}
+
 /// The verdict produced by the rule engine after evaluating all rules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RuleVerdict {
@@ -634,6 +742,30 @@ pub enum RuleVerdict {
         rule: String,
         /// The JSON changes to apply.
         changes: serde_json::Value,
+    },
+    /// Process through a state machine.
+    StateMachine {
+        /// Name of the rule that triggered the state machine.
+        rule: String,
+        /// Name of the state machine to use.
+        state_machine: String,
+        /// Fields to use for computing the fingerprint.
+        fingerprint_fields: Vec<String>,
+    },
+    /// Group events for batched notification.
+    Group {
+        /// Name of the rule that triggered grouping.
+        rule: String,
+        /// Fields to group events by.
+        group_by: Vec<String>,
+        /// Seconds to wait before sending first notification.
+        group_wait_seconds: u64,
+        /// Minimum seconds between notifications for same group.
+        group_interval_seconds: u64,
+        /// Maximum events in a single group.
+        max_group_size: usize,
+        /// Optional template name for group notification.
+        template: Option<String>,
     },
 }
 
@@ -811,6 +943,28 @@ fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVerdict {
             debug!(custom_action = %name, "custom action not handled, allowing");
             RuleVerdict::Allow
         }
+        RuleAction::StateMachine {
+            state_machine,
+            fingerprint_fields,
+        } => RuleVerdict::StateMachine {
+            rule: rule_name.to_owned(),
+            state_machine: state_machine.clone(),
+            fingerprint_fields: fingerprint_fields.clone(),
+        },
+        RuleAction::Group {
+            group_by,
+            group_wait_seconds,
+            group_interval_seconds,
+            max_group_size,
+            template,
+        } => RuleVerdict::Group {
+            rule: rule_name.to_owned(),
+            group_by: group_by.clone(),
+            group_wait_seconds: *group_wait_seconds,
+            group_interval_seconds: *group_interval_seconds,
+            max_group_size: *max_group_size,
+            template: template.clone(),
+        },
     }
 }
 

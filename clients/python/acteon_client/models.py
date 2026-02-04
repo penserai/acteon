@@ -277,3 +277,152 @@ class AuditPage:
             limit=data["limit"],
             offset=data["offset"],
         )
+
+
+# =============================================================================
+# Event Types (State Machine Lifecycle)
+# =============================================================================
+
+
+@dataclass
+class EventQuery:
+    """Query parameters for listing events."""
+    namespace: str
+    tenant: str
+    status: Optional[str] = None
+    limit: Optional[int] = None
+
+    def to_params(self) -> dict[str, Any]:
+        """Convert to query parameters."""
+        params: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+        }
+        if self.status:
+            params["status"] = self.status
+        if self.limit is not None:
+            params["limit"] = self.limit
+        return params
+
+
+@dataclass
+class EventState:
+    """Current state of an event."""
+    fingerprint: str
+    state: str
+    action_type: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EventState":
+        return cls(
+            fingerprint=data["fingerprint"],
+            state=data["state"],
+            action_type=data.get("action_type"),
+            updated_at=data.get("updated_at"),
+        )
+
+
+@dataclass
+class EventListResponse:
+    """Response from listing events."""
+    events: list[EventState]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EventListResponse":
+        return cls(
+            events=[EventState.from_dict(e) for e in data["events"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class TransitionResponse:
+    """Response from transitioning an event."""
+    fingerprint: str
+    previous_state: str
+    new_state: str
+    notify: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TransitionResponse":
+        return cls(
+            fingerprint=data["fingerprint"],
+            previous_state=data["previous_state"],
+            new_state=data["new_state"],
+            notify=data["notify"],
+        )
+
+
+# =============================================================================
+# Group Types (Event Batching)
+# =============================================================================
+
+
+@dataclass
+class GroupSummary:
+    """Summary of an event group."""
+    group_id: str
+    group_key: str
+    event_count: int
+    state: str
+    notify_at: Optional[str] = None
+    created_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GroupSummary":
+        return cls(
+            group_id=data["group_id"],
+            group_key=data["group_key"],
+            event_count=data["event_count"],
+            state=data["state"],
+            notify_at=data.get("notify_at"),
+            created_at=data.get("created_at"),
+        )
+
+
+@dataclass
+class GroupListResponse:
+    """Response from listing groups."""
+    groups: list[GroupSummary]
+    total: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GroupListResponse":
+        return cls(
+            groups=[GroupSummary.from_dict(g) for g in data["groups"]],
+            total=data["total"],
+        )
+
+
+@dataclass
+class GroupDetail:
+    """Detailed information about a group."""
+    group: GroupSummary
+    events: list[str]
+    labels: dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "GroupDetail":
+        return cls(
+            group=GroupSummary.from_dict(data["group"]),
+            events=data.get("events", []),
+            labels=data.get("labels", {}),
+        )
+
+
+@dataclass
+class FlushGroupResponse:
+    """Response from flushing a group."""
+    group_id: str
+    event_count: int
+    notified: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FlushGroupResponse":
+        return cls(
+            group_id=data["group_id"],
+            event_count=data["event_count"],
+            notified=data["notified"],
+        )

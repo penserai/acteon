@@ -261,6 +261,26 @@ fn compile_action(action: &YamlAction) -> RuleAction {
         YamlAction::Modify { changes } => RuleAction::Modify {
             changes: changes.clone(),
         },
+        YamlAction::StateMachine {
+            state_machine,
+            fingerprint_fields,
+        } => RuleAction::StateMachine {
+            state_machine: state_machine.clone(),
+            fingerprint_fields: fingerprint_fields.clone(),
+        },
+        YamlAction::Group {
+            group_by,
+            group_wait_seconds,
+            group_interval_seconds,
+            max_group_size,
+            template,
+        } => RuleAction::Group {
+            group_by: group_by.clone(),
+            group_wait_seconds: *group_wait_seconds,
+            group_interval_seconds: *group_interval_seconds,
+            max_group_size: *max_group_size,
+            template: template.clone(),
+        },
     }
 }
 
@@ -537,6 +557,23 @@ rules:
       type: modify
       changes:
         key: value
+  - name: r8
+    condition:
+      field: x
+      eq: 1
+    action:
+      type: state_machine
+      state_machine: alert
+      fingerprint_fields:
+        - action_type
+  - name: r9
+    condition:
+      field: x
+      eq: 1
+    action:
+      type: group
+      group_by:
+        - metadata.cluster
 "#;
         let rules = fe.parse(yaml).unwrap();
         assert!(rules[0].action.is_allow());
@@ -546,6 +583,8 @@ rules:
         assert!(rules[4].action.is_reroute());
         assert!(rules[5].action.is_throttle());
         assert!(rules[6].action.is_modify());
+        assert!(rules[7].action.is_state_machine());
+        assert!(rules[8].action.is_group());
     }
 
     #[test]

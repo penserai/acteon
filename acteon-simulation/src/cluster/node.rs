@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use acteon_audit::AuditStore;
-use acteon_core::{Action, ActionOutcome};
+use acteon_core::{Action, ActionOutcome, StateMachineConfig};
 use acteon_gateway::{Gateway, GatewayBuilder, GatewayError};
 use acteon_provider::DynProvider;
 use acteon_rules::Rule;
@@ -43,6 +43,7 @@ impl ServerNode {
         providers: Vec<Arc<dyn DynProvider>>,
         audit: Option<Arc<dyn AuditStore>>,
         environment: std::collections::HashMap<String, String>,
+        state_machines: Vec<StateMachineConfig>,
     ) -> Result<Self, SimulationError> {
         let mut builder = GatewayBuilder::new().state(state).lock(lock).rules(rules);
 
@@ -56,6 +57,10 @@ impl ServerNode {
 
         for (key, value) in environment {
             builder = builder.env_var(key, value);
+        }
+
+        for sm in state_machines {
+            builder = builder.state_machine(sm);
         }
 
         let gateway = builder
@@ -129,6 +134,7 @@ pub struct ServerNodeBuilder {
     providers: Vec<Arc<dyn DynProvider>>,
     audit: Option<Arc<dyn AuditStore>>,
     environment: std::collections::HashMap<String, String>,
+    state_machines: Vec<StateMachineConfig>,
 }
 
 impl ServerNodeBuilder {
@@ -195,6 +201,13 @@ impl ServerNodeBuilder {
         self
     }
 
+    /// Add a state machine configuration.
+    #[must_use]
+    pub fn state_machine(mut self, config: StateMachineConfig) -> Self {
+        self.state_machines.push(config);
+        self
+    }
+
     /// Build the `ServerNode`.
     pub fn build(self) -> Result<ServerNode, SimulationError> {
         let id = self.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -217,6 +230,7 @@ impl ServerNodeBuilder {
             self.providers,
             self.audit,
             self.environment,
+            self.state_machines,
         )
     }
 }

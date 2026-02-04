@@ -13,6 +13,14 @@ from .models import (
     AuditQuery,
     AuditPage,
     AuditRecord,
+    EventQuery,
+    EventState,
+    EventListResponse,
+    TransitionResponse,
+    GroupSummary,
+    GroupListResponse,
+    GroupDetail,
+    FlushGroupResponse,
 )
 
 
@@ -271,6 +279,168 @@ class ActeonClient:
         else:
             raise HttpError(response.status_code, f"Failed to get audit record")
 
+    # =========================================================================
+    # Events (State Machine Lifecycle)
+    # =========================================================================
+
+    def list_events(self, query: EventQuery) -> EventListResponse:
+        """List events filtered by namespace, tenant, and optionally status.
+
+        Args:
+            query: Query parameters for filtering events.
+
+        Returns:
+            List of events matching the query.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/events", params=query.to_params())
+
+        if response.status_code == 200:
+            return EventListResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list events")
+
+    def get_event(
+        self, fingerprint: str, namespace: str, tenant: str
+    ) -> Optional[EventState]:
+        """Get the current state of an event by fingerprint.
+
+        Args:
+            fingerprint: The event fingerprint.
+            namespace: The event namespace.
+            tenant: The event tenant.
+
+        Returns:
+            The event state, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request(
+            "GET",
+            f"/v1/events/{fingerprint}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return EventState.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get event")
+
+    def transition_event(
+        self, fingerprint: str, to_state: str, namespace: str, tenant: str
+    ) -> TransitionResponse:
+        """Transition an event to a new state.
+
+        Args:
+            fingerprint: The event fingerprint.
+            to_state: The target state to transition to.
+            namespace: The event namespace.
+            tenant: The event tenant.
+
+        Returns:
+            Details of the transition.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the event is not found (404).
+            ApiError: If the server returns an error.
+        """
+        response = self._request(
+            "PUT",
+            f"/v1/events/{fingerprint}/transition",
+            json={"to": to_state, "namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return TransitionResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Event not found: {fingerprint}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
+    # Groups (Event Batching)
+    # =========================================================================
+
+    def list_groups(self) -> GroupListResponse:
+        """List all active event groups.
+
+        Returns:
+            List of active groups.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/groups")
+
+        if response.status_code == 200:
+            return GroupListResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list groups")
+
+    def get_group(self, group_key: str) -> Optional[GroupDetail]:
+        """Get details of a specific group.
+
+        Args:
+            group_key: The group key.
+
+        Returns:
+            The group details, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/groups/{group_key}")
+
+        if response.status_code == 200:
+            return GroupDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get group")
+
+    def flush_group(self, group_key: str) -> FlushGroupResponse:
+        """Force flush a group, triggering immediate notification.
+
+        Args:
+            group_key: The group key to flush.
+
+        Returns:
+            Details of the flushed group.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the group is not found (404).
+            ApiError: If the server returns an error.
+        """
+        response = self._request("DELETE", f"/v1/groups/{group_key}")
+
+        if response.status_code == 200:
+            return FlushGroupResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Group not found: {group_key}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
 
 class AsyncActeonClient:
     """Async HTTP client for the Acteon action gateway.
@@ -405,3 +575,83 @@ class AsyncActeonClient:
             return None
         else:
             raise HttpError(response.status_code, f"Failed to get audit record")
+
+    # =========================================================================
+    # Events (State Machine Lifecycle)
+    # =========================================================================
+
+    async def list_events(self, query: EventQuery) -> EventListResponse:
+        response = await self._request("GET", "/v1/events", params=query.to_params())
+        if response.status_code == 200:
+            return EventListResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list events")
+
+    async def get_event(
+        self, fingerprint: str, namespace: str, tenant: str
+    ) -> Optional[EventState]:
+        response = await self._request(
+            "GET",
+            f"/v1/events/{fingerprint}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return EventState.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get event")
+
+    async def transition_event(
+        self, fingerprint: str, to_state: str, namespace: str, tenant: str
+    ) -> TransitionResponse:
+        response = await self._request(
+            "PUT",
+            f"/v1/events/{fingerprint}/transition",
+            json={"to": to_state, "namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return TransitionResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Event not found: {fingerprint}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
+    # Groups (Event Batching)
+    # =========================================================================
+
+    async def list_groups(self) -> GroupListResponse:
+        response = await self._request("GET", "/v1/groups")
+        if response.status_code == 200:
+            return GroupListResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list groups")
+
+    async def get_group(self, group_key: str) -> Optional[GroupDetail]:
+        response = await self._request("GET", f"/v1/groups/{group_key}")
+        if response.status_code == 200:
+            return GroupDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get group")
+
+    async def flush_group(self, group_key: str) -> FlushGroupResponse:
+        response = await self._request("DELETE", f"/v1/groups/{group_key}")
+        if response.status_code == 200:
+            return FlushGroupResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Group not found: {group_key}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )

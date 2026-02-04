@@ -5,7 +5,7 @@ use deadpool_redis::{Config, Pool, Runtime};
 use redis::{AsyncCommands, Script};
 
 use acteon_state::error::StateError;
-use acteon_state::key::StateKey;
+use acteon_state::key::{KeyKind, StateKey};
 use acteon_state::store::{CasResult, StateStore};
 
 use crate::config::RedisConfig;
@@ -248,6 +248,200 @@ impl StateStore for RedisStateStore {
                 current_version,
             })
         }
+    }
+
+    async fn scan_keys(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StateError> {
+        let pattern = match prefix {
+            Some(p) => format!("{}:{}:{}:{}:{}*", self.prefix, namespace, tenant, kind, p),
+            None => format!("{}:{}:{}:{}:*", self.prefix, namespace, tenant, kind),
+        };
+
+        let mut conn = self.conn().await?;
+        let mut results = Vec::new();
+        let mut cursor = 0u64;
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for key in keys {
+                // Try to get value from hash first, then plain string
+                let val: Option<String> = conn
+                    .hget(&key, "v")
+                    .await
+                    .map_err(|e| StateError::Backend(e.to_string()))?;
+
+                let value = if let Some(v) = val {
+                    v
+                } else {
+                    // Try plain string key (without :h suffix)
+                    let plain_key = key.strip_suffix(":h").unwrap_or(&key);
+                    let v: Option<String> = conn
+                        .get(plain_key)
+                        .await
+                        .map_err(|e| StateError::Backend(e.to_string()))?;
+                    match v {
+                        Some(s) => s,
+                        None => continue,
+                    }
+                };
+
+                // Strip the prefix to return a clean key
+                let clean_key = key
+                    .strip_prefix(&format!("{}:", self.prefix))
+                    .unwrap_or(&key)
+                    .strip_suffix(":h")
+                    .unwrap_or(&key)
+                    .to_string();
+
+                results.push((clean_key, value));
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
+        // Scan all keys matching the pattern: {prefix}:*:*:{kind}:*
+        // This matches keys across all namespaces and tenants for the given kind.
+        let pattern = format!("{}:*:*:{}:*", self.prefix, kind);
+
+        let mut conn = self.conn().await?;
+        let mut results = Vec::new();
+        let mut cursor = 0u64;
+
+        loop {
+            let (new_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for key in keys {
+                // Try to get value from hash first, then plain string
+                let val: Option<String> = conn
+                    .hget(&key, "v")
+                    .await
+                    .map_err(|e| StateError::Backend(e.to_string()))?;
+
+                let value = if let Some(v) = val {
+                    v
+                } else {
+                    // Try plain string key (without :h suffix)
+                    let plain_key = key.strip_suffix(":h").unwrap_or(&key);
+                    let v: Option<String> = conn
+                        .get(plain_key)
+                        .await
+                        .map_err(|e| StateError::Backend(e.to_string()))?;
+                    match v {
+                        Some(s) => s,
+                        None => continue,
+                    }
+                };
+
+                // Strip the prefix to return a clean key
+                let clean_key = key
+                    .strip_prefix(&format!("{}:", self.prefix))
+                    .unwrap_or(&key)
+                    .strip_suffix(":h")
+                    .unwrap_or(&key)
+                    .to_string();
+
+                results.push((clean_key, value));
+            }
+
+            cursor = new_cursor;
+            if cursor == 0 {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let index_key = format!("{}:timeout_index", self.prefix);
+
+        let mut conn = self.conn().await?;
+
+        // ZADD timeout_index <score=expires_at_ms> <member=canonical_key>
+        redis::cmd("ZADD")
+            .arg(&index_key)
+            .arg(expires_at_ms)
+            .arg(&canonical)
+            .query_async::<i64>(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let index_key = format!("{}:timeout_index", self.prefix);
+
+        let mut conn = self.conn().await?;
+
+        // ZREM timeout_index <member=canonical_key>
+        redis::cmd("ZREM")
+            .arg(&index_key)
+            .arg(&canonical)
+            .query_async::<i64>(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let index_key = format!("{}:timeout_index", self.prefix);
+
+        let mut conn = self.conn().await?;
+
+        // ZRANGEBYSCORE timeout_index -inf <now_ms>
+        // Returns all members with score <= now_ms (i.e., expired)
+        let keys: Vec<String> = redis::cmd("ZRANGEBYSCORE")
+            .arg(&index_key)
+            .arg("-inf")
+            .arg(now_ms)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        // Strip the prefix from the returned keys
+        let clean_keys: Vec<String> = keys
+            .into_iter()
+            .map(|k| {
+                k.strip_prefix(&format!("{}:", self.prefix))
+                    .unwrap_or(&k)
+                    .to_string()
+            })
+            .collect();
+
+        Ok(clean_keys)
     }
 }
 

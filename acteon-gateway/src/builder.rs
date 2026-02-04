@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use acteon_audit::store::AuditStore;
+use acteon_core::StateMachineConfig;
 use acteon_executor::{DeadLetterQueue, DeadLetterSink, ExecutorConfig};
 use acteon_provider::{DynProvider, ProviderRegistry};
 use acteon_rules::{Rule, RuleEngine};
@@ -10,6 +11,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::error::GatewayError;
 use crate::gateway::Gateway;
+use crate::group_manager::GroupManager;
 use crate::metrics::GatewayMetrics;
 
 /// Fluent builder for constructing a [`Gateway`] instance.
@@ -29,6 +31,8 @@ pub struct GatewayBuilder {
     audit_store_payload: bool,
     dlq: Option<Arc<dyn DeadLetterSink>>,
     dlq_enabled: bool,
+    state_machines: HashMap<String, StateMachineConfig>,
+    group_manager: Option<Arc<GroupManager>>,
 }
 
 impl GatewayBuilder {
@@ -46,6 +50,8 @@ impl GatewayBuilder {
             audit_store_payload: true,
             dlq: None,
             dlq_enabled: false,
+            state_machines: HashMap::new(),
+            group_manager: None,
         }
     }
 
@@ -134,6 +140,24 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a state machine configuration.
+    #[must_use]
+    pub fn state_machine(mut self, config: StateMachineConfig) -> Self {
+        self.state_machines.insert(config.name.clone(), config);
+        self
+    }
+
+    /// Set a shared group manager.
+    ///
+    /// Use this when you need to share the group manager with a
+    /// [`BackgroundProcessor`](crate::background::BackgroundProcessor) for
+    /// automatic group flushing.
+    #[must_use]
+    pub fn group_manager(mut self, manager: Arc<GroupManager>) -> Self {
+        self.group_manager = Some(manager);
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -163,6 +187,11 @@ impl GatewayBuilder {
             acteon_executor::ActionExecutor::new(self.executor_config)
         };
 
+        // Use provided group manager or create a new one.
+        let group_manager = self
+            .group_manager
+            .unwrap_or_else(|| Arc::new(GroupManager::new()));
+
         Ok(Gateway {
             state,
             lock,
@@ -176,6 +205,8 @@ impl GatewayBuilder {
             audit_store_payload: self.audit_store_payload,
             audit_tracker: TaskTracker::new(),
             dlq,
+            state_machines: self.state_machines,
+            group_manager,
         })
     }
 }

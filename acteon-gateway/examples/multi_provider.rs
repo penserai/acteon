@@ -148,6 +148,17 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
         ActionOutcome::Throttled { retry_after } => {
             format!("Throttled (retry after {retry_after:?})")
         }
+        ActionOutcome::Grouped {
+            group_id,
+            group_size,
+            ..
+        } => format!("Grouped (id: {group_id}, size: {group_size})"),
+        ActionOutcome::StateChanged {
+            fingerprint,
+            previous_state,
+            new_state,
+            ..
+        } => format!("StateChanged ({fingerprint}: {previous_state} -> {new_state})"),
         ActionOutcome::Failed(err) => format!("Failed: {}", err.message),
     }
 }

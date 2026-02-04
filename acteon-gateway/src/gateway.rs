@@ -4,15 +4,17 @@ use std::time::Duration;
 
 use chrono::Utc;
 use tokio_util::task::TaskTracker;
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use acteon_audit::AuditRecord;
 use acteon_audit::store::AuditStore;
-use acteon_core::{Action, ActionOutcome, Caller};
+use acteon_core::{Action, ActionOutcome, Caller, StateMachineConfig, compute_fingerprint};
 use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
 use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
 use acteon_state::{DistributedLock, KeyKind, StateKey, StateStore};
+
+use crate::group_manager::GroupManager;
 
 use crate::error::GatewayError;
 use crate::metrics::GatewayMetrics;
@@ -38,6 +40,8 @@ pub struct Gateway {
     pub(crate) audit_store_payload: bool,
     pub(crate) audit_tracker: TaskTracker,
     pub(crate) dlq: Option<Arc<dyn DeadLetterSink>>,
+    pub(crate) state_machines: HashMap<String, StateMachineConfig>,
+    pub(crate) group_manager: Arc<GroupManager>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -121,6 +125,31 @@ impl Gateway {
                 json_patch::merge(&mut modified.payload, changes);
                 self.execute_action(&modified).await
             }
+            RuleVerdict::StateMachine {
+                rule: _,
+                state_machine,
+                fingerprint_fields,
+            } => {
+                self.handle_state_machine(&action, state_machine, fingerprint_fields)
+                    .await?
+            }
+            RuleVerdict::Group {
+                rule: _,
+                group_by,
+                group_wait_seconds,
+                group_interval_seconds,
+                max_group_size,
+                template: _,
+            } => {
+                self.handle_group(
+                    &action,
+                    group_by,
+                    *group_wait_seconds,
+                    *group_interval_seconds,
+                    *max_group_size,
+                )
+                .await?
+            }
         };
 
         // 5. Emit audit record (tracked async task for graceful shutdown).
@@ -154,17 +183,27 @@ impl Gateway {
         Ok(outcome)
     }
 
-    /// Dispatch a batch of actions sequentially, collecting results.
+    /// Dispatch a batch of actions in parallel, collecting results.
+    ///
+    /// Actions are processed concurrently up to the executor's concurrency limit.
+    /// Results are returned in the same order as the input actions.
     pub async fn dispatch_batch(
         &self,
         actions: Vec<Action>,
         caller: Option<&Caller>,
     ) -> Vec<Result<ActionOutcome, GatewayError>> {
-        let mut results = Vec::with_capacity(actions.len());
-        for action in actions {
-            results.push(self.dispatch(action, caller).await);
-        }
-        results
+        use futures::stream::{self, StreamExt};
+
+        // Process actions in parallel with bounded concurrency.
+        // The executor already has its own concurrency limits, so we use a
+        // reasonable batch concurrency here (e.g., 32 concurrent dispatches).
+        const BATCH_CONCURRENCY: usize = 32;
+
+        stream::iter(actions)
+            .map(|action| self.dispatch(action, caller))
+            .buffer_unordered(BATCH_CONCURRENCY)
+            .collect()
+            .await
     }
 
     /// Return a reference to the gateway metrics.
@@ -330,6 +369,210 @@ impl Gateway {
             _ => Ok(result),
         }
     }
+
+    /// Handle the state machine verdict: track event lifecycle.
+    #[allow(clippy::too_many_lines)]
+    async fn handle_state_machine(
+        &self,
+        action: &Action,
+        state_machine_name: &str,
+        fingerprint_fields: &[String],
+    ) -> Result<ActionOutcome, GatewayError> {
+        let state_machine = self.state_machines.get(state_machine_name).ok_or_else(|| {
+            GatewayError::Configuration(format!("state machine not found: {state_machine_name}"))
+        })?;
+
+        // Compute fingerprint from action fields
+        let fingerprint = if let Some(fp) = &action.fingerprint {
+            fp.clone()
+        } else {
+            compute_fingerprint(action, fingerprint_fields)
+        };
+
+        // Acquire a lock on the fingerprint to prevent race conditions
+        // between different actions affecting the same entity
+        let lock_name = format!(
+            "state:{}:{}:{}",
+            action.namespace, action.tenant, fingerprint
+        );
+        let guard = self
+            .lock
+            .acquire(&lock_name, Duration::from_secs(30), Duration::from_secs(5))
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        // Get current state from state store
+        let state_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::EventState,
+            &fingerprint,
+        );
+
+        let current_state = match self.state.get(&state_key).await? {
+            Some(val) => {
+                // Parse stored state JSON
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val) {
+                    parsed
+                        .get("state")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or(&state_machine.initial_state)
+                        .to_string()
+                } else {
+                    val
+                }
+            }
+            None => state_machine.initial_state.clone(),
+        };
+
+        // Determine the target state from the action's status or use current state
+        let target_state = action
+            .status
+            .clone()
+            .unwrap_or_else(|| current_state.clone());
+
+        // Validate state transition
+        let (new_state, notify) = if current_state == target_state {
+            // No transition needed
+            (current_state.clone(), false)
+        } else if state_machine.is_transition_allowed(&current_state, &target_state) {
+            let transition = state_machine.get_transition(&current_state, &target_state);
+            let should_notify = transition.is_some_and(|t| t.on_transition.notify);
+            (target_state, should_notify)
+        } else {
+            debug!(
+                from = %current_state,
+                to = %target_state,
+                "invalid state transition, keeping current state"
+            );
+            (current_state.clone(), false)
+        };
+
+        // Store updated state
+        let state_value = serde_json::json!({
+            "state": &new_state,
+            "fingerprint": &fingerprint,
+            "updated_at": Utc::now().to_rfc3339(),
+            "action_type": &action.action_type,
+        });
+        self.state
+            .set(&state_key, &state_value.to_string(), None)
+            .await?;
+
+        // Update active events index for inhibition lookups
+        let active_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::ActiveEvents,
+            &action.action_type,
+        );
+        let active_value = serde_json::json!({
+            "state": &new_state,
+            "fingerprint": &fingerprint,
+        });
+        self.state
+            .set(&active_key, &active_value.to_string(), None)
+            .await?;
+
+        // Create timeout entry if the new state has a configured timeout
+        if let Some(timeout_config) = state_machine.get_timeout_for_state(&new_state) {
+            #[allow(clippy::cast_possible_wrap)]
+            let expires_at =
+                Utc::now() + chrono::Duration::seconds(timeout_config.after_seconds as i64);
+            let timeout_key = StateKey::new(
+                action.namespace.as_str(),
+                action.tenant.as_str(),
+                KeyKind::EventTimeout,
+                &fingerprint,
+            );
+            let timeout_value = serde_json::json!({
+                "fingerprint": &fingerprint,
+                "state_machine": state_machine_name,
+                "current_state": &new_state,
+                "transition_to": &timeout_config.transition_to,
+                "expires_at": expires_at.to_rfc3339(),
+                "created_at": Utc::now().to_rfc3339(),
+            });
+            self.state
+                .set(&timeout_key, &timeout_value.to_string(), None)
+                .await?;
+
+            // Add to timeout index for efficient O(log N) queries
+            self.state
+                .index_timeout(&timeout_key, expires_at.timestamp_millis())
+                .await?;
+
+            debug!(
+                fingerprint = %fingerprint,
+                state = %new_state,
+                timeout_seconds = timeout_config.after_seconds,
+                "created timeout entry"
+            );
+        } else {
+            // Clear any existing timeout if the new state has no timeout
+            let timeout_key = StateKey::new(
+                action.namespace.as_str(),
+                action.tenant.as_str(),
+                KeyKind::EventTimeout,
+                &fingerprint,
+            );
+            let _ = self.state.delete(&timeout_key).await;
+            // Also remove from index (ignore errors if not present)
+            let _ = self.state.remove_timeout_index(&timeout_key).await;
+        }
+
+        // Release the fingerprint lock
+        guard
+            .release()
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        Ok(ActionOutcome::StateChanged {
+            fingerprint,
+            previous_state: current_state,
+            new_state,
+            notify,
+        })
+    }
+
+    /// Handle the group verdict: add event to group for batched notification.
+    async fn handle_group(
+        &self,
+        action: &Action,
+        group_by: &[String],
+        group_wait_seconds: u64,
+        _group_interval_seconds: u64,
+        _max_group_size: usize,
+    ) -> Result<ActionOutcome, GatewayError> {
+        let (group_id, group_size, notify_at) = self
+            .group_manager
+            .add_to_group(action, group_by, group_wait_seconds, self.state.as_ref())
+            .await?;
+
+        Ok(ActionOutcome::Grouped {
+            group_id,
+            group_size,
+            notify_at,
+        })
+    }
+
+    /// Register a state machine configuration.
+    pub fn register_state_machine(&mut self, config: StateMachineConfig) {
+        self.state_machines.insert(config.name.clone(), config);
+    }
+
+    /// Get the shared group manager.
+    ///
+    /// Returns a clone of the `Arc` to allow sharing with a
+    /// [`BackgroundProcessor`](crate::background::BackgroundProcessor).
+    pub fn group_manager(&self) -> Arc<GroupManager> {
+        Arc::clone(&self.group_manager)
+    }
+
+    /// Get a reference to the state store.
+    pub fn state_store(&self) -> &Arc<dyn StateStore> {
+        &self.state
+    }
 }
 
 // -- Audit helpers -----------------------------------------------------------
@@ -344,6 +587,8 @@ fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
         RuleVerdict::Reroute { .. } => "reroute",
         RuleVerdict::Throttle { .. } => "throttle",
         RuleVerdict::Modify { .. } => "modify",
+        RuleVerdict::StateMachine { .. } => "state_machine",
+        RuleVerdict::Group { .. } => "group",
     }
 }
 
@@ -355,7 +600,9 @@ fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
         | RuleVerdict::Suppress(rule)
         | RuleVerdict::Reroute { rule, .. }
         | RuleVerdict::Throttle { rule, .. }
-        | RuleVerdict::Modify { rule, .. } => Some(rule.clone()),
+        | RuleVerdict::Modify { rule, .. }
+        | RuleVerdict::StateMachine { rule, .. }
+        | RuleVerdict::Group { rule, .. } => Some(rule.clone()),
     }
 }
 
@@ -368,6 +615,8 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Rerouted { .. } => "rerouted",
         ActionOutcome::Throttled { .. } => "throttled",
         ActionOutcome::Failed(_) => "failed",
+        ActionOutcome::Grouped { .. } => "grouped",
+        ActionOutcome::StateChanged { .. } => "state_changed",
     }
 }
 
@@ -416,6 +665,26 @@ fn build_audit_record(
             serde_json::json!({ "retry_after_secs": retry_after.as_secs() })
         }
         ActionOutcome::Deduplicated => serde_json::json!({}),
+        ActionOutcome::Grouped {
+            group_id,
+            group_size,
+            notify_at,
+        } => serde_json::json!({
+            "group_id": group_id,
+            "group_size": group_size,
+            "notify_at": notify_at.to_rfc3339(),
+        }),
+        ActionOutcome::StateChanged {
+            fingerprint,
+            previous_state,
+            new_state,
+            notify,
+        } => serde_json::json!({
+            "fingerprint": fingerprint,
+            "previous_state": previous_state,
+            "new_state": new_state,
+            "notify": notify,
+        }),
     };
 
     AuditRecord {
