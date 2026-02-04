@@ -34,6 +34,7 @@ pub struct SimulationHarness {
 
 impl SimulationHarness {
     /// Start a simulation cluster with the given configuration.
+    #[allow(clippy::unused_async)] // Async for future backend connections
     pub async fn start(config: SimulationConfig) -> Result<Self, SimulationError> {
         let port_allocator = PortAllocator::new();
 
@@ -78,8 +79,7 @@ impl SimulationHarness {
                 .ok_or(SimulationError::PortExhausted)?;
 
             let state: Arc<dyn StateStore> = shared_state
-                .as_ref()
-                .map(Arc::clone)
+                .clone()
                 .unwrap_or_else(|| Arc::new(MemoryStateStore::new()));
 
             let audit: Option<Arc<dyn acteon_audit::AuditStore>> = match &config.audit_backend {

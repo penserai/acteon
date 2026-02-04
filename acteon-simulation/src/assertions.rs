@@ -54,8 +54,7 @@ impl SideEffectAssertions {
             ActionOutcome::Suppressed { rule } => {
                 assert_eq!(
                     rule, expected_rule,
-                    "expected suppression by '{}', got '{}'",
-                    expected_rule, rule
+                    "expected suppression by '{expected_rule}', got '{rule}'"
                 );
             }
             _ => panic!("expected Suppressed, got {outcome:?}"),
@@ -84,8 +83,7 @@ impl SideEffectAssertions {
             ActionOutcome::Rerouted { new_provider, .. } => {
                 assert_eq!(
                     new_provider, expected_provider,
-                    "expected reroute to '{}', got '{}'",
-                    expected_provider, new_provider
+                    "expected reroute to '{expected_provider}', got '{new_provider}'"
                 );
             }
             _ => panic!("expected Rerouted, got {outcome:?}"),

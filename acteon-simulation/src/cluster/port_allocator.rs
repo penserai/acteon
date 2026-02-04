@@ -42,7 +42,7 @@ impl PortAllocator {
     /// Returns a `SocketAddr` bound to `127.0.0.1` with the allocated port.
     pub fn allocate(&self) -> Option<SocketAddr> {
         // Try ephemeral port first
-        if let Some(addr) = self.try_ephemeral() {
+        if let Some(addr) = Self::try_ephemeral() {
             let mut allocated = self.allocated.lock();
             allocated.insert(addr.port());
             return Some(addr);
@@ -53,7 +53,7 @@ impl PortAllocator {
     }
 
     /// Try to allocate an ephemeral port via the OS.
-    fn try_ephemeral(&self) -> Option<SocketAddr> {
+    fn try_ephemeral() -> Option<SocketAddr> {
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().ok()?;
         // Drop the listener to release the port, but we've recorded it

@@ -48,8 +48,7 @@ impl Error {
             Self::Connection(_) => true,
             Self::Http { status, .. } => *status >= 500,
             Self::Api { retryable, .. } => *retryable,
-            Self::Deserialization(_) => false,
-            Self::Configuration(_) => false,
+            Self::Deserialization(_) | Self::Configuration(_) => false,
         }
     }
 

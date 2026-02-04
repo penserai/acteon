@@ -7,7 +7,7 @@ use std::env;
 pub struct AvailableBackends {
     /// Redis connection URL, if available.
     pub redis: Option<String>,
-    /// PostgreSQL connection URL, if available.
+    /// `PostgreSQL` connection URL, if available.
     pub postgres: Option<String>,
 }
 
@@ -28,21 +28,22 @@ impl AvailableBackends {
     ///
     /// This is more expensive than `from_env` but verifies that the
     /// services are actually reachable.
+    #[allow(clippy::unused_async)] // Async for future real connection checks
     pub async fn from_connections() -> Self {
         let mut backends = Self::from_env();
 
         // Verify Redis connection if URL is set
-        if let Some(ref url) = backends.redis {
-            if !Self::check_redis(url).await {
-                backends.redis = None;
-            }
+        if let Some(ref url) = backends.redis
+            && !Self::check_redis(url)
+        {
+            backends.redis = None;
         }
 
         // Verify Postgres connection if URL is set
-        if let Some(ref url) = backends.postgres {
-            if !Self::check_postgres(url).await {
-                backends.postgres = None;
-            }
+        if let Some(ref url) = backends.postgres
+            && !Self::check_postgres(url)
+        {
+            backends.postgres = None;
         }
 
         backends
@@ -53,7 +54,7 @@ impl AvailableBackends {
         self.redis.is_some()
     }
 
-    /// Check if PostgreSQL is available.
+    /// Check if `PostgreSQL` is available.
     pub fn has_postgres(&self) -> bool {
         self.postgres.is_some()
     }
@@ -71,11 +72,11 @@ impl AvailableBackends {
             .unwrap_or_else(|| panic!("Redis not available, skipping test"))
     }
 
-    /// Get the PostgreSQL URL, or skip the test if not available.
+    /// Get the `PostgreSQL` URL, or skip the test if not available.
     ///
     /// # Panics
     ///
-    /// This function will panic with a "test skipped" message if PostgreSQL
+    /// This function will panic with a "test skipped" message if `PostgreSQL`
     /// is not available.
     pub fn require_postgres(&self) -> &str {
         self.postgres
@@ -95,14 +96,14 @@ impl AvailableBackends {
             .ok()
     }
 
-    async fn check_redis(_url: &str) -> bool {
+    fn check_redis(_url: &str) -> bool {
         // Connection verification would require the redis crate directly.
         // For now, trust the environment variable. The actual connection
         // will fail fast when creating RedisStateStore if unavailable.
         true
     }
 
-    async fn check_postgres(_url: &str) -> bool {
+    fn check_postgres(_url: &str) -> bool {
         // PostgreSQL connection check would require sqlx
         // For now, just trust the environment variable
         true
@@ -133,7 +134,7 @@ macro_rules! skip_without_redis {
     };
 }
 
-/// Helper macro for skipping tests when PostgreSQL is not available.
+/// Helper macro for skipping tests when `PostgreSQL` is not available.
 #[macro_export]
 macro_rules! skip_without_postgres {
     () => {

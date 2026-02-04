@@ -101,12 +101,14 @@ impl ActeonClientBuilder {
     }
 
     /// Set the request timeout.
+    #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
     /// Set the API key for authentication.
+    #[must_use]
     pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
         self.api_key = Some(api_key.into());
         self
@@ -115,6 +117,7 @@ impl ActeonClientBuilder {
     /// Use a custom reqwest Client.
     ///
     /// Useful for configuring TLS, proxies, or other advanced settings.
+    #[must_use]
     pub fn client(mut self, client: Client) -> Self {
         self.client = Some(client);
         self

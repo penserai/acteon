@@ -103,14 +103,12 @@ impl DynProvider for FailingProvider {
         let call_number = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
 
         // Check if we should succeed after N failures
-        if let Some(fail_until) = self.fail_until {
-            if call_number > fail_until {
-                return Ok(ProviderResponse::success(serde_json::json!({
-                    "provider": self.name,
-                    "action_id": action.id.to_string(),
-                    "recovered_after": fail_until
-                })));
-            }
+        if self.fail_until.is_some_and(|fail_until| call_number > fail_until) {
+            return Ok(ProviderResponse::success(serde_json::json!({
+                "provider": self.name,
+                "action_id": action.id.to_string(),
+                "recovered_after": self.fail_until
+            })));
         }
 
         // Simulate delay for timeout errors
