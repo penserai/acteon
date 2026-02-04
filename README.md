@@ -14,6 +14,36 @@ Acteon is an action gateway that dispatches actions through a configurable pipel
 
 The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis into a stag -- the very thing he pursued. Likewise, actions entering Acteon are transformed -- deduplicated, rerouted, throttled, or dispatched -- before they ever reach the outside world.
 
+## Features
+
+### Rule-Based Action Processing
+
+- **Suppression** — Block actions matching specific conditions (e.g., spam filtering, maintenance windows)
+- **Deduplication** — Prevent duplicate processing using configurable keys and TTLs
+- **Throttling** — Rate-limit actions per tenant, provider, or action type with automatic retry-after hints
+- **Rerouting** — Dynamically redirect actions to different providers based on priority, load, or content
+- **Payload Modification** — Transform action payloads before execution (redaction, enrichment, normalization)
+
+### Pluggable Backends
+
+- **State Storage** — Memory, Redis, PostgreSQL, DynamoDB, or ClickHouse for distributed locks and deduplication state
+- **Audit Trail** — Memory, PostgreSQL, ClickHouse, or Elasticsearch for searchable action history with configurable retention
+
+### Enterprise Ready
+
+- **Multi-Tenant** — Namespace and tenant isolation with per-tenant rate limiting
+- **Authentication** — API key and JWT support with role-based access control and grant-level authorization
+- **Hot Reload** — Update rules and auth configuration without restarts
+- **Graceful Shutdown** — Drain in-flight requests before stopping
+- **Observability** — Prometheus metrics, structured logging, and comprehensive audit trails
+
+### Developer Experience
+
+- **OpenAPI/Swagger** — Auto-generated API documentation with interactive UI
+- **Polyglot Clients** — Official SDKs for Rust, Python, Node.js/TypeScript, Go, and Java
+- **Simulation Framework** — Test harness with mock providers, failure injection, and multi-node scenarios
+- **YAML Rules** — Human-readable rule definitions with CEL expression support
+
 ## Architecture
 
 | Crate | Description |
