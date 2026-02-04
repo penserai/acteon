@@ -6,6 +6,8 @@ use acteon_core::{
 };
 
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
+use super::events::{EventStateResponse, TransitionRequest, TransitionResponse};
+use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
 use super::schemas::{
     ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest, ReloadResponse, RuleSummary,
     SetEnabledRequest, SetEnabledResponse,
@@ -24,7 +26,9 @@ use super::schemas::{
         (name = "Dispatch", description = "Action dispatch through the gateway pipeline"),
         (name = "Rules", description = "Rule management and lifecycle"),
         (name = "Audit", description = "Audit trail query and lookup"),
-        (name = "DLQ", description = "Dead-letter queue for failed actions")
+        (name = "DLQ", description = "Dead-letter queue for failed actions"),
+        (name = "Events", description = "Event lifecycle state management"),
+        (name = "Groups", description = "Event group management for batched notifications")
     ),
     paths(
         super::health::health,
@@ -38,6 +42,11 @@ use super::schemas::{
         super::audit::get_audit_by_action,
         super::dlq::dlq_stats,
         super::dlq::dlq_drain,
+        super::events::get_event,
+        super::events::transition_event,
+        super::groups::list_groups,
+        super::groups::get_group,
+        super::groups::flush_group,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -47,6 +56,8 @@ use super::schemas::{
         ErrorResponse,
         AuditRecord, AuditQuery, AuditPage,
         DlqStatsResponse, DlqEntry, DlqDrainResponse,
+        EventStateResponse, TransitionRequest, TransitionResponse,
+        GroupSummary, ListGroupsResponse, GroupDetailResponse, FlushGroupResponse,
     ))
 )]
 pub struct ApiDoc;

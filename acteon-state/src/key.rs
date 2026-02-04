@@ -12,6 +12,16 @@ pub enum KeyKind {
     State,
     History,
     RateLimit,
+    /// Event lifecycle state (state machine position).
+    EventState,
+    /// Event timeout tracking.
+    EventTimeout,
+    /// Event group data.
+    Group,
+    /// Index of pending groups awaiting flush.
+    PendingGroups,
+    /// Index of active events for inhibition lookups.
+    ActiveEvents,
     Custom(String),
 }
 
@@ -26,6 +36,11 @@ impl KeyKind {
             Self::State => "state",
             Self::History => "history",
             Self::RateLimit => "rate_limit",
+            Self::EventState => "event_state",
+            Self::EventTimeout => "event_timeout",
+            Self::Group => "group",
+            Self::PendingGroups => "pending_groups",
+            Self::ActiveEvents => "active_events",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -102,6 +117,11 @@ mod tests {
         assert_eq!(KeyKind::State.as_str(), "state");
         assert_eq!(KeyKind::History.as_str(), "history");
         assert_eq!(KeyKind::RateLimit.as_str(), "rate_limit");
+        assert_eq!(KeyKind::EventState.as_str(), "event_state");
+        assert_eq!(KeyKind::EventTimeout.as_str(), "event_timeout");
+        assert_eq!(KeyKind::Group.as_str(), "group");
+        assert_eq!(KeyKind::PendingGroups.as_str(), "pending_groups");
+        assert_eq!(KeyKind::ActiveEvents.as_str(), "active_events");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

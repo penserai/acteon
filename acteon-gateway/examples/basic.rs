@@ -127,6 +127,8 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Suppressed { .. } => "Suppressed",
         ActionOutcome::Rerouted { .. } => "Rerouted",
         ActionOutcome::Throttled { .. } => "Throttled",
+        ActionOutcome::Grouped { .. } => "Grouped",
+        ActionOutcome::StateChanged { .. } => "StateChanged",
         ActionOutcome::Failed(_) => "Failed",
     }
 }

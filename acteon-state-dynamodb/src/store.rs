@@ -5,7 +5,7 @@ use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::types::AttributeValue;
 
 use acteon_state::error::StateError;
-use acteon_state::key::StateKey;
+use acteon_state::key::{KeyKind, StateKey};
 use acteon_state::store::{CasResult, StateStore};
 
 use crate::config::DynamoConfig;
@@ -392,6 +392,135 @@ impl StateStore for DynamoStateStore {
                 }
             }
         }
+    }
+
+    async fn scan_keys(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StateError> {
+        let pk = format!("{}:{}:{}", self.prefix, namespace, tenant);
+        let sk_prefix = match prefix {
+            Some(p) => format!("{kind}:{p}"),
+            None => format!("{kind}:"),
+        };
+
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut results = Vec::new();
+        let mut exclusive_start_key = None;
+
+        loop {
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .key_condition_expression("pk = :pk AND begins_with(sk, :sk_prefix)")
+                .expression_attribute_values(":pk", AttributeValue::S(pk.clone()))
+                .expression_attribute_values(":sk_prefix", AttributeValue::S(sk_prefix.clone()))
+                .expression_attribute_values(":now", AttributeValue::N(now_epoch.to_string()))
+                .filter_expression("attribute_not_exists(expires_at) OR expires_at > :now");
+
+            if let Some(key) = exclusive_start_key {
+                query = query.set_exclusive_start_key(Some(key));
+            }
+
+            let response = query
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for item in response.items() {
+                let key = match item.get("sk") {
+                    Some(AttributeValue::S(s)) => format!("{namespace}:{tenant}:{s}"),
+                    _ => continue,
+                };
+                let value = match item.get("value") {
+                    Some(AttributeValue::S(v)) => v.clone(),
+                    _ => continue,
+                };
+                results.push((key, value));
+            }
+
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
+        // For DynamoDB, we need to scan the entire table and filter by kind.
+        // This is expensive but necessary for global scans.
+        let sk_prefix = format!("{kind}:");
+
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut results = Vec::new();
+        let mut exclusive_start_key = None;
+
+        loop {
+            let mut scan = self
+                .client
+                .scan()
+                .table_name(&self.table_name)
+                .filter_expression(
+                    "begins_with(sk, :sk_prefix) AND \
+                     (attribute_not_exists(expires_at) OR expires_at > :now)",
+                )
+                .expression_attribute_values(":sk_prefix", AttributeValue::S(sk_prefix.clone()))
+                .expression_attribute_values(":now", AttributeValue::N(now_epoch.to_string()));
+
+            if let Some(key) = exclusive_start_key {
+                scan = scan.set_exclusive_start_key(Some(key));
+            }
+
+            let response = scan
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for item in response.items() {
+                // Extract pk to get namespace:tenant
+                let pk = match item.get("pk") {
+                    Some(AttributeValue::S(s)) => s.clone(),
+                    _ => continue,
+                };
+                // pk format: {prefix}:{namespace}:{tenant}
+                // Strip the prefix to get namespace:tenant
+                let ns_tenant = pk.strip_prefix(&format!("{}:", self.prefix)).unwrap_or(&pk);
+
+                let sk = match item.get("sk") {
+                    Some(AttributeValue::S(s)) => s.clone(),
+                    _ => continue,
+                };
+                let value = match item.get("value") {
+                    Some(AttributeValue::S(v)) => v.clone(),
+                    _ => continue,
+                };
+
+                // Reconstruct the key as namespace:tenant:kind:id
+                let key = format!("{ns_tenant}:{sk}");
+                results.push((key, value));
+            }
+
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+
+        Ok(results)
     }
 }
 

@@ -16,6 +16,7 @@ acteon-provider = { workspace = true }
 acteon-executor = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+futures = { workspace = true }
 serde_json = { workspace = true }
 json-patch = { workspace = true }
 notify = { workspace = true }
@@ -24,6 +25,9 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+parking_lot = "0.12"
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 acteon-rules-yaml = { workspace = true }

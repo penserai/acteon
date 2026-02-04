@@ -104,6 +104,27 @@ pub enum Expr {
     StateCounter(String),
     /// Compute the duration since the last state update for the given key.
     StateTimeSince(String),
+
+    // Event state machine expressions (for inhibition)
+    /// Check if an active event exists with the given type.
+    /// Usage: `HasActiveEvent("cluster_down")` or `HasActiveEvent("cluster_down", action.metadata.cluster)`
+    HasActiveEvent {
+        /// Event type to check for.
+        event_type: String,
+        /// Optional label value to match (from action field path).
+        label_value: Option<Box<Expr>>,
+    },
+    /// Get the current state of an event by fingerprint.
+    /// Returns the state name (e.g., "open", "closed") or null if not found.
+    GetEventState(Box<Expr>),
+    /// Check if an event is in a specific state.
+    /// Usage: `EventInState(action.fingerprint, "firing")`
+    EventInState {
+        /// Expression evaluating to the fingerprint.
+        fingerprint: Box<Expr>,
+        /// The state name to check for.
+        state: String,
+    },
 }
 
 impl Expr {
@@ -203,6 +224,45 @@ mod tests {
             Box::new(Expr::String("yes".into())),
             Box::new(Expr::String("no".into())),
         );
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn has_active_event_expr() {
+        let expr = Expr::HasActiveEvent {
+            event_type: "cluster_down".into(),
+            label_value: Some(Box::new(Expr::Field(
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("action".into())),
+                    "metadata".into(),
+                )),
+                "cluster".into(),
+            ))),
+        };
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn get_event_state_expr() {
+        let expr = Expr::GetEventState(Box::new(Expr::String("fingerprint-123".into())));
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn event_in_state_expr() {
+        let expr = Expr::EventInState {
+            fingerprint: Box::new(Expr::Field(
+                Box::new(Expr::Ident("action".into())),
+                "fingerprint".into(),
+            )),
+            state: "firing".into(),
+        };
         let json = serde_json::to_string(&expr).unwrap();
         let back: Expr = serde_json::from_str(&json).unwrap();
         assert_eq!(format!("{expr:?}"), format!("{back:?}"));

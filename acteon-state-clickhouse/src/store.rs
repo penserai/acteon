@@ -3,7 +3,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use acteon_state::error::StateError;
-use acteon_state::key::StateKey;
+use acteon_state::key::{KeyKind, StateKey};
 use acteon_state::store::{CasResult, StateStore};
 
 use crate::config::ClickHouseConfig;
@@ -26,6 +26,13 @@ struct ValueVersionRow {
 #[derive(clickhouse::Row, serde::Deserialize)]
 struct VersionRow {
     version: u64,
+}
+
+/// Row type used for key-value pairs in scan results.
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct KeyValueRow {
+    key: String,
+    value: String,
 }
 
 /// Row type used when inserting into the state table.
@@ -344,6 +351,61 @@ impl StateStore for ClickHouseStateStore {
 
         self.insert_row(&new_row).await?;
         Ok(CasResult::Ok)
+    }
+
+    async fn scan_keys(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StateError> {
+        let key_prefix = match prefix {
+            Some(p) => format!("{namespace}:{tenant}:{kind}:{p}%"),
+            None => format!("{namespace}:{tenant}:{kind}:%"),
+        };
+
+        let query = format!(
+            "SELECT key, value FROM {} FINAL \
+             WHERE key LIKE ? AND is_deleted = 0 \
+             AND (expires_at IS NULL OR expires_at > now64(3)) \
+             ORDER BY key",
+            self.state_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(&key_prefix)
+            .fetch_all::<KeyValueRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| (r.key, r.value)).collect())
+    }
+
+    async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
+        // Match keys where the third colon-separated segment is the kind.
+        // Pattern: %:*:{kind}:%
+        let pattern = format!("%:%:{kind}:%");
+
+        let query = format!(
+            "SELECT key, value FROM {} FINAL \
+             WHERE key LIKE ? AND is_deleted = 0 \
+             AND (expires_at IS NULL OR expires_at > now64(3)) \
+             ORDER BY key",
+            self.state_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(&pattern)
+            .fetch_all::<KeyValueRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| (r.key, r.value)).collect())
     }
 }
 

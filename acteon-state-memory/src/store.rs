@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use tokio::time::Instant;
 
 use acteon_state::error::StateError;
-use acteon_state::key::StateKey;
+use acteon_state::key::{KeyKind, StateKey};
 use acteon_state::store::{CasResult, StateStore};
 
 /// A single entry in the in-memory store.
@@ -207,6 +207,50 @@ impl StateStore for MemoryStateStore {
         entry.expires_at = expiry_from_ttl(ttl).or(entry.expires_at);
 
         Ok(CasResult::Ok)
+    }
+
+    async fn scan_keys(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StateError> {
+        // Build the key prefix to match
+        let key_prefix = format!("{namespace}:{tenant}:{kind}:");
+        let full_prefix = match prefix {
+            Some(p) => format!("{key_prefix}{p}"),
+            None => key_prefix,
+        };
+
+        let mut results = Vec::new();
+
+        for entry in &self.data {
+            let key = entry.key();
+            if key.starts_with(&full_prefix) && !entry.value().is_expired() {
+                results.push((key.clone(), entry.value().value.clone()));
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
+        // Keys are formatted as "{namespace}:{tenant}:{kind}:{id}"
+        // We need to find all keys where the third segment matches the kind.
+        let kind_str = kind.to_string();
+        let mut results = Vec::new();
+
+        for entry in &self.data {
+            let key = entry.key();
+            // Parse the key to extract the kind segment
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() >= 3 && parts[2] == kind_str && !entry.value().is_expired() {
+                results.push((key.clone(), entry.value().value.clone()));
+            }
+        }
+
+        Ok(results)
     }
 }
 

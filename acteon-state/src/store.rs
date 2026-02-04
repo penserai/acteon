@@ -62,4 +62,31 @@ pub trait StateStore: Send + Sync {
         new_value: &str,
         ttl: Option<Duration>,
     ) -> Result<CasResult, StateError>;
+
+    /// Scan keys matching a prefix pattern.
+    ///
+    /// Returns a list of (key, value) pairs where the key matches the given
+    /// namespace, tenant, and kind. The `prefix` parameter filters keys that
+    /// start with the given string after the kind prefix.
+    ///
+    /// This operation may be expensive on some backends. Use sparingly.
+    async fn scan_keys(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: crate::key::KeyKind,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StateError>;
+
+    /// Scan all keys of a given kind across all namespaces and tenants.
+    ///
+    /// Returns a list of (key, value) pairs. The key format is
+    /// `{namespace}:{tenant}:{kind}:{identifier}`.
+    ///
+    /// This operation scans the entire keyspace for the given kind, which
+    /// can be expensive. Use sparingly and consider pagination for large datasets.
+    async fn scan_keys_by_kind(
+        &self,
+        kind: crate::key::KeyKind,
+    ) -> Result<Vec<(String, String)>, StateError>;
 }

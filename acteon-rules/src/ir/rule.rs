@@ -40,6 +40,26 @@ pub enum RuleAction {
         /// Parameters for the custom handler.
         params: serde_json::Value,
     },
+    /// Process action through a state machine.
+    StateMachine {
+        /// Name of the state machine to use.
+        state_machine: String,
+        /// Fields to use for computing the fingerprint.
+        fingerprint_fields: Vec<String>,
+    },
+    /// Group events for batched notification.
+    Group {
+        /// Fields to group events by.
+        group_by: Vec<String>,
+        /// Seconds to wait before sending first notification.
+        group_wait_seconds: u64,
+        /// Minimum seconds between notifications for same group.
+        group_interval_seconds: u64,
+        /// Maximum events in a single group.
+        max_group_size: usize,
+        /// Optional template name for group notification.
+        template: Option<String>,
+    },
 }
 
 /// Where a rule was loaded from.
@@ -196,6 +216,17 @@ mod tests {
             RuleAction::Custom {
                 name: "webhook".into(),
                 params: serde_json::json!({"url": "https://example.com"}),
+            },
+            RuleAction::StateMachine {
+                state_machine: "alert".into(),
+                fingerprint_fields: vec!["action_type".into(), "metadata.cluster".into()],
+            },
+            RuleAction::Group {
+                group_by: vec!["cluster".into(), "severity".into()],
+                group_wait_seconds: 30,
+                group_interval_seconds: 300,
+                max_group_size: 100,
+                template: Some("alert_group".into()),
             },
         ];
 

@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 
 use acteon_state::error::StateError;
-use acteon_state::key::StateKey;
+use acteon_state::key::{KeyKind, StateKey};
 use acteon_state::store::{CasResult, StateStore};
 
 use crate::config::PostgresConfig;
@@ -300,6 +300,53 @@ impl StateStore for PostgresStateStore {
                 }),
             }
         }
+    }
+
+    async fn scan_keys(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        kind: KeyKind,
+        prefix: Option<&str>,
+    ) -> Result<Vec<(String, String)>, StateError> {
+        let table = self.config.state_table();
+        let key_prefix = match prefix {
+            Some(p) => format!("{namespace}:{tenant}:{kind}:{p}%"),
+            None => format!("{namespace}:{tenant}:{kind}:%"),
+        };
+
+        let query = format!(
+            "SELECT key, value FROM {table} \
+             WHERE key LIKE $1 AND (expires_at IS NULL OR expires_at > NOW())"
+        );
+
+        let rows: Vec<(String, String)> = sqlx::query_as(&query)
+            .bind(&key_prefix)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows)
+    }
+
+    async fn scan_keys_by_kind(&self, kind: KeyKind) -> Result<Vec<(String, String)>, StateError> {
+        let table = self.config.state_table();
+        // Match keys where the third colon-separated segment is the kind.
+        // Pattern: %:*:{kind}:%
+        let pattern = format!("%:%:{kind}:%");
+
+        let query = format!(
+            "SELECT key, value FROM {table} \
+             WHERE key LIKE $1 AND (expires_at IS NULL OR expires_at > NOW())"
+        );
+
+        let rows: Vec<(String, String)> = sqlx::query_as(&query)
+            .bind(&pattern)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows)
     }
 }
 

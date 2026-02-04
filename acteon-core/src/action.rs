@@ -28,6 +28,10 @@ pub struct ActionMetadata {
     "payload": {"to": "user@example.com", "subject": "Hello"},
     "metadata": {},
     "dedup_key": null,
+    "status": null,
+    "fingerprint": null,
+    "starts_at": null,
+    "ends_at": null,
     "created_at": "2025-01-01T00:00:00Z"
 })))]
 pub struct Action {
@@ -58,6 +62,20 @@ pub struct Action {
     /// key are suppressed.
     pub dedup_key: Option<String>,
 
+    /// Current state in the state machine (e.g., "open", "closed").
+    /// State names are defined by configuration, not hardcoded.
+    pub status: Option<String>,
+
+    /// Fingerprint for correlating related events.
+    /// Used to group events and track state across related actions.
+    pub fingerprint: Option<String>,
+
+    /// When this event started.
+    pub starts_at: Option<DateTime<Utc>>,
+
+    /// When this event ended.
+    pub ends_at: Option<DateTime<Utc>>,
+
     /// Timestamp when the action was created.
     pub created_at: DateTime<Utc>,
 }
@@ -82,6 +100,10 @@ impl Action {
             payload,
             metadata: ActionMetadata::default(),
             dedup_key: None,
+            status: None,
+            fingerprint: None,
+            starts_at: None,
+            ends_at: None,
             created_at: Utc::now(),
         }
     }
@@ -97,6 +119,34 @@ impl Action {
     #[must_use]
     pub fn with_metadata(mut self, metadata: ActionMetadata) -> Self {
         self.metadata = metadata;
+        self
+    }
+
+    /// Set the event status (state machine state).
+    #[must_use]
+    pub fn with_status(mut self, status: impl Into<String>) -> Self {
+        self.status = Some(status.into());
+        self
+    }
+
+    /// Set the fingerprint for event correlation.
+    #[must_use]
+    pub fn with_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
+        self.fingerprint = Some(fingerprint.into());
+        self
+    }
+
+    /// Set the event start time.
+    #[must_use]
+    pub fn with_starts_at(mut self, starts_at: DateTime<Utc>) -> Self {
+        self.starts_at = Some(starts_at);
+        self
+    }
+
+    /// Set the event end time.
+    #[must_use]
+    pub fn with_ends_at(mut self, ends_at: DateTime<Utc>) -> Self {
+        self.ends_at = Some(ends_at);
         self
     }
 }
@@ -135,5 +185,30 @@ mod tests {
         let back: Action = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, action.id);
         assert_eq!(back.payload, action.payload);
+    }
+
+    #[test]
+    fn action_with_status() {
+        let action =
+            Action::new("ns", "t", "p", "type", serde_json::Value::Null).with_status("open");
+        assert_eq!(action.status.as_deref(), Some("open"));
+    }
+
+    #[test]
+    fn action_with_fingerprint() {
+        let action =
+            Action::new("ns", "t", "p", "type", serde_json::Value::Null).with_fingerprint("fp-123");
+        assert_eq!(action.fingerprint.as_deref(), Some("fp-123"));
+    }
+
+    #[test]
+    fn action_with_lifecycle_times() {
+        let now = Utc::now();
+        let later = now + chrono::Duration::hours(1);
+        let action = Action::new("ns", "t", "p", "type", serde_json::Value::Null)
+            .with_starts_at(now)
+            .with_ends_at(later);
+        assert_eq!(action.starts_at, Some(now));
+        assert_eq!(action.ends_at, Some(later));
     }
 }

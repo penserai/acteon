@@ -5,6 +5,21 @@ const fn default_true() -> bool {
     true
 }
 
+/// Default group wait time in seconds (30 seconds).
+const fn default_group_wait() -> u64 {
+    30
+}
+
+/// Default group interval in seconds (5 minutes).
+const fn default_group_interval() -> u64 {
+    300
+}
+
+/// Default maximum group size.
+const fn default_max_group_size() -> usize {
+    100
+}
+
 /// Top-level YAML rule file containing a list of rules.
 #[derive(Debug, Deserialize)]
 pub struct YamlRuleFile {
@@ -141,6 +156,30 @@ pub enum YamlAction {
     Modify {
         /// JSON value describing the modifications.
         changes: serde_json::Value,
+    },
+    /// Process action through a state machine.
+    StateMachine {
+        /// Name of the state machine to use.
+        state_machine: String,
+        /// Fields to use for computing the fingerprint.
+        #[serde(default)]
+        fingerprint_fields: Vec<String>,
+    },
+    /// Group events for batched notification.
+    Group {
+        /// Fields to group events by.
+        group_by: Vec<String>,
+        /// Seconds to wait before sending first notification.
+        #[serde(default = "default_group_wait")]
+        group_wait_seconds: u64,
+        /// Minimum seconds between notifications for same group.
+        #[serde(default = "default_group_interval")]
+        group_interval_seconds: u64,
+        /// Maximum events in a single group.
+        #[serde(default = "default_max_group_size")]
+        max_group_size: usize,
+        /// Optional template name for group notification.
+        template: Option<String>,
     },
 }
 
@@ -321,5 +360,104 @@ rules:
 ";
         let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(!file.rules[0].enabled);
+    }
+
+    #[test]
+    fn parse_state_machine_action() {
+        let yaml = r#"
+rules:
+  - name: alert-lifecycle
+    condition:
+      field: action.action_type
+      eq: alert
+    action:
+      type: state_machine
+      state_machine: alert
+      fingerprint_fields:
+        - action_type
+        - metadata.cluster
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        match &file.rules[0].action {
+            YamlAction::StateMachine {
+                state_machine,
+                fingerprint_fields,
+            } => {
+                assert_eq!(state_machine, "alert");
+                assert_eq!(fingerprint_fields.len(), 2);
+            }
+            other => panic!("expected StateMachine, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_group_action() {
+        let yaml = r#"
+rules:
+  - name: group-alerts
+    condition:
+      field: action.action_type
+      starts_with: alert_
+    action:
+      type: group
+      group_by:
+        - metadata.cluster
+        - metadata.severity
+      group_wait_seconds: 60
+      group_interval_seconds: 300
+      max_group_size: 50
+      template: alert_group_template
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        match &file.rules[0].action {
+            YamlAction::Group {
+                group_by,
+                group_wait_seconds,
+                group_interval_seconds,
+                max_group_size,
+                template,
+            } => {
+                assert_eq!(group_by.len(), 2);
+                assert_eq!(*group_wait_seconds, 60);
+                assert_eq!(*group_interval_seconds, 300);
+                assert_eq!(*max_group_size, 50);
+                assert_eq!(template.as_deref(), Some("alert_group_template"));
+            }
+            other => panic!("expected Group, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_group_action_with_defaults() {
+        let yaml = r#"
+rules:
+  - name: group-alerts
+    condition:
+      field: action.action_type
+      eq: alert
+    action:
+      type: group
+      group_by:
+        - metadata.cluster
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        match &file.rules[0].action {
+            YamlAction::Group {
+                group_wait_seconds,
+                group_interval_seconds,
+                max_group_size,
+                template,
+                ..
+            } => {
+                // Check defaults are applied
+                assert_eq!(*group_wait_seconds, 30);
+                assert_eq!(*group_interval_seconds, 300);
+                assert_eq!(*max_group_size, 100);
+                assert!(template.is_none());
+            }
+            other => panic!("expected Group, got {other:?}"),
+        }
     }
 }

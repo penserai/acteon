@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Outcome of dispatching an action through the gateway pipeline.
@@ -26,6 +27,26 @@ pub enum ActionOutcome {
     },
     /// Action failed after all retries.
     Failed(ActionError),
+    /// Action was grouped for batched notification.
+    Grouped {
+        /// Unique identifier for the group.
+        group_id: String,
+        /// Current number of events in the group.
+        group_size: usize,
+        /// When the group will be flushed/notified.
+        notify_at: DateTime<Utc>,
+    },
+    /// Action triggered a state machine transition.
+    StateChanged {
+        /// Fingerprint of the event whose state changed.
+        fingerprint: String,
+        /// Previous state before transition.
+        previous_state: String,
+        /// New state after transition.
+        new_state: String,
+        /// Whether this transition triggers a notification.
+        notify: bool,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -119,5 +140,31 @@ mod tests {
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("block-spam"));
+    }
+
+    #[test]
+    fn outcome_grouped() {
+        let outcome = ActionOutcome::Grouped {
+            group_id: "group-123".into(),
+            group_size: 5,
+            notify_at: chrono::Utc::now(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("group-123"));
+        assert!(json.contains("group_size"));
+    }
+
+    #[test]
+    fn outcome_state_changed() {
+        let outcome = ActionOutcome::StateChanged {
+            fingerprint: "fp-456".into(),
+            previous_state: "open".into(),
+            new_state: "in_progress".into(),
+            notify: true,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("fp-456"));
+        assert!(json.contains("open"));
+        assert!(json.contains("in_progress"));
     }
 }

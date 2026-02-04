@@ -38,6 +38,16 @@ impl RuleAction {
         matches!(self, Self::Deduplicate { .. })
     }
 
+    /// Returns `true` if this action processes through a state machine.
+    pub fn is_state_machine(&self) -> bool {
+        matches!(self, Self::StateMachine { .. })
+    }
+
+    /// Returns `true` if this action groups events.
+    pub fn is_group(&self) -> bool {
+        matches!(self, Self::Group { .. })
+    }
+
     /// Returns a human-readable label for the action kind.
     pub fn kind_label(&self) -> &'static str {
         match self {
@@ -49,6 +59,8 @@ impl RuleAction {
             Self::Throttle { .. } => "throttle",
             Self::Modify { .. } => "modify",
             Self::Custom { .. } => "custom",
+            Self::StateMachine { .. } => "state_machine",
+            Self::Group { .. } => "group",
         }
     }
 }
@@ -126,5 +138,47 @@ mod tests {
             .kind_label(),
             "custom"
         );
+        assert_eq!(
+            RuleAction::StateMachine {
+                state_machine: "alert".into(),
+                fingerprint_fields: vec![]
+            }
+            .kind_label(),
+            "state_machine"
+        );
+        assert_eq!(
+            RuleAction::Group {
+                group_by: vec![],
+                group_wait_seconds: 30,
+                group_interval_seconds: 60,
+                max_group_size: 100,
+                template: None
+            }
+            .kind_label(),
+            "group"
+        );
+    }
+
+    #[test]
+    fn state_machine_predicates() {
+        let sm = RuleAction::StateMachine {
+            state_machine: "alert".into(),
+            fingerprint_fields: vec!["action_type".into()],
+        };
+        assert!(sm.is_state_machine());
+        assert!(!sm.is_group());
+    }
+
+    #[test]
+    fn group_predicates() {
+        let group = RuleAction::Group {
+            group_by: vec!["cluster".into()],
+            group_wait_seconds: 30,
+            group_interval_seconds: 60,
+            max_group_size: 100,
+            template: Some("alert_template".into()),
+        };
+        assert!(group.is_group());
+        assert!(!group.is_state_machine());
     }
 }
