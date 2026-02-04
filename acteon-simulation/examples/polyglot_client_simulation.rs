@@ -287,8 +287,15 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
         .output();
 
     let result = match output {
-        Ok(out) if out.status.success() || !String::from_utf8_lossy(&out.stderr).contains("not found") => {
-            Some((out.status.success(), String::from_utf8_lossy(&out.stdout).to_string(), String::from_utf8_lossy(&out.stderr).to_string()))
+        Ok(out)
+            if out.status.success()
+                || !String::from_utf8_lossy(&out.stderr).contains("not found") =>
+        {
+            Some((
+                out.status.success(),
+                String::from_utf8_lossy(&out.stdout).to_string(),
+                String::from_utf8_lossy(&out.stderr).to_string(),
+            ))
         }
         _ => None,
     };
