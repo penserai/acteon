@@ -114,6 +114,64 @@ impl SideEffectAssertions {
         );
     }
 
+    /// Assert that an outcome matches the `Grouped` variant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `Grouped`.
+    pub fn assert_grouped(outcome: &ActionOutcome) {
+        assert!(
+            matches!(outcome, ActionOutcome::Grouped { .. }),
+            "expected Grouped, got {outcome:?}"
+        );
+    }
+
+    /// Assert that an outcome is grouped with a minimum number of events.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `Grouped` or the group size is less than expected.
+    pub fn assert_grouped_with_min_size(outcome: &ActionOutcome, min_size: usize) {
+        match outcome {
+            ActionOutcome::Grouped { group_size, .. } => {
+                assert!(
+                    *group_size >= min_size,
+                    "expected group size >= {min_size}, got {group_size}"
+                );
+            }
+            _ => panic!("expected Grouped, got {outcome:?}"),
+        }
+    }
+
+    /// Assert that an outcome matches the `StateChanged` variant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `StateChanged`.
+    pub fn assert_state_changed(outcome: &ActionOutcome) {
+        assert!(
+            matches!(outcome, ActionOutcome::StateChanged { .. }),
+            "expected StateChanged, got {outcome:?}"
+        );
+    }
+
+    /// Assert that a state transition occurred to a specific state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `StateChanged` or the new state doesn't match.
+    pub fn assert_state_changed_to(outcome: &ActionOutcome, expected_state: &str) {
+        match outcome {
+            ActionOutcome::StateChanged { new_state, .. } => {
+                assert_eq!(
+                    new_state, expected_state,
+                    "expected state change to '{expected_state}', got '{new_state}'"
+                );
+            }
+            _ => panic!("expected StateChanged, got {outcome:?}"),
+        }
+    }
+
     /// Assert that a provider was called exactly N times.
     ///
     /// # Panics
@@ -219,6 +277,12 @@ pub trait ActionOutcomeExt {
     /// Assert this outcome is `Failed`.
     fn assert_failed(&self);
 
+    /// Assert this outcome is `Grouped`.
+    fn assert_grouped(&self);
+
+    /// Assert this outcome is `StateChanged`.
+    fn assert_state_changed(&self);
+
     /// Check if this outcome is `Executed`.
     fn is_executed(&self) -> bool;
 
@@ -236,6 +300,12 @@ pub trait ActionOutcomeExt {
 
     /// Check if this outcome is `Failed`.
     fn is_failed(&self) -> bool;
+
+    /// Check if this outcome is `Grouped`.
+    fn is_grouped(&self) -> bool;
+
+    /// Check if this outcome is `StateChanged`.
+    fn is_state_changed(&self) -> bool;
 }
 
 impl ActionOutcomeExt for ActionOutcome {
@@ -263,6 +333,14 @@ impl ActionOutcomeExt for ActionOutcome {
         SideEffectAssertions::assert_failed(self);
     }
 
+    fn assert_grouped(&self) {
+        SideEffectAssertions::assert_grouped(self);
+    }
+
+    fn assert_state_changed(&self) {
+        SideEffectAssertions::assert_state_changed(self);
+    }
+
     fn is_executed(&self) -> bool {
         matches!(self, ActionOutcome::Executed(_))
     }
@@ -285,6 +363,14 @@ impl ActionOutcomeExt for ActionOutcome {
 
     fn is_failed(&self) -> bool {
         matches!(self, ActionOutcome::Failed(_))
+    }
+
+    fn is_grouped(&self) -> bool {
+        matches!(self, ActionOutcome::Grouped { .. })
+    }
+
+    fn is_state_changed(&self) -> bool {
+        matches!(self, ActionOutcome::StateChanged { .. })
     }
 }
 
@@ -398,5 +484,96 @@ mod tests {
         };
         assert!(suppressed.is_suppressed());
         assert!(!suppressed.is_executed());
+    }
+
+    #[test]
+    fn assert_grouped_passes() {
+        let outcome = ActionOutcome::Grouped {
+            group_id: "group-123".into(),
+            group_size: 5,
+            notify_at: chrono::Utc::now(),
+        };
+        SideEffectAssertions::assert_grouped(&outcome);
+        outcome.assert_grouped();
+    }
+
+    #[test]
+    fn assert_grouped_with_min_size_passes() {
+        let outcome = ActionOutcome::Grouped {
+            group_id: "group-123".into(),
+            group_size: 5,
+            notify_at: chrono::Utc::now(),
+        };
+        SideEffectAssertions::assert_grouped_with_min_size(&outcome, 3);
+        SideEffectAssertions::assert_grouped_with_min_size(&outcome, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected group size >= 10")]
+    fn assert_grouped_with_min_size_fails_on_small_group() {
+        let outcome = ActionOutcome::Grouped {
+            group_id: "group-123".into(),
+            group_size: 5,
+            notify_at: chrono::Utc::now(),
+        };
+        SideEffectAssertions::assert_grouped_with_min_size(&outcome, 10);
+    }
+
+    #[test]
+    fn assert_state_changed_passes() {
+        let outcome = ActionOutcome::StateChanged {
+            fingerprint: "fp-123".into(),
+            previous_state: "open".into(),
+            new_state: "closed".into(),
+            notify: true,
+        };
+        SideEffectAssertions::assert_state_changed(&outcome);
+        outcome.assert_state_changed();
+    }
+
+    #[test]
+    fn assert_state_changed_to_passes() {
+        let outcome = ActionOutcome::StateChanged {
+            fingerprint: "fp-123".into(),
+            previous_state: "open".into(),
+            new_state: "closed".into(),
+            notify: true,
+        };
+        SideEffectAssertions::assert_state_changed_to(&outcome, "closed");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected state change to 'resolved'")]
+    fn assert_state_changed_to_fails_on_wrong_state() {
+        let outcome = ActionOutcome::StateChanged {
+            fingerprint: "fp-123".into(),
+            previous_state: "open".into(),
+            new_state: "closed".into(),
+            notify: true,
+        };
+        SideEffectAssertions::assert_state_changed_to(&outcome, "resolved");
+    }
+
+    #[test]
+    fn is_grouped_works() {
+        let grouped = ActionOutcome::Grouped {
+            group_id: "group-123".into(),
+            group_size: 5,
+            notify_at: chrono::Utc::now(),
+        };
+        assert!(grouped.is_grouped());
+        assert!(!grouped.is_executed());
+    }
+
+    #[test]
+    fn is_state_changed_works() {
+        let state_changed = ActionOutcome::StateChanged {
+            fingerprint: "fp-123".into(),
+            previous_state: "open".into(),
+            new_state: "closed".into(),
+            notify: true,
+        };
+        assert!(state_changed.is_state_changed());
+        assert!(!state_changed.is_executed());
     }
 }

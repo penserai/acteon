@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use acteon_core::StateMachineConfig;
+
 /// Configuration for a simulation cluster.
 #[derive(Debug, Clone)]
 pub struct SimulationConfig {
@@ -19,6 +21,8 @@ pub struct SimulationConfig {
     pub providers: Vec<String>,
     /// Environment variables available during rule evaluation.
     pub environment: HashMap<String, String>,
+    /// State machine configurations.
+    pub state_machines: Vec<StateMachineConfig>,
 }
 
 impl Default for SimulationConfig {
@@ -31,6 +35,7 @@ impl Default for SimulationConfig {
             rules: Vec::new(),
             providers: Vec::new(),
             environment: HashMap::new(),
+            state_machines: Vec::new(),
         }
     }
 }
@@ -52,6 +57,7 @@ pub struct SimulationConfigBuilder {
     rules: Vec<String>,
     providers: Vec<String>,
     environment: HashMap<String, String>,
+    state_machines: Vec<StateMachineConfig>,
 }
 
 impl SimulationConfigBuilder {
@@ -121,6 +127,13 @@ impl SimulationConfigBuilder {
         self
     }
 
+    /// Add a state machine configuration.
+    #[must_use]
+    pub fn add_state_machine(mut self, config: StateMachineConfig) -> Self {
+        self.state_machines.push(config);
+        self
+    }
+
     /// Build the `SimulationConfig`.
     #[must_use]
     pub fn build(self) -> SimulationConfig {
@@ -132,6 +145,7 @@ impl SimulationConfigBuilder {
             rules: self.rules,
             providers: self.providers,
             environment: self.environment,
+            state_machines: self.state_machines,
         }
     }
 }
