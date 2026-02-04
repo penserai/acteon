@@ -293,32 +293,54 @@ See the [acteon-simulation README](acteon-simulation/README.md) for full documen
 
 ## Client Libraries
 
-### Rust
+Official client libraries are available for multiple languages:
 
-The `acteon-client` crate provides a native Rust HTTP client:
+| Language | Package | Documentation |
+|----------|---------|---------------|
+| Rust | `acteon-client` | [README](acteon-client/README.md) |
+| Python | `acteon-client` | [README](clients/python/README.md) |
+| Node.js/TypeScript | `@acteon/client` | [README](clients/nodejs/README.md) |
+| Go | `github.com/penserai/acteon/clients/go/acteon` | [README](clients/go/README.md) |
+| Java | `com.acteon:acteon-client` | [README](clients/java/README.md) |
 
+### Quick Examples
+
+**Rust:**
 ```rust
-use acteon_client::ActeonClient;
-use acteon_core::Action;
-
 let client = ActeonClient::new("http://localhost:8080");
-
-// Check health
-assert!(client.health().await?);
-
-// Dispatch an action
 let action = Action::new("ns", "tenant", "email", "send", json!({"to": "user@example.com"}));
 let outcome = client.dispatch(&action).await?;
-
-// Query audit trail
-let audit = client.query_audit(&AuditQuery {
-    tenant: Some("tenant".to_string()),
-    limit: Some(10),
-    ..Default::default()
-}).await?;
 ```
 
-See the [acteon-client README](acteon-client/README.md) for full documentation.
+**Python:**
+```python
+client = ActeonClient("http://localhost:8080")
+action = Action("ns", "tenant", "email", "send", {"to": "user@example.com"})
+outcome = client.dispatch(action)
+```
+
+**Node.js/TypeScript:**
+```typescript
+const client = new ActeonClient("http://localhost:8080");
+const action = createAction("ns", "tenant", "email", "send", { to: "user@example.com" });
+const outcome = await client.dispatch(action);
+```
+
+**Go:**
+```go
+client := acteon.NewClient("http://localhost:8080")
+action := acteon.NewAction("ns", "tenant", "email", "send", map[string]any{"to": "user@example.com"})
+outcome, _ := client.Dispatch(ctx, action)
+```
+
+**Java:**
+```java
+ActeonClient client = new ActeonClient("http://localhost:8080");
+Action action = new Action("ns", "tenant", "email", "send", Map.of("to", "user@example.com"));
+ActionOutcome outcome = client.dispatch(action);
+```
+
+See the [clients directory](clients/README.md) for full documentation.
 
 ## Tests
 

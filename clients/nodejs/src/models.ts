@@ -1,0 +1,324 @@
+/**
+ * Data models for the Acteon client.
+ */
+
+import { randomUUID } from "crypto";
+
+/**
+ * An action to be dispatched through Acteon.
+ */
+export interface Action {
+  /** Unique action identifier. */
+  id: string;
+  /** Logical grouping for the action. */
+  namespace: string;
+  /** Tenant identifier for multi-tenancy. */
+  tenant: string;
+  /** Target provider name (e.g., "email", "sms"). */
+  provider: string;
+  /** Type of action (e.g., "send_notification"). */
+  actionType: string;
+  /** Action-specific data. */
+  payload: Record<string, unknown>;
+  /** Optional deduplication key. */
+  dedupKey?: string;
+  /** Optional key-value metadata. */
+  metadata?: Record<string, string>;
+}
+
+/**
+ * Create a new action with auto-generated ID.
+ */
+export function createAction(
+  namespace: string,
+  tenant: string,
+  provider: string,
+  actionType: string,
+  payload: Record<string, unknown>,
+  options?: {
+    id?: string;
+    dedupKey?: string;
+    metadata?: Record<string, string>;
+  }
+): Action {
+  return {
+    id: options?.id ?? randomUUID(),
+    namespace,
+    tenant,
+    provider,
+    actionType,
+    payload,
+    dedupKey: options?.dedupKey,
+    metadata: options?.metadata,
+  };
+}
+
+/**
+ * Convert an Action to the API request format.
+ */
+export function actionToRequest(action: Action): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    id: action.id,
+    namespace: action.namespace,
+    tenant: action.tenant,
+    provider: action.provider,
+    action_type: action.actionType,
+    payload: action.payload,
+  };
+  if (action.dedupKey) {
+    result.dedup_key = action.dedupKey;
+  }
+  if (action.metadata) {
+    result.metadata = { labels: action.metadata };
+  }
+  return result;
+}
+
+/**
+ * Response from a provider after executing an action.
+ */
+export interface ProviderResponse {
+  status: "success" | "failure" | "partial";
+  body: Record<string, unknown>;
+  headers: Record<string, string>;
+}
+
+/**
+ * Outcome of dispatching an action.
+ */
+export type ActionOutcome =
+  | { type: "executed"; response: ProviderResponse }
+  | { type: "deduplicated" }
+  | { type: "suppressed"; rule: string }
+  | {
+      type: "rerouted";
+      originalProvider: string;
+      newProvider: string;
+      response: ProviderResponse;
+    }
+  | { type: "throttled"; retryAfterSecs: number }
+  | { type: "failed"; error: ActionError };
+
+/**
+ * Error details when an action fails.
+ */
+export interface ActionError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  attempts: number;
+}
+
+/**
+ * Parse an ActionOutcome from API response.
+ */
+export function parseActionOutcome(data: unknown): ActionOutcome {
+  if (typeof data !== "object" || data === null) {
+    return { type: "failed", error: { code: "UNKNOWN", message: "Invalid response", retryable: false, attempts: 0 } };
+  }
+
+  const obj = data as Record<string, unknown>;
+
+  if ("Executed" in obj) {
+    const resp = obj.Executed as Record<string, unknown>;
+    return {
+      type: "executed",
+      response: {
+        status: (resp.status as "success" | "failure" | "partial") ?? "success",
+        body: (resp.body as Record<string, unknown>) ?? {},
+        headers: (resp.headers as Record<string, string>) ?? {},
+      },
+    };
+  }
+
+  if (obj === "Deduplicated" || "Deduplicated" in obj) {
+    return { type: "deduplicated" };
+  }
+
+  if ("Suppressed" in obj) {
+    const suppressed = obj.Suppressed as Record<string, unknown>;
+    return { type: "suppressed", rule: (suppressed.rule as string) ?? "" };
+  }
+
+  if ("Rerouted" in obj) {
+    const rerouted = obj.Rerouted as Record<string, unknown>;
+    const resp = (rerouted.response as Record<string, unknown>) ?? {};
+    return {
+      type: "rerouted",
+      originalProvider: (rerouted.original_provider as string) ?? "",
+      newProvider: (rerouted.new_provider as string) ?? "",
+      response: {
+        status: (resp.status as "success" | "failure" | "partial") ?? "success",
+        body: (resp.body as Record<string, unknown>) ?? {},
+        headers: (resp.headers as Record<string, string>) ?? {},
+      },
+    };
+  }
+
+  if ("Throttled" in obj) {
+    const throttled = obj.Throttled as Record<string, unknown>;
+    const retryAfter = (throttled.retry_after as Record<string, number>) ?? {};
+    const secs = (retryAfter.secs ?? 0) + (retryAfter.nanos ?? 0) / 1e9;
+    return { type: "throttled", retryAfterSecs: secs };
+  }
+
+  if ("Failed" in obj) {
+    const failed = obj.Failed as Record<string, unknown>;
+    return {
+      type: "failed",
+      error: {
+        code: (failed.code as string) ?? "UNKNOWN",
+        message: (failed.message as string) ?? "Unknown error",
+        retryable: (failed.retryable as boolean) ?? false,
+        attempts: (failed.attempts as number) ?? 0,
+      },
+    };
+  }
+
+  return { type: "failed", error: { code: "UNKNOWN", message: "Unknown outcome", retryable: false, attempts: 0 } };
+}
+
+/**
+ * Error response from the API.
+ */
+export interface ErrorResponse {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+/**
+ * Result from a batch dispatch operation.
+ */
+export type BatchResult =
+  | { success: true; outcome: ActionOutcome }
+  | { success: false; error: ErrorResponse };
+
+/**
+ * Parse a BatchResult from API response.
+ */
+export function parseBatchResult(data: unknown): BatchResult {
+  if (typeof data !== "object" || data === null) {
+    return { success: false, error: { code: "UNKNOWN", message: "Invalid response", retryable: false } };
+  }
+
+  const obj = data as Record<string, unknown>;
+  if ("error" in obj) {
+    const err = obj.error as Record<string, unknown>;
+    return {
+      success: false,
+      error: {
+        code: (err.code as string) ?? "UNKNOWN",
+        message: (err.message as string) ?? "Unknown error",
+        retryable: (err.retryable as boolean) ?? false,
+      },
+    };
+  }
+
+  return { success: true, outcome: parseActionOutcome(data) };
+}
+
+/**
+ * Information about a loaded rule.
+ */
+export interface RuleInfo {
+  name: string;
+  priority: number;
+  enabled: boolean;
+  description?: string;
+}
+
+/**
+ * Result of reloading rules.
+ */
+export interface ReloadResult {
+  loaded: number;
+  errors: string[];
+}
+
+/**
+ * Query parameters for audit search.
+ */
+export interface AuditQuery {
+  namespace?: string;
+  tenant?: string;
+  provider?: string;
+  actionType?: string;
+  outcome?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Convert AuditQuery to URL search params.
+ */
+export function auditQueryToParams(query: AuditQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  if (query.namespace) params.set("namespace", query.namespace);
+  if (query.tenant) params.set("tenant", query.tenant);
+  if (query.provider) params.set("provider", query.provider);
+  if (query.actionType) params.set("action_type", query.actionType);
+  if (query.outcome) params.set("outcome", query.outcome);
+  if (query.limit !== undefined) params.set("limit", query.limit.toString());
+  if (query.offset !== undefined) params.set("offset", query.offset.toString());
+  return params;
+}
+
+/**
+ * An audit record.
+ */
+export interface AuditRecord {
+  id: string;
+  actionId: string;
+  namespace: string;
+  tenant: string;
+  provider: string;
+  actionType: string;
+  verdict: string;
+  outcome: string;
+  matchedRule?: string;
+  durationMs: number;
+  dispatchedAt: string;
+}
+
+/**
+ * Parse an AuditRecord from API response.
+ */
+export function parseAuditRecord(data: Record<string, unknown>): AuditRecord {
+  return {
+    id: data.id as string,
+    actionId: data.action_id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    provider: data.provider as string,
+    actionType: data.action_type as string,
+    verdict: data.verdict as string,
+    outcome: data.outcome as string,
+    matchedRule: data.matched_rule as string | undefined,
+    durationMs: data.duration_ms as number,
+    dispatchedAt: data.dispatched_at as string,
+  };
+}
+
+/**
+ * Paginated audit results.
+ */
+export interface AuditPage {
+  records: AuditRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Parse an AuditPage from API response.
+ */
+export function parseAuditPage(data: Record<string, unknown>): AuditPage {
+  const records = data.records as Record<string, unknown>[];
+  return {
+    records: records.map(parseAuditRecord),
+    total: data.total as number,
+    limit: data.limit as number,
+    offset: data.offset as number,
+  };
+}
