@@ -83,8 +83,19 @@ impl TestServer {
                 .unwrap();
         });
 
-        // Wait a bit for server to start
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        // Wait for server to be ready by polling /health
+        let health_url = format!("http://{}/health", addr);
+        let client = reqwest::Client::new();
+        let max_attempts = 50;
+        for attempt in 1..=max_attempts {
+            match client.get(&health_url).send().await {
+                Ok(resp) if resp.status().is_success() => break,
+                _ if attempt == max_attempts => {
+                    return Err("Server failed to start: health check timeout".into());
+                }
+                _ => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
 
         Ok(Self {
             addr,
@@ -146,19 +157,46 @@ fn run_python_client(base_url: &str, project_root: &str) -> ClientTestResult {
 fn run_nodejs_client(base_url: &str, project_root: &str) -> ClientTestResult {
     let client_dir = format!("{}/clients/nodejs", project_root);
 
-    // First, build the TypeScript client
+    // Install dependencies if needed
+    let install_output = Command::new("npm")
+        .arg("install")
+        .arg("--legacy-peer-deps")
+        .current_dir(&client_dir)
+        .output();
+
+    if let Err(e) = install_output {
+        return ClientTestResult {
+            language: "Node.js".to_string(),
+            success: false,
+            output: format!("Failed to install dependencies: {}", e),
+        };
+    }
+
+    // Build the TypeScript client
     let build_output = Command::new("npm")
         .arg("run")
         .arg("build")
         .current_dir(&client_dir)
         .output();
 
-    if let Err(e) = build_output {
-        return ClientTestResult {
-            language: "Node.js".to_string(),
-            success: false,
-            output: format!("Failed to build: {}", e),
-        };
+    match build_output {
+        Ok(out) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            return ClientTestResult {
+                language: "Node.js".to_string(),
+                success: false,
+                output: format!("Build failed:\n{}\n{}", stdout, stderr),
+            };
+        }
+        Err(e) => {
+            return ClientTestResult {
+                language: "Node.js".to_string(),
+                success: false,
+                output: format!("Failed to build: {}", e),
+            };
+        }
+        _ => {}
     }
 
     let script = format!(

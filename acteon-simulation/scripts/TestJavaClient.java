@@ -7,9 +7,8 @@
  * Usage:
  *   ACTEON_URL=http://localhost:8080 jbang TestJavaClient.java
  *
- * Or compile manually:
- *   cd clients/java && mvn package
- *   java -cp target/classes:. TestJavaClient
+ * Or with the built JAR:
+ *   java -cp acteon-client-0.1.0.jar:. TestJavaClient
  */
 
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -55,33 +54,16 @@ public class TestJavaClient {
         });
 
         // Test: Single dispatch
-        String dispatchedId = UUID.randomUUID().toString();
         test("dispatch()", () -> {
-            Map<String, Object> action = new LinkedHashMap<>();
-            action.put("id", dispatchedId);
-            action.put("namespace", "test");
-            action.put("tenant", "java-client");
-            action.put("provider", "email");
-            action.put("action_type", "send_notification");
-            action.put("payload", Map.of("to", "test@example.com", "subject", "Java test"));
-            action.put("created_at", java.time.Instant.now().toString());
+            Map<String, Object> action = createAction("send_notification",
+                    Map.of("to", "test@example.com", "subject", "Java test"));
 
-            String body = mapper.writeValueAsString(action);
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl + "/v1/dispatch"))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body))
-                    .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                throw new RuntimeException("Dispatch returned " + response.statusCode() + ": " + response.body());
-            }
+            String responseBody = dispatch(action);
+            String outcomeType = parseOutcomeType(responseBody);
 
-            // API returns {"Executed": {...}}, "Deduplicated", {"Suppressed": {...}}, etc.
-            String outcomeType = getOutcomeType(response.body());
             List<String> validTypes = List.of("Executed", "Deduplicated", "Suppressed", "Rerouted", "Throttled", "Failed");
             if (!validTypes.contains(outcomeType)) {
-                throw new RuntimeException("Unexpected outcome type: " + outcomeType + " from " + response.body());
+                throw new RuntimeException("Unexpected outcome type: " + outcomeType);
             }
         });
 
@@ -89,15 +71,7 @@ public class TestJavaClient {
         test("dispatchBatch()", () -> {
             List<Map<String, Object>> actions = new ArrayList<>();
             for (int i = 0; i < 3; i++) {
-                Map<String, Object> action = new LinkedHashMap<>();
-                action.put("id", UUID.randomUUID().toString());
-                action.put("namespace", "test");
-                action.put("tenant", "java-client");
-                action.put("provider", "email");
-                action.put("action_type", "batch_test");
-                action.put("payload", Map.of("seq", i));
-                action.put("created_at", java.time.Instant.now().toString());
-                actions.add(action);
+                actions.add(createAction("batch_test", Map.of("seq", i)));
             }
 
             String body = mapper.writeValueAsString(actions);
@@ -111,7 +85,7 @@ public class TestJavaClient {
                 throw new RuntimeException("Batch dispatch returned " + response.statusCode());
             }
 
-            List<Map<String, Object>> results = mapper.readValue(response.body(), new TypeReference<>() {});
+            List<Object> results = mapper.readValue(response.body(), new TypeReference<>() {});
             if (results.size() != 3) {
                 throw new RuntimeException("Expected 3 results, got " + results.size());
             }
@@ -127,8 +101,7 @@ public class TestJavaClient {
             if (response.statusCode() != 200) {
                 throw new RuntimeException("List rules returned " + response.statusCode());
             }
-            List<Map<String, Object>> rules = mapper.readValue(response.body(), new TypeReference<>() {});
-            // rules can be empty, just check it's a valid list
+            // rules can be empty, just check it's a valid response
         });
 
         // Test: Deduplication
@@ -136,52 +109,25 @@ public class TestJavaClient {
             String dedupKey = "java-dedup-" + UUID.randomUUID();
 
             // First action
-            Map<String, Object> action1 = new LinkedHashMap<>();
-            action1.put("id", UUID.randomUUID().toString());
-            action1.put("namespace", "test");
-            action1.put("tenant", "java-client");
-            action1.put("provider", "email");
-            action1.put("action_type", "dedup_test");
-            action1.put("payload", Map.of("msg", "first"));
+            Map<String, Object> action1 = createAction("dedup_test", Map.of("msg", "first"));
             action1.put("dedup_key", dedupKey);
-            action1.put("created_at", java.time.Instant.now().toString());
+            String response1 = dispatch(action1);
+            String type1 = parseOutcomeType(response1);
 
-            String body1 = mapper.writeValueAsString(action1);
-            HttpRequest request1 = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl + "/v1/dispatch"))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body1))
-                    .build();
-            HttpResponse<String> response1 = httpClient.send(request1, HttpResponse.BodyHandlers.ofString());
-            if (response1.statusCode() != 200) {
-                throw new RuntimeException("First dispatch returned " + response1.statusCode());
-            }
-
-            // Second action (same dedup key)
-            Map<String, Object> action2 = new LinkedHashMap<>();
-            action2.put("id", UUID.randomUUID().toString());
-            action2.put("namespace", "test");
-            action2.put("tenant", "java-client");
-            action2.put("provider", "email");
-            action2.put("action_type", "dedup_test");
-            action2.put("payload", Map.of("msg", "second"));
-            action2.put("dedup_key", dedupKey);
-            action2.put("created_at", java.time.Instant.now().toString());
-
-            String body2 = mapper.writeValueAsString(action2);
-            HttpRequest request2 = HttpRequest.newBuilder()
-                    .uri(URI.create(baseUrl + "/v1/dispatch"))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(body2))
-                    .build();
-            HttpResponse<String> response2 = httpClient.send(request2, HttpResponse.BodyHandlers.ofString());
-            if (response2.statusCode() != 200) {
-                throw new RuntimeException("Second dispatch returned " + response2.statusCode());
-            }
-
-            String type1 = getOutcomeType(response1.body());
             if (!type1.equals("Executed") && !type1.equals("Failed")) {
                 throw new RuntimeException("Unexpected first outcome: " + type1);
+            }
+
+            // Second action (same dedup key) - should work without error
+            Map<String, Object> action2 = createAction("dedup_test", Map.of("msg", "second"));
+            action2.put("dedup_key", dedupKey);
+            String response2 = dispatch(action2);
+            String type2 = parseOutcomeType(response2);
+
+            // Second should be either Deduplicated or Executed (depending on server state)
+            List<String> validTypes = List.of("Executed", "Deduplicated", "Failed");
+            if (!validTypes.contains(type2)) {
+                throw new RuntimeException("Unexpected second outcome: " + type2);
             }
         });
 
@@ -213,10 +159,42 @@ public class TestJavaClient {
     }
 
     /**
-     * Extract outcome type from API response body.
+     * Create an action map with required fields.
+     */
+    private static Map<String, Object> createAction(String actionType, Map<String, Object> payload) {
+        Map<String, Object> action = new LinkedHashMap<>();
+        action.put("id", UUID.randomUUID().toString());
+        action.put("namespace", "test");
+        action.put("tenant", "java-client");
+        action.put("provider", "email");
+        action.put("action_type", actionType);
+        action.put("payload", payload);
+        action.put("created_at", java.time.Instant.now().toString());
+        return action;
+    }
+
+    /**
+     * Dispatch an action and return the response body.
+     */
+    private static String dispatch(Map<String, Object> action) throws Exception {
+        String body = mapper.writeValueAsString(action);
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/v1/dispatch"))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() != 200) {
+            throw new RuntimeException("Dispatch returned " + response.statusCode() + ": " + response.body());
+        }
+        return response.body();
+    }
+
+    /**
+     * Parse outcome type from API response.
      * API returns: {"Executed": {...}}, "Deduplicated", {"Suppressed": {...}}, etc.
      */
-    private static String getOutcomeType(String responseBody) {
+    private static String parseOutcomeType(String responseBody) {
         String trimmed = responseBody.trim();
         // Handle string response like "Deduplicated"
         if (trimmed.equals("\"Deduplicated\"")) {

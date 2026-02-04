@@ -51,6 +51,34 @@ public class ActionOutcome {
     public boolean isFailed() { return type == OutcomeType.FAILED; }
 
     /**
+     * Parse an ActionOutcome from a raw JSON string.
+     * Handles both object responses like {"Executed": {...}} and string responses like "Deduplicated".
+     */
+    public static ActionOutcome fromJson(String json) {
+        String trimmed = json.trim();
+
+        // Handle string response like "Deduplicated"
+        if (trimmed.equals("\"Deduplicated\"")) {
+            ActionOutcome outcome = new ActionOutcome();
+            outcome.type = OutcomeType.DEDUPLICATED;
+            return outcome;
+        }
+
+        // For object responses, parse as map
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            @SuppressWarnings("unchecked")
+            Map<String, Object> data = mapper.readValue(json, Map.class);
+            return fromMap(data);
+        } catch (Exception e) {
+            ActionOutcome outcome = new ActionOutcome();
+            outcome.type = OutcomeType.FAILED;
+            outcome.error = new ActionError("PARSE_ERROR", "Failed to parse outcome: " + e.getMessage(), false, 0);
+            return outcome;
+        }
+    }
+
+    /**
      * Parse an ActionOutcome from a raw JSON map.
      */
     @SuppressWarnings("unchecked")
@@ -61,7 +89,7 @@ public class ActionOutcome {
             outcome.type = OutcomeType.EXECUTED;
             Map<String, Object> resp = (Map<String, Object>) data.get("Executed");
             outcome.response = ProviderResponse.fromMap(resp);
-        } else if (data.containsKey("Deduplicated") || "Deduplicated".equals(data)) {
+        } else if (data.containsKey("Deduplicated") || data.isEmpty()) {
             outcome.type = OutcomeType.DEDUPLICATED;
         } else if (data.containsKey("Suppressed")) {
             outcome.type = OutcomeType.SUPPRESSED;
