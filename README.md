@@ -28,7 +28,7 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 
 - **Event Grouping** — Batch related events together for consolidated notifications with configurable wait times and group sizes
 - **State Machines** — Track event lifecycle through configurable states (e.g., open → investigating → resolved) with automatic timeout transitions
-- **Inhibition** — Suppress child alerts when parent alerts are active (e.g., suppress pod alerts during cluster outages)
+- **Inhibition** — Suppress dependent events when parent events are active using expression functions
 - **Fingerprinting** — Correlate related events using configurable field-based fingerprints
 - **Background Processing** — Automatic group flushing, timeout processing, and state cleanup
 
@@ -334,9 +334,9 @@ rules:
       max_group_size: 100
 ```
 
-### Inhibition (Alert Suppression)
+### Inhibition
 
-Suppress child alerts when parent alerts are active using expression functions:
+Suppress dependent events when parent events are active using expression functions:
 
 ```yaml
 rules:
