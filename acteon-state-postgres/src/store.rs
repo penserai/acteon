@@ -348,6 +348,56 @@ impl StateStore for PostgresStateStore {
 
         Ok(rows)
     }
+
+    async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let table = self.config.timeout_index_table();
+
+        // UPSERT: insert or update on conflict
+        let query = format!(
+            "INSERT INTO {table} (key, expires_at_ms) VALUES ($1, $2) \
+             ON CONFLICT (key) DO UPDATE SET expires_at_ms = $2"
+        );
+
+        sqlx::query(&query)
+            .bind(&canonical)
+            .bind(expires_at_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let table = self.config.timeout_index_table();
+
+        let query = format!("DELETE FROM {table} WHERE key = $1");
+
+        sqlx::query(&query)
+            .bind(&canonical)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let table = self.config.timeout_index_table();
+
+        // Query using the index on expires_at_ms - O(log N + M)
+        let query = format!("SELECT key FROM {table} WHERE expires_at_ms <= $1");
+
+        let rows: Vec<(String,)> = sqlx::query_as(&query)
+            .bind(now_ms)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
 }
 
 #[cfg(all(test, feature = "integration"))]

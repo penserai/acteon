@@ -522,6 +522,122 @@ impl StateStore for DynamoStateStore {
 
         Ok(results)
     }
+
+    async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        // Use a composite sort key: "{expires_at_ms}#{canonical_key}"
+        // This allows efficient range queries by expiration time.
+        let partition_key = format!("{}:timeout_index", self.prefix);
+        let sort_key = format!("{expires_at_ms:020}#{canonical}");
+
+        self.client
+            .put_item()
+            .table_name(&self.table_name)
+            .item("pk", AttributeValue::S(partition_key))
+            .item("sk", AttributeValue::S(sort_key))
+            .item("key", AttributeValue::S(canonical))
+            .item(
+                "expires_at_ms",
+                AttributeValue::N(expires_at_ms.to_string()),
+            )
+            .send()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let partition_key = format!("{}:timeout_index", self.prefix);
+
+        // We need to find and delete the item. Since we don't know the expires_at_ms,
+        // we query for items with this key and delete them.
+        let mut exclusive_start_key = None;
+
+        loop {
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .key_condition_expression("pk = :pk")
+                .filter_expression("#key_attr = :key_val")
+                .expression_attribute_names("#key_attr", "key")
+                .expression_attribute_values(":pk", AttributeValue::S(partition_key.clone()))
+                .expression_attribute_values(":key_val", AttributeValue::S(canonical.clone()));
+
+            if let Some(start_key) = exclusive_start_key {
+                query = query.set_exclusive_start_key(Some(start_key));
+            }
+
+            let response = query
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for item in response.items() {
+                if let Some(AttributeValue::S(sk)) = item.get("sk") {
+                    self.client
+                        .delete_item()
+                        .table_name(&self.table_name)
+                        .key("pk", AttributeValue::S(partition_key.clone()))
+                        .key("sk", AttributeValue::S(sk.clone()))
+                        .send()
+                        .await
+                        .map_err(|e| StateError::Backend(e.to_string()))?;
+                }
+            }
+
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let pk = format!("{}:timeout_index", self.prefix);
+        // Query for all items where sk < "{now_ms:020}~"
+        // The ~ character is greater than any digit, so this gets all expired items.
+        let max_sk = format!("{now_ms:020}~");
+
+        let mut results = Vec::new();
+        let mut exclusive_start_key = None;
+
+        loop {
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .key_condition_expression("pk = :pk AND sk < :max_sk")
+                .expression_attribute_values(":pk", AttributeValue::S(pk.clone()))
+                .expression_attribute_values(":max_sk", AttributeValue::S(max_sk.clone()));
+
+            if let Some(start_key) = exclusive_start_key {
+                query = query.set_exclusive_start_key(Some(start_key));
+            }
+
+            let response = query
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for item in response.items() {
+                if let Some(AttributeValue::S(key)) = item.get("key") {
+                    results.push(key.clone());
+                }
+            }
+
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 /// Parse the counter value from an `UpdateItem` response.

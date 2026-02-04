@@ -89,4 +89,19 @@ pub trait StateStore: Send + Sync {
         &self,
         kind: crate::key::KeyKind,
     ) -> Result<Vec<(String, String)>, StateError>;
+
+    /// Add a key to the timeout index with its expiration timestamp.
+    ///
+    /// This enables efficient O(log N) queries for expired timeouts instead of
+    /// scanning all timeout keys. The `expires_at` is a Unix timestamp in milliseconds.
+    async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError>;
+
+    /// Remove a key from the timeout index.
+    async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError>;
+
+    /// Get all timeout keys that have expired (`expires_at` <= now).
+    ///
+    /// Returns a list of canonical key strings. This is O(log N + M) where M is
+    /// the number of expired keys, compared to O(N) for scanning all timeouts.
+    async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError>;
 }

@@ -496,6 +496,12 @@ impl Gateway {
             self.state
                 .set(&timeout_key, &timeout_value.to_string(), None)
                 .await?;
+
+            // Add to timeout index for efficient O(log N) queries
+            self.state
+                .index_timeout(&timeout_key, expires_at.timestamp_millis())
+                .await?;
+
             debug!(
                 fingerprint = %fingerprint,
                 state = %new_state,
@@ -511,6 +517,8 @@ impl Gateway {
                 &fingerprint,
             );
             let _ = self.state.delete(&timeout_key).await;
+            // Also remove from index (ignore errors if not present)
+            let _ = self.state.remove_timeout_index(&timeout_key).await;
         }
 
         // Release the fingerprint lock

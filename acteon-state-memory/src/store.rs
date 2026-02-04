@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::sync::RwLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -34,9 +36,29 @@ fn expiry_from_ttl(ttl: Option<Duration>) -> Option<Instant> {
 /// Entries are lazily evicted on read when their TTL has elapsed. This
 /// implementation is fully synchronous internally; the async trait methods
 /// return immediately.
-#[derive(Debug, Default)]
 pub struct MemoryStateStore {
     data: DashMap<String, Entry>,
+    /// Sorted index for timeout queries: maps `expiration_ms` -> set of keys.
+    /// Using `RwLock` because `BTreeMap` doesn't support concurrent access.
+    timeout_index: RwLock<BTreeMap<i64, Vec<String>>>,
+}
+
+impl Default for MemoryStateStore {
+    fn default() -> Self {
+        Self {
+            data: DashMap::new(),
+            timeout_index: RwLock::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl std::fmt::Debug for MemoryStateStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryStateStore")
+            .field("data", &self.data)
+            .field("timeout_index", &"<RwLock<BTreeMap>>")
+            .finish()
+    }
 }
 
 impl MemoryStateStore {
@@ -251,6 +273,54 @@ impl StateStore for MemoryStateStore {
         }
 
         Ok(results)
+    }
+
+    async fn index_timeout(&self, key: &StateKey, expires_at_ms: i64) -> Result<(), StateError> {
+        let canonical = Self::render_key(key);
+        let mut index = self
+            .timeout_index
+            .write()
+            .map_err(|_| StateError::Backend("timeout index lock poisoned".into()))?;
+        index.entry(expires_at_ms).or_default().push(canonical);
+        Ok(())
+    }
+
+    async fn remove_timeout_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = Self::render_key(key);
+        let mut index = self
+            .timeout_index
+            .write()
+            .map_err(|_| StateError::Backend("timeout index lock poisoned".into()))?;
+
+        // We need to find and remove the key from the index.
+        // Since we don't know the expiration time, we iterate through all entries.
+        // This is O(N) in the worst case, but removal is infrequent.
+        let mut empty_buckets = Vec::new();
+        for (expires_at, keys) in index.iter_mut() {
+            keys.retain(|k| k != &canonical);
+            if keys.is_empty() {
+                empty_buckets.push(*expires_at);
+            }
+        }
+        for bucket in empty_buckets {
+            index.remove(&bucket);
+        }
+        Ok(())
+    }
+
+    async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let index = self
+            .timeout_index
+            .read()
+            .map_err(|_| StateError::Backend("timeout index lock poisoned".into()))?;
+
+        // BTreeMap range query: get all entries with key <= now_ms
+        // This is O(log N + M) where M is the number of expired entries.
+        let mut expired = Vec::new();
+        for (_expires_at, keys) in index.range(..=now_ms) {
+            expired.extend(keys.iter().cloned());
+        }
+        Ok(expired)
     }
 }
 

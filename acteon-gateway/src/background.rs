@@ -208,51 +208,56 @@ impl BackgroundProcessor {
 
     /// Process state machine timeouts.
     ///
-    /// Scans for timeout entries that have expired and triggers the configured
-    /// state transitions. Supports multi-tenant processing by scanning all
-    /// timeout keys regardless of namespace/tenant.
+    /// Uses an indexed approach to efficiently find expired timeouts in O(log N + M)
+    /// where M is the number of expired entries, instead of scanning all timeout keys.
     async fn process_timeouts(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Scan for all timeout entries across all namespaces and tenants.
-        let timeout_entries = self.state.scan_keys_by_kind(KeyKind::EventTimeout).await?;
-
         let now = Utc::now();
+        let now_ms = now.timestamp_millis();
 
-        for (key, value) in timeout_entries {
-            // Parse the timeout entry
-            let timeout_data: serde_json::Value = match serde_json::from_str(&value) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+        // Get only the expired timeout keys using the efficient index query.
+        let expired_keys = self.state.get_expired_timeouts(now_ms).await?;
 
-            let expires_at = timeout_data
-                .get("expires_at")
-                .and_then(|v| v.as_str())
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+        if expired_keys.is_empty() {
+            return Ok(());
+        }
 
-            let Some(expires_at) = expires_at else {
-                continue;
-            };
+        debug!(count = expired_keys.len(), "processing expired timeouts");
 
-            // Check if timeout has expired
-            if now < expires_at {
-                continue;
-            }
-
+        for canonical_key in expired_keys {
             // Parse namespace and tenant from the key (format: namespace:tenant:kind:id)
-            let key_parts: Vec<&str> = key.splitn(4, ':').collect();
-            let (namespace, tenant) = if key_parts.len() >= 2 {
-                (key_parts[0].to_string(), key_parts[1].to_string())
+            let key_parts: Vec<&str> = canonical_key.splitn(4, ':').collect();
+            let (namespace, tenant, fingerprint) = if key_parts.len() >= 4 {
+                (
+                    key_parts[0].to_string(),
+                    key_parts[1].to_string(),
+                    key_parts[3].to_string(),
+                )
             } else {
-                // Fallback to configured namespace/tenant if key parsing fails
-                (self.config.namespace.clone(), self.config.tenant.clone())
+                warn!(key = %canonical_key, "invalid timeout key format");
+                continue;
             };
 
-            let fingerprint = timeout_data
-                .get("fingerprint")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
+            // Fetch the timeout data from the state store
+            let timeout_key = StateKey::new(
+                namespace.as_str(),
+                tenant.as_str(),
+                KeyKind::EventTimeout,
+                &fingerprint,
+            );
+
+            let Some(value) = self.state.get(&timeout_key).await? else {
+                // Timeout was already processed or deleted, remove from index
+                self.state.remove_timeout_index(&timeout_key).await?;
+                continue;
+            };
+
+            // Parse the timeout entry
+            let Ok(timeout_data) = serde_json::from_str::<serde_json::Value>(&value) else {
+                warn!(key = %canonical_key, "failed to parse timeout data");
+                continue;
+            };
+
+            // fingerprint is already parsed from the key above
             let state_machine_name = timeout_data
                 .get("state_machine")
                 .and_then(|v| v.as_str())
@@ -298,14 +303,9 @@ impl BackgroundProcessor {
                 .set(&state_key, &new_state_value.to_string(), None)
                 .await?;
 
-            // Delete the processed timeout entry
-            let timeout_key = StateKey::new(
-                namespace.as_str(),
-                tenant.as_str(),
-                KeyKind::EventTimeout,
-                &fingerprint,
-            );
+            // Delete the processed timeout entry and remove from index
             self.state.delete(&timeout_key).await?;
+            self.state.remove_timeout_index(&timeout_key).await?;
 
             // Send timeout event if channel is configured
             if let Some(ref tx) = self.timeout_tx {
