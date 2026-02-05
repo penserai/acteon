@@ -403,9 +403,10 @@ export class ActeonClient {
    * Approve a pending action by namespace, tenant, ID, and HMAC signature.
    * Does not require authentication -- the HMAC signature serves as proof of authorization.
    */
-  async approve(namespace: string, tenant: string, id: string, sig: string): Promise<ApprovalActionResponse> {
+  async approve(namespace: string, tenant: string, id: string, sig: string, expiresAt: number): Promise<ApprovalActionResponse> {
     const params = new URLSearchParams();
     params.set("sig", sig);
+    params.set("expires_at", expiresAt.toString());
     const response = await this.request("POST", `/v1/approvals/${namespace}/${tenant}/${id}/approve`, { params });
 
     if (response.ok) {
@@ -424,9 +425,10 @@ export class ActeonClient {
    * Reject a pending action by namespace, tenant, ID, and HMAC signature.
    * Does not require authentication -- the HMAC signature serves as proof of authorization.
    */
-  async reject(namespace: string, tenant: string, id: string, sig: string): Promise<ApprovalActionResponse> {
+  async reject(namespace: string, tenant: string, id: string, sig: string, expiresAt: number): Promise<ApprovalActionResponse> {
     const params = new URLSearchParams();
     params.set("sig", sig);
+    params.set("expires_at", expiresAt.toString());
     const response = await this.request("POST", `/v1/approvals/${namespace}/${tenant}/${id}/reject`, { params });
 
     if (response.ok) {
@@ -445,9 +447,10 @@ export class ActeonClient {
    * Get the status of an approval by namespace, tenant, ID, and HMAC signature.
    * Returns null if not found or expired.
    */
-  async getApproval(namespace: string, tenant: string, id: string, sig: string): Promise<ApprovalStatus | null> {
+  async getApproval(namespace: string, tenant: string, id: string, sig: string, expiresAt: number): Promise<ApprovalStatus | null> {
     const params = new URLSearchParams();
     params.set("sig", sig);
+    params.set("expires_at", expiresAt.toString());
     const response = await this.request("GET", `/v1/approvals/${namespace}/${tenant}/${id}`, { params });
 
     if (response.ok) {

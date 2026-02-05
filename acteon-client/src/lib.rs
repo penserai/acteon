@@ -695,7 +695,7 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.approve("payments", "tenant-1", "abc-123", "hmac-sig").await?;
+    /// let result = client.approve("payments", "tenant-1", "abc-123", "hmac-sig", 1700000000).await?;
     /// println!("Status: {}, Outcome: {:?}", result.status, result.outcome);
     /// # Ok(())
     /// # }
@@ -706,10 +706,11 @@ impl ActeonClient {
         tenant: &str,
         id: &str,
         sig: &str,
+        expires_at: i64,
     ) -> Result<ApprovalActionResponse, Error> {
         let url = format!(
-            "{}/v1/approvals/{}/{}/{}/approve?sig={}",
-            self.base_url, namespace, tenant, id, sig
+            "{}/v1/approvals/{}/{}/{}/approve?sig={}&expires_at={}",
+            self.base_url, namespace, tenant, id, sig, expires_at
         );
 
         let response = self
@@ -755,7 +756,7 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// let result = client.reject("payments", "tenant-1", "abc-123", "hmac-sig").await?;
+    /// let result = client.reject("payments", "tenant-1", "abc-123", "hmac-sig", 1700000000).await?;
     /// println!("Status: {}", result.status);
     /// # Ok(())
     /// # }
@@ -766,10 +767,11 @@ impl ActeonClient {
         tenant: &str,
         id: &str,
         sig: &str,
+        expires_at: i64,
     ) -> Result<ApprovalActionResponse, Error> {
         let url = format!(
-            "{}/v1/approvals/{}/{}/{}/reject?sig={}",
-            self.base_url, namespace, tenant, id, sig
+            "{}/v1/approvals/{}/{}/{}/reject?sig={}&expires_at={}",
+            self.base_url, namespace, tenant, id, sig, expires_at
         );
 
         let response = self
@@ -815,7 +817,7 @@ impl ActeonClient {
     /// use acteon_client::ActeonClient;
     ///
     /// let client = ActeonClient::new("http://localhost:8080");
-    /// if let Some(status) = client.get_approval("payments", "tenant-1", "abc-123", "hmac-sig").await? {
+    /// if let Some(status) = client.get_approval("payments", "tenant-1", "abc-123", "hmac-sig", 1700000000).await? {
     ///     println!("Approval status: {}", status.status);
     /// }
     /// # Ok(())
@@ -827,10 +829,11 @@ impl ActeonClient {
         tenant: &str,
         id: &str,
         sig: &str,
+        expires_at: i64,
     ) -> Result<Option<ApprovalStatusResponse>, Error> {
         let url = format!(
-            "{}/v1/approvals/{}/{}/{}?sig={}",
-            self.base_url, namespace, tenant, id, sig
+            "{}/v1/approvals/{}/{}/{}?sig={}&expires_at={}",
+            self.base_url, namespace, tenant, id, sig, expires_at
         );
 
         let response = self

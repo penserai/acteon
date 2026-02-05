@@ -445,13 +445,14 @@ public class ActeonClient implements AutoCloseable {
      * Approves a pending action by namespace, tenant, ID, and HMAC signature.
      * Does not require authentication -- the HMAC signature serves as proof of authorization.
      */
-    public ApprovalActionResponse approve(String namespace, String tenant, String id, String sig) throws ActeonException {
+    public ApprovalActionResponse approve(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
         try {
             String path = "/v1/approvals/"
                 + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/approve"
-                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8);
+                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
+                + "&expires_at=" + expiresAt;
 
             HttpRequest request = requestBuilder(path)
                 .POST(HttpRequest.BodyPublishers.noBody())
@@ -480,13 +481,14 @@ public class ActeonClient implements AutoCloseable {
      * Rejects a pending action by namespace, tenant, ID, and HMAC signature.
      * Does not require authentication -- the HMAC signature serves as proof of authorization.
      */
-    public ApprovalActionResponse reject(String namespace, String tenant, String id, String sig) throws ActeonException {
+    public ApprovalActionResponse reject(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
         try {
             String path = "/v1/approvals/"
                 + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/reject"
-                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8);
+                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
+                + "&expires_at=" + expiresAt;
 
             HttpRequest request = requestBuilder(path)
                 .POST(HttpRequest.BodyPublishers.noBody())
@@ -515,13 +517,14 @@ public class ActeonClient implements AutoCloseable {
      * Gets the status of an approval by namespace, tenant, ID, and HMAC signature.
      * Returns empty if not found or expired.
      */
-    public Optional<ApprovalStatus> getApproval(String namespace, String tenant, String id, String sig) throws ActeonException {
+    public Optional<ApprovalStatus> getApproval(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
         try {
             String path = "/v1/approvals/"
                 + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
                 + URLEncoder.encode(id, StandardCharsets.UTF_8)
-                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8);
+                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
+                + "&expires_at=" + expiresAt;
 
             HttpRequest request = requestBuilder(path)
                 .GET()

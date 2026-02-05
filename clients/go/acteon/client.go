@@ -432,9 +432,10 @@ func (c *Client) GetGroup(ctx context.Context, groupKey string) (*GroupDetail, e
 
 // Approve approves a pending action by namespace, tenant, ID, and HMAC signature.
 // Does not require authentication -- the HMAC signature serves as proof of authorization.
-func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string) (*ApprovalActionResponse, error) {
+func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalActionResponse, error) {
 	params := url.Values{}
 	params.Set("sig", sig)
+	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
 	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/approve?%s", namespace, tenant, id, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
@@ -468,9 +469,10 @@ func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string)
 
 // Reject rejects a pending action by namespace, tenant, ID, and HMAC signature.
 // Does not require authentication -- the HMAC signature serves as proof of authorization.
-func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string) (*ApprovalActionResponse, error) {
+func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalActionResponse, error) {
 	params := url.Values{}
 	params.Set("sig", sig)
+	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
 	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/reject?%s", namespace, tenant, id, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
@@ -504,9 +506,10 @@ func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string) 
 
 // GetApproval gets the status of an approval by namespace, tenant, ID, and HMAC signature.
 // Returns nil if not found or expired.
-func (c *Client) GetApproval(ctx context.Context, namespace, tenant, id, sig string) (*ApprovalStatus, error) {
+func (c *Client) GetApproval(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalStatus, error) {
 	params := url.Values{}
 	params.Set("sig", sig)
+	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
 	path := fmt.Sprintf("/v1/approvals/%s/%s/%s?%s", namespace, tenant, id, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
