@@ -48,6 +48,11 @@ impl RuleAction {
         matches!(self, Self::Group { .. })
     }
 
+    /// Returns `true` if this action requests human approval.
+    pub fn is_request_approval(&self) -> bool {
+        matches!(self, Self::RequestApproval { .. })
+    }
+
     /// Returns a human-readable label for the action kind.
     pub fn kind_label(&self) -> &'static str {
         match self {
@@ -61,6 +66,7 @@ impl RuleAction {
             Self::Custom { .. } => "custom",
             Self::StateMachine { .. } => "state_machine",
             Self::Group { .. } => "group",
+            Self::RequestApproval { .. } => "request_approval",
         }
     }
 }

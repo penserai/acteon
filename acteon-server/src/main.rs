@@ -183,12 +183,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let group_manager = Arc::new(GroupManager::new());
 
     // Build the gateway.
+    let external_url = config
+        .server
+        .external_url
+        .clone()
+        .unwrap_or_else(|| format!("http://{}:{}", config.server.host, config.server.port));
+
     let mut builder = GatewayBuilder::new()
         .state(Arc::clone(&store))
         .lock(Arc::clone(&lock))
         .executor_config(exec_config)
         .dlq_enabled(config.executor.dlq_enabled)
-        .group_manager(Arc::clone(&group_manager));
+        .group_manager(Arc::clone(&group_manager))
+        .external_url(external_url);
+
+    if let Some(ref secret_hex) = config.server.approval_secret {
+        let secret =
+            hex::decode(secret_hex).map_err(|e| format!("invalid approval_secret hex: {e}"))?;
+        builder = builder.approval_secret(secret);
+    }
 
     if let Some(ref audit) = audit_store {
         builder = builder
@@ -278,20 +291,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cleanup_interval: Duration::from_secs(config.background.cleanup_interval_seconds),
             enable_group_flush: config.background.enable_group_flush,
             enable_timeout_processing: config.background.enable_timeout_processing,
+            enable_approval_retry: config.background.enable_approval_retry,
             namespace: config.background.namespace.clone(),
             tenant: config.background.tenant.clone(),
         };
 
-        // Create channels for receiving flush and timeout events.
+        // Create channels for receiving flush, timeout, and approval retry events.
         let (flush_tx, mut flush_rx) = tokio::sync::mpsc::channel(100);
         let (timeout_tx, mut timeout_rx) = tokio::sync::mpsc::channel(100);
+        let (approval_retry_tx, mut approval_retry_rx) = tokio::sync::mpsc::channel(100);
 
-        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+        let mut bg_builder = BackgroundProcessorBuilder::new()
             .config(bg_config)
             .group_manager(Arc::clone(&group_manager))
             .state(Arc::clone(&store))
             .group_flush_channel(flush_tx)
-            .timeout_channel(timeout_tx)
+            .timeout_channel(timeout_tx);
+
+        if config.background.enable_approval_retry {
+            bg_builder = bg_builder.approval_retry_channel(approval_retry_tx);
+        }
+
+        let (mut processor, shutdown_tx) = bg_builder
             .build()
             .map_err(|e| format!("failed to build background processor: {e}"))?;
 
@@ -419,6 +440,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             fingerprint = %event.fingerprint,
                             error = %e,
                             "failed to dispatch timeout notification"
+                        );
+                    }
+                }
+            }
+        });
+
+        // Spawn consumer for approval retry events.
+        // Retries sending the notification for approvals where it previously failed.
+        let retry_gateway = Arc::clone(&gateway);
+        tokio::spawn(async move {
+            while let Some(event) = approval_retry_rx.recv().await {
+                info!(
+                    approval_id = %event.approval_id,
+                    namespace = %event.namespace,
+                    tenant = %event.tenant,
+                    "retrying approval notification"
+                );
+
+                let gw = retry_gateway.read().await;
+                match gw
+                    .retry_approval_notification(
+                        &event.namespace,
+                        &event.tenant,
+                        &event.approval_id,
+                    )
+                    .await
+                {
+                    Ok(true) => {
+                        info!(
+                            approval_id = %event.approval_id,
+                            "approval notification retry succeeded"
+                        );
+                    }
+                    Ok(false) => {
+                        tracing::debug!(
+                            approval_id = %event.approval_id,
+                            "approval notification retry skipped (no longer eligible)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            approval_id = %event.approval_id,
+                            error = %e,
+                            "approval notification retry failed"
                         );
                     }
                 }

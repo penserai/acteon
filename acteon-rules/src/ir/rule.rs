@@ -60,6 +60,15 @@ pub enum RuleAction {
         /// Optional template name for group notification.
         template: Option<String>,
     },
+    /// Request human approval before executing the action.
+    RequestApproval {
+        /// Provider to use for sending the approval notification.
+        notify_provider: String,
+        /// Timeout in seconds before the approval request expires.
+        timeout_seconds: u64,
+        /// Optional message to include in the approval notification.
+        message: Option<String>,
+    },
 }
 
 /// Where a rule was loaded from.
@@ -227,6 +236,11 @@ mod tests {
                 group_interval_seconds: 300,
                 max_group_size: 100,
                 template: Some("alert_group".into()),
+            },
+            RuleAction::RequestApproval {
+                notify_provider: "email".into(),
+                timeout_seconds: 86400,
+                message: Some("Requires approval".into()),
             },
         ];
 

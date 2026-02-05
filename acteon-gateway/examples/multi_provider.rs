@@ -160,5 +160,10 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
             ..
         } => format!("StateChanged ({fingerprint}: {previous_state} -> {new_state})"),
         ActionOutcome::Failed(err) => format!("Failed: {}", err.message),
+        ActionOutcome::PendingApproval {
+            approval_id,
+            expires_at,
+            ..
+        } => format!("PendingApproval (id: {approval_id}, expires: {expires_at})"),
     }
 }

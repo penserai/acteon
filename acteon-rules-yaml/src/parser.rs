@@ -20,6 +20,11 @@ const fn default_max_group_size() -> usize {
     100
 }
 
+/// Default approval timeout in seconds (1 hour).
+const fn default_approval_timeout() -> u64 {
+    3600
+}
+
 /// Top-level YAML rule file containing a list of rules.
 #[derive(Debug, Deserialize)]
 pub struct YamlRuleFile {
@@ -180,6 +185,16 @@ pub enum YamlAction {
         max_group_size: usize,
         /// Optional template name for group notification.
         template: Option<String>,
+    },
+    /// Request human approval before executing the action.
+    RequestApproval {
+        /// Provider to use for sending the approval notification.
+        notify_provider: String,
+        /// Timeout in seconds before the approval expires.
+        #[serde(default = "default_approval_timeout")]
+        timeout_seconds: u64,
+        /// Optional message to include in the approval notification.
+        message: Option<String>,
     },
 }
 
@@ -426,6 +441,63 @@ rules:
                 assert_eq!(template.as_deref(), Some("alert_group_template"));
             }
             other => panic!("expected Group, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_request_approval_action() {
+        let yaml = r#"
+rules:
+  - name: approve-large-refunds
+    priority: 1
+    condition:
+      field: action.payload.amount
+      gt: 500
+    action:
+      type: request_approval
+      notify_provider: email
+      timeout_seconds: 86400
+      message: "Refund requires approval"
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        match &file.rules[0].action {
+            YamlAction::RequestApproval {
+                notify_provider,
+                timeout_seconds,
+                message,
+            } => {
+                assert_eq!(notify_provider, "email");
+                assert_eq!(*timeout_seconds, 86400);
+                assert_eq!(message.as_deref(), Some("Refund requires approval"));
+            }
+            other => panic!("expected RequestApproval, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_request_approval_with_defaults() {
+        let yaml = r#"
+rules:
+  - name: approve-action
+    condition:
+      field: action.action_type
+      eq: refund
+    action:
+      type: request_approval
+      notify_provider: slack
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        match &file.rules[0].action {
+            YamlAction::RequestApproval {
+                timeout_seconds,
+                message,
+                ..
+            } => {
+                assert_eq!(*timeout_seconds, 3600); // default
+                assert!(message.is_none());
+            }
+            other => panic!("expected RequestApproval, got {other:?}"),
         }
     }
 

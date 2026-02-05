@@ -16,6 +16,7 @@ use tracing::{debug, error, info, warn};
 use acteon_core::{EventGroup, StateMachineConfig};
 use acteon_state::{KeyKind, StateKey, StateStore};
 
+use crate::gateway::ApprovalRecord;
 use crate::group_manager::GroupManager;
 
 /// Configuration for the background processor.
@@ -31,6 +32,8 @@ pub struct BackgroundConfig {
     pub enable_group_flush: bool,
     /// Whether timeout processing is enabled.
     pub enable_timeout_processing: bool,
+    /// Whether approval notification retry is enabled (default: true).
+    pub enable_approval_retry: bool,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -45,6 +48,7 @@ impl Default for BackgroundConfig {
             cleanup_interval: Duration::from_secs(60),
             enable_group_flush: true,
             enable_timeout_processing: true,
+            enable_approval_retry: true,
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -75,6 +79,19 @@ pub struct TimeoutEvent {
     pub fired_at: chrono::DateTime<Utc>,
 }
 
+/// Event emitted when a pending approval needs notification retry.
+#[derive(Debug, Clone)]
+pub struct ApprovalRetryEvent {
+    /// Namespace of the approval.
+    pub namespace: String,
+    /// Tenant of the approval.
+    pub tenant: String,
+    /// The approval ID.
+    pub approval_id: String,
+    /// The full approval record (contains action, URLs, etc.).
+    pub record: ApprovalRecord,
+}
+
 /// Background processor for periodic gateway tasks.
 pub struct BackgroundProcessor {
     config: BackgroundConfig,
@@ -88,6 +105,8 @@ pub struct BackgroundProcessor {
     group_flush_tx: Option<mpsc::Sender<GroupFlushEvent>>,
     /// Channel to send timeout events.
     timeout_tx: Option<mpsc::Sender<TimeoutEvent>>,
+    /// Channel to send approval retry events.
+    approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
 }
 
 impl BackgroundProcessor {
@@ -107,6 +126,7 @@ impl BackgroundProcessor {
             shutdown_rx,
             group_flush_tx: None,
             timeout_tx: None,
+            approval_retry_tx: None,
         }
     }
 
@@ -121,6 +141,13 @@ impl BackgroundProcessor {
     #[must_use]
     pub fn with_timeout_channel(mut self, tx: mpsc::Sender<TimeoutEvent>) -> Self {
         self.timeout_tx = Some(tx);
+        self
+    }
+
+    /// Set a channel to receive approval retry events.
+    #[must_use]
+    pub fn with_approval_retry_channel(mut self, tx: mpsc::Sender<ApprovalRetryEvent>) -> Self {
+        self.approval_retry_tx = Some(tx);
         self
     }
 
@@ -325,19 +352,76 @@ impl BackgroundProcessor {
         Ok(())
     }
 
-    /// Run periodic cleanup tasks.
-    #[allow(clippy::unused_async)] // Will use async for state store operations
+    /// Run periodic cleanup tasks, including approval notification retry sweep.
     async fn run_cleanup(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Clean up resolved/notified groups that are no longer needed
         let groups = self.group_manager.list_pending_groups();
         debug!(pending_groups = groups.len(), "cleanup: checking groups");
 
-        // Additional cleanup could include:
-        // - Removing old event state entries
-        // - Cleaning up expired dedup keys
-        // - Archiving old audit records
+        // Sweep for pending approvals that need notification retry.
+        if self.config.enable_approval_retry
+            && let Some(ref tx) = self.approval_retry_tx
+        {
+            self.sweep_approval_retries(tx).await;
+        }
 
         Ok(())
+    }
+
+    /// Scan for pending approvals with `notification_sent == false` and emit retry events.
+    async fn sweep_approval_retries(&self, tx: &mpsc::Sender<ApprovalRetryEvent>) {
+        let entries = match self.state.scan_keys_by_kind(KeyKind::Approval).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!(error = %e, "failed to scan approval keys for retry sweep");
+                return;
+            }
+        };
+
+        let now = Utc::now();
+        let mut retry_count = 0u32;
+
+        for (key, value) in entries {
+            // Skip claim keys (format: namespace:tenant:approval:id:claim)
+            if key.ends_with(":claim") {
+                continue;
+            }
+
+            let record: ApprovalRecord = match serde_json::from_str(&value) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            // Only retry pending, unsent, non-expired approvals
+            if record.status != "pending" || record.notification_sent || record.expires_at <= now {
+                continue;
+            }
+
+            // Parse namespace and tenant from key (format: namespace:tenant:approval:id)
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let namespace = parts[0].to_string();
+            let tenant = parts[1].to_string();
+
+            let event = ApprovalRetryEvent {
+                namespace,
+                tenant,
+                approval_id: record.token.clone(),
+                record,
+            };
+
+            if tx.send(event).await.is_err() {
+                warn!("approval retry event channel closed");
+                return;
+            }
+            retry_count += 1;
+        }
+
+        if retry_count > 0 {
+            debug!(count = retry_count, "emitted approval retry events");
+        }
     }
 }
 
@@ -349,6 +433,7 @@ pub struct BackgroundProcessorBuilder {
     state_machines: Vec<StateMachineConfig>,
     group_flush_tx: Option<mpsc::Sender<GroupFlushEvent>>,
     timeout_tx: Option<mpsc::Sender<TimeoutEvent>>,
+    approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -362,6 +447,7 @@ impl BackgroundProcessorBuilder {
             state_machines: Vec::new(),
             group_flush_tx: None,
             timeout_tx: None,
+            approval_retry_tx: None,
         }
     }
 
@@ -407,6 +493,13 @@ impl BackgroundProcessorBuilder {
         self
     }
 
+    /// Set the approval retry event channel.
+    #[must_use]
+    pub fn approval_retry_channel(mut self, tx: mpsc::Sender<ApprovalRetryEvent>) -> Self {
+        self.approval_retry_tx = Some(tx);
+        self
+    }
+
     /// Build the background processor.
     ///
     /// Returns the processor and a shutdown sender.
@@ -430,6 +523,10 @@ impl BackgroundProcessorBuilder {
 
         if let Some(tx) = self.timeout_tx {
             processor = processor.with_timeout_channel(tx);
+        }
+
+        if let Some(tx) = self.approval_retry_tx {
+            processor = processor.with_approval_retry_channel(tx);
         }
 
         Ok((processor, shutdown_tx))
@@ -460,6 +557,7 @@ mod tests {
                 cleanup_interval: Duration::from_millis(100),
                 enable_group_flush: true,
                 enable_timeout_processing: true,
+                enable_approval_retry: false,
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -511,6 +609,7 @@ mod tests {
                 cleanup_interval: Duration::from_secs(100),
                 enable_group_flush: true,
                 enable_timeout_processing: false,
+                enable_approval_retry: false,
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })

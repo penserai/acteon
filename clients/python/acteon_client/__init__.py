@@ -19,6 +19,9 @@ from .models import (
     GroupListResponse,
     GroupDetail,
     FlushGroupResponse,
+    ApprovalActionResponse,
+    ApprovalStatus,
+    ApprovalListResponse,
 )
 
 __version__ = "0.1.0"
@@ -45,4 +48,7 @@ __all__ = [
     "GroupListResponse",
     "GroupDetail",
     "FlushGroupResponse",
+    "ApprovalActionResponse",
+    "ApprovalStatus",
+    "ApprovalListResponse",
 ]

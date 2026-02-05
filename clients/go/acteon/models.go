@@ -349,3 +349,31 @@ type FlushGroupResponse struct {
 	EventCount int    `json:"event_count"`
 	Notified   bool   `json:"notified"`
 }
+
+// =============================================================================
+// Approval Types (Human-in-the-Loop)
+// =============================================================================
+
+// ApprovalActionResponse represents the response from approving or rejecting an action.
+type ApprovalActionResponse struct {
+	ID      string         `json:"id"`
+	Status  string         `json:"status"`
+	Outcome map[string]any `json:"outcome,omitempty"`
+}
+
+// ApprovalStatus represents the public-facing approval status (no payload exposed).
+type ApprovalStatus struct {
+	Token     string  `json:"token"`
+	Status    string  `json:"status"`
+	Rule      string  `json:"rule"`
+	CreatedAt string  `json:"created_at"`
+	ExpiresAt string  `json:"expires_at"`
+	DecidedAt *string `json:"decided_at,omitempty"`
+	Message   *string `json:"message,omitempty"`
+}
+
+// ApprovalListResponse represents the response from listing pending approvals.
+type ApprovalListResponse struct {
+	Approvals []ApprovalStatus `json:"approvals"`
+	Count     int              `json:"count"`
+}

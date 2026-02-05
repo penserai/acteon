@@ -1,3 +1,4 @@
+pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod dispatch;
@@ -49,7 +50,20 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health::health))
         .route("/metrics", get(health::metrics))
         // Login (must be public)
-        .route("/v1/auth/login", post(auth::login));
+        .route("/v1/auth/login", post(auth::login))
+        // Approvals (public, HMAC-authenticated via query signature)
+        .route(
+            "/v1/approvals/{namespace}/{tenant}/{id}/approve",
+            post(approvals::approve),
+        )
+        .route(
+            "/v1/approvals/{namespace}/{tenant}/{id}/reject",
+            post(approvals::reject),
+        )
+        .route(
+            "/v1/approvals/{namespace}/{tenant}/{id}",
+            get(approvals::get_approval),
+        );
 
     let protected = Router::new()
         // Dispatch
@@ -76,6 +90,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups", get(groups::list_groups))
         .route("/v1/groups/{group_key}", get(groups::get_group))
         .route("/v1/groups/{group_key}", delete(groups::flush_group))
+        // Approvals (list requires auth)
+        .route("/v1/approvals", get(approvals::list_approvals))
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
         // Rate limiting runs after auth (so CallerIdentity is available)

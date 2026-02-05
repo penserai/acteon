@@ -44,5 +44,8 @@ export {
   type GroupListResponse,
   type GroupDetail,
   type FlushGroupResponse,
+  type ApprovalActionResponse,
+  type ApprovalStatus,
+  type ApprovalListResponse,
   createAction,
 } from "./models.js";

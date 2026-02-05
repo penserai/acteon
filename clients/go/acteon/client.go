@@ -426,6 +426,138 @@ func (c *Client) GetGroup(ctx context.Context, groupKey string) (*GroupDetail, e
 	return &detail, nil
 }
 
+// =============================================================================
+// Approvals (Human-in-the-Loop)
+// =============================================================================
+
+// Approve approves a pending action by namespace, tenant, ID, and HMAC signature.
+// Does not require authentication -- the HMAC signature serves as proof of authorization.
+func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalActionResponse, error) {
+	params := url.Values{}
+	params.Set("sig", sig)
+	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
+	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/approve?%s", namespace, tenant, id, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result ApprovalActionResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Approval not found or expired"}
+	}
+	if resp.StatusCode == http.StatusGone {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Approval already decided"}
+	}
+
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to approve"}
+}
+
+// Reject rejects a pending action by namespace, tenant, ID, and HMAC signature.
+// Does not require authentication -- the HMAC signature serves as proof of authorization.
+func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalActionResponse, error) {
+	params := url.Values{}
+	params.Set("sig", sig)
+	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
+	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/reject?%s", namespace, tenant, id, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result ApprovalActionResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Approval not found or expired"}
+	}
+	if resp.StatusCode == http.StatusGone {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Approval already decided"}
+	}
+
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to reject"}
+}
+
+// GetApproval gets the status of an approval by namespace, tenant, ID, and HMAC signature.
+// Returns nil if not found or expired.
+func (c *Client) GetApproval(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalStatus, error) {
+	params := url.Values{}
+	params.Set("sig", sig)
+	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
+	path := fmt.Sprintf("/v1/approvals/%s/%s/%s?%s", namespace, tenant, id, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get approval"}
+	}
+
+	var status ApprovalStatus
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &status, nil
+}
+
+// ListApprovals lists pending approvals filtered by namespace and tenant.
+// Requires authentication.
+func (c *Client) ListApprovals(ctx context.Context, namespace, tenant string) (*ApprovalListResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := "/v1/approvals?" + params.Encode()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list approvals"}
+	}
+
+	var result ApprovalListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
 // FlushGroup forces a group to flush, triggering immediate notification.
 func (c *Client) FlushGroup(ctx context.Context, groupKey string) (*FlushGroupResponse, error) {
 	resp, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/groups/%s", groupKey), nil)

@@ -281,6 +281,15 @@ fn compile_action(action: &YamlAction) -> RuleAction {
             max_group_size: *max_group_size,
             template: template.clone(),
         },
+        YamlAction::RequestApproval {
+            notify_provider,
+            timeout_seconds,
+            message,
+        } => RuleAction::RequestApproval {
+            notify_provider: notify_provider.clone(),
+            timeout_seconds: *timeout_seconds,
+            message: message.clone(),
+        },
     }
 }
 
@@ -574,6 +583,14 @@ rules:
       type: group
       group_by:
         - metadata.cluster
+  - name: r10
+    condition:
+      field: x
+      eq: 1
+    action:
+      type: request_approval
+      notify_provider: email
+      timeout_seconds: 3600
 "#;
         let rules = fe.parse(yaml).unwrap();
         assert!(rules[0].action.is_allow());
@@ -585,6 +602,7 @@ rules:
         assert!(rules[6].action.is_modify());
         assert!(rules[7].action.is_state_machine());
         assert!(rules[8].action.is_group());
+        assert!(rules[9].action.is_request_approval());
     }
 
     #[test]

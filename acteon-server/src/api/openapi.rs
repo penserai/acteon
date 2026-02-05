@@ -5,6 +5,9 @@ use acteon_core::{
     Action, ActionError, ActionMetadata, ActionOutcome, ProviderResponse, ResponseStatus,
 };
 
+use super::approvals::{
+    ApprovalActionResponse, ApprovalQueryParams, ApprovalStatusResponse, ListApprovalsResponse,
+};
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
 use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
@@ -30,7 +33,8 @@ use super::schemas::{
         (name = "Audit", description = "Audit trail query and lookup"),
         (name = "DLQ", description = "Dead-letter queue for failed actions"),
         (name = "Events", description = "Event lifecycle state management"),
-        (name = "Groups", description = "Event group management for batched notifications")
+        (name = "Groups", description = "Event group management for batched notifications"),
+        (name = "Approvals", description = "Human-in-the-loop approval workflow")
     ),
     paths(
         super::health::health,
@@ -50,6 +54,10 @@ use super::schemas::{
         super::groups::list_groups,
         super::groups::get_group,
         super::groups::flush_group,
+        super::approvals::approve,
+        super::approvals::reject,
+        super::approvals::get_approval,
+        super::approvals::list_approvals,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -61,6 +69,7 @@ use super::schemas::{
         DlqStatsResponse, DlqEntry, DlqDrainResponse,
         EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
         GroupSummary, ListGroupsResponse, GroupDetailResponse, FlushGroupResponse,
+        ApprovalActionResponse, ApprovalStatusResponse, ApprovalQueryParams, ListApprovalsResponse,
     ))
 )]
 pub struct ApiDoc;

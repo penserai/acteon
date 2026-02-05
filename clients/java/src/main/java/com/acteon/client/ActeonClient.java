@@ -438,6 +438,145 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Approvals (Human-in-the-Loop)
+    // =========================================================================
+
+    /**
+     * Approves a pending action by namespace, tenant, ID, and HMAC signature.
+     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     */
+    public ApprovalActionResponse approve(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
+        try {
+            String path = "/v1/approvals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/approve"
+                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
+                + "&expires_at=" + expiresAt;
+
+            HttpRequest request = requestBuilder(path)
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ApprovalActionResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Approval not found or expired");
+            } else if (response.statusCode() == 410) {
+                throw new HttpException(response.statusCode(), "Approval already decided");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to approve");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Rejects a pending action by namespace, tenant, ID, and HMAC signature.
+     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     */
+    public ApprovalActionResponse reject(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
+        try {
+            String path = "/v1/approvals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/reject"
+                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
+                + "&expires_at=" + expiresAt;
+
+            HttpRequest request = requestBuilder(path)
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ApprovalActionResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Approval not found or expired");
+            } else if (response.statusCode() == 410) {
+                throw new HttpException(response.statusCode(), "Approval already decided");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to reject");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets the status of an approval by namespace, tenant, ID, and HMAC signature.
+     * Returns empty if not found or expired.
+     */
+    public Optional<ApprovalStatus> getApproval(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
+        try {
+            String path = "/v1/approvals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(id, StandardCharsets.UTF_8)
+                + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
+                + "&expires_at=" + expiresAt;
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, ApprovalStatus.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get approval");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists pending approvals filtered by namespace and tenant.
+     * Requires authentication.
+     */
+    public ApprovalListResponse listApprovals(String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/approvals?"
+                + "namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ApprovalListResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list approvals");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Groups (Event Batching)
     // =========================================================================
 

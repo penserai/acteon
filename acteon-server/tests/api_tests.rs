@@ -13,9 +13,10 @@ use acteon_core::{Action, ProviderResponse};
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_provider::{DynProvider, ProviderError};
-use acteon_rules::ir::expr::Expr;
+use acteon_rules::ir::expr::{BinaryOp, Expr};
 use acteon_rules::ir::rule::{Rule, RuleAction};
 use acteon_server::api::AppState;
+use acteon_state::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 
 // -- Mock provider --------------------------------------------------------
@@ -708,4 +709,365 @@ async fn dispatch_without_audit_still_works() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(json.get("Executed").is_some());
+}
+
+// -- Approval REST API helpers ------------------------------------------------
+
+struct FailingMockProvider {
+    provider_name: String,
+}
+
+impl FailingMockProvider {
+    fn new(name: &str) -> Self {
+        Self {
+            provider_name: name.to_owned(),
+        }
+    }
+}
+
+#[async_trait]
+impl DynProvider for FailingMockProvider {
+    fn name(&self) -> &str {
+        &self.provider_name
+    }
+
+    async fn execute(&self, _action: &Action) -> Result<ProviderResponse, ProviderError> {
+        Err(ProviderError::ExecutionFailed("provider down".into()))
+    }
+
+    async fn health_check(&self) -> Result<(), ProviderError> {
+        Ok(())
+    }
+}
+
+fn refund_condition() -> Expr {
+    Expr::Binary(
+        BinaryOp::Eq,
+        Box::new(Expr::Field(
+            Box::new(Expr::Ident("action".into())),
+            "action_type".into(),
+        )),
+        Box::new(Expr::String("process_refund".into())),
+    )
+}
+
+fn approval_rule(timeout_seconds: u64) -> Rule {
+    Rule::new(
+        "approve-refunds",
+        refund_condition(),
+        RuleAction::RequestApproval {
+            notify_provider: "slack".into(),
+            timeout_seconds,
+            message: Some("Requires approval".into()),
+        },
+    )
+}
+
+fn build_approval_state(rules: Vec<Rule>) -> AppState {
+    build_approval_state_with_providers(
+        rules,
+        vec![
+            Arc::new(MockProvider::new("payments")) as Arc<dyn DynProvider>,
+            Arc::new(MockProvider::new("slack")),
+        ],
+    )
+}
+
+fn build_approval_state_with_providers(
+    rules: Vec<Rule>,
+    providers: Vec<Arc<dyn DynProvider>>,
+) -> AppState {
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let lock = Arc::new(MemoryDistributedLock::new());
+
+    let mut builder = GatewayBuilder::new()
+        .state(store)
+        .lock(lock)
+        .rules(rules)
+        .approval_secret(b"test-secret-key-for-approvals!!")
+        .external_url("https://test.example.com")
+        .executor_config(ExecutorConfig {
+            max_retries: 0,
+            execution_timeout: Duration::from_secs(5),
+            max_concurrent: 10,
+            ..ExecutorConfig::default()
+        });
+    for p in providers {
+        builder = builder.provider(p);
+    }
+
+    let gw = builder.build().expect("gateway should build");
+
+    AppState {
+        gateway: Arc::new(RwLock::new(gw)),
+        audit: None,
+        auth: None,
+        rate_limiter: None,
+    }
+}
+
+fn refund_action() -> Action {
+    Action::new(
+        "payments",
+        "tenant-1",
+        "payments",
+        "process_refund",
+        serde_json::json!({"order_id": "ORD-123", "amount": 99.99}),
+    )
+}
+
+fn parse_query_param(url: &str, param: &str) -> Option<String> {
+    let query = url.split('?').nth(1)?;
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        if kv.next()? == param {
+            return kv.next().map(String::from);
+        }
+    }
+    None
+}
+
+/// Helper: dispatch a refund action and return (approval_id, approve_url, reject_url).
+async fn dispatch_refund_and_get_pending(state: &AppState) -> (String, String, String) {
+    let app = build_app(state.clone());
+    let action = refund_action();
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let pending = json
+        .get("PendingApproval")
+        .expect("expected PendingApproval outcome");
+
+    let approval_id = pending["approval_id"].as_str().unwrap().to_string();
+    let approve_url = pending["approve_url"].as_str().unwrap().to_string();
+    let reject_url = pending["reject_url"].as_str().unwrap().to_string();
+
+    (approval_id, approve_url, reject_url)
+}
+
+// -- Approval REST API tests --------------------------------------------------
+
+#[tokio::test]
+async fn approval_dispatch_returns_pending_with_signed_urls() {
+    let state = build_approval_state(vec![approval_rule(3600)]);
+    let (approval_id, approve_url, reject_url) = dispatch_refund_and_get_pending(&state).await;
+
+    assert!(!approval_id.is_empty());
+    assert!(
+        approve_url.starts_with("https://test.example.com/v1/approvals/"),
+        "approve_url should start with external_url prefix, got {approve_url}"
+    );
+    assert!(
+        reject_url.starts_with("https://test.example.com/v1/approvals/"),
+        "reject_url should start with external_url prefix, got {reject_url}"
+    );
+    assert!(parse_query_param(&approve_url, "sig").is_some());
+    assert!(parse_query_param(&approve_url, "expires_at").is_some());
+    assert!(parse_query_param(&reject_url, "sig").is_some());
+    assert!(parse_query_param(&reject_url, "expires_at").is_some());
+}
+
+#[tokio::test]
+async fn approval_approve_via_rest_executes_action() {
+    let state = build_approval_state(vec![approval_rule(3600)]);
+    let (approval_id, approve_url, _) = dispatch_refund_and_get_pending(&state).await;
+
+    let sig = parse_query_param(&approve_url, "sig").unwrap();
+    let expires_at = parse_query_param(&approve_url, "expires_at").unwrap();
+
+    // POST /v1/approvals/{ns}/{tenant}/{id}/approve?sig=...&expires_at=...
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(format!(
+                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "approved");
+    assert!(
+        json["outcome"].is_object(),
+        "approved action should have execution outcome"
+    );
+
+    // Verify status via GET
+    let app2 = build_app(state);
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "approved");
+}
+
+#[tokio::test]
+async fn approval_reject_via_rest_updates_status() {
+    let state = build_approval_state(vec![approval_rule(3600)]);
+    let (approval_id, _, reject_url) = dispatch_refund_and_get_pending(&state).await;
+
+    let sig = parse_query_param(&reject_url, "sig").unwrap();
+    let expires_at = parse_query_param(&reject_url, "expires_at").unwrap();
+
+    // POST /v1/approvals/{ns}/{tenant}/{id}/reject?sig=...&expires_at=...
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(format!(
+                    "/v1/approvals/payments/tenant-1/{approval_id}/reject?sig={sig}&expires_at={expires_at}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "rejected");
+    assert!(
+        json["outcome"].is_null(),
+        "rejected action should have no execution outcome"
+    );
+
+    // Verify status via GET
+    let app2 = build_app(state);
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "rejected");
+}
+
+#[tokio::test]
+async fn approval_notification_failure_still_creates_pending() {
+    let state = build_approval_state_with_providers(
+        vec![approval_rule(3600)],
+        vec![
+            Arc::new(MockProvider::new("payments")) as Arc<dyn DynProvider>,
+            Arc::new(FailingMockProvider::new("slack")),
+        ],
+    );
+
+    let app = build_app(state);
+    let action = refund_action();
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let pending = json
+        .get("PendingApproval")
+        .expect("should still return PendingApproval even with notification failure");
+
+    assert_eq!(
+        pending["notification_sent"], false,
+        "notification_sent should be false when slack provider fails"
+    );
+    assert!(
+        !pending["approval_id"].as_str().unwrap().is_empty(),
+        "approval_id should still be present"
+    );
+}
+
+#[tokio::test]
+async fn approval_expired_link_returns_404() {
+    let state = build_approval_state(vec![approval_rule(2)]);
+    let (approval_id, approve_url, _) = dispatch_refund_and_get_pending(&state).await;
+
+    let sig = parse_query_param(&approve_url, "sig").unwrap();
+    let expires_at = parse_query_param(&approve_url, "expires_at").unwrap();
+
+    // Wait for the approval to expire (2-second timeout + buffer).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let app = build_app(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(format!(
+                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "expired approval should return 404"
+    );
 }

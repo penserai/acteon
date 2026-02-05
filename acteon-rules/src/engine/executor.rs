@@ -767,6 +767,17 @@ pub enum RuleVerdict {
         /// Optional template name for group notification.
         template: Option<String>,
     },
+    /// Request human approval before executing the action.
+    RequestApproval {
+        /// Name of the rule that triggered the approval request.
+        rule: String,
+        /// Provider to use for sending the approval notification.
+        notify_provider: String,
+        /// Timeout in seconds before the approval request expires.
+        timeout_seconds: u64,
+        /// Optional message to include in the approval notification.
+        message: Option<String>,
+    },
 }
 
 /// The rule engine evaluates a set of rules against an evaluation context.
@@ -964,6 +975,16 @@ fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVerdict {
             group_interval_seconds: *group_interval_seconds,
             max_group_size: *max_group_size,
             template: template.clone(),
+        },
+        RuleAction::RequestApproval {
+            notify_provider,
+            timeout_seconds,
+            message,
+        } => RuleVerdict::RequestApproval {
+            rule: rule_name.to_owned(),
+            notify_provider: notify_provider.clone(),
+            timeout_seconds: *timeout_seconds,
+            message: message.clone(),
         },
     }
 }
