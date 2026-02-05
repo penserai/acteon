@@ -54,31 +54,55 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 
 ## Architecture
 
+All crates are organized under `crates/` with logical groupings:
+
+### Core Components
+
 | Crate | Description |
 |-------|-------------|
-| `acteon-core` | Shared types (`Action`, `ActionOutcome`, newtypes) |
-| `acteon-state` | Abstract state store / distributed lock trait |
-| `acteon-state-memory` | In-memory state backend |
-| `acteon-state-redis` | Redis state backend |
-| `acteon-state-postgres` | PostgreSQL state backend |
-| `acteon-state-dynamodb` | DynamoDB state backend |
-| `acteon-state-clickhouse` | ClickHouse state backend |
-| `acteon-audit` | Abstract audit trail trait |
-| `acteon-audit-memory` | In-memory audit backend |
-| `acteon-audit-postgres` | PostgreSQL audit backend |
-| `acteon-audit-clickhouse` | ClickHouse audit backend |
-| `acteon-audit-elasticsearch` | Elasticsearch audit backend |
-| `acteon-rules` | Rule engine IR and evaluation |
-| `acteon-rules-yaml` | YAML rule file parser |
-| `acteon-rules-cel` | CEL expression support |
-| `acteon-provider` | Provider trait and registry |
-| `acteon-executor` | Action execution with retries and concurrency |
-| `acteon-gateway` | Orchestrates lock, rules, execution, grouping, and state machines |
-| `acteon-server` | HTTP server (Axum) with Swagger UI |
-| `acteon-email` | Email/SMTP provider |
-| `acteon-slack` | Slack provider |
-| [`acteon-client`](acteon-client/README.md) | Native Rust HTTP client for the Acteon API |
-| [`acteon-simulation`](acteon-simulation/README.md) | Testing framework with mock providers and failure injection |
+| `crates/core` | Shared types (`Action`, `ActionOutcome`, newtypes) |
+| [`crates/client`](crates/client/README.md) | Native Rust HTTP client for the Acteon API |
+| `crates/server` | HTTP server (Axum) with Swagger UI |
+| `crates/gateway` | Orchestrates lock, rules, execution, grouping, and state machines |
+| [`crates/simulation`](crates/simulation/README.md) | Testing framework with mock providers and failure injection |
+| `crates/executor` | Action execution with retries and concurrency |
+| `crates/provider` | Provider trait and registry |
+
+### State Backends
+
+| Crate | Description |
+|-------|-------------|
+| `crates/state/state` | Abstract state store / distributed lock trait |
+| `crates/state/memory` | In-memory state backend |
+| `crates/state/redis` | Redis state backend |
+| `crates/state/postgres` | PostgreSQL state backend |
+| `crates/state/dynamodb` | DynamoDB state backend |
+| `crates/state/clickhouse` | ClickHouse state backend |
+
+### Audit Backends
+
+| Crate | Description |
+|-------|-------------|
+| `crates/audit/audit` | Abstract audit trail trait |
+| `crates/audit/memory` | In-memory audit backend |
+| `crates/audit/postgres` | PostgreSQL audit backend |
+| `crates/audit/clickhouse` | ClickHouse audit backend |
+| `crates/audit/elasticsearch` | Elasticsearch audit backend |
+
+### Rules Frontends
+
+| Crate | Description |
+|-------|-------------|
+| `crates/rules/rules` | Rule engine IR and evaluation |
+| `crates/rules/yaml` | YAML rule file parser |
+| `crates/rules/cel` | CEL expression support |
+
+### Integrations
+
+| Crate | Description |
+|-------|-------------|
+| `crates/integrations/email` | Email/SMTP provider |
+| `crates/integrations/slack` | Slack provider |
 
 ## Running locally
 
