@@ -1,29 +1,38 @@
 [workspace]
 resolver = "2"
 members = [
-    "acteon-core",
-    "acteon-state",
-    "acteon-state-memory",
-    "acteon-state-postgres",
-    "acteon-state-redis",
-    "acteon-state-dynamodb",
-    "acteon-state-clickhouse",
-    "acteon-rules",
-    "acteon-rules-yaml",
-    "acteon-rules-cel",
-    "acteon-provider",
-    "acteon-executor",
-    "acteon-gateway",
-    "acteon-server",
-    "acteon-slack",
-    "acteon-email",
-    "acteon-audit",
-    "acteon-audit-memory",
-    "acteon-audit-postgres",
-    "acteon-audit-clickhouse",
-    "acteon-audit-elasticsearch",
-    "acteon-client",
-    "acteon-simulation",
+    # Core components
+    "crates/core",
+    "crates/client",
+    "crates/server",
+    "crates/gateway",
+    "crates/simulation",
+    "crates/executor",
+    "crates/provider",
+
+    # State backends
+    "crates/state/state",
+    "crates/state/memory",
+    "crates/state/postgres",
+    "crates/state/redis",
+    "crates/state/dynamodb",
+    "crates/state/clickhouse",
+
+    # Audit backends
+    "crates/audit/audit",
+    "crates/audit/memory",
+    "crates/audit/postgres",
+    "crates/audit/clickhouse",
+    "crates/audit/elasticsearch",
+
+    # Rules frontends
+    "crates/rules/rules",
+    "crates/rules/yaml",
+    "crates/rules/cel",
+
+    # Integrations
+    "crates/integrations/email",
+    "crates/integrations/slack",
 ]
 
 [workspace.package]
@@ -34,30 +43,38 @@ repository = "https://github.com/acteon/acteon"
 rust-version = "1.88"
 
 [workspace.dependencies]
-# Internal crates
-acteon-core = { path = "acteon-core" }
-acteon-state = { path = "acteon-state" }
-acteon-state-memory = { path = "acteon-state-memory" }
-acteon-state-postgres = { path = "acteon-state-postgres" }
-acteon-state-redis = { path = "acteon-state-redis" }
-acteon-state-dynamodb = { path = "acteon-state-dynamodb" }
-acteon-rules = { path = "acteon-rules" }
-acteon-rules-yaml = { path = "acteon-rules-yaml" }
-acteon-rules-cel = { path = "acteon-rules-cel" }
-acteon-provider = { path = "acteon-provider" }
-acteon-executor = { path = "acteon-executor" }
-acteon-gateway = { path = "acteon-gateway" }
-acteon-server = { path = "acteon-server" }
-acteon-slack = { path = "acteon-slack" }
-acteon-email = { path = "acteon-email" }
-acteon-audit = { path = "acteon-audit" }
-acteon-audit-memory = { path = "acteon-audit-memory" }
-acteon-audit-postgres = { path = "acteon-audit-postgres" }
-acteon-audit-clickhouse = { path = "acteon-audit-clickhouse" }
-acteon-audit-elasticsearch = { path = "acteon-audit-elasticsearch" }
-acteon-state-clickhouse = { path = "acteon-state-clickhouse" }
-acteon-client = { path = "acteon-client" }
-acteon-simulation = { path = "acteon-simulation" }
+# Internal crates - Core
+acteon-core = { path = "crates/core" }
+acteon-client = { path = "crates/client" }
+acteon-server = { path = "crates/server" }
+acteon-gateway = { path = "crates/gateway" }
+acteon-simulation = { path = "crates/simulation" }
+acteon-executor = { path = "crates/executor" }
+acteon-provider = { path = "crates/provider" }
+
+# State backends
+acteon-state = { path = "crates/state/state" }
+acteon-state-memory = { path = "crates/state/memory" }
+acteon-state-postgres = { path = "crates/state/postgres" }
+acteon-state-redis = { path = "crates/state/redis" }
+acteon-state-dynamodb = { path = "crates/state/dynamodb" }
+acteon-state-clickhouse = { path = "crates/state/clickhouse" }
+
+# Audit backends
+acteon-audit = { path = "crates/audit/audit" }
+acteon-audit-memory = { path = "crates/audit/memory" }
+acteon-audit-postgres = { path = "crates/audit/postgres" }
+acteon-audit-clickhouse = { path = "crates/audit/clickhouse" }
+acteon-audit-elasticsearch = { path = "crates/audit/elasticsearch" }
+
+# Rules frontends
+acteon-rules = { path = "crates/rules/rules" }
+acteon-rules-yaml = { path = "crates/rules/yaml" }
+acteon-rules-cel = { path = "crates/rules/cel" }
+
+# Integrations
+acteon-email = { path = "crates/integrations/email" }
+acteon-slack = { path = "crates/integrations/slack" }
 
 # Parsing
 nom = "7"
