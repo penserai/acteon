@@ -1769,4 +1769,348 @@ mod tests {
         assert_eq!(snap.throttled, 0);
         assert_eq!(snap.failed, 0);
     }
+
+    // -- Approval test helpers ------------------------------------------------
+
+    use acteon_rules::ir::expr::BinaryOp;
+    use acteon_state::{DistributedLock, StateStore};
+
+    struct FailingMockProvider {
+        provider_name: String,
+    }
+
+    impl FailingMockProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                provider_name: name.to_owned(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DynProvider for FailingMockProvider {
+        fn name(&self) -> &str {
+            &self.provider_name
+        }
+
+        async fn execute(&self, _action: &Action) -> Result<ProviderResponse, ProviderError> {
+            Err(ProviderError::ExecutionFailed("provider down".into()))
+        }
+
+        async fn health_check(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    /// Build a condition expression matching `action.action_type == "process_refund"`.
+    fn refund_condition() -> Expr {
+        Expr::Binary(
+            BinaryOp::Eq,
+            Box::new(Expr::Field(
+                Box::new(Expr::Ident("action".into())),
+                "action_type".into(),
+            )),
+            Box::new(Expr::String("process_refund".into())),
+        )
+    }
+
+    fn approval_rule(timeout_seconds: u64) -> Rule {
+        Rule::new(
+            "approve-refunds",
+            refund_condition(),
+            RuleAction::RequestApproval {
+                notify_provider: "slack".into(),
+                timeout_seconds,
+                message: Some("Requires approval".into()),
+            },
+        )
+    }
+
+    fn build_approval_gateway(
+        rules: Vec<Rule>,
+        providers: Vec<Arc<dyn DynProvider>>,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        build_approval_gateway_with_state(rules, providers, store, lock)
+    }
+
+    fn build_approval_gateway_with_state(
+        rules: Vec<Rule>,
+        providers: Vec<Arc<dyn DynProvider>>,
+        store: Arc<dyn StateStore>,
+        lock: Arc<dyn DistributedLock>,
+    ) -> crate::gateway::Gateway {
+        let mut builder = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(rules)
+            .approval_secret(b"test-secret-key-for-approvals!!")
+            .external_url("https://test.example.com");
+        for p in providers {
+            builder = builder.provider(p);
+        }
+        builder.build().expect("gateway should build")
+    }
+
+    fn refund_action() -> Action {
+        Action::new(
+            "payments",
+            "tenant-1",
+            "payments",
+            "process_refund",
+            serde_json::json!({"order_id": "ORD-123", "amount": 99.99}),
+        )
+    }
+
+    fn parse_query_param(url: &str, param: &str) -> Option<String> {
+        let query = url.split('?').nth(1)?;
+        for pair in query.split('&') {
+            let mut kv = pair.splitn(2, '=');
+            if kv.next()? == param {
+                return kv.next().map(String::from);
+            }
+        }
+        None
+    }
+
+    // -- Approval tests -------------------------------------------------------
+
+    #[tokio::test]
+    async fn approval_dispatch_returns_pending_with_signed_urls() {
+        let gw = build_approval_gateway(
+            vec![approval_rule(3600)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(MockProvider::new("slack")),
+            ],
+        );
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                reject_url,
+                notification_sent,
+                ..
+            } => {
+                assert!(!approval_id.is_empty(), "approval_id must be non-empty");
+                assert!(
+                    approve_url.starts_with("https://test.example.com/v1/approvals/"),
+                    "approve_url should start with external_url prefix"
+                );
+                assert!(
+                    reject_url.starts_with("https://test.example.com/v1/approvals/"),
+                    "reject_url should start with external_url prefix"
+                );
+                assert!(
+                    parse_query_param(&approve_url, "sig").is_some(),
+                    "approve_url must contain sig param"
+                );
+                assert!(
+                    parse_query_param(&approve_url, "expires_at").is_some(),
+                    "approve_url must contain expires_at param"
+                );
+                assert!(
+                    parse_query_param(&reject_url, "sig").is_some(),
+                    "reject_url must contain sig param"
+                );
+                assert!(
+                    parse_query_param(&reject_url, "expires_at").is_some(),
+                    "reject_url must contain expires_at param"
+                );
+                assert!(
+                    notification_sent,
+                    "notification should be sent successfully"
+                );
+            }
+            other => panic!("expected PendingApproval, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_approve_executes_action() {
+        let gw = build_approval_gateway(
+            vec![approval_rule(3600)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(MockProvider::new("slack")),
+            ],
+        );
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+
+        let result = gw
+            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, ActionOutcome::Executed(_)),
+            "approved action should execute, got {result:?}"
+        );
+
+        let approvals = gw
+            .list_pending_approvals("payments", "tenant-1")
+            .await
+            .unwrap();
+        let record = approvals
+            .iter()
+            .find(|a| a.token == approval_id)
+            .expect("approval record should exist");
+        assert_eq!(record.status, "approved");
+    }
+
+    #[tokio::test]
+    async fn approval_reject_updates_status() {
+        let gw = build_approval_gateway(
+            vec![approval_rule(3600)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(MockProvider::new("slack")),
+            ],
+        );
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, reject_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                reject_url,
+                ..
+            } => (approval_id, reject_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&reject_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&reject_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+
+        gw.reject_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
+            .await
+            .unwrap();
+
+        let approvals = gw
+            .list_pending_approvals("payments", "tenant-1")
+            .await
+            .unwrap();
+        let record = approvals
+            .iter()
+            .find(|a| a.token == approval_id)
+            .expect("approval record should exist");
+        assert_eq!(record.status, "rejected");
+    }
+
+    #[tokio::test]
+    async fn approval_notification_failure_retry_succeeds() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock: Arc<dyn DistributedLock> = Arc::new(MemoryDistributedLock::new());
+
+        // Gateway A: FailingMockProvider("slack") — notification will fail.
+        let gw_a = build_approval_gateway_with_state(
+            vec![approval_rule(3600)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(FailingMockProvider::new("slack")),
+            ],
+            Arc::clone(&store),
+            Arc::clone(&lock),
+        );
+
+        let outcome = gw_a.dispatch(refund_action(), None).await.unwrap();
+        let approval_id = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                notification_sent,
+                ..
+            } => {
+                assert!(
+                    !notification_sent,
+                    "notification should fail with FailingMockProvider"
+                );
+                approval_id
+            }
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        // Gateway B: shares same state, has a working MockProvider("slack").
+        let gw_b = build_approval_gateway_with_state(
+            vec![approval_rule(3600)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(MockProvider::new("slack")),
+            ],
+            Arc::clone(&store),
+            Arc::clone(&lock),
+        );
+
+        let retried = gw_b
+            .retry_approval_notification("payments", "tenant-1", &approval_id)
+            .await
+            .unwrap();
+        assert!(retried, "retry should succeed with working provider");
+
+        // Calling retry again should return false (already sent).
+        let retried_again = gw_b
+            .retry_approval_notification("payments", "tenant-1", &approval_id)
+            .await
+            .unwrap();
+        assert!(
+            !retried_again,
+            "second retry should return false (notification already sent)"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_expired_link_returns_error() {
+        let gw = build_approval_gateway(
+            vec![approval_rule(2)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(MockProvider::new("slack")),
+            ],
+        );
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+
+        // Wait for the approval to expire (2-second timeout + buffer).
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let result = gw
+            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
+            .await;
+        assert!(
+            result.is_err(),
+            "expired approval should return an error, got {result:?}"
+        );
+    }
 }
