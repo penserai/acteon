@@ -25,6 +25,57 @@ use crate::metrics::GatewayMetrics;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// A named HMAC key for signing/verifying approval URLs.
+#[derive(Debug, Clone)]
+pub struct ApprovalKey {
+    /// Key identifier included in signed URLs.
+    pub kid: String,
+    /// The raw HMAC secret bytes.
+    pub secret: Vec<u8>,
+}
+
+/// Ordered set of HMAC keys. Index 0 = current signing key.
+#[derive(Debug, Clone)]
+pub struct ApprovalKeySet {
+    keys: Vec<ApprovalKey>,
+}
+
+impl ApprovalKeySet {
+    /// Create a new key set. Panics if `keys` is empty.
+    pub fn new(keys: Vec<ApprovalKey>) -> Self {
+        assert!(
+            !keys.is_empty(),
+            "ApprovalKeySet must have at least one key"
+        );
+        Self { keys }
+    }
+
+    /// Create a key set from a single secret (legacy compatibility). Uses kid `"k0"`.
+    pub fn from_single(secret: Vec<u8>) -> Self {
+        Self {
+            keys: vec![ApprovalKey {
+                kid: "k0".into(),
+                secret,
+            }],
+        }
+    }
+
+    /// The current signing key (first in the list).
+    pub fn current(&self) -> &ApprovalKey {
+        &self.keys[0]
+    }
+
+    /// Look up a key by its kid.
+    pub fn get(&self, kid: &str) -> Option<&ApprovalKey> {
+        self.keys.iter().find(|k| k.kid == kid)
+    }
+
+    /// All keys (for try-all verification).
+    pub fn all(&self) -> &[ApprovalKey] {
+        &self.keys
+    }
+}
+
 /// A stored approval record awaiting human decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
@@ -94,7 +145,11 @@ pub struct Gateway {
     pub(crate) state_machines: HashMap<String, StateMachineConfig>,
     pub(crate) group_manager: Arc<GroupManager>,
     pub(crate) external_url: Option<String>,
-    pub(crate) approval_secret: Vec<u8>,
+    pub(crate) approval_keys: ApprovalKeySet,
+    pub(crate) llm_evaluator: Option<Arc<dyn acteon_llm::LlmEvaluator>>,
+    pub(crate) llm_policy: String,
+    pub(crate) llm_policies: HashMap<String, String>,
+    pub(crate) llm_fail_open: bool,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -150,9 +205,12 @@ impl Gateway {
 
         info!(?verdict, "rule evaluation complete");
 
+        // 3b. LLM guardrail check (skipped for already-denied/suppressed verdicts).
+        let verdict = self.apply_llm_guardrail(&action, verdict).await;
+
         // 4. Handle the verdict.
         let outcome = match &verdict {
-            RuleVerdict::Allow => self.execute_action(&action).await,
+            RuleVerdict::Allow(_) => self.execute_action(&action).await,
             RuleVerdict::Deduplicate { ttl_seconds } => {
                 self.handle_dedup(&action, *ttl_seconds).await?
             }
@@ -273,6 +331,71 @@ impl Gateway {
             .buffer_unordered(BATCH_CONCURRENCY)
             .collect()
             .await
+    }
+
+    /// Resolve the LLM policy string for the given action and verdict.
+    ///
+    /// Resolution order (most specific wins):
+    /// 1. Rule metadata `llm_policy` key (per-rule override)
+    /// 2. `self.llm_policies[action.action_type]` (per-action-type override)
+    /// 3. `self.llm_policy` (global default)
+    fn resolve_llm_policy(&self, action: &Action, verdict: &RuleVerdict) -> String {
+        // 1. Check rule metadata for llm_policy.
+        if let Some(rule_name) = verdict.rule_name()
+            && let Some(rule) = self.engine.rule_by_name(rule_name)
+            && let Some(policy) = rule.metadata.get("llm_policy")
+        {
+            return policy.clone();
+        }
+
+        // 2. Check per-action-type policy map.
+        if let Some(policy) = self.llm_policies.get(&action.action_type) {
+            return policy.clone();
+        }
+
+        // 3. Global default.
+        self.llm_policy.clone()
+    }
+
+    /// Apply the optional LLM guardrail to a verdict.
+    ///
+    /// Skips the LLM call if no evaluator is configured or if the verdict
+    /// is already `Deny` or `Suppress`. On error, behaviour depends on
+    /// `llm_fail_open`.
+    async fn apply_llm_guardrail(&self, action: &Action, verdict: RuleVerdict) -> RuleVerdict {
+        let Some(ref llm) = self.llm_evaluator else {
+            return verdict;
+        };
+
+        // Skip LLM evaluation for already-denied/suppressed actions.
+        if matches!(verdict, RuleVerdict::Deny(_) | RuleVerdict::Suppress(_)) {
+            return verdict;
+        }
+
+        let policy = self.resolve_llm_policy(action, &verdict);
+
+        match llm.evaluate(action, &policy).await {
+            Ok(response) => {
+                if response.allowed {
+                    self.metrics.increment_llm_guardrail_allowed();
+                    verdict
+                } else {
+                    self.metrics.increment_llm_guardrail_denied();
+                    info!(reason = %response.reason, "LLM guardrail denied action");
+                    RuleVerdict::Deny(format!("LLM guardrail: {}", response.reason))
+                }
+            }
+            Err(e) => {
+                self.metrics.increment_llm_guardrail_errors();
+                if self.llm_fail_open {
+                    warn!(error = %e, "LLM guardrail error (fail-open), allowing action");
+                    verdict
+                } else {
+                    warn!(error = %e, "LLM guardrail error (fail-closed), denying action");
+                    RuleVerdict::Deny(format!("LLM guardrail unavailable: {e}"))
+                }
+            }
+        }
     }
 
     /// Return a reference to the gateway metrics.
@@ -604,13 +727,19 @@ impl Gateway {
         })
     }
 
-    /// Compute the HMAC-SHA256 signature for an approval.
+    /// Compute the HMAC-SHA256 signature for an approval using a specific key.
     ///
     /// The message uses length-prefixed fields to prevent canonicalization
     /// attacks (e.g., `ns="a:b", tenant="c"` vs `ns="a", tenant="b:c"`).
     /// The `expires_at` timestamp binds the signature to a specific expiry
     /// window so leaked links cannot be replayed after expiration.
-    fn compute_approval_sig(&self, ns: &str, tenant: &str, id: &str, expires_at: i64) -> String {
+    fn compute_approval_sig_with_key(
+        key: &ApprovalKey,
+        ns: &str,
+        tenant: &str,
+        id: &str,
+        expires_at: i64,
+    ) -> String {
         let msg = format!(
             "{}:{}\n{}:{}\n{}:{}\n{}",
             ns.len(),
@@ -621,13 +750,31 @@ impl Gateway {
             id,
             expires_at,
         );
-        let mut mac =
-            HmacSha256::new_from_slice(&self.approval_secret).expect("HMAC accepts any key size");
+        let mut mac = HmacSha256::new_from_slice(&key.secret).expect("HMAC accepts any key size");
         mac.update(msg.as_bytes());
         hex::encode(mac.finalize().into_bytes())
     }
 
+    /// Compute the HMAC-SHA256 signature using the current signing key.
+    ///
+    /// Returns `(signature, kid)` so that the kid can be appended to URLs.
+    fn compute_approval_sig(
+        &self,
+        ns: &str,
+        tenant: &str,
+        id: &str,
+        expires_at: i64,
+    ) -> (String, String) {
+        let current = self.approval_keys.current();
+        let sig = Self::compute_approval_sig_with_key(current, ns, tenant, id, expires_at);
+        (sig, current.kid.clone())
+    }
+
     /// Verify the HMAC-SHA256 signature for an approval.
+    ///
+    /// If `kid` is `Some`, only the matching key is tried. If `kid` is `None`,
+    /// all keys are tried in order for backward compatibility with URLs
+    /// generated before key rotation was introduced.
     fn verify_approval_sig(
         &self,
         ns: &str,
@@ -635,15 +782,31 @@ impl Gateway {
         id: &str,
         expires_at: i64,
         sig: &str,
+        kid: Option<&str>,
     ) -> bool {
-        let expected = self.compute_approval_sig(ns, tenant, id, expires_at);
-        // Constant-time comparison
-        expected.len() == sig.len()
-            && expected
-                .bytes()
-                .zip(sig.bytes())
-                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                == 0
+        let keys_to_try: Vec<&ApprovalKey> = if let Some(kid) = kid {
+            match self.approval_keys.get(kid) {
+                Some(key) => vec![key],
+                None => return false,
+            }
+        } else {
+            self.approval_keys.all().iter().collect()
+        };
+
+        for key in keys_to_try {
+            let expected = Self::compute_approval_sig_with_key(key, ns, tenant, id, expires_at);
+            // Constant-time comparison
+            let is_match = expected.len() == sig.len()
+                && expected
+                    .bytes()
+                    .zip(sig.bytes())
+                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                    == 0;
+            if is_match {
+                return true;
+            }
+        }
+        false
     }
 
     /// Handle the request approval verdict: store approval record, send notification, return pending.
@@ -666,7 +829,7 @@ impl Gateway {
 
         // Compute HMAC signature (includes expires_at to bind sig to this TTL)
         let expires_ts = expires_at.timestamp();
-        let sig = self.compute_approval_sig(
+        let (sig, kid) = self.compute_approval_sig(
             action.namespace.as_str(),
             action.tenant.as_str(),
             &id,
@@ -729,10 +892,10 @@ impl Gateway {
         let ns = &action.namespace;
         let tenant = &action.tenant;
         let approve_url = format!(
-            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
         let reject_url = format!(
-            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
 
         let notification_payload = serde_json::json!({
@@ -838,9 +1001,10 @@ impl Gateway {
         id: &str,
         sig: &str,
         expires_at: i64,
+        kid: Option<&str>,
     ) -> Result<ActionOutcome, GatewayError> {
         // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
-        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -945,9 +1109,10 @@ impl Gateway {
         id: &str,
         sig: &str,
         expires_at: i64,
+        kid: Option<&str>,
     ) -> Result<(), GatewayError> {
         // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
-        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -1037,17 +1202,17 @@ impl Gateway {
 
         // Compute HMAC signature for the URLs (includes expires_at)
         let expires_ts = record.expires_at.timestamp();
-        let sig = self.compute_approval_sig(namespace, tenant, id, expires_ts);
+        let (sig, kid) = self.compute_approval_sig(namespace, tenant, id, expires_ts);
 
         let external_url = self
             .external_url
             .as_deref()
             .unwrap_or("http://localhost:8080");
         let approve_url = format!(
-            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
         let reject_url = format!(
-            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
 
         let notification_payload = serde_json::json!({
@@ -1146,9 +1311,10 @@ impl Gateway {
         id: &str,
         sig: &str,
         expires_at: i64,
+        kid: Option<&str>,
     ) -> Result<Option<ApprovalStatus>, GatewayError> {
         // Verify HMAC signature
-        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
             return Ok(None);
         }
 
@@ -1223,7 +1389,7 @@ impl Gateway {
 /// Extract a string tag from a `RuleVerdict`.
 fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
     match verdict {
-        RuleVerdict::Allow => "allow",
+        RuleVerdict::Allow(_) => "allow",
         RuleVerdict::Deny(_) => "deny",
         RuleVerdict::Deduplicate { .. } => "deduplicate",
         RuleVerdict::Suppress(_) => "suppress",
@@ -1239,7 +1405,7 @@ fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
 /// Extract the matched rule name from a `RuleVerdict`, if any.
 fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
     match verdict {
-        RuleVerdict::Allow | RuleVerdict::Deduplicate { .. } => None,
+        RuleVerdict::Allow(_) | RuleVerdict::Deduplicate { .. } => None,
         RuleVerdict::Deny(rule)
         | RuleVerdict::Suppress(rule)
         | RuleVerdict::Reroute { rule, .. }
@@ -1368,6 +1534,7 @@ fn build_audit_record(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -1921,6 +2088,14 @@ mod tests {
                     "reject_url must contain expires_at param"
                 );
                 assert!(
+                    parse_query_param(&approve_url, "kid").is_some(),
+                    "approve_url must contain kid param"
+                );
+                assert!(
+                    parse_query_param(&reject_url, "kid").is_some(),
+                    "reject_url must contain kid param"
+                );
+                assert!(
                     notification_sent,
                     "notification should be sent successfully"
                 );
@@ -1954,9 +2129,17 @@ mod tests {
             .expect("expires_at param")
             .parse()
             .expect("expires_at should be an integer");
+        let kid = parse_query_param(&approve_url, "kid");
 
         let result = gw
-            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                kid.as_deref(),
+            )
             .await
             .unwrap();
         assert!(
@@ -2000,10 +2183,18 @@ mod tests {
             .expect("expires_at param")
             .parse()
             .expect("expires_at should be an integer");
+        let kid = parse_query_param(&reject_url, "kid");
 
-        gw.reject_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
-            .await
-            .unwrap();
+        gw.reject_approval(
+            "payments",
+            "tenant-1",
+            &approval_id,
+            &sig,
+            expires_at,
+            kid.as_deref(),
+        )
+        .await
+        .unwrap();
 
         let approvals = gw
             .list_pending_approvals("payments", "tenant-1")
@@ -2101,16 +2292,408 @@ mod tests {
             .expect("expires_at param")
             .parse()
             .expect("expires_at should be an integer");
+        let kid = parse_query_param(&approve_url, "kid");
 
         // Wait for the approval to expire (2-second timeout + buffer).
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         let result = gw
-            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                kid.as_deref(),
+            )
             .await;
         assert!(
             result.is_err(),
             "expired approval should return an error, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn approval_key_rotation_old_key_still_verifies() {
+        use crate::gateway::{ApprovalKey, ApprovalKeySet};
+
+        let old_secret = b"old-secret-key-for-rotation!!!!".to_vec();
+        let new_secret = b"new-secret-key-for-rotation!!!!".to_vec();
+
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        // Build a gateway with only the old key (simulating the previous deployment).
+        let old_keys = ApprovalKeySet::new(vec![ApprovalKey {
+            kid: "k1".into(),
+            secret: old_secret.clone(),
+        }]);
+
+        let gw_old = GatewayBuilder::new()
+            .state(Arc::clone(&store) as Arc<dyn StateStore>)
+            .lock(Arc::clone(&lock) as Arc<dyn DistributedLock>)
+            .rules(vec![approval_rule(3600)])
+            .provider(Arc::new(MockProvider::new("payments")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .approval_keys(old_keys)
+            .external_url("https://test.example.com")
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch to get a signed URL from the old key.
+        let outcome = gw_old.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+        let kid = parse_query_param(&approve_url, "kid");
+        assert_eq!(kid.as_deref(), Some("k1"), "URL should contain kid=k1");
+
+        // Build a new gateway with rotated keys: k2 is current, k1 is still accepted.
+        let rotated_keys = ApprovalKeySet::new(vec![
+            ApprovalKey {
+                kid: "k2".into(),
+                secret: new_secret,
+            },
+            ApprovalKey {
+                kid: "k1".into(),
+                secret: old_secret,
+            },
+        ]);
+
+        let gw_new = GatewayBuilder::new()
+            .state(store as Arc<dyn StateStore>)
+            .lock(lock as Arc<dyn DistributedLock>)
+            .rules(vec![approval_rule(3600)])
+            .provider(Arc::new(MockProvider::new("payments")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .approval_keys(rotated_keys)
+            .external_url("https://test.example.com")
+            .build()
+            .expect("gateway should build");
+
+        // The old-key-signed URL should still verify on the new gateway.
+        let result = gw_new
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                kid.as_deref(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, ActionOutcome::Executed(_)),
+            "old-key-signed approval should still execute after rotation, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_backward_compat_no_kid_in_url() {
+        use crate::gateway::ApprovalKeySet;
+
+        let secret = b"compat-test-secret-key-value!!!".to_vec();
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let keys = ApprovalKeySet::from_single(secret);
+
+        let gw = GatewayBuilder::new()
+            .state(Arc::clone(&store) as Arc<dyn StateStore>)
+            .lock(Arc::clone(&lock) as Arc<dyn DistributedLock>)
+            .rules(vec![approval_rule(3600)])
+            .provider(Arc::new(MockProvider::new("payments")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .approval_keys(keys)
+            .external_url("https://test.example.com")
+            .build()
+            .expect("gateway should build");
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+
+        // Pass kid as None to simulate a legacy URL without kid parameter.
+        let result = gw
+            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at, None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, ActionOutcome::Executed(_)),
+            "verification with kid=None should succeed by trying all keys, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_unknown_kid_rejected() {
+        let gw = build_approval_gateway(
+            vec![approval_rule(3600)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(MockProvider::new("slack")),
+            ],
+        );
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+
+        // Pass an unknown kid -- verification should fail.
+        let result = gw
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                Some("bad"),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "unknown kid should cause verification failure, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn approval_keyset_from_single() {
+        use crate::gateway::ApprovalKeySet;
+
+        let secret = b"my-secret".to_vec();
+        let ks = ApprovalKeySet::from_single(secret.clone());
+
+        assert_eq!(ks.current().kid, "k0");
+        assert_eq!(ks.current().secret, secret);
+        assert_eq!(ks.all().len(), 1);
+        assert!(ks.get("k0").is_some());
+        assert!(ks.get("k1").is_none());
+    }
+
+    // -- LLM guardrail tests -------------------------------------------------
+
+    fn build_gateway_with_llm(
+        rules: Vec<Rule>,
+        evaluator: Arc<dyn acteon_llm::LlmEvaluator>,
+        fail_open: bool,
+    ) -> crate::gateway::Gateway {
+        build_gateway_with_llm_policies(rules, evaluator, fail_open, HashMap::new())
+    }
+
+    fn build_gateway_with_llm_policies(
+        rules: Vec<Rule>,
+        evaluator: Arc<dyn acteon_llm::LlmEvaluator>,
+        fail_open: bool,
+        llm_policies: HashMap<String, String>,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(rules)
+            .provider(Arc::new(MockProvider::new("email")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .llm_evaluator(evaluator)
+            .llm_policy("test policy".to_string())
+            .llm_policies(llm_policies)
+            .llm_fail_open(fail_open)
+            .build()
+            .expect("gateway should build")
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_blocks_action() {
+        let evaluator = Arc::new(acteon_llm::MockLlmEvaluator::denying("unsafe action"));
+        let gw = build_gateway_with_llm(vec![], evaluator, true);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Suppressed { ref rule } if rule.contains("LLM guardrail")),
+            "LLM deny should produce Suppressed outcome, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_denied, 1);
+        assert_eq!(snap.llm_guardrail_allowed, 0);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_allows_action() {
+        let evaluator = Arc::new(acteon_llm::MockLlmEvaluator::allowing());
+        let gw = build_gateway_with_llm(vec![], evaluator, true);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "LLM allow should let action execute, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_allowed, 1);
+        assert_eq!(snap.llm_guardrail_denied, 0);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_skips_already_denied() {
+        // Use a FailingLlmEvaluator — if the LLM is actually called, it would
+        // produce an error. The test verifies the LLM is never consulted for
+        // already-denied actions.
+        let evaluator = Arc::new(acteon_llm::FailingLlmEvaluator::new("should not be called"));
+        let rules = vec![Rule::new("deny-all", Expr::Bool(true), RuleAction::Deny)];
+        let gw = build_gateway_with_llm(rules, evaluator, false);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Suppressed { .. }),
+            "already-denied action should stay denied, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(
+            snap.llm_guardrail_errors, 0,
+            "LLM should not have been called"
+        );
+        assert_eq!(snap.llm_guardrail_allowed, 0);
+        assert_eq!(snap.llm_guardrail_denied, 0);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_fail_open() {
+        let evaluator = Arc::new(acteon_llm::FailingLlmEvaluator::new("service unavailable"));
+        let gw = build_gateway_with_llm(vec![], evaluator, true);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "fail-open should allow action on LLM error, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_errors, 1);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_fail_closed() {
+        let evaluator = Arc::new(acteon_llm::FailingLlmEvaluator::new("service unavailable"));
+        let gw = build_gateway_with_llm(vec![], evaluator, false);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Suppressed { ref rule } if rule.contains("LLM guardrail")),
+            "fail-closed should deny action on LLM error, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_errors, 1);
+    }
+
+    // -- LLM policy resolution tests ------------------------------------------
+
+    #[tokio::test]
+    async fn llm_guardrail_uses_rule_metadata_policy() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+        let mut meta = HashMap::new();
+        meta.insert("llm_policy".into(), "Block DROP statements".into());
+
+        let rules =
+            vec![Rule::new("guard-sql", Expr::Bool(true), RuleAction::Allow).with_metadata(meta)];
+
+        let gw = build_gateway_with_llm_policies(rules, evaluator.clone(), true, HashMap::new());
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0], "Block DROP statements");
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_uses_action_type_policy() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+        let mut action_policies = HashMap::new();
+        action_policies.insert("send_email".into(), "Block spam content".into());
+
+        // No rules with metadata — should fall through to action-type map.
+        let gw = build_gateway_with_llm_policies(vec![], evaluator.clone(), true, action_policies);
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0], "Block spam content");
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_falls_back_to_global() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+
+        // No rule metadata, no action-type map — should use global "test policy".
+        let gw = build_gateway_with_llm_policies(vec![], evaluator.clone(), true, HashMap::new());
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0], "test policy");
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_rule_metadata_overrides_action_type() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+
+        let mut meta = HashMap::new();
+        meta.insert("llm_policy".into(), "Rule-level policy".into());
+        let rules =
+            vec![Rule::new("guard-email", Expr::Bool(true), RuleAction::Allow).with_metadata(meta)];
+
+        let mut action_policies = HashMap::new();
+        action_policies.insert("send_email".into(), "Action-type policy".into());
+
+        let gw = build_gateway_with_llm_policies(rules, evaluator.clone(), true, action_policies);
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        // Rule metadata should win over action-type policy.
+        assert_eq!(policies[0], "Rule-level policy");
     }
 }

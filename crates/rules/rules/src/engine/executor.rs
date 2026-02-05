@@ -710,7 +710,10 @@ async fn eval_event_in_state(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RuleVerdict {
     /// Allow the action to proceed.
-    Allow,
+    ///
+    /// Contains the name of the matched rule, if any. `None` when no rule
+    /// matched and the engine fell through to the default allow.
+    Allow(Option<String>),
     /// Deny the action with a reason.
     Deny(String),
     /// Deduplicate with an optional TTL.
@@ -780,6 +783,25 @@ pub enum RuleVerdict {
     },
 }
 
+impl RuleVerdict {
+    /// Extract the rule name from the verdict, if any.
+    ///
+    /// Returns `None` for `Allow` and `Deduplicate` (which don't carry a rule name).
+    pub fn rule_name(&self) -> Option<&str> {
+        match self {
+            Self::Allow(name) => name.as_deref(),
+            Self::Deduplicate { .. } => None,
+            Self::Deny(name) | Self::Suppress(name) => Some(name),
+            Self::Reroute { rule, .. }
+            | Self::Throttle { rule, .. }
+            | Self::Modify { rule, .. }
+            | Self::StateMachine { rule, .. }
+            | Self::Group { rule, .. }
+            | Self::RequestApproval { rule, .. } => Some(rule),
+        }
+    }
+}
+
 /// The rule engine evaluates a set of rules against an evaluation context.
 ///
 /// Rules are evaluated in priority order (lower priority number first).
@@ -801,6 +823,11 @@ impl RuleEngine {
     /// Return a reference to the sorted rules.
     pub fn rules(&self) -> &[Rule] {
         &self.rules
+    }
+
+    /// Look up a rule by name.
+    pub fn rule_by_name(&self, name: &str) -> Option<&Rule> {
+        self.rules.iter().find(|r| r.name == name)
     }
 
     /// Compute a fingerprint of the current rule set.
@@ -845,7 +872,7 @@ impl RuleEngine {
         }
 
         debug!("no rules matched, returning Allow");
-        Ok(RuleVerdict::Allow)
+        Ok(RuleVerdict::Allow(None))
     }
 
     /// Add multiple rules to the engine and re-sort by priority.
@@ -927,7 +954,7 @@ impl RuleEngine {
 /// Convert a `RuleAction` into a `RuleVerdict` with the rule name attached.
 fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVerdict {
     match action {
-        RuleAction::Allow => RuleVerdict::Allow,
+        RuleAction::Allow => RuleVerdict::Allow(Some(rule_name.to_owned())),
         RuleAction::Deny => RuleVerdict::Deny(rule_name.to_owned()),
         RuleAction::Deduplicate { ttl_seconds } => RuleVerdict::Deduplicate {
             ttl_seconds: *ttl_seconds,
@@ -952,7 +979,7 @@ fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVerdict {
         RuleAction::Custom { name, params: _ } => {
             // Custom actions fall through as Allow for now, with a debug log.
             debug!(custom_action = %name, "custom action not handled, allowing");
-            RuleVerdict::Allow
+            RuleVerdict::Allow(Some(rule_name.to_owned()))
         }
         RuleAction::StateMachine {
             state_machine,
@@ -1666,7 +1693,7 @@ mod tests {
         let ctx = test_context(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -1694,7 +1721,7 @@ mod tests {
         let ctx = test_context(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -1756,7 +1783,7 @@ mod tests {
         let ctx = test_context(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -1995,7 +2022,7 @@ mod tests {
         // Disable it
         engine.disable_rule("deny-all");
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
 
         // Re-enable
         engine.enable_rule("deny-all");
@@ -2060,5 +2087,75 @@ mod tests {
             Rule::new("b", Expr::Bool(false), RuleAction::Deny).with_version(3),
         ]);
         assert_eq!(engine1.rules_version(), engine2.rules_version());
+    }
+
+    #[test]
+    fn rule_verdict_rule_name() {
+        assert_eq!(RuleVerdict::Allow(None).rule_name(), None);
+        assert_eq!(
+            RuleVerdict::Allow(Some("allow-rule".into())).rule_name(),
+            Some("allow-rule")
+        );
+        assert_eq!(
+            RuleVerdict::Deny("deny-rule".into()).rule_name(),
+            Some("deny-rule")
+        );
+        assert_eq!(
+            RuleVerdict::Suppress("suppress-rule".into()).rule_name(),
+            Some("suppress-rule")
+        );
+        assert_eq!(
+            RuleVerdict::Reroute {
+                rule: "reroute-rule".into(),
+                target_provider: "sms".into(),
+            }
+            .rule_name(),
+            Some("reroute-rule")
+        );
+        assert_eq!(
+            RuleVerdict::Throttle {
+                rule: "throttle-rule".into(),
+                max_count: 10,
+                window_seconds: 60,
+            }
+            .rule_name(),
+            Some("throttle-rule")
+        );
+        assert_eq!(
+            RuleVerdict::Deduplicate {
+                ttl_seconds: Some(300),
+            }
+            .rule_name(),
+            None
+        );
+        assert_eq!(
+            RuleVerdict::Modify {
+                rule: "modify-rule".into(),
+                changes: serde_json::json!({}),
+            }
+            .rule_name(),
+            Some("modify-rule")
+        );
+        assert_eq!(
+            RuleVerdict::RequestApproval {
+                rule: "approval-rule".into(),
+                notify_provider: "email".into(),
+                timeout_seconds: 3600,
+                message: None,
+            }
+            .rule_name(),
+            Some("approval-rule")
+        );
+    }
+
+    #[test]
+    fn engine_rule_by_name() {
+        let engine = RuleEngine::new(vec![
+            Rule::new("alpha", Expr::Bool(true), RuleAction::Allow),
+            Rule::new("beta", Expr::Bool(false), RuleAction::Deny),
+        ]);
+        assert_eq!(engine.rule_by_name("alpha").unwrap().name, "alpha");
+        assert_eq!(engine.rule_by_name("beta").unwrap().name, "beta");
+        assert!(engine.rule_by_name("nonexistent").is_none());
     }
 }

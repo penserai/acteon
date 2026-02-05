@@ -9,8 +9,10 @@ use acteon_rules::{Rule, RuleEngine};
 use acteon_state::{DistributedLock, StateStore};
 use tokio_util::task::TaskTracker;
 
+use acteon_llm::LlmEvaluator;
+
 use crate::error::GatewayError;
-use crate::gateway::Gateway;
+use crate::gateway::{ApprovalKeySet, Gateway};
 use crate::group_manager::GroupManager;
 use crate::metrics::GatewayMetrics;
 
@@ -35,6 +37,11 @@ pub struct GatewayBuilder {
     group_manager: Option<Arc<GroupManager>>,
     external_url: Option<String>,
     approval_secret: Option<Vec<u8>>,
+    approval_keys: Option<ApprovalKeySet>,
+    llm_evaluator: Option<Arc<dyn LlmEvaluator>>,
+    llm_policy: String,
+    llm_policies: HashMap<String, String>,
+    llm_fail_open: bool,
 }
 
 impl GatewayBuilder {
@@ -56,6 +63,11 @@ impl GatewayBuilder {
             group_manager: None,
             external_url: None,
             approval_secret: None,
+            approval_keys: None,
+            llm_evaluator: None,
+            llm_policy: String::new(),
+            llm_policies: HashMap::new(),
+            llm_fail_open: true,
         }
     }
 
@@ -176,9 +188,61 @@ impl GatewayBuilder {
     ///
     /// If not set, a random 32-byte secret is generated automatically.
     /// Pass a stable secret for approval URLs that survive server restarts.
+    ///
+    /// For key rotation support, use [`approval_keys`](Self::approval_keys) instead.
     #[must_use]
     pub fn approval_secret(mut self, secret: impl Into<Vec<u8>>) -> Self {
         self.approval_secret = Some(secret.into());
+        self
+    }
+
+    /// Set the HMAC key set used to sign and verify approval URLs.
+    ///
+    /// The first key in the set is the current signing key. All keys are
+    /// tried during verification, enabling zero-downtime key rotation.
+    /// This takes precedence over [`approval_secret`](Self::approval_secret).
+    #[must_use]
+    pub fn approval_keys(mut self, keys: ApprovalKeySet) -> Self {
+        self.approval_keys = Some(keys);
+        self
+    }
+
+    /// Set the LLM evaluator for guardrail checks.
+    ///
+    /// When set, actions that pass rule evaluation are additionally checked
+    /// by the LLM before execution. Actions already denied or suppressed by
+    /// rules skip the LLM call.
+    #[must_use]
+    pub fn llm_evaluator(mut self, evaluator: Arc<dyn LlmEvaluator>) -> Self {
+        self.llm_evaluator = Some(evaluator);
+        self
+    }
+
+    /// Set the policy prompt sent to the LLM guardrail.
+    #[must_use]
+    pub fn llm_policy(mut self, policy: impl Into<String>) -> Self {
+        self.llm_policy = policy.into();
+        self
+    }
+
+    /// Set per-action-type LLM policy overrides.
+    ///
+    /// Keys are action type strings, values are policy prompts.
+    /// These take precedence over the global policy but are overridden
+    /// by per-rule metadata `llm_policy` entries.
+    #[must_use]
+    pub fn llm_policies(mut self, policies: HashMap<String, String>) -> Self {
+        self.llm_policies = policies;
+        self
+    }
+
+    /// Set whether the LLM guardrail fails open (default: `true`).
+    ///
+    /// When `true`, LLM evaluation errors allow the action to proceed.
+    /// When `false`, errors cause the action to be denied.
+    #[must_use]
+    pub fn llm_fail_open(mut self, fail_open: bool) -> Self {
+        self.llm_fail_open = fail_open;
         self
     }
 
@@ -216,15 +280,19 @@ impl GatewayBuilder {
             .group_manager
             .unwrap_or_else(|| Arc::new(GroupManager::new()));
 
-        // Use provided approval secret or generate a random one from UUIDs.
-        let approval_secret = self.approval_secret.unwrap_or_else(|| {
+        // Use provided key set, or wrap a single secret, or generate a random key.
+        let approval_keys = if let Some(keys) = self.approval_keys {
+            keys
+        } else if let Some(secret) = self.approval_secret {
+            ApprovalKeySet::from_single(secret)
+        } else {
             let a = uuid::Uuid::new_v4();
             let b = uuid::Uuid::new_v4();
             let mut secret = Vec::with_capacity(32);
             secret.extend_from_slice(a.as_bytes());
             secret.extend_from_slice(b.as_bytes());
-            secret
-        });
+            ApprovalKeySet::from_single(secret)
+        };
 
         Ok(Gateway {
             state,
@@ -242,7 +310,11 @@ impl GatewayBuilder {
             state_machines: self.state_machines,
             group_manager,
             external_url: self.external_url,
-            approval_secret,
+            approval_keys,
+            llm_evaluator: self.llm_evaluator,
+            llm_policy: self.llm_policy,
+            llm_policies: self.llm_policies,
+            llm_fail_open: self.llm_fail_open,
         })
     }
 }

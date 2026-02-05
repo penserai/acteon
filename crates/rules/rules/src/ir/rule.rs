@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::expr::Expr;
@@ -108,6 +110,9 @@ pub struct Rule {
     /// Version number for tracking rule changes. Defaults to 0.
     #[serde(default)]
     pub version: u64,
+    /// Arbitrary key-value metadata for the rule (e.g. `llm_policy` overrides).
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
 }
 
 impl Rule {
@@ -124,6 +129,7 @@ impl Rule {
             action,
             source: RuleSource::Inline,
             version: 0,
+            metadata: HashMap::new(),
         }
     }
 
@@ -161,10 +167,19 @@ impl Rule {
         self.version = version;
         self
     }
+
+    /// Set the metadata for this rule.
+    #[must_use]
+    pub fn with_metadata(mut self, metadata: HashMap<String, String>) -> Self {
+        self.metadata = metadata;
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::ir::expr::BinaryOp;
 
@@ -288,5 +303,34 @@ mod tests {
         let json = serde_json::to_string(&rule).unwrap();
         let back: Rule = serde_json::from_str(&json).unwrap();
         assert_eq!(back.version, 7);
+    }
+
+    #[test]
+    fn rule_with_metadata() {
+        let mut meta = HashMap::new();
+        meta.insert("llm_policy".into(), "Block DROP statements".into());
+        let rule =
+            Rule::new("guarded", Expr::Bool(true), RuleAction::Allow).with_metadata(meta.clone());
+        assert_eq!(rule.metadata, meta);
+
+        // Serde roundtrip preserves metadata.
+        let json = serde_json::to_string(&rule).unwrap();
+        let back: Rule = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.metadata.get("llm_policy").unwrap(),
+            "Block DROP statements"
+        );
+    }
+
+    #[test]
+    fn rule_metadata_serde_default() {
+        // Deserializing without a "metadata" field should default to empty.
+        let rule = Rule::new("test", Expr::Bool(true), RuleAction::Allow);
+        let mut json_val: serde_json::Value = serde_json::to_value(&rule).unwrap();
+        json_val.as_object_mut().unwrap().remove("metadata");
+        let json_str = serde_json::to_string(&json_val).unwrap();
+
+        let back: Rule = serde_json::from_str(&json_str).unwrap();
+        assert!(back.metadata.is_empty());
     }
 }

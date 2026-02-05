@@ -61,10 +61,12 @@ mod error;
 
 pub use error::Error;
 
+use std::fmt::Write;
+use std::time::Duration;
+
 use acteon_core::{Action, ActionOutcome};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 /// Default request timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -708,10 +710,30 @@ impl ActeonClient {
         sig: &str,
         expires_at: i64,
     ) -> Result<ApprovalActionResponse, Error> {
-        let url = format!(
+        self.approve_with_kid(namespace, tenant, id, sig, expires_at, None)
+            .await
+    }
+
+    /// Approve a pending action, optionally specifying which HMAC key was used.
+    ///
+    /// When `kid` is `Some`, the `kid` query parameter is appended so the
+    /// server can look up the correct key without trying all of them.
+    pub async fn approve_with_kid(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+        expires_at: i64,
+        kid: Option<&str>,
+    ) -> Result<ApprovalActionResponse, Error> {
+        let mut url = format!(
             "{}/v1/approvals/{}/{}/{}/approve?sig={}&expires_at={}",
             self.base_url, namespace, tenant, id, sig, expires_at
         );
+        if let Some(k) = kid {
+            write!(url, "&kid={k}").expect("writing to String cannot fail");
+        }
 
         let response = self
             .client
@@ -769,10 +791,30 @@ impl ActeonClient {
         sig: &str,
         expires_at: i64,
     ) -> Result<ApprovalActionResponse, Error> {
-        let url = format!(
+        self.reject_with_kid(namespace, tenant, id, sig, expires_at, None)
+            .await
+    }
+
+    /// Reject a pending action, optionally specifying which HMAC key was used.
+    ///
+    /// When `kid` is `Some`, the `kid` query parameter is appended so the
+    /// server can look up the correct key without trying all of them.
+    pub async fn reject_with_kid(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+        expires_at: i64,
+        kid: Option<&str>,
+    ) -> Result<ApprovalActionResponse, Error> {
+        let mut url = format!(
             "{}/v1/approvals/{}/{}/{}/reject?sig={}&expires_at={}",
             self.base_url, namespace, tenant, id, sig, expires_at
         );
+        if let Some(k) = kid {
+            write!(url, "&kid={k}").expect("writing to String cannot fail");
+        }
 
         let response = self
             .client
@@ -831,10 +873,30 @@ impl ActeonClient {
         sig: &str,
         expires_at: i64,
     ) -> Result<Option<ApprovalStatusResponse>, Error> {
-        let url = format!(
+        self.get_approval_with_kid(namespace, tenant, id, sig, expires_at, None)
+            .await
+    }
+
+    /// Get approval status, optionally specifying which HMAC key was used.
+    ///
+    /// When `kid` is `Some`, the `kid` query parameter is appended so the
+    /// server can look up the correct key without trying all of them.
+    pub async fn get_approval_with_kid(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+        expires_at: i64,
+        kid: Option<&str>,
+    ) -> Result<Option<ApprovalStatusResponse>, Error> {
+        let mut url = format!(
             "{}/v1/approvals/{}/{}/{}?sig={}&expires_at={}",
             self.base_url, namespace, tenant, id, sig, expires_at
         );
+        if let Some(k) = kid {
+            write!(url, "&kid={k}").expect("writing to String cannot fail");
+        }
 
         let response = self
             .client

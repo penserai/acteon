@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 /// Top-level configuration for the Acteon server, loaded from a TOML file.
@@ -27,6 +29,9 @@ pub struct ActeonConfig {
     /// Background processing configuration.
     #[serde(default)]
     pub background: BackgroundProcessingConfig,
+    /// LLM guardrail configuration.
+    #[serde(default)]
+    pub llm_guardrail: LlmGuardrailServerConfig,
 }
 
 /// Configuration for the state store backend.
@@ -87,6 +92,15 @@ pub struct ExecutorConfig {
     pub dlq_enabled: bool,
 }
 
+/// A named HMAC key for signing/verifying approval URLs (config representation).
+#[derive(Debug, Deserialize)]
+pub struct ApprovalKeyConfig {
+    /// Key identifier (e.g. `"k1"`, `"k2"`).
+    pub id: String,
+    /// Hex-encoded HMAC secret.
+    pub secret: String,
+}
+
 /// HTTP server bind configuration.
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
@@ -112,6 +126,12 @@ pub struct ServerConfig {
     /// If not set, a random secret is generated on startup (approval URLs
     /// will not survive server restarts).
     pub approval_secret: Option<String>,
+    /// Named HMAC keys for signing/verifying approval URLs (multi-key).
+    ///
+    /// The first key is the current signing key. Additional keys are accepted
+    /// during verification to support key rotation.
+    /// Takes precedence over `approval_secret` when set.
+    pub approval_keys: Option<Vec<ApprovalKeyConfig>>,
 }
 
 impl Default for ServerConfig {
@@ -122,6 +142,7 @@ impl Default for ServerConfig {
             shutdown_timeout_seconds: default_shutdown_timeout(),
             external_url: None,
             approval_secret: None,
+            approval_keys: None,
         }
     }
 }
@@ -337,5 +358,70 @@ fn default_enable_timeout_processing() -> bool {
 }
 
 fn default_enable_approval_retry() -> bool {
+    true
+}
+
+/// Configuration for the optional LLM guardrail.
+#[derive(Debug, Deserialize)]
+pub struct LlmGuardrailServerConfig {
+    /// Whether the LLM guardrail is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OpenAI-compatible API endpoint.
+    #[serde(default = "default_llm_endpoint")]
+    pub endpoint: String,
+    /// Model to use.
+    #[serde(default = "default_llm_model")]
+    pub model: String,
+    /// API key for authentication.
+    #[serde(default)]
+    pub api_key: String,
+    /// System prompt / policy sent to the LLM.
+    #[serde(default)]
+    pub policy: String,
+    /// Per-action-type policy overrides.
+    ///
+    /// Keys are action type strings, values are policy prompts. These take
+    /// precedence over the global `policy` but are overridden by per-rule
+    /// metadata `llm_policy` entries.
+    #[serde(default)]
+    pub policies: HashMap<String, String>,
+    /// Whether to allow actions when the LLM is unreachable.
+    #[serde(default = "default_llm_fail_open")]
+    pub fail_open: bool,
+    /// Request timeout in seconds.
+    pub timeout_seconds: Option<u64>,
+    /// Temperature for LLM sampling.
+    pub temperature: Option<f64>,
+    /// Maximum tokens in the response.
+    pub max_tokens: Option<u32>,
+}
+
+impl Default for LlmGuardrailServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_llm_endpoint(),
+            model: default_llm_model(),
+            api_key: String::new(),
+            policy: String::new(),
+            policies: HashMap::new(),
+            fail_open: default_llm_fail_open(),
+            timeout_seconds: None,
+            temperature: None,
+            max_tokens: None,
+        }
+    }
+}
+
+fn default_llm_endpoint() -> String {
+    "https://api.openai.com/v1/chat/completions".to_owned()
+}
+
+fn default_llm_model() -> String {
+    "gpt-4o-mini".to_owned()
+}
+
+fn default_llm_fail_open() -> bool {
     true
 }

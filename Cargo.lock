@@ -126,6 +126,7 @@ dependencies = [
  "acteon-audit",
  "acteon-core",
  "acteon-executor",
+ "acteon-llm",
  "acteon-provider",
  "acteon-rules",
  "acteon-rules-yaml",
@@ -148,6 +149,20 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "acteon-llm"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -223,6 +238,7 @@ dependencies = [
  "acteon-core",
  "acteon-executor",
  "acteon-gateway",
+ "acteon-llm",
  "acteon-provider",
  "acteon-rules",
  "acteon-rules-yaml",

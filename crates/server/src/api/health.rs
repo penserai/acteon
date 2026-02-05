@@ -31,6 +31,9 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
             rerouted: snap.rerouted,
             throttled: snap.throttled,
             failed: snap.failed,
+            llm_guardrail_allowed: snap.llm_guardrail_allowed,
+            llm_guardrail_denied: snap.llm_guardrail_denied,
+            llm_guardrail_errors: snap.llm_guardrail_errors,
         },
     };
 
@@ -60,6 +63,9 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         rerouted: snap.rerouted,
         throttled: snap.throttled,
         failed: snap.failed,
+        llm_guardrail_allowed: snap.llm_guardrail_allowed,
+        llm_guardrail_denied: snap.llm_guardrail_denied,
+        llm_guardrail_errors: snap.llm_guardrail_errors,
     };
 
     (StatusCode::OK, Json(body))

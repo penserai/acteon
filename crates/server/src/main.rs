@@ -14,7 +14,9 @@ use acteon_gateway::group_manager::GroupManager;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_server::api::AppState;
 use acteon_server::auth::AuthProvider;
-use acteon_server::auth::crypto::{decrypt_auth_config, encrypt_value, parse_master_key};
+use acteon_server::auth::crypto::{
+    decrypt_auth_config, decrypt_value, encrypt_value, parse_master_key,
+};
 use acteon_server::auth::watcher::AuthWatcher;
 use acteon_server::config::ActeonConfig;
 use acteon_server::ratelimit::{RateLimitFileConfig, RateLimiter};
@@ -99,12 +101,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Parse the master key if available (used by auth and encrypted config values).
+    let master_key = std::env::var("ACTEON_AUTH_KEY")
+        .ok()
+        .map(|raw| parse_master_key(&raw).map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}")))
+        .transpose()?;
+
     // Build the auth provider if enabled.
     let (auth_provider, _auth_watcher_handle) = if config.auth.enabled {
-        let master_key_raw = std::env::var("ACTEON_AUTH_KEY")
-            .map_err(|_| "ACTEON_AUTH_KEY environment variable is required when auth is enabled")?;
-        let master_key = parse_master_key(&master_key_raw)
-            .map_err(|e| format!("invalid ACTEON_AUTH_KEY: {e}"))?;
+        let auth_master_key = master_key
+            .ok_or("ACTEON_AUTH_KEY environment variable is required when auth is enabled")?;
 
         let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
 
@@ -124,14 +130,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             toml::from_str(&auth_contents)
                 .map_err(|e| format!("failed to parse auth config: {e}"))?;
 
-        decrypt_auth_config(&mut auth_config, &master_key)?;
+        decrypt_auth_config(&mut auth_config, &auth_master_key)?;
 
         let provider = Arc::new(AuthProvider::new(&auth_config, Arc::clone(&store))?);
         info!("auth provider initialized");
 
         // Spawn the auth watcher for hot-reload.
         let watcher_handle = if config.auth.watch.unwrap_or(true) {
-            let watcher = AuthWatcher::new(Arc::clone(&provider), auth_path.clone(), master_key);
+            let watcher =
+                AuthWatcher::new(Arc::clone(&provider), auth_path.clone(), auth_master_key);
             Some(watcher.spawn())
         } else {
             None
@@ -197,10 +204,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .group_manager(Arc::clone(&group_manager))
         .external_url(external_url);
 
-    if let Some(ref secret_hex) = config.server.approval_secret {
+    if let Some(ref key_configs) = config.server.approval_keys {
+        let keys: Vec<acteon_gateway::ApprovalKey> = key_configs
+            .iter()
+            .map(|kc| {
+                let secret = hex::decode(&kc.secret)
+                    .map_err(|e| format!("invalid hex in approval_keys id={}: {e}", kc.id))?;
+                Ok(acteon_gateway::ApprovalKey {
+                    kid: kc.id.clone(),
+                    secret,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let keyset = acteon_gateway::ApprovalKeySet::new(keys);
+        builder = builder.approval_keys(keyset);
+    } else if let Some(ref secret_hex) = config.server.approval_secret {
         let secret =
             hex::decode(secret_hex).map_err(|e| format!("invalid approval_secret hex: {e}"))?;
         builder = builder.approval_secret(secret);
+    }
+
+    // Wire LLM guardrail if enabled.
+    if config.llm_guardrail.enabled {
+        let api_key = require_decrypt(&config.llm_guardrail.api_key, master_key.as_ref())?;
+
+        let mut llm_config = acteon_llm::LlmGuardrailConfig::new(
+            &config.llm_guardrail.endpoint,
+            &config.llm_guardrail.model,
+            api_key,
+        );
+        if let Some(timeout) = config.llm_guardrail.timeout_seconds {
+            llm_config = llm_config.with_timeout(timeout);
+        }
+        if let Some(temp) = config.llm_guardrail.temperature {
+            llm_config = llm_config.with_temperature(temp);
+        }
+        if let Some(max) = config.llm_guardrail.max_tokens {
+            llm_config = llm_config.with_max_tokens(max);
+        }
+        let evaluator = acteon_llm::HttpLlmEvaluator::new(llm_config)
+            .map_err(|e| format!("failed to create LLM evaluator: {e}"))?;
+        builder = builder
+            .llm_evaluator(Arc::new(evaluator))
+            .llm_policy(&config.llm_guardrail.policy)
+            .llm_policies(config.llm_guardrail.policies.clone())
+            .llm_fail_open(config.llm_guardrail.fail_open);
+        info!(
+            model = %config.llm_guardrail.model,
+            fail_open = config.llm_guardrail.fail_open,
+            "LLM guardrail enabled"
+        );
     }
 
     if let Some(ref audit) = audit_store {
@@ -536,6 +589,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("acteon-server shut down");
     Ok(())
+}
+
+/// Decrypt a config value, requiring `ACTEON_AUTH_KEY` if the value is encrypted.
+///
+/// - `ENC[...]` values are decrypted using the master key (error if key is missing).
+/// - Plain values are returned as-is regardless of whether a key is available.
+fn require_decrypt(
+    value: &str,
+    master_key: Option<&[u8; 32]>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    if value.trim().starts_with("ENC[") {
+        let mk = master_key.ok_or(
+            "ACTEON_AUTH_KEY environment variable is required to decrypt ENC[...] config values",
+        )?;
+        Ok(decrypt_value(value, mk)?)
+    } else {
+        Ok(value.to_owned())
+    }
 }
 
 /// Run the `encrypt` subcommand: read plaintext from stdin, output ENC[...] to stdout.

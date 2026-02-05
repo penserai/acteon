@@ -448,7 +448,7 @@ class ActeonClient:
     # Approvals (Human-in-the-Loop)
     # =========================================================================
 
-    def approve(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int) -> ApprovalActionResponse:
+    def approve(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
         """Approve a pending action by namespace, tenant, ID, and HMAC signature.
 
         Args:
@@ -457,6 +457,7 @@ class ActeonClient:
             id: The approval ID.
             sig: The HMAC-SHA256 signature.
             expires_at: Expiration timestamp (unix seconds) bound into the signature.
+            kid: Optional key ID identifying which HMAC key was used.
 
         Returns:
             The approval result with optional action outcome.
@@ -465,10 +466,13 @@ class ActeonClient:
             ConnectionError: If unable to connect to the server.
             HttpError: If approval not found (404) or already decided (410).
         """
+        params: dict = {"sig": sig, "expires_at": expires_at}
+        if kid is not None:
+            params["kid"] = kid
         response = self._request(
             "POST",
             f"/v1/approvals/{namespace}/{tenant}/{id}/approve",
-            params={"sig": sig, "expires_at": expires_at},
+            params=params,
         )
 
         if response.status_code == 200:
@@ -480,7 +484,7 @@ class ActeonClient:
         else:
             raise HttpError(response.status_code, "Failed to approve")
 
-    def reject(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int) -> ApprovalActionResponse:
+    def reject(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
         """Reject a pending action by namespace, tenant, ID, and HMAC signature.
 
         Args:
@@ -489,6 +493,7 @@ class ActeonClient:
             id: The approval ID.
             sig: The HMAC-SHA256 signature.
             expires_at: Expiration timestamp (unix seconds) bound into the signature.
+            kid: Optional key ID identifying which HMAC key was used.
 
         Returns:
             The rejection result.
@@ -497,10 +502,13 @@ class ActeonClient:
             ConnectionError: If unable to connect to the server.
             HttpError: If approval not found (404) or already decided (410).
         """
+        params: dict = {"sig": sig, "expires_at": expires_at}
+        if kid is not None:
+            params["kid"] = kid
         response = self._request(
             "POST",
             f"/v1/approvals/{namespace}/{tenant}/{id}/reject",
-            params={"sig": sig, "expires_at": expires_at},
+            params=params,
         )
 
         if response.status_code == 200:
@@ -512,7 +520,7 @@ class ActeonClient:
         else:
             raise HttpError(response.status_code, "Failed to reject")
 
-    def get_approval(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int) -> Optional[ApprovalStatus]:
+    def get_approval(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> Optional[ApprovalStatus]:
         """Get the status of an approval by namespace, tenant, ID, and HMAC signature.
 
         Args:
@@ -521,6 +529,7 @@ class ActeonClient:
             id: The approval ID.
             sig: The HMAC-SHA256 signature.
             expires_at: Expiration timestamp (unix seconds) bound into the signature.
+            kid: Optional key ID identifying which HMAC key was used.
 
         Returns:
             The approval status, or None if not found.
@@ -529,10 +538,13 @@ class ActeonClient:
             ConnectionError: If unable to connect to the server.
             HttpError: If the server returns an error (other than 404).
         """
+        params: dict = {"sig": sig, "expires_at": expires_at}
+        if kid is not None:
+            params["kid"] = kid
         response = self._request(
             "GET",
             f"/v1/approvals/{namespace}/{tenant}/{id}",
-            params={"sig": sig, "expires_at": expires_at},
+            params=params,
         )
 
         if response.status_code == 200:
@@ -788,11 +800,14 @@ class AsyncActeonClient:
     # Approvals (Human-in-the-Loop)
     # =========================================================================
 
-    async def approve(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int) -> ApprovalActionResponse:
+    async def approve(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
+        params: dict = {"sig": sig, "expires_at": expires_at}
+        if kid is not None:
+            params["kid"] = kid
         response = await self._request(
             "POST",
             f"/v1/approvals/{namespace}/{tenant}/{id}/approve",
-            params={"sig": sig, "expires_at": expires_at},
+            params=params,
         )
         if response.status_code == 200:
             return ApprovalActionResponse.from_dict(response.json())
@@ -803,11 +818,14 @@ class AsyncActeonClient:
         else:
             raise HttpError(response.status_code, "Failed to approve")
 
-    async def reject(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int) -> ApprovalActionResponse:
+    async def reject(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> ApprovalActionResponse:
+        params: dict = {"sig": sig, "expires_at": expires_at}
+        if kid is not None:
+            params["kid"] = kid
         response = await self._request(
             "POST",
             f"/v1/approvals/{namespace}/{tenant}/{id}/reject",
-            params={"sig": sig, "expires_at": expires_at},
+            params=params,
         )
         if response.status_code == 200:
             return ApprovalActionResponse.from_dict(response.json())
@@ -818,11 +836,14 @@ class AsyncActeonClient:
         else:
             raise HttpError(response.status_code, "Failed to reject")
 
-    async def get_approval(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int) -> Optional[ApprovalStatus]:
+    async def get_approval(self, namespace: str, tenant: str, id: str, sig: str, expires_at: int, kid: Optional[str] = None) -> Optional[ApprovalStatus]:
+        params: dict = {"sig": sig, "expires_at": expires_at}
+        if kid is not None:
+            params["kid"] = kid
         response = await self._request(
             "GET",
             f"/v1/approvals/{namespace}/{tenant}/{id}",
-            params={"sig": sig, "expires_at": expires_at},
+            params=params,
         )
         if response.status_code == 200:
             return ApprovalStatus.from_dict(response.json())
