@@ -71,6 +71,8 @@ pub struct SigQuery {
     pub sig: String,
     /// Expiration timestamp (unix seconds) bound into the signature.
     pub expires_at: i64,
+    /// Key ID identifying which HMAC key was used to produce the signature.
+    pub kid: Option<String>,
 }
 
 /// Response for listing pending approvals.
@@ -104,6 +106,7 @@ pub struct ApprovalPath {
         ("id" = String, Path, description = "Approval ID"),
         ("sig" = String, Query, description = "HMAC-SHA256 signature"),
         ("expires_at" = i64, Query, description = "Expiration timestamp (unix seconds) bound into the signature"),
+        ("kid" = Option<String>, Query, description = "Key ID identifying which HMAC key was used"),
     ),
     responses(
         (status = 200, description = "Action approved and executed", body = ApprovalActionResponse),
@@ -125,6 +128,7 @@ pub async fn approve(
             &path.id,
             &sig_query.sig,
             sig_query.expires_at,
+            sig_query.kid.as_deref(),
         )
         .await
     {
@@ -171,6 +175,7 @@ pub async fn approve(
         ("id" = String, Path, description = "Approval ID"),
         ("sig" = String, Query, description = "HMAC-SHA256 signature"),
         ("expires_at" = i64, Query, description = "Expiration timestamp (unix seconds) bound into the signature"),
+        ("kid" = Option<String>, Query, description = "Key ID identifying which HMAC key was used"),
     ),
     responses(
         (status = 200, description = "Action rejected", body = ApprovalActionResponse),
@@ -192,6 +197,7 @@ pub async fn reject(
             &path.id,
             &sig_query.sig,
             sig_query.expires_at,
+            sig_query.kid.as_deref(),
         )
         .await
     {
@@ -237,6 +243,7 @@ pub async fn reject(
         ("id" = String, Path, description = "Approval ID"),
         ("sig" = String, Query, description = "HMAC-SHA256 signature"),
         ("expires_at" = i64, Query, description = "Expiration timestamp (unix seconds) bound into the signature"),
+        ("kid" = Option<String>, Query, description = "Key ID identifying which HMAC key was used"),
     ),
     responses(
         (status = 200, description = "Approval status retrieved", body = ApprovalStatusResponse),
@@ -257,6 +264,7 @@ pub async fn get_approval(
             &path.id,
             &sig_query.sig,
             sig_query.expires_at,
+            sig_query.kid.as_deref(),
         )
         .await
     {

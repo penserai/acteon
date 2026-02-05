@@ -13,7 +13,7 @@ pub use background::{
 };
 pub use builder::GatewayBuilder;
 pub use error::GatewayError;
-pub use gateway::{ApprovalRecord, ApprovalStatus, Gateway};
+pub use gateway::{ApprovalKey, ApprovalKeySet, ApprovalRecord, ApprovalStatus, Gateway};
 pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot};
 pub use watcher::RuleWatcher;

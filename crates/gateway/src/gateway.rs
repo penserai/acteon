@@ -25,6 +25,57 @@ use crate::metrics::GatewayMetrics;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// A named HMAC key for signing/verifying approval URLs.
+#[derive(Debug, Clone)]
+pub struct ApprovalKey {
+    /// Key identifier included in signed URLs.
+    pub kid: String,
+    /// The raw HMAC secret bytes.
+    pub secret: Vec<u8>,
+}
+
+/// Ordered set of HMAC keys. Index 0 = current signing key.
+#[derive(Debug, Clone)]
+pub struct ApprovalKeySet {
+    keys: Vec<ApprovalKey>,
+}
+
+impl ApprovalKeySet {
+    /// Create a new key set. Panics if `keys` is empty.
+    pub fn new(keys: Vec<ApprovalKey>) -> Self {
+        assert!(
+            !keys.is_empty(),
+            "ApprovalKeySet must have at least one key"
+        );
+        Self { keys }
+    }
+
+    /// Create a key set from a single secret (legacy compatibility). Uses kid `"k0"`.
+    pub fn from_single(secret: Vec<u8>) -> Self {
+        Self {
+            keys: vec![ApprovalKey {
+                kid: "k0".into(),
+                secret,
+            }],
+        }
+    }
+
+    /// The current signing key (first in the list).
+    pub fn current(&self) -> &ApprovalKey {
+        &self.keys[0]
+    }
+
+    /// Look up a key by its kid.
+    pub fn get(&self, kid: &str) -> Option<&ApprovalKey> {
+        self.keys.iter().find(|k| k.kid == kid)
+    }
+
+    /// All keys (for try-all verification).
+    pub fn all(&self) -> &[ApprovalKey] {
+        &self.keys
+    }
+}
+
 /// A stored approval record awaiting human decision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalRecord {
@@ -94,7 +145,7 @@ pub struct Gateway {
     pub(crate) state_machines: HashMap<String, StateMachineConfig>,
     pub(crate) group_manager: Arc<GroupManager>,
     pub(crate) external_url: Option<String>,
-    pub(crate) approval_secret: Vec<u8>,
+    pub(crate) approval_keys: ApprovalKeySet,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -604,13 +655,19 @@ impl Gateway {
         })
     }
 
-    /// Compute the HMAC-SHA256 signature for an approval.
+    /// Compute the HMAC-SHA256 signature for an approval using a specific key.
     ///
     /// The message uses length-prefixed fields to prevent canonicalization
     /// attacks (e.g., `ns="a:b", tenant="c"` vs `ns="a", tenant="b:c"`).
     /// The `expires_at` timestamp binds the signature to a specific expiry
     /// window so leaked links cannot be replayed after expiration.
-    fn compute_approval_sig(&self, ns: &str, tenant: &str, id: &str, expires_at: i64) -> String {
+    fn compute_approval_sig_with_key(
+        key: &ApprovalKey,
+        ns: &str,
+        tenant: &str,
+        id: &str,
+        expires_at: i64,
+    ) -> String {
         let msg = format!(
             "{}:{}\n{}:{}\n{}:{}\n{}",
             ns.len(),
@@ -621,13 +678,31 @@ impl Gateway {
             id,
             expires_at,
         );
-        let mut mac =
-            HmacSha256::new_from_slice(&self.approval_secret).expect("HMAC accepts any key size");
+        let mut mac = HmacSha256::new_from_slice(&key.secret).expect("HMAC accepts any key size");
         mac.update(msg.as_bytes());
         hex::encode(mac.finalize().into_bytes())
     }
 
+    /// Compute the HMAC-SHA256 signature using the current signing key.
+    ///
+    /// Returns `(signature, kid)` so that the kid can be appended to URLs.
+    fn compute_approval_sig(
+        &self,
+        ns: &str,
+        tenant: &str,
+        id: &str,
+        expires_at: i64,
+    ) -> (String, String) {
+        let current = self.approval_keys.current();
+        let sig = Self::compute_approval_sig_with_key(current, ns, tenant, id, expires_at);
+        (sig, current.kid.clone())
+    }
+
     /// Verify the HMAC-SHA256 signature for an approval.
+    ///
+    /// If `kid` is `Some`, only the matching key is tried. If `kid` is `None`,
+    /// all keys are tried in order for backward compatibility with URLs
+    /// generated before key rotation was introduced.
     fn verify_approval_sig(
         &self,
         ns: &str,
@@ -635,15 +710,31 @@ impl Gateway {
         id: &str,
         expires_at: i64,
         sig: &str,
+        kid: Option<&str>,
     ) -> bool {
-        let expected = self.compute_approval_sig(ns, tenant, id, expires_at);
-        // Constant-time comparison
-        expected.len() == sig.len()
-            && expected
-                .bytes()
-                .zip(sig.bytes())
-                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                == 0
+        let keys_to_try: Vec<&ApprovalKey> = if let Some(kid) = kid {
+            match self.approval_keys.get(kid) {
+                Some(key) => vec![key],
+                None => return false,
+            }
+        } else {
+            self.approval_keys.all().iter().collect()
+        };
+
+        for key in keys_to_try {
+            let expected = Self::compute_approval_sig_with_key(key, ns, tenant, id, expires_at);
+            // Constant-time comparison
+            let is_match = expected.len() == sig.len()
+                && expected
+                    .bytes()
+                    .zip(sig.bytes())
+                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                    == 0;
+            if is_match {
+                return true;
+            }
+        }
+        false
     }
 
     /// Handle the request approval verdict: store approval record, send notification, return pending.
@@ -666,7 +757,7 @@ impl Gateway {
 
         // Compute HMAC signature (includes expires_at to bind sig to this TTL)
         let expires_ts = expires_at.timestamp();
-        let sig = self.compute_approval_sig(
+        let (sig, kid) = self.compute_approval_sig(
             action.namespace.as_str(),
             action.tenant.as_str(),
             &id,
@@ -729,10 +820,10 @@ impl Gateway {
         let ns = &action.namespace;
         let tenant = &action.tenant;
         let approve_url = format!(
-            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
         let reject_url = format!(
-            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
 
         let notification_payload = serde_json::json!({
@@ -838,9 +929,10 @@ impl Gateway {
         id: &str,
         sig: &str,
         expires_at: i64,
+        kid: Option<&str>,
     ) -> Result<ActionOutcome, GatewayError> {
         // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
-        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -945,9 +1037,10 @@ impl Gateway {
         id: &str,
         sig: &str,
         expires_at: i64,
+        kid: Option<&str>,
     ) -> Result<(), GatewayError> {
         // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
-        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
             return Err(GatewayError::ApprovalNotFound);
         }
 
@@ -1037,17 +1130,17 @@ impl Gateway {
 
         // Compute HMAC signature for the URLs (includes expires_at)
         let expires_ts = record.expires_at.timestamp();
-        let sig = self.compute_approval_sig(namespace, tenant, id, expires_ts);
+        let (sig, kid) = self.compute_approval_sig(namespace, tenant, id, expires_ts);
 
         let external_url = self
             .external_url
             .as_deref()
             .unwrap_or("http://localhost:8080");
         let approve_url = format!(
-            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
         let reject_url = format!(
-            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}"
+            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}&kid={kid}"
         );
 
         let notification_payload = serde_json::json!({
@@ -1146,9 +1239,10 @@ impl Gateway {
         id: &str,
         sig: &str,
         expires_at: i64,
+        kid: Option<&str>,
     ) -> Result<Option<ApprovalStatus>, GatewayError> {
         // Verify HMAC signature
-        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
             return Ok(None);
         }
 
@@ -1921,6 +2015,14 @@ mod tests {
                     "reject_url must contain expires_at param"
                 );
                 assert!(
+                    parse_query_param(&approve_url, "kid").is_some(),
+                    "approve_url must contain kid param"
+                );
+                assert!(
+                    parse_query_param(&reject_url, "kid").is_some(),
+                    "reject_url must contain kid param"
+                );
+                assert!(
                     notification_sent,
                     "notification should be sent successfully"
                 );
@@ -1954,9 +2056,17 @@ mod tests {
             .expect("expires_at param")
             .parse()
             .expect("expires_at should be an integer");
+        let kid = parse_query_param(&approve_url, "kid");
 
         let result = gw
-            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                kid.as_deref(),
+            )
             .await
             .unwrap();
         assert!(
@@ -2000,10 +2110,18 @@ mod tests {
             .expect("expires_at param")
             .parse()
             .expect("expires_at should be an integer");
+        let kid = parse_query_param(&reject_url, "kid");
 
-        gw.reject_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
-            .await
-            .unwrap();
+        gw.reject_approval(
+            "payments",
+            "tenant-1",
+            &approval_id,
+            &sig,
+            expires_at,
+            kid.as_deref(),
+        )
+        .await
+        .unwrap();
 
         let approvals = gw
             .list_pending_approvals("payments", "tenant-1")
@@ -2101,16 +2219,216 @@ mod tests {
             .expect("expires_at param")
             .parse()
             .expect("expires_at should be an integer");
+        let kid = parse_query_param(&approve_url, "kid");
 
         // Wait for the approval to expire (2-second timeout + buffer).
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         let result = gw
-            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at)
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                kid.as_deref(),
+            )
             .await;
         assert!(
             result.is_err(),
             "expired approval should return an error, got {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn approval_key_rotation_old_key_still_verifies() {
+        use crate::gateway::{ApprovalKey, ApprovalKeySet};
+
+        let old_secret = b"old-secret-key-for-rotation!!!!".to_vec();
+        let new_secret = b"new-secret-key-for-rotation!!!!".to_vec();
+
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        // Build a gateway with only the old key (simulating the previous deployment).
+        let old_keys = ApprovalKeySet::new(vec![ApprovalKey {
+            kid: "k1".into(),
+            secret: old_secret.clone(),
+        }]);
+
+        let gw_old = GatewayBuilder::new()
+            .state(Arc::clone(&store) as Arc<dyn StateStore>)
+            .lock(Arc::clone(&lock) as Arc<dyn DistributedLock>)
+            .rules(vec![approval_rule(3600)])
+            .provider(Arc::new(MockProvider::new("payments")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .approval_keys(old_keys)
+            .external_url("https://test.example.com")
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch to get a signed URL from the old key.
+        let outcome = gw_old.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+        let kid = parse_query_param(&approve_url, "kid");
+        assert_eq!(kid.as_deref(), Some("k1"), "URL should contain kid=k1");
+
+        // Build a new gateway with rotated keys: k2 is current, k1 is still accepted.
+        let rotated_keys = ApprovalKeySet::new(vec![
+            ApprovalKey {
+                kid: "k2".into(),
+                secret: new_secret,
+            },
+            ApprovalKey {
+                kid: "k1".into(),
+                secret: old_secret,
+            },
+        ]);
+
+        let gw_new = GatewayBuilder::new()
+            .state(store as Arc<dyn StateStore>)
+            .lock(lock as Arc<dyn DistributedLock>)
+            .rules(vec![approval_rule(3600)])
+            .provider(Arc::new(MockProvider::new("payments")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .approval_keys(rotated_keys)
+            .external_url("https://test.example.com")
+            .build()
+            .expect("gateway should build");
+
+        // The old-key-signed URL should still verify on the new gateway.
+        let result = gw_new
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                kid.as_deref(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, ActionOutcome::Executed(_)),
+            "old-key-signed approval should still execute after rotation, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_backward_compat_no_kid_in_url() {
+        use crate::gateway::ApprovalKeySet;
+
+        let secret = b"compat-test-secret-key-value!!!".to_vec();
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let keys = ApprovalKeySet::from_single(secret);
+
+        let gw = GatewayBuilder::new()
+            .state(Arc::clone(&store) as Arc<dyn StateStore>)
+            .lock(Arc::clone(&lock) as Arc<dyn DistributedLock>)
+            .rules(vec![approval_rule(3600)])
+            .provider(Arc::new(MockProvider::new("payments")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .approval_keys(keys)
+            .external_url("https://test.example.com")
+            .build()
+            .expect("gateway should build");
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+
+        // Pass kid as None to simulate a legacy URL without kid parameter.
+        let result = gw
+            .execute_approval("payments", "tenant-1", &approval_id, &sig, expires_at, None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result, ActionOutcome::Executed(_)),
+            "verification with kid=None should succeed by trying all keys, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_unknown_kid_rejected() {
+        let gw = build_approval_gateway(
+            vec![approval_rule(3600)],
+            vec![
+                Arc::new(MockProvider::new("payments")),
+                Arc::new(MockProvider::new("slack")),
+            ],
+        );
+
+        let outcome = gw.dispatch(refund_action(), None).await.unwrap();
+        let (approval_id, approve_url) = match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                ..
+            } => (approval_id, approve_url),
+            other => panic!("expected PendingApproval, got {other:?}"),
+        };
+
+        let sig = parse_query_param(&approve_url, "sig").expect("sig param");
+        let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
+            .expect("expires_at param")
+            .parse()
+            .expect("expires_at should be an integer");
+
+        // Pass an unknown kid -- verification should fail.
+        let result = gw
+            .execute_approval(
+                "payments",
+                "tenant-1",
+                &approval_id,
+                &sig,
+                expires_at,
+                Some("bad"),
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "unknown kid should cause verification failure, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn approval_keyset_from_single() {
+        use crate::gateway::ApprovalKeySet;
+
+        let secret = b"my-secret".to_vec();
+        let ks = ApprovalKeySet::from_single(secret.clone());
+
+        assert_eq!(ks.current().kid, "k0");
+        assert_eq!(ks.current().secret, secret);
+        assert_eq!(ks.all().len(), 1);
+        assert!(ks.get("k0").is_some());
+        assert!(ks.get("k1").is_none());
     }
 }

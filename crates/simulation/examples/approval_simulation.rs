@@ -175,10 +175,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("expires_at in approve URL")
         .parse()
         .expect("expires_at should be an integer");
+    let kid = parse_query_param(&approve_url, "kid");
 
     println!("  GET /v1/approvals/billing/tenant-1/{approval_id}");
     match client
-        .get_approval("billing", "tenant-1", &approval_id, &sig, expires_at)
+        .get_approval_with_kid(
+            "billing",
+            "tenant-1",
+            &approval_id,
+            &sig,
+            expires_at,
+            kid.as_deref(),
+        )
         .await
     {
         Ok(Some(status)) => {
@@ -225,7 +233,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("  POST /v1/approvals/billing/tenant-1/{approval_id}/approve");
     match client
-        .approve("billing", "tenant-1", &approval_id, &sig, expires_at)
+        .approve_with_kid(
+            "billing",
+            "tenant-1",
+            &approval_id,
+            &sig,
+            expires_at,
+            kid.as_deref(),
+        )
         .await
     {
         Ok(result) => {
@@ -248,7 +263,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("  GET /v1/approvals/billing/tenant-1/{approval_id}");
     match client
-        .get_approval("billing", "tenant-1", &approval_id, &sig, expires_at)
+        .get_approval_with_kid(
+            "billing",
+            "tenant-1",
+            &approval_id,
+            &sig,
+            expires_at,
+            kid.as_deref(),
+        )
         .await
     {
         Ok(Some(status)) => println!("  Status: {} (was: pending)", status.status),
@@ -297,16 +319,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("expires_at in reject URL")
         .parse()
         .expect("expires_at should be an integer");
+    let reject_kid = parse_query_param(&reject_url_2, "kid");
 
     println!("  Simulating human clicking 'Reject'...");
     println!("  POST /v1/approvals/billing/tenant-1/{approval_id_2}/reject");
     match client
-        .reject(
+        .reject_with_kid(
             "billing",
             "tenant-1",
             &approval_id_2,
             &reject_sig,
             reject_expires,
+            reject_kid.as_deref(),
         )
         .await
     {

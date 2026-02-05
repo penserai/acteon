@@ -197,7 +197,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .group_manager(Arc::clone(&group_manager))
         .external_url(external_url);
 
-    if let Some(ref secret_hex) = config.server.approval_secret {
+    if let Some(ref key_configs) = config.server.approval_keys {
+        let keys: Vec<acteon_gateway::ApprovalKey> = key_configs
+            .iter()
+            .map(|kc| {
+                let secret = hex::decode(&kc.secret)
+                    .map_err(|e| format!("invalid hex in approval_keys id={}: {e}", kc.id))?;
+                Ok(acteon_gateway::ApprovalKey {
+                    kid: kc.id.clone(),
+                    secret,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let keyset = acteon_gateway::ApprovalKeySet::new(keys);
+        builder = builder.approval_keys(keyset);
+    } else if let Some(ref secret_hex) = config.server.approval_secret {
         let secret =
             hex::decode(secret_hex).map_err(|e| format!("invalid approval_secret hex: {e}"))?;
         builder = builder.approval_secret(secret);

@@ -432,10 +432,14 @@ func (c *Client) GetGroup(ctx context.Context, groupKey string) (*GroupDetail, e
 
 // Approve approves a pending action by namespace, tenant, ID, and HMAC signature.
 // Does not require authentication -- the HMAC signature serves as proof of authorization.
-func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalActionResponse, error) {
+// Pass an empty string for kid to omit the key ID parameter.
+func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64, kid string) (*ApprovalActionResponse, error) {
 	params := url.Values{}
 	params.Set("sig", sig)
 	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
+	if kid != "" {
+		params.Set("kid", kid)
+	}
 	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/approve?%s", namespace, tenant, id, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
@@ -469,10 +473,14 @@ func (c *Client) Approve(ctx context.Context, namespace, tenant, id, sig string,
 
 // Reject rejects a pending action by namespace, tenant, ID, and HMAC signature.
 // Does not require authentication -- the HMAC signature serves as proof of authorization.
-func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalActionResponse, error) {
+// Pass an empty string for kid to omit the key ID parameter.
+func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64, kid string) (*ApprovalActionResponse, error) {
 	params := url.Values{}
 	params.Set("sig", sig)
 	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
+	if kid != "" {
+		params.Set("kid", kid)
+	}
 	path := fmt.Sprintf("/v1/approvals/%s/%s/%s/reject?%s", namespace, tenant, id, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
@@ -506,10 +514,14 @@ func (c *Client) Reject(ctx context.Context, namespace, tenant, id, sig string, 
 
 // GetApproval gets the status of an approval by namespace, tenant, ID, and HMAC signature.
 // Returns nil if not found or expired.
-func (c *Client) GetApproval(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64) (*ApprovalStatus, error) {
+// Pass an empty string for kid to omit the key ID parameter.
+func (c *Client) GetApproval(ctx context.Context, namespace, tenant, id, sig string, expiresAt int64, kid string) (*ApprovalStatus, error) {
 	params := url.Values{}
 	params.Set("sig", sig)
 	params.Set("expires_at", strconv.FormatInt(expiresAt, 10))
+	if kid != "" {
+		params.Set("kid", kid)
+	}
 	path := fmt.Sprintf("/v1/approvals/%s/%s/%s?%s", namespace, tenant, id, params.Encode())
 
 	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)

@@ -87,6 +87,15 @@ pub struct ExecutorConfig {
     pub dlq_enabled: bool,
 }
 
+/// A named HMAC key for signing/verifying approval URLs (config representation).
+#[derive(Debug, Deserialize)]
+pub struct ApprovalKeyConfig {
+    /// Key identifier (e.g. `"k1"`, `"k2"`).
+    pub id: String,
+    /// Hex-encoded HMAC secret.
+    pub secret: String,
+}
+
 /// HTTP server bind configuration.
 #[derive(Debug, Deserialize)]
 pub struct ServerConfig {
@@ -112,6 +121,12 @@ pub struct ServerConfig {
     /// If not set, a random secret is generated on startup (approval URLs
     /// will not survive server restarts).
     pub approval_secret: Option<String>,
+    /// Named HMAC keys for signing/verifying approval URLs (multi-key).
+    ///
+    /// The first key is the current signing key. Additional keys are accepted
+    /// during verification to support key rotation.
+    /// Takes precedence over `approval_secret` when set.
+    pub approval_keys: Option<Vec<ApprovalKeyConfig>>,
 }
 
 impl Default for ServerConfig {
@@ -122,6 +137,7 @@ impl Default for ServerConfig {
             shutdown_timeout_seconds: default_shutdown_timeout(),
             external_url: None,
             approval_secret: None,
+            approval_keys: None,
         }
     }
 }

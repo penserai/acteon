@@ -10,7 +10,7 @@ use acteon_state::{DistributedLock, StateStore};
 use tokio_util::task::TaskTracker;
 
 use crate::error::GatewayError;
-use crate::gateway::Gateway;
+use crate::gateway::{ApprovalKeySet, Gateway};
 use crate::group_manager::GroupManager;
 use crate::metrics::GatewayMetrics;
 
@@ -35,6 +35,7 @@ pub struct GatewayBuilder {
     group_manager: Option<Arc<GroupManager>>,
     external_url: Option<String>,
     approval_secret: Option<Vec<u8>>,
+    approval_keys: Option<ApprovalKeySet>,
 }
 
 impl GatewayBuilder {
@@ -56,6 +57,7 @@ impl GatewayBuilder {
             group_manager: None,
             external_url: None,
             approval_secret: None,
+            approval_keys: None,
         }
     }
 
@@ -176,9 +178,22 @@ impl GatewayBuilder {
     ///
     /// If not set, a random 32-byte secret is generated automatically.
     /// Pass a stable secret for approval URLs that survive server restarts.
+    ///
+    /// For key rotation support, use [`approval_keys`](Self::approval_keys) instead.
     #[must_use]
     pub fn approval_secret(mut self, secret: impl Into<Vec<u8>>) -> Self {
         self.approval_secret = Some(secret.into());
+        self
+    }
+
+    /// Set the HMAC key set used to sign and verify approval URLs.
+    ///
+    /// The first key in the set is the current signing key. All keys are
+    /// tried during verification, enabling zero-downtime key rotation.
+    /// This takes precedence over [`approval_secret`](Self::approval_secret).
+    #[must_use]
+    pub fn approval_keys(mut self, keys: ApprovalKeySet) -> Self {
+        self.approval_keys = Some(keys);
         self
     }
 
@@ -216,15 +231,19 @@ impl GatewayBuilder {
             .group_manager
             .unwrap_or_else(|| Arc::new(GroupManager::new()));
 
-        // Use provided approval secret or generate a random one from UUIDs.
-        let approval_secret = self.approval_secret.unwrap_or_else(|| {
+        // Use provided key set, or wrap a single secret, or generate a random key.
+        let approval_keys = if let Some(keys) = self.approval_keys {
+            keys
+        } else if let Some(secret) = self.approval_secret {
+            ApprovalKeySet::from_single(secret)
+        } else {
             let a = uuid::Uuid::new_v4();
             let b = uuid::Uuid::new_v4();
             let mut secret = Vec::with_capacity(32);
             secret.extend_from_slice(a.as_bytes());
             secret.extend_from_slice(b.as_bytes());
-            secret
-        });
+            ApprovalKeySet::from_single(secret)
+        };
 
         Ok(Gateway {
             state,
@@ -242,7 +261,7 @@ impl GatewayBuilder {
             state_machines: self.state_machines,
             group_manager,
             external_url: self.external_url,
-            approval_secret,
+            approval_keys,
         })
     }
 }

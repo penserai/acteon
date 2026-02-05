@@ -446,6 +446,16 @@ public class ActeonClient implements AutoCloseable {
      * Does not require authentication -- the HMAC signature serves as proof of authorization.
      */
     public ApprovalActionResponse approve(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
+        return approve(namespace, tenant, id, sig, expiresAt, null);
+    }
+
+    /**
+     * Approves a pending action by namespace, tenant, ID, HMAC signature, and optional key ID.
+     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     *
+     * @param kid Optional key ID identifying which HMAC key was used. Pass null to omit.
+     */
+    public ApprovalActionResponse approve(String namespace, String tenant, String id, String sig, long expiresAt, String kid) throws ActeonException {
         try {
             String path = "/v1/approvals/"
                 + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
@@ -453,6 +463,9 @@ public class ActeonClient implements AutoCloseable {
                 + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/approve"
                 + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
                 + "&expires_at=" + expiresAt;
+            if (kid != null) {
+                path += "&kid=" + URLEncoder.encode(kid, StandardCharsets.UTF_8);
+            }
 
             HttpRequest request = requestBuilder(path)
                 .POST(HttpRequest.BodyPublishers.noBody())
@@ -482,6 +495,16 @@ public class ActeonClient implements AutoCloseable {
      * Does not require authentication -- the HMAC signature serves as proof of authorization.
      */
     public ApprovalActionResponse reject(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
+        return reject(namespace, tenant, id, sig, expiresAt, null);
+    }
+
+    /**
+     * Rejects a pending action by namespace, tenant, ID, HMAC signature, and optional key ID.
+     * Does not require authentication -- the HMAC signature serves as proof of authorization.
+     *
+     * @param kid Optional key ID identifying which HMAC key was used. Pass null to omit.
+     */
+    public ApprovalActionResponse reject(String namespace, String tenant, String id, String sig, long expiresAt, String kid) throws ActeonException {
         try {
             String path = "/v1/approvals/"
                 + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
@@ -489,6 +512,9 @@ public class ActeonClient implements AutoCloseable {
                 + URLEncoder.encode(id, StandardCharsets.UTF_8) + "/reject"
                 + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
                 + "&expires_at=" + expiresAt;
+            if (kid != null) {
+                path += "&kid=" + URLEncoder.encode(kid, StandardCharsets.UTF_8);
+            }
 
             HttpRequest request = requestBuilder(path)
                 .POST(HttpRequest.BodyPublishers.noBody())
@@ -518,6 +544,16 @@ public class ActeonClient implements AutoCloseable {
      * Returns empty if not found or expired.
      */
     public Optional<ApprovalStatus> getApproval(String namespace, String tenant, String id, String sig, long expiresAt) throws ActeonException {
+        return getApproval(namespace, tenant, id, sig, expiresAt, null);
+    }
+
+    /**
+     * Gets the status of an approval by namespace, tenant, ID, HMAC signature, and optional key ID.
+     * Returns empty if not found or expired.
+     *
+     * @param kid Optional key ID identifying which HMAC key was used. Pass null to omit.
+     */
+    public Optional<ApprovalStatus> getApproval(String namespace, String tenant, String id, String sig, long expiresAt, String kid) throws ActeonException {
         try {
             String path = "/v1/approvals/"
                 + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
@@ -525,6 +561,9 @@ public class ActeonClient implements AutoCloseable {
                 + URLEncoder.encode(id, StandardCharsets.UTF_8)
                 + "?sig=" + URLEncoder.encode(sig, StandardCharsets.UTF_8)
                 + "&expires_at=" + expiresAt;
+            if (kid != null) {
+                path += "&kid=" + URLEncoder.encode(kid, StandardCharsets.UTF_8);
+            }
 
             HttpRequest request = requestBuilder(path)
                 .GET()

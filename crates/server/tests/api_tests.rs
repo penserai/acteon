@@ -881,6 +881,14 @@ async fn approval_dispatch_returns_pending_with_signed_urls() {
     assert!(parse_query_param(&approve_url, "expires_at").is_some());
     assert!(parse_query_param(&reject_url, "sig").is_some());
     assert!(parse_query_param(&reject_url, "expires_at").is_some());
+    assert!(
+        parse_query_param(&approve_url, "kid").is_some(),
+        "approve_url should contain kid parameter"
+    );
+    assert!(
+        parse_query_param(&reject_url, "kid").is_some(),
+        "reject_url should contain kid parameter"
+    );
 }
 
 #[tokio::test]
@@ -890,15 +898,16 @@ async fn approval_approve_via_rest_executes_action() {
 
     let sig = parse_query_param(&approve_url, "sig").unwrap();
     let expires_at = parse_query_param(&approve_url, "expires_at").unwrap();
+    let kid = parse_query_param(&approve_url, "kid").unwrap();
 
-    // POST /v1/approvals/{ns}/{tenant}/{id}/approve?sig=...&expires_at=...
+    // POST /v1/approvals/{ns}/{tenant}/{id}/approve?sig=...&expires_at=...&kid=...
     let app = build_app(state.clone());
     let response = app
         .oneshot(
             Request::builder()
                 .method(http::Method::POST)
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}"
+                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -923,7 +932,7 @@ async fn approval_approve_via_rest_executes_action() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}"
+                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -946,15 +955,16 @@ async fn approval_reject_via_rest_updates_status() {
 
     let sig = parse_query_param(&reject_url, "sig").unwrap();
     let expires_at = parse_query_param(&reject_url, "expires_at").unwrap();
+    let kid = parse_query_param(&reject_url, "kid").unwrap();
 
-    // POST /v1/approvals/{ns}/{tenant}/{id}/reject?sig=...&expires_at=...
+    // POST /v1/approvals/{ns}/{tenant}/{id}/reject?sig=...&expires_at=...&kid=...
     let app = build_app(state.clone());
     let response = app
         .oneshot(
             Request::builder()
                 .method(http::Method::POST)
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}/reject?sig={sig}&expires_at={expires_at}"
+                    "/v1/approvals/payments/tenant-1/{approval_id}/reject?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -979,7 +989,7 @@ async fn approval_reject_via_rest_updates_status() {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}"
+                    "/v1/approvals/payments/tenant-1/{approval_id}?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -1047,6 +1057,7 @@ async fn approval_expired_link_returns_404() {
 
     let sig = parse_query_param(&approve_url, "sig").unwrap();
     let expires_at = parse_query_param(&approve_url, "expires_at").unwrap();
+    let kid = parse_query_param(&approve_url, "kid").unwrap();
 
     // Wait for the approval to expire (2-second timeout + buffer).
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1057,7 +1068,7 @@ async fn approval_expired_link_returns_404() {
             Request::builder()
                 .method(http::Method::POST)
                 .uri(format!(
-                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}"
+                    "/v1/approvals/payments/tenant-1/{approval_id}/approve?sig={sig}&expires_at={expires_at}&kid={kid}"
                 ))
                 .body(Body::empty())
                 .unwrap(),
