@@ -35,6 +35,15 @@ pub struct MetricsResponse {
     /// Actions that failed after retries.
     #[schema(example = 1)]
     pub failed: u64,
+    /// Actions allowed by the LLM guardrail.
+    #[schema(example = 0)]
+    pub llm_guardrail_allowed: u64,
+    /// Actions denied by the LLM guardrail.
+    #[schema(example = 0)]
+    pub llm_guardrail_denied: u64,
+    /// LLM guardrail evaluation errors.
+    #[schema(example = 0)]
+    pub llm_guardrail_errors: u64,
 }
 
 /// Summary of a loaded rule.

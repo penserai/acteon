@@ -22,6 +22,12 @@ pub struct GatewayMetrics {
     pub failed: AtomicU64,
     /// Actions pending human approval.
     pub pending_approval: AtomicU64,
+    /// Actions allowed by the LLM guardrail.
+    pub llm_guardrail_allowed: AtomicU64,
+    /// Actions denied by the LLM guardrail.
+    pub llm_guardrail_denied: AtomicU64,
+    /// LLM guardrail evaluation errors.
+    pub llm_guardrail_errors: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -65,6 +71,21 @@ impl GatewayMetrics {
         self.pending_approval.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the LLM guardrail allowed counter.
+    pub fn increment_llm_guardrail_allowed(&self) {
+        self.llm_guardrail_allowed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the LLM guardrail denied counter.
+    pub fn increment_llm_guardrail_denied(&self) {
+        self.llm_guardrail_denied.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the LLM guardrail errors counter.
+    pub fn increment_llm_guardrail_errors(&self) {
+        self.llm_guardrail_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -76,6 +97,9 @@ impl GatewayMetrics {
             throttled: self.throttled.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
             pending_approval: self.pending_approval.load(Ordering::Relaxed),
+            llm_guardrail_allowed: self.llm_guardrail_allowed.load(Ordering::Relaxed),
+            llm_guardrail_denied: self.llm_guardrail_denied.load(Ordering::Relaxed),
+            llm_guardrail_errors: self.llm_guardrail_errors.load(Ordering::Relaxed),
         }
     }
 }
@@ -99,6 +123,12 @@ pub struct MetricsSnapshot {
     pub failed: u64,
     /// Actions pending human approval.
     pub pending_approval: u64,
+    /// Actions allowed by the LLM guardrail.
+    pub llm_guardrail_allowed: u64,
+    /// Actions denied by the LLM guardrail.
+    pub llm_guardrail_denied: u64,
+    /// LLM guardrail evaluation errors.
+    pub llm_guardrail_errors: u64,
 }
 
 #[cfg(test)]
@@ -117,6 +147,9 @@ mod tests {
         assert_eq!(snap.throttled, 0);
         assert_eq!(snap.failed, 0);
         assert_eq!(snap.pending_approval, 0);
+        assert_eq!(snap.llm_guardrail_allowed, 0);
+        assert_eq!(snap.llm_guardrail_denied, 0);
+        assert_eq!(snap.llm_guardrail_errors, 0);
     }
 
     #[test]
@@ -131,6 +164,9 @@ mod tests {
         m.increment_throttled();
         m.increment_failed();
         m.increment_pending_approval();
+        m.increment_llm_guardrail_allowed();
+        m.increment_llm_guardrail_denied();
+        m.increment_llm_guardrail_errors();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -141,5 +177,8 @@ mod tests {
         assert_eq!(snap.throttled, 1);
         assert_eq!(snap.failed, 1);
         assert_eq!(snap.pending_approval, 1);
+        assert_eq!(snap.llm_guardrail_allowed, 1);
+        assert_eq!(snap.llm_guardrail_denied, 1);
+        assert_eq!(snap.llm_guardrail_errors, 1);
     }
 }

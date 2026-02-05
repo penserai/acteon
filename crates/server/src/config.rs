@@ -27,6 +27,9 @@ pub struct ActeonConfig {
     /// Background processing configuration.
     #[serde(default)]
     pub background: BackgroundProcessingConfig,
+    /// LLM guardrail configuration.
+    #[serde(default)]
+    pub llm_guardrail: LlmGuardrailServerConfig,
 }
 
 /// Configuration for the state store backend.
@@ -353,5 +356,62 @@ fn default_enable_timeout_processing() -> bool {
 }
 
 fn default_enable_approval_retry() -> bool {
+    true
+}
+
+/// Configuration for the optional LLM guardrail.
+#[derive(Debug, Deserialize)]
+pub struct LlmGuardrailServerConfig {
+    /// Whether the LLM guardrail is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OpenAI-compatible API endpoint.
+    #[serde(default = "default_llm_endpoint")]
+    pub endpoint: String,
+    /// Model to use.
+    #[serde(default = "default_llm_model")]
+    pub model: String,
+    /// API key for authentication.
+    #[serde(default)]
+    pub api_key: String,
+    /// System prompt / policy sent to the LLM.
+    #[serde(default)]
+    pub policy: String,
+    /// Whether to allow actions when the LLM is unreachable.
+    #[serde(default = "default_llm_fail_open")]
+    pub fail_open: bool,
+    /// Request timeout in seconds.
+    pub timeout_seconds: Option<u64>,
+    /// Temperature for LLM sampling.
+    pub temperature: Option<f64>,
+    /// Maximum tokens in the response.
+    pub max_tokens: Option<u32>,
+}
+
+impl Default for LlmGuardrailServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_llm_endpoint(),
+            model: default_llm_model(),
+            api_key: String::new(),
+            policy: String::new(),
+            fail_open: default_llm_fail_open(),
+            timeout_seconds: None,
+            temperature: None,
+            max_tokens: None,
+        }
+    }
+}
+
+fn default_llm_endpoint() -> String {
+    "https://api.openai.com/v1/chat/completions".to_owned()
+}
+
+fn default_llm_model() -> String {
+    "gpt-4o-mini".to_owned()
+}
+
+fn default_llm_fail_open() -> bool {
     true
 }

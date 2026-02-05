@@ -9,6 +9,8 @@ use acteon_rules::{Rule, RuleEngine};
 use acteon_state::{DistributedLock, StateStore};
 use tokio_util::task::TaskTracker;
 
+use acteon_llm::LlmEvaluator;
+
 use crate::error::GatewayError;
 use crate::gateway::{ApprovalKeySet, Gateway};
 use crate::group_manager::GroupManager;
@@ -36,6 +38,9 @@ pub struct GatewayBuilder {
     external_url: Option<String>,
     approval_secret: Option<Vec<u8>>,
     approval_keys: Option<ApprovalKeySet>,
+    llm_evaluator: Option<Arc<dyn LlmEvaluator>>,
+    llm_policy: String,
+    llm_fail_open: bool,
 }
 
 impl GatewayBuilder {
@@ -58,6 +63,9 @@ impl GatewayBuilder {
             external_url: None,
             approval_secret: None,
             approval_keys: None,
+            llm_evaluator: None,
+            llm_policy: String::new(),
+            llm_fail_open: true,
         }
     }
 
@@ -197,6 +205,34 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the LLM evaluator for guardrail checks.
+    ///
+    /// When set, actions that pass rule evaluation are additionally checked
+    /// by the LLM before execution. Actions already denied or suppressed by
+    /// rules skip the LLM call.
+    #[must_use]
+    pub fn llm_evaluator(mut self, evaluator: Arc<dyn LlmEvaluator>) -> Self {
+        self.llm_evaluator = Some(evaluator);
+        self
+    }
+
+    /// Set the policy prompt sent to the LLM guardrail.
+    #[must_use]
+    pub fn llm_policy(mut self, policy: impl Into<String>) -> Self {
+        self.llm_policy = policy.into();
+        self
+    }
+
+    /// Set whether the LLM guardrail fails open (default: `true`).
+    ///
+    /// When `true`, LLM evaluation errors allow the action to proceed.
+    /// When `false`, errors cause the action to be denied.
+    #[must_use]
+    pub fn llm_fail_open(mut self, fail_open: bool) -> Self {
+        self.llm_fail_open = fail_open;
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -262,6 +298,9 @@ impl GatewayBuilder {
             group_manager,
             external_url: self.external_url,
             approval_keys,
+            llm_evaluator: self.llm_evaluator,
+            llm_policy: self.llm_policy,
+            llm_fail_open: self.llm_fail_open,
         })
     }
 }

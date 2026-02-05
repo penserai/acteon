@@ -146,6 +146,9 @@ pub struct Gateway {
     pub(crate) group_manager: Arc<GroupManager>,
     pub(crate) external_url: Option<String>,
     pub(crate) approval_keys: ApprovalKeySet,
+    pub(crate) llm_evaluator: Option<Arc<dyn acteon_llm::LlmEvaluator>>,
+    pub(crate) llm_policy: String,
+    pub(crate) llm_fail_open: bool,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -200,6 +203,9 @@ impl Gateway {
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 
         info!(?verdict, "rule evaluation complete");
+
+        // 3b. LLM guardrail check (skipped for already-denied/suppressed verdicts).
+        let verdict = self.apply_llm_guardrail(&action, verdict).await;
 
         // 4. Handle the verdict.
         let outcome = match &verdict {
@@ -324,6 +330,45 @@ impl Gateway {
             .buffer_unordered(BATCH_CONCURRENCY)
             .collect()
             .await
+    }
+
+    /// Apply the optional LLM guardrail to a verdict.
+    ///
+    /// Skips the LLM call if no evaluator is configured or if the verdict
+    /// is already `Deny` or `Suppress`. On error, behaviour depends on
+    /// `llm_fail_open`.
+    async fn apply_llm_guardrail(&self, action: &Action, verdict: RuleVerdict) -> RuleVerdict {
+        let Some(ref llm) = self.llm_evaluator else {
+            return verdict;
+        };
+
+        // Skip LLM evaluation for already-denied/suppressed actions.
+        if matches!(verdict, RuleVerdict::Deny(_) | RuleVerdict::Suppress(_)) {
+            return verdict;
+        }
+
+        match llm.evaluate(action, &self.llm_policy).await {
+            Ok(response) => {
+                if response.allowed {
+                    self.metrics.increment_llm_guardrail_allowed();
+                    verdict
+                } else {
+                    self.metrics.increment_llm_guardrail_denied();
+                    info!(reason = %response.reason, "LLM guardrail denied action");
+                    RuleVerdict::Deny(format!("LLM guardrail: {}", response.reason))
+                }
+            }
+            Err(e) => {
+                self.metrics.increment_llm_guardrail_errors();
+                if self.llm_fail_open {
+                    warn!(error = %e, "LLM guardrail error (fail-open), allowing action");
+                    verdict
+                } else {
+                    warn!(error = %e, "LLM guardrail error (fail-closed), denying action");
+                    RuleVerdict::Deny(format!("LLM guardrail unavailable: {e}"))
+                }
+            }
+        }
     }
 
     /// Return a reference to the gateway metrics.
@@ -2430,5 +2475,119 @@ mod tests {
         assert_eq!(ks.all().len(), 1);
         assert!(ks.get("k0").is_some());
         assert!(ks.get("k1").is_none());
+    }
+
+    // -- LLM guardrail tests -------------------------------------------------
+
+    fn build_gateway_with_llm(
+        rules: Vec<Rule>,
+        evaluator: Arc<dyn acteon_llm::LlmEvaluator>,
+        fail_open: bool,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(rules)
+            .provider(Arc::new(MockProvider::new("email")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .llm_evaluator(evaluator)
+            .llm_policy("test policy".to_string())
+            .llm_fail_open(fail_open)
+            .build()
+            .expect("gateway should build")
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_blocks_action() {
+        let evaluator = Arc::new(acteon_llm::MockLlmEvaluator::denying("unsafe action"));
+        let gw = build_gateway_with_llm(vec![], evaluator, true);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Suppressed { ref rule } if rule.contains("LLM guardrail")),
+            "LLM deny should produce Suppressed outcome, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_denied, 1);
+        assert_eq!(snap.llm_guardrail_allowed, 0);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_allows_action() {
+        let evaluator = Arc::new(acteon_llm::MockLlmEvaluator::allowing());
+        let gw = build_gateway_with_llm(vec![], evaluator, true);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "LLM allow should let action execute, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_allowed, 1);
+        assert_eq!(snap.llm_guardrail_denied, 0);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_skips_already_denied() {
+        // Use a FailingLlmEvaluator — if the LLM is actually called, it would
+        // produce an error. The test verifies the LLM is never consulted for
+        // already-denied actions.
+        let evaluator = Arc::new(acteon_llm::FailingLlmEvaluator::new("should not be called"));
+        let rules = vec![Rule::new("deny-all", Expr::Bool(true), RuleAction::Deny)];
+        let gw = build_gateway_with_llm(rules, evaluator, false);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Suppressed { .. }),
+            "already-denied action should stay denied, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(
+            snap.llm_guardrail_errors, 0,
+            "LLM should not have been called"
+        );
+        assert_eq!(snap.llm_guardrail_allowed, 0);
+        assert_eq!(snap.llm_guardrail_denied, 0);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_fail_open() {
+        let evaluator = Arc::new(acteon_llm::FailingLlmEvaluator::new("service unavailable"));
+        let gw = build_gateway_with_llm(vec![], evaluator, true);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "fail-open should allow action on LLM error, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_errors, 1);
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_fail_closed() {
+        let evaluator = Arc::new(acteon_llm::FailingLlmEvaluator::new("service unavailable"));
+        let gw = build_gateway_with_llm(vec![], evaluator, false);
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Suppressed { ref rule } if rule.contains("LLM guardrail")),
+            "fail-closed should deny action on LLM error, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.llm_guardrail_errors, 1);
     }
 }
