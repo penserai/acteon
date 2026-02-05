@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use acteon_core::Action;
 use async_trait::async_trait;
 
@@ -71,6 +73,50 @@ impl LlmEvaluator for FailingLlmEvaluator {
         _policy: &str,
     ) -> Result<LlmGuardrailResponse, LlmEvaluatorError> {
         Err(LlmEvaluatorError::ApiError(self.error_message.clone()))
+    }
+}
+
+/// A mock LLM evaluator that captures the policy string passed to it.
+///
+/// Always allows actions. Use [`captured_policies`](Self::captured_policies) to
+/// inspect which policy strings were received.
+#[derive(Debug)]
+pub struct CapturingLlmEvaluator {
+    policies: Mutex<Vec<String>>,
+}
+
+impl CapturingLlmEvaluator {
+    /// Create a new capturing evaluator.
+    pub fn new() -> Self {
+        Self {
+            policies: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Return all policy strings that were passed to [`evaluate`](LlmEvaluator::evaluate).
+    pub fn captured_policies(&self) -> Vec<String> {
+        self.policies.lock().unwrap().clone()
+    }
+}
+
+impl Default for CapturingLlmEvaluator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl LlmEvaluator for CapturingLlmEvaluator {
+    async fn evaluate(
+        &self,
+        _action: &Action,
+        policy: &str,
+    ) -> Result<LlmGuardrailResponse, LlmEvaluatorError> {
+        self.policies.lock().unwrap().push(policy.to_owned());
+        Ok(LlmGuardrailResponse {
+            allowed: true,
+            reason: "allowed by capturing mock".into(),
+        })
     }
 }
 

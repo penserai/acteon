@@ -148,6 +148,7 @@ pub struct Gateway {
     pub(crate) approval_keys: ApprovalKeySet,
     pub(crate) llm_evaluator: Option<Arc<dyn acteon_llm::LlmEvaluator>>,
     pub(crate) llm_policy: String,
+    pub(crate) llm_policies: HashMap<String, String>,
     pub(crate) llm_fail_open: bool,
 }
 
@@ -209,7 +210,7 @@ impl Gateway {
 
         // 4. Handle the verdict.
         let outcome = match &verdict {
-            RuleVerdict::Allow => self.execute_action(&action).await,
+            RuleVerdict::Allow(_) => self.execute_action(&action).await,
             RuleVerdict::Deduplicate { ttl_seconds } => {
                 self.handle_dedup(&action, *ttl_seconds).await?
             }
@@ -332,6 +333,30 @@ impl Gateway {
             .await
     }
 
+    /// Resolve the LLM policy string for the given action and verdict.
+    ///
+    /// Resolution order (most specific wins):
+    /// 1. Rule metadata `llm_policy` key (per-rule override)
+    /// 2. `self.llm_policies[action.action_type]` (per-action-type override)
+    /// 3. `self.llm_policy` (global default)
+    fn resolve_llm_policy(&self, action: &Action, verdict: &RuleVerdict) -> String {
+        // 1. Check rule metadata for llm_policy.
+        if let Some(rule_name) = verdict.rule_name()
+            && let Some(rule) = self.engine.rule_by_name(rule_name)
+            && let Some(policy) = rule.metadata.get("llm_policy")
+        {
+            return policy.clone();
+        }
+
+        // 2. Check per-action-type policy map.
+        if let Some(policy) = self.llm_policies.get(&action.action_type) {
+            return policy.clone();
+        }
+
+        // 3. Global default.
+        self.llm_policy.clone()
+    }
+
     /// Apply the optional LLM guardrail to a verdict.
     ///
     /// Skips the LLM call if no evaluator is configured or if the verdict
@@ -347,7 +372,9 @@ impl Gateway {
             return verdict;
         }
 
-        match llm.evaluate(action, &self.llm_policy).await {
+        let policy = self.resolve_llm_policy(action, &verdict);
+
+        match llm.evaluate(action, &policy).await {
             Ok(response) => {
                 if response.allowed {
                     self.metrics.increment_llm_guardrail_allowed();
@@ -1362,7 +1389,7 @@ impl Gateway {
 /// Extract a string tag from a `RuleVerdict`.
 fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
     match verdict {
-        RuleVerdict::Allow => "allow",
+        RuleVerdict::Allow(_) => "allow",
         RuleVerdict::Deny(_) => "deny",
         RuleVerdict::Deduplicate { .. } => "deduplicate",
         RuleVerdict::Suppress(_) => "suppress",
@@ -1378,7 +1405,7 @@ fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
 /// Extract the matched rule name from a `RuleVerdict`, if any.
 fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
     match verdict {
-        RuleVerdict::Allow | RuleVerdict::Deduplicate { .. } => None,
+        RuleVerdict::Allow(_) | RuleVerdict::Deduplicate { .. } => None,
         RuleVerdict::Deny(rule)
         | RuleVerdict::Suppress(rule)
         | RuleVerdict::Reroute { rule, .. }
@@ -1507,6 +1534,7 @@ fn build_audit_record(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -2484,6 +2512,15 @@ mod tests {
         evaluator: Arc<dyn acteon_llm::LlmEvaluator>,
         fail_open: bool,
     ) -> crate::gateway::Gateway {
+        build_gateway_with_llm_policies(rules, evaluator, fail_open, HashMap::new())
+    }
+
+    fn build_gateway_with_llm_policies(
+        rules: Vec<Rule>,
+        evaluator: Arc<dyn acteon_llm::LlmEvaluator>,
+        fail_open: bool,
+        llm_policies: HashMap<String, String>,
+    ) -> crate::gateway::Gateway {
         let store = Arc::new(MemoryStateStore::new());
         let lock = Arc::new(MemoryDistributedLock::new());
 
@@ -2500,6 +2537,7 @@ mod tests {
             })
             .llm_evaluator(evaluator)
             .llm_policy("test policy".to_string())
+            .llm_policies(llm_policies)
             .llm_fail_open(fail_open)
             .build()
             .expect("gateway should build")
@@ -2589,5 +2627,73 @@ mod tests {
 
         let snap = gw.metrics().snapshot();
         assert_eq!(snap.llm_guardrail_errors, 1);
+    }
+
+    // -- LLM policy resolution tests ------------------------------------------
+
+    #[tokio::test]
+    async fn llm_guardrail_uses_rule_metadata_policy() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+        let mut meta = HashMap::new();
+        meta.insert("llm_policy".into(), "Block DROP statements".into());
+
+        let rules =
+            vec![Rule::new("guard-sql", Expr::Bool(true), RuleAction::Allow).with_metadata(meta)];
+
+        let gw = build_gateway_with_llm_policies(rules, evaluator.clone(), true, HashMap::new());
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0], "Block DROP statements");
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_uses_action_type_policy() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+        let mut action_policies = HashMap::new();
+        action_policies.insert("send_email".into(), "Block spam content".into());
+
+        // No rules with metadata — should fall through to action-type map.
+        let gw = build_gateway_with_llm_policies(vec![], evaluator.clone(), true, action_policies);
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0], "Block spam content");
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_falls_back_to_global() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+
+        // No rule metadata, no action-type map — should use global "test policy".
+        let gw = build_gateway_with_llm_policies(vec![], evaluator.clone(), true, HashMap::new());
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0], "test policy");
+    }
+
+    #[tokio::test]
+    async fn llm_guardrail_rule_metadata_overrides_action_type() {
+        let evaluator = Arc::new(acteon_llm::CapturingLlmEvaluator::new());
+
+        let mut meta = HashMap::new();
+        meta.insert("llm_policy".into(), "Rule-level policy".into());
+        let rules =
+            vec![Rule::new("guard-email", Expr::Bool(true), RuleAction::Allow).with_metadata(meta)];
+
+        let mut action_policies = HashMap::new();
+        action_policies.insert("send_email".into(), "Action-type policy".into());
+
+        let gw = build_gateway_with_llm_policies(rules, evaluator.clone(), true, action_policies);
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let policies = evaluator.captured_policies();
+        assert_eq!(policies.len(), 1);
+        // Rule metadata should win over action-type policy.
+        assert_eq!(policies[0], "Rule-level policy");
     }
 }

@@ -40,6 +40,7 @@ pub struct GatewayBuilder {
     approval_keys: Option<ApprovalKeySet>,
     llm_evaluator: Option<Arc<dyn LlmEvaluator>>,
     llm_policy: String,
+    llm_policies: HashMap<String, String>,
     llm_fail_open: bool,
 }
 
@@ -65,6 +66,7 @@ impl GatewayBuilder {
             approval_keys: None,
             llm_evaluator: None,
             llm_policy: String::new(),
+            llm_policies: HashMap::new(),
             llm_fail_open: true,
         }
     }
@@ -223,6 +225,17 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set per-action-type LLM policy overrides.
+    ///
+    /// Keys are action type strings, values are policy prompts.
+    /// These take precedence over the global policy but are overridden
+    /// by per-rule metadata `llm_policy` entries.
+    #[must_use]
+    pub fn llm_policies(mut self, policies: HashMap<String, String>) -> Self {
+        self.llm_policies = policies;
+        self
+    }
+
     /// Set whether the LLM guardrail fails open (default: `true`).
     ///
     /// When `true`, LLM evaluation errors allow the action to proceed.
@@ -300,6 +313,7 @@ impl GatewayBuilder {
             approval_keys,
             llm_evaluator: self.llm_evaluator,
             llm_policy: self.llm_policy,
+            llm_policies: self.llm_policies,
             llm_fail_open: self.llm_fail_open,
         })
     }

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 /// Top-level configuration for the Acteon server, loaded from a TOML file.
@@ -377,6 +379,13 @@ pub struct LlmGuardrailServerConfig {
     /// System prompt / policy sent to the LLM.
     #[serde(default)]
     pub policy: String,
+    /// Per-action-type policy overrides.
+    ///
+    /// Keys are action type strings, values are policy prompts. These take
+    /// precedence over the global `policy` but are overridden by per-rule
+    /// metadata `llm_policy` entries.
+    #[serde(default)]
+    pub policies: HashMap<String, String>,
     /// Whether to allow actions when the LLM is unreachable.
     #[serde(default = "default_llm_fail_open")]
     pub fail_open: bool,
@@ -396,6 +405,7 @@ impl Default for LlmGuardrailServerConfig {
             model: default_llm_model(),
             api_key: String::new(),
             policy: String::new(),
+            policies: HashMap::new(),
             fail_open: default_llm_fail_open(),
             timeout_seconds: None,
             temperature: None,

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 /// Returns the default value `true` for serde.
@@ -49,6 +51,9 @@ pub struct YamlRule {
     pub condition: YamlCondition,
     /// The action to take when the condition matches.
     pub action: YamlAction,
+    /// Arbitrary key-value metadata (e.g. `llm_policy` overrides).
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
 }
 
 /// A condition expression that can combine multiple predicates.

@@ -60,6 +60,7 @@ fn compile_rule(yaml: YamlRule, file: Option<&Path>) -> Result<Rule, RuleError> 
         action,
         source,
         version: 0,
+        metadata: yaml.metadata,
     })
 }
 
@@ -738,7 +739,7 @@ rules:
         let verdict = engine.evaluate(&ctx).await.unwrap();
         // action_type is "send_email", not "spam", so block-spam does not fire.
         // allow-all matches.
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -797,7 +798,7 @@ rules:
         let ctx = EvalContext::new(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -856,7 +857,7 @@ rules:
         let ctx = EvalContext::new(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -892,6 +893,46 @@ rules:
             }
             other => panic!("expected Reroute, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_rule_with_metadata() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: guard-sql
+    metadata:
+      llm_policy: "Block any SQL containing DROP"
+      owner: "security-team"
+    condition:
+      field: action.action_type
+      eq: "sql_query"
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].metadata.get("llm_policy").unwrap(),
+            "Block any SQL containing DROP"
+        );
+        assert_eq!(rules[0].metadata.get("owner").unwrap(), "security-team");
+    }
+
+    #[test]
+    fn parse_rule_without_metadata_defaults_empty() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: no-meta
+    condition:
+      field: action.action_type
+      eq: "test"
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert!(rules[0].metadata.is_empty());
     }
 
     #[tokio::test]

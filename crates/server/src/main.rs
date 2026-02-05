@@ -247,6 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         builder = builder
             .llm_evaluator(Arc::new(evaluator))
             .llm_policy(&config.llm_guardrail.policy)
+            .llm_policies(config.llm_guardrail.policies.clone())
             .llm_fail_open(config.llm_guardrail.fail_open);
         info!(
             model = %config.llm_guardrail.model,

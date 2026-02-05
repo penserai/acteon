@@ -139,6 +139,7 @@ fn compile_rule(cel: CelRule, file: Option<&Path>) -> Result<Rule, RuleError> {
         action,
         source,
         version: 0,
+        metadata: std::collections::HashMap::new(),
     })
 }
 
@@ -425,7 +426,7 @@ rules:
         let verdict = engine.evaluate(&ctx).await.unwrap();
         // action_type is "send_email", not "spam", so block-spam does not fire.
         // allow-email matches.
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -477,7 +478,7 @@ rules:
         let ctx = EvalContext::new(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -529,7 +530,7 @@ rules:
         let ctx = EvalContext::new(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -644,7 +645,7 @@ rules:
         let ctx = EvalContext::new(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 
     #[tokio::test]
@@ -667,6 +668,6 @@ rules:
         let ctx = EvalContext::new(&action, &store, &env);
 
         let verdict = engine.evaluate(&ctx).await.unwrap();
-        assert!(matches!(verdict, RuleVerdict::Allow));
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 }

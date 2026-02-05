@@ -8,4 +8,4 @@ pub use config::LlmGuardrailConfig;
 pub use error::LlmEvaluatorError;
 pub use evaluator::{LlmEvaluator, LlmGuardrailResponse};
 pub use http::HttpLlmEvaluator;
-pub use mock::{FailingLlmEvaluator, MockLlmEvaluator};
+pub use mock::{CapturingLlmEvaluator, FailingLlmEvaluator, MockLlmEvaluator};
