@@ -140,6 +140,7 @@ clap = { version = "4", features = ["derive"] }
 jsonwebtoken = "9"
 argon2 = "0.5"
 sha2 = "0.10"
+hmac = "0.12"
 hex = "0.4"
 aes-gcm = "0.10"
 base64 = "0.22"

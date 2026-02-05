@@ -426,3 +426,62 @@ class FlushGroupResponse:
             event_count=data["event_count"],
             notified=data["notified"],
         )
+
+
+# =============================================================================
+# Approval Types (Human-in-the-Loop)
+# =============================================================================
+
+
+@dataclass
+class ApprovalActionResponse:
+    """Response from approving or rejecting an action."""
+    id: str
+    status: str
+    outcome: Optional[dict[str, Any]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ApprovalActionResponse":
+        return cls(
+            id=data["id"],
+            status=data["status"],
+            outcome=data.get("outcome"),
+        )
+
+
+@dataclass
+class ApprovalStatus:
+    """Public-facing approval status (no payload exposed)."""
+    token: str
+    status: str
+    rule: str
+    created_at: str
+    expires_at: str
+    decided_at: Optional[str] = None
+    message: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ApprovalStatus":
+        return cls(
+            token=data["token"],
+            status=data["status"],
+            rule=data["rule"],
+            created_at=data["created_at"],
+            expires_at=data["expires_at"],
+            decided_at=data.get("decided_at"),
+            message=data.get("message"),
+        )
+
+
+@dataclass
+class ApprovalListResponse:
+    """Response from listing pending approvals."""
+    approvals: list[ApprovalStatus]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ApprovalListResponse":
+        return cls(
+            approvals=[ApprovalStatus.from_dict(a) for a in data["approvals"]],
+            count=data["count"],
+        )

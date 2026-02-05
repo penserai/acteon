@@ -26,4 +26,12 @@ pub enum GatewayError {
     /// The gateway was misconfigured (e.g. missing required components).
     #[error("configuration error: {0}")]
     Configuration(String),
+
+    /// The approval token was not found or has expired.
+    #[error("approval not found")]
+    ApprovalNotFound,
+
+    /// The approval has already been approved or rejected.
+    #[error("approval already decided: {0}")]
+    ApprovalAlreadyDecided(String),
 }

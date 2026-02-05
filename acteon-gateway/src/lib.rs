@@ -8,12 +8,12 @@ pub mod watcher;
 
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};
 pub use background::{
-    BackgroundConfig, BackgroundProcessor, BackgroundProcessorBuilder, GroupFlushEvent,
-    TimeoutEvent,
+    ApprovalRetryEvent, BackgroundConfig, BackgroundProcessor, BackgroundProcessorBuilder,
+    GroupFlushEvent, TimeoutEvent,
 };
 pub use builder::GatewayBuilder;
 pub use error::GatewayError;
-pub use gateway::Gateway;
+pub use gateway::{ApprovalRecord, ApprovalStatus, Gateway};
 pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot};
 pub use watcher::RuleWatcher;

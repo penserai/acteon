@@ -510,3 +510,74 @@ export function parseFlushGroupResponse(data: Record<string, unknown>): FlushGro
     notified: data.notified as boolean,
   };
 }
+
+// =============================================================================
+// Approval Types (Human-in-the-Loop)
+// =============================================================================
+
+/**
+ * Response from approving or rejecting an action.
+ */
+export interface ApprovalActionResponse {
+  id: string;
+  status: string;
+  outcome?: Record<string, unknown>;
+}
+
+/**
+ * Parse an ApprovalActionResponse from API response.
+ */
+export function parseApprovalActionResponse(data: Record<string, unknown>): ApprovalActionResponse {
+  return {
+    id: data.id as string,
+    status: data.status as string,
+    outcome: data.outcome as Record<string, unknown> | undefined,
+  };
+}
+
+/**
+ * Public-facing approval status (no payload exposed).
+ */
+export interface ApprovalStatus {
+  token: string;
+  status: string;
+  rule: string;
+  createdAt: string;
+  expiresAt: string;
+  decidedAt?: string;
+  message?: string;
+}
+
+/**
+ * Parse an ApprovalStatus from API response.
+ */
+export function parseApprovalStatus(data: Record<string, unknown>): ApprovalStatus {
+  return {
+    token: data.token as string,
+    status: data.status as string,
+    rule: data.rule as string,
+    createdAt: data.created_at as string,
+    expiresAt: data.expires_at as string,
+    decidedAt: data.decided_at as string | undefined,
+    message: data.message as string | undefined,
+  };
+}
+
+/**
+ * Response from listing pending approvals.
+ */
+export interface ApprovalListResponse {
+  approvals: ApprovalStatus[];
+  count: number;
+}
+
+/**
+ * Parse an ApprovalListResponse from API response.
+ */
+export function parseApprovalListResponse(data: Record<string, unknown>): ApprovalListResponse {
+  const approvals = data.approvals as Record<string, unknown>[];
+  return {
+    approvals: approvals.map(parseApprovalStatus),
+    count: data.count as number,
+  };
+}

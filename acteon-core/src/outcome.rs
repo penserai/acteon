@@ -47,6 +47,19 @@ pub enum ActionOutcome {
         /// Whether this transition triggers a notification.
         notify: bool,
     },
+    /// Action requires human approval before execution.
+    PendingApproval {
+        /// Token used to approve or reject this action.
+        approval_id: String,
+        /// When the approval request expires.
+        expires_at: DateTime<Utc>,
+        /// Full HMAC-signed URL to approve the action.
+        approve_url: String,
+        /// Full HMAC-signed URL to reject the action.
+        reject_url: String,
+        /// Whether the notification was successfully sent to the human.
+        notification_sent: bool,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -152,6 +165,23 @@ mod tests {
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("group-123"));
         assert!(json.contains("group_size"));
+    }
+
+    #[test]
+    fn outcome_pending_approval() {
+        let outcome = ActionOutcome::PendingApproval {
+            approval_id: "abc123".into(),
+            expires_at: chrono::Utc::now(),
+            approve_url: "https://example.com/approve".into(),
+            reject_url: "https://example.com/reject".into(),
+            notification_sent: true,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("abc123"));
+        assert!(json.contains("expires_at"));
+        assert!(json.contains("approve_url"));
+        assert!(json.contains("reject_url"));
+        assert!(json.contains("notification_sent"));
     }
 
     #[test]

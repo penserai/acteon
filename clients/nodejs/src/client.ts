@@ -19,6 +19,9 @@ import {
   GroupListResponse,
   GroupDetail,
   FlushGroupResponse,
+  ApprovalActionResponse,
+  ApprovalStatus,
+  ApprovalListResponse,
   actionToRequest,
   auditQueryToParams,
   eventQueryToParams,
@@ -33,6 +36,9 @@ import {
   parseGroupListResponse,
   parseGroupDetail,
   parseFlushGroupResponse,
+  parseApprovalActionResponse,
+  parseApprovalStatus,
+  parseApprovalListResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -386,6 +392,89 @@ export class ActeonClient {
         (data.message as string) ?? "Unknown error",
         (data.retryable as boolean) ?? false
       );
+    }
+  }
+
+  // =========================================================================
+  // Approvals (Human-in-the-Loop)
+  // =========================================================================
+
+  /**
+   * Approve a pending action by namespace, tenant, ID, and HMAC signature.
+   * Does not require authentication -- the HMAC signature serves as proof of authorization.
+   */
+  async approve(namespace: string, tenant: string, id: string, sig: string): Promise<ApprovalActionResponse> {
+    const params = new URLSearchParams();
+    params.set("sig", sig);
+    const response = await this.request("POST", `/v1/approvals/${namespace}/${tenant}/${id}/approve`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseApprovalActionResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, "Approval not found or expired");
+    } else if (response.status === 410) {
+      throw new HttpError(410, "Approval already decided");
+    } else {
+      throw new HttpError(response.status, "Failed to approve");
+    }
+  }
+
+  /**
+   * Reject a pending action by namespace, tenant, ID, and HMAC signature.
+   * Does not require authentication -- the HMAC signature serves as proof of authorization.
+   */
+  async reject(namespace: string, tenant: string, id: string, sig: string): Promise<ApprovalActionResponse> {
+    const params = new URLSearchParams();
+    params.set("sig", sig);
+    const response = await this.request("POST", `/v1/approvals/${namespace}/${tenant}/${id}/reject`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseApprovalActionResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, "Approval not found or expired");
+    } else if (response.status === 410) {
+      throw new HttpError(410, "Approval already decided");
+    } else {
+      throw new HttpError(response.status, "Failed to reject");
+    }
+  }
+
+  /**
+   * Get the status of an approval by namespace, tenant, ID, and HMAC signature.
+   * Returns null if not found or expired.
+   */
+  async getApproval(namespace: string, tenant: string, id: string, sig: string): Promise<ApprovalStatus | null> {
+    const params = new URLSearchParams();
+    params.set("sig", sig);
+    const response = await this.request("GET", `/v1/approvals/${namespace}/${tenant}/${id}`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseApprovalStatus(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get approval");
+    }
+  }
+
+  /**
+   * List pending approvals filtered by namespace and tenant.
+   * Requires authentication.
+   */
+  async listApprovals(namespace: string, tenant: string): Promise<ApprovalListResponse> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/approvals", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseApprovalListResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list approvals");
     }
   }
 }

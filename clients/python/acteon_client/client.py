@@ -21,6 +21,9 @@ from .models import (
     GroupListResponse,
     GroupDetail,
     FlushGroupResponse,
+    ApprovalActionResponse,
+    ApprovalStatus,
+    ApprovalListResponse,
 )
 
 
@@ -441,6 +444,128 @@ class ActeonClient:
                 retryable=data.get("retryable", False),
             )
 
+    # =========================================================================
+    # Approvals (Human-in-the-Loop)
+    # =========================================================================
+
+    def approve(self, namespace: str, tenant: str, id: str, sig: str) -> ApprovalActionResponse:
+        """Approve a pending action by namespace, tenant, ID, and HMAC signature.
+
+        Args:
+            namespace: The approval namespace.
+            tenant: The approval tenant.
+            id: The approval ID.
+            sig: The HMAC-SHA256 signature.
+
+        Returns:
+            The approval result with optional action outcome.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If approval not found (404) or already decided (410).
+        """
+        response = self._request(
+            "POST",
+            f"/v1/approvals/{namespace}/{tenant}/{id}/approve",
+            params={"sig": sig},
+        )
+
+        if response.status_code == 200:
+            return ApprovalActionResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Approval not found or expired")
+        elif response.status_code == 410:
+            raise HttpError(410, "Approval already decided")
+        else:
+            raise HttpError(response.status_code, "Failed to approve")
+
+    def reject(self, namespace: str, tenant: str, id: str, sig: str) -> ApprovalActionResponse:
+        """Reject a pending action by namespace, tenant, ID, and HMAC signature.
+
+        Args:
+            namespace: The approval namespace.
+            tenant: The approval tenant.
+            id: The approval ID.
+            sig: The HMAC-SHA256 signature.
+
+        Returns:
+            The rejection result.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If approval not found (404) or already decided (410).
+        """
+        response = self._request(
+            "POST",
+            f"/v1/approvals/{namespace}/{tenant}/{id}/reject",
+            params={"sig": sig},
+        )
+
+        if response.status_code == 200:
+            return ApprovalActionResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Approval not found or expired")
+        elif response.status_code == 410:
+            raise HttpError(410, "Approval already decided")
+        else:
+            raise HttpError(response.status_code, "Failed to reject")
+
+    def get_approval(self, namespace: str, tenant: str, id: str, sig: str) -> Optional[ApprovalStatus]:
+        """Get the status of an approval by namespace, tenant, ID, and HMAC signature.
+
+        Args:
+            namespace: The approval namespace.
+            tenant: The approval tenant.
+            id: The approval ID.
+            sig: The HMAC-SHA256 signature.
+
+        Returns:
+            The approval status, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request(
+            "GET",
+            f"/v1/approvals/{namespace}/{tenant}/{id}",
+            params={"sig": sig},
+        )
+
+        if response.status_code == 200:
+            return ApprovalStatus.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get approval")
+
+    def list_approvals(
+        self, namespace: str, tenant: str
+    ) -> ApprovalListResponse:
+        """List pending approvals filtered by namespace and tenant.
+
+        Args:
+            namespace: The namespace to filter by.
+            tenant: The tenant to filter by.
+
+        Returns:
+            List of pending approvals.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request(
+            "GET",
+            "/v1/approvals",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return ApprovalListResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list approvals")
+
 
 class AsyncActeonClient:
     """Async HTTP client for the Acteon action gateway.
@@ -655,3 +780,63 @@ class AsyncActeonClient:
                 message=data.get("message", "Unknown error"),
                 retryable=data.get("retryable", False),
             )
+
+    # =========================================================================
+    # Approvals (Human-in-the-Loop)
+    # =========================================================================
+
+    async def approve(self, namespace: str, tenant: str, id: str, sig: str) -> ApprovalActionResponse:
+        response = await self._request(
+            "POST",
+            f"/v1/approvals/{namespace}/{tenant}/{id}/approve",
+            params={"sig": sig},
+        )
+        if response.status_code == 200:
+            return ApprovalActionResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Approval not found or expired")
+        elif response.status_code == 410:
+            raise HttpError(410, "Approval already decided")
+        else:
+            raise HttpError(response.status_code, "Failed to approve")
+
+    async def reject(self, namespace: str, tenant: str, id: str, sig: str) -> ApprovalActionResponse:
+        response = await self._request(
+            "POST",
+            f"/v1/approvals/{namespace}/{tenant}/{id}/reject",
+            params={"sig": sig},
+        )
+        if response.status_code == 200:
+            return ApprovalActionResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Approval not found or expired")
+        elif response.status_code == 410:
+            raise HttpError(410, "Approval already decided")
+        else:
+            raise HttpError(response.status_code, "Failed to reject")
+
+    async def get_approval(self, namespace: str, tenant: str, id: str, sig: str) -> Optional[ApprovalStatus]:
+        response = await self._request(
+            "GET",
+            f"/v1/approvals/{namespace}/{tenant}/{id}",
+            params={"sig": sig},
+        )
+        if response.status_code == 200:
+            return ApprovalStatus.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get approval")
+
+    async def list_approvals(
+        self, namespace: str, tenant: str
+    ) -> ApprovalListResponse:
+        response = await self._request(
+            "GET",
+            "/v1/approvals",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return ApprovalListResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list approvals")

@@ -679,6 +679,230 @@ impl ActeonClient {
     }
 
     // =========================================================================
+    // Approvals (Human-in-the-Loop)
+    // =========================================================================
+
+    /// Approve a pending action by namespace, tenant, ID, and HMAC signature.
+    ///
+    /// The original action is executed upon approval. This does not require
+    /// authentication -- the HMAC signature in the query string serves as
+    /// proof of authorization.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let result = client.approve("payments", "tenant-1", "abc-123", "hmac-sig").await?;
+    /// println!("Status: {}, Outcome: {:?}", result.status, result.outcome);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn approve(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+    ) -> Result<ApprovalActionResponse, Error> {
+        let url = format!(
+            "{}/v1/approvals/{}/{}/{}/approve?sig={}",
+            self.base_url, namespace, tenant, id, sig
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ApprovalActionResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(Error::Http {
+                status: 404,
+                message: "Approval not found or expired".to_string(),
+            })
+        } else if response.status() == reqwest::StatusCode::GONE {
+            Err(Error::Http {
+                status: 410,
+                message: "Approval already decided".to_string(),
+            })
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to approve: {}", response.status()),
+            })
+        }
+    }
+
+    /// Reject a pending action by namespace, tenant, ID, and HMAC signature.
+    ///
+    /// This does not require authentication -- the HMAC signature in the
+    /// query string serves as proof of authorization.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let result = client.reject("payments", "tenant-1", "abc-123", "hmac-sig").await?;
+    /// println!("Status: {}", result.status);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn reject(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+    ) -> Result<ApprovalActionResponse, Error> {
+        let url = format!(
+            "{}/v1/approvals/{}/{}/{}/reject?sig={}",
+            self.base_url, namespace, tenant, id, sig
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ApprovalActionResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(Error::Http {
+                status: 404,
+                message: "Approval not found or expired".to_string(),
+            })
+        } else if response.status() == reqwest::StatusCode::GONE {
+            Err(Error::Http {
+                status: 410,
+                message: "Approval already decided".to_string(),
+            })
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to reject: {}", response.status()),
+            })
+        }
+    }
+
+    /// Get the status of an approval by namespace, tenant, ID, and HMAC signature.
+    ///
+    /// Returns `None` if the approval is not found or has expired.
+    /// Does not expose the original action payload.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// if let Some(status) = client.get_approval("payments", "tenant-1", "abc-123", "hmac-sig").await? {
+    ///     println!("Approval status: {}", status.status);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_approval(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+    ) -> Result<Option<ApprovalStatusResponse>, Error> {
+        let url = format!(
+            "{}/v1/approvals/{}/{}/{}?sig={}",
+            self.base_url, namespace, tenant, id, sig
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ApprovalStatusResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(Some(result))
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Ok(None)
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to get approval: {}", response.status()),
+            })
+        }
+    }
+
+    /// List pending approvals filtered by namespace and tenant.
+    ///
+    /// Requires authentication.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let result = client.list_approvals("payments", "tenant-1").await?;
+    /// for approval in result.approvals {
+    ///     println!("{}: {}", approval.token, approval.status);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list_approvals(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<ApprovalListResponse, Error> {
+        let url = format!("{}/v1/approvals", self.base_url);
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .query(&[("namespace", namespace), ("tenant", tenant)])
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ApprovalListResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to list approvals: {}", response.status()),
+            })
+        }
+    }
+
+    // =========================================================================
     // Groups (Event Batching)
     // =========================================================================
 
@@ -1008,6 +1232,49 @@ pub struct TransitionResponse {
     pub new_state: String,
     /// Whether the transition triggered a notification.
     pub notify: bool,
+}
+
+// =============================================================================
+// Approval Types (Human-in-the-Loop)
+// =============================================================================
+
+/// Response from approving or rejecting an action.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApprovalActionResponse {
+    /// The approval ID.
+    pub id: String,
+    /// The resulting status ("approved" or "rejected").
+    pub status: String,
+    /// The outcome of the original action (only present when approved).
+    pub outcome: Option<serde_json::Value>,
+}
+
+/// Public-facing approval status (no payload exposed).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApprovalStatusResponse {
+    /// The approval token.
+    pub token: String,
+    /// Current status: "pending", "approved", or "rejected".
+    pub status: String,
+    /// Rule that triggered the approval.
+    pub rule: String,
+    /// When the approval was created.
+    pub created_at: String,
+    /// When the approval expires.
+    pub expires_at: String,
+    /// When a decision was made (if any).
+    pub decided_at: Option<String>,
+    /// Optional message from the rule.
+    pub message: Option<String>,
+}
+
+/// Response from listing pending approvals.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApprovalListResponse {
+    /// List of pending approvals.
+    pub approvals: Vec<ApprovalStatusResponse>,
+    /// Total number of approvals returned.
+    pub count: usize,
 }
 
 // =============================================================================

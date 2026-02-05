@@ -22,6 +22,10 @@ pub enum KeyKind {
     PendingGroups,
     /// Index of active events for inhibition lookups.
     ActiveEvents,
+    /// Approval record awaiting human decision.
+    Approval,
+    /// Index of pending approvals by action ID.
+    PendingApprovals,
     Custom(String),
 }
 
@@ -41,6 +45,8 @@ impl KeyKind {
             Self::Group => "group",
             Self::PendingGroups => "pending_groups",
             Self::ActiveEvents => "active_events",
+            Self::Approval => "approval",
+            Self::PendingApprovals => "pending_approvals",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -122,6 +128,8 @@ mod tests {
         assert_eq!(KeyKind::Group.as_str(), "group");
         assert_eq!(KeyKind::PendingGroups.as_str(), "pending_groups");
         assert_eq!(KeyKind::ActiveEvents.as_str(), "active_events");
+        assert_eq!(KeyKind::Approval.as_str(), "approval");
+        assert_eq!(KeyKind::PendingApprovals.as_str(), "pending_approvals");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

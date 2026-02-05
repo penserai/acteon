@@ -20,6 +20,8 @@ pub struct GatewayMetrics {
     pub throttled: AtomicU64,
     /// Actions that failed after all retries.
     pub failed: AtomicU64,
+    /// Actions pending human approval.
+    pub pending_approval: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -58,6 +60,11 @@ impl GatewayMetrics {
         self.failed.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the pending approval counter.
+    pub fn increment_pending_approval(&self) {
+        self.pending_approval.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -68,6 +75,7 @@ impl GatewayMetrics {
             rerouted: self.rerouted.load(Ordering::Relaxed),
             throttled: self.throttled.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
+            pending_approval: self.pending_approval.load(Ordering::Relaxed),
         }
     }
 }
@@ -89,6 +97,8 @@ pub struct MetricsSnapshot {
     pub throttled: u64,
     /// Actions that failed.
     pub failed: u64,
+    /// Actions pending human approval.
+    pub pending_approval: u64,
 }
 
 #[cfg(test)]
@@ -106,6 +116,7 @@ mod tests {
         assert_eq!(snap.rerouted, 0);
         assert_eq!(snap.throttled, 0);
         assert_eq!(snap.failed, 0);
+        assert_eq!(snap.pending_approval, 0);
     }
 
     #[test]
@@ -119,6 +130,7 @@ mod tests {
         m.increment_rerouted();
         m.increment_throttled();
         m.increment_failed();
+        m.increment_pending_approval();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -128,5 +140,6 @@ mod tests {
         assert_eq!(snap.rerouted, 1);
         assert_eq!(snap.throttled, 1);
         assert_eq!(snap.failed, 1);
+        assert_eq!(snap.pending_approval, 1);
     }
 }

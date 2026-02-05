@@ -3,8 +3,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use tokio_util::task::TaskTracker;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use acteon_audit::AuditRecord;
 use acteon_audit::store::AuditStore;
@@ -14,10 +16,59 @@ use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
 use acteon_state::{DistributedLock, KeyKind, StateKey, StateStore};
 
+use serde::{Deserialize, Serialize};
+
 use crate::group_manager::GroupManager;
 
 use crate::error::GatewayError;
 use crate::metrics::GatewayMetrics;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// A stored approval record awaiting human decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalRecord {
+    /// The original action to execute on approval.
+    pub action: Action,
+    /// The approval ID (UUID).
+    pub token: String,
+    /// Name of the rule that triggered the approval request.
+    pub rule: String,
+    /// When the approval request was created.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// When the approval request expires.
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// Current status: "pending", "approved", or "rejected".
+    pub status: String,
+    /// Who approved/rejected (if decided).
+    pub decided_by: Option<String>,
+    /// When the decision was made.
+    pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Optional message from the rule.
+    pub message: Option<String>,
+    /// Whether the notification was successfully sent.
+    #[serde(default)]
+    pub notification_sent: bool,
+}
+
+/// Public-facing approval status (does not expose the original action payload).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApprovalStatus {
+    /// The approval token.
+    pub token: String,
+    /// Current status.
+    pub status: String,
+    /// Rule that triggered the approval.
+    pub rule: String,
+    /// When the approval was created.
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// When the approval expires.
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+    /// When the decision was made.
+    pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Optional message.
+    pub message: Option<String>,
+}
 
 /// The central gateway that orchestrates the action dispatch pipeline.
 ///
@@ -42,6 +93,8 @@ pub struct Gateway {
     pub(crate) dlq: Option<Arc<dyn DeadLetterSink>>,
     pub(crate) state_machines: HashMap<String, StateMachineConfig>,
     pub(crate) group_manager: Arc<GroupManager>,
+    pub(crate) external_url: Option<String>,
+    pub(crate) approval_secret: Vec<u8>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -66,6 +119,7 @@ impl Gateway {
             action.provider = %action.provider,
         )
     )]
+    #[allow(clippy::too_many_lines)]
     pub async fn dispatch(
         &self,
         action: Action,
@@ -147,6 +201,21 @@ impl Gateway {
                     *group_wait_seconds,
                     *group_interval_seconds,
                     *max_group_size,
+                )
+                .await?
+            }
+            RuleVerdict::RequestApproval {
+                rule,
+                notify_provider,
+                timeout_seconds,
+                message,
+            } => {
+                self.handle_request_approval(
+                    &action,
+                    rule,
+                    notify_provider,
+                    *timeout_seconds,
+                    message.as_deref(),
                 )
                 .await?
             }
@@ -535,6 +604,206 @@ impl Gateway {
         })
     }
 
+    /// Compute the HMAC-SHA256 signature for an approval.
+    ///
+    /// The message uses length-prefixed fields to prevent canonicalization
+    /// attacks (e.g., `ns="a:b", tenant="c"` vs `ns="a", tenant="b:c"`).
+    /// The `expires_at` timestamp binds the signature to a specific expiry
+    /// window so leaked links cannot be replayed after expiration.
+    fn compute_approval_sig(&self, ns: &str, tenant: &str, id: &str, expires_at: i64) -> String {
+        let msg = format!(
+            "{}:{}\n{}:{}\n{}:{}\n{}",
+            ns.len(),
+            ns,
+            tenant.len(),
+            tenant,
+            id.len(),
+            id,
+            expires_at,
+        );
+        let mut mac =
+            HmacSha256::new_from_slice(&self.approval_secret).expect("HMAC accepts any key size");
+        mac.update(msg.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    /// Verify the HMAC-SHA256 signature for an approval.
+    fn verify_approval_sig(
+        &self,
+        ns: &str,
+        tenant: &str,
+        id: &str,
+        expires_at: i64,
+        sig: &str,
+    ) -> bool {
+        let expected = self.compute_approval_sig(ns, tenant, id, expires_at);
+        // Constant-time comparison
+        expected.len() == sig.len()
+            && expected
+                .bytes()
+                .zip(sig.bytes())
+                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                == 0
+    }
+
+    /// Handle the request approval verdict: store approval record, send notification, return pending.
+    #[allow(clippy::too_many_lines)]
+    async fn handle_request_approval(
+        &self,
+        action: &Action,
+        rule: &str,
+        notify_provider: &str,
+        timeout_seconds: u64,
+        message: Option<&str>,
+    ) -> Result<ActionOutcome, GatewayError> {
+        // Generate a UUID as the approval ID
+        let id = uuid::Uuid::new_v4().to_string();
+
+        let now = Utc::now();
+        #[allow(clippy::cast_possible_wrap)]
+        let expires_at = now + chrono::Duration::seconds(timeout_seconds as i64);
+        let ttl = Some(Duration::from_secs(timeout_seconds));
+
+        // Compute HMAC signature (includes expires_at to bind sig to this TTL)
+        let expires_ts = expires_at.timestamp();
+        let sig = self.compute_approval_sig(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            &id,
+            expires_ts,
+        );
+
+        // Build the approval record
+        let record = ApprovalRecord {
+            action: action.clone(),
+            token: id.clone(),
+            rule: rule.to_owned(),
+            created_at: now,
+            expires_at,
+            status: "pending".to_string(),
+            decided_by: None,
+            decided_at: None,
+            message: message.map(String::from),
+            notification_sent: false, // updated below
+        };
+
+        let record_json = serde_json::to_string(&record).map_err(|e| {
+            GatewayError::Configuration(format!("failed to serialize approval: {e}"))
+        })?;
+
+        // Store the approval record keyed by namespace:tenant:approval:id
+        let approval_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::Approval,
+            &id,
+        );
+        self.state.set(&approval_key, &record_json, ttl).await?;
+
+        // Store pending approvals index by action ID
+        let pending_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::PendingApprovals,
+            action.id.as_str(),
+        );
+        let pending_val = serde_json::json!({
+            "token": &id,
+            "created_at": now.to_rfc3339(),
+            "expires_at": expires_at.to_rfc3339(),
+        });
+        self.state
+            .set(&pending_key, &pending_val.to_string(), ttl)
+            .await?;
+
+        // Build HMAC-signed URLs with namespace/tenant in the path
+        let external_url = self.external_url.as_deref().unwrap_or_else(|| {
+            warn!("`external_url` not configured, using http://localhost:8080");
+            "http://localhost:8080"
+        });
+
+        if !external_url.starts_with("https://") {
+            warn!(url = %external_url, "external_url is not HTTPS - approval links will not be secure");
+        }
+
+        let ns = &action.namespace;
+        let tenant = &action.tenant;
+        let approve_url = format!(
+            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}"
+        );
+        let reject_url = format!(
+            "{external_url}/v1/approvals/{ns}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}"
+        );
+
+        let notification_payload = serde_json::json!({
+            "subject": format!("Approval Required: {}", action.action_type),
+            "body": format!(
+                "Action '{}' requires approval.\n\nReason: {}\n\nApprove: {}\nReject: {}",
+                action.action_type,
+                message.unwrap_or("Approval required"),
+                approve_url,
+                reject_url,
+            ),
+            "approval_url": &approve_url,
+            "reject_url": &reject_url,
+            "action_id": action.id.to_string(),
+            "action_type": &action.action_type,
+            "namespace": action.namespace.to_string(),
+            "tenant": action.tenant.to_string(),
+            "expires_at": expires_at.to_rfc3339(),
+        });
+
+        // Execute notification directly via provider (bypass rules)
+        let mut notification_sent = false;
+        if let Some(provider) = self.providers.get(notify_provider) {
+            let notification = Action::new(
+                action.namespace.as_str(),
+                action.tenant.as_str(),
+                notify_provider,
+                "approval_notification",
+                notification_payload,
+            );
+            let result = self
+                .executor
+                .execute(&notification, provider.as_ref())
+                .await;
+            if let ActionOutcome::Failed(err) = &result {
+                error!(
+                    error = %err.message,
+                    "approval notification failed, approval is pending but human may not receive the link"
+                );
+            } else {
+                notification_sent = true;
+                info!("approval notification sent via {notify_provider}");
+            }
+        } else {
+            error!(
+                provider = %notify_provider,
+                "notification provider not found, approval is pending but human will not receive the link"
+            );
+        }
+
+        // Update the record with notification status
+        if notification_sent {
+            let mut updated = record;
+            updated.notification_sent = true;
+            let updated_json = serde_json::to_string(&updated).map_err(|e| {
+                GatewayError::Configuration(format!("failed to serialize approval: {e}"))
+            })?;
+            self.state.set(&approval_key, &updated_json, ttl).await?;
+        }
+
+        self.metrics.increment_pending_approval();
+
+        Ok(ActionOutcome::PendingApproval {
+            approval_id: id,
+            expires_at,
+            approve_url,
+            reject_url,
+            notification_sent,
+        })
+    }
+
     /// Handle the group verdict: add event to group for batched notification.
     async fn handle_group(
         &self,
@@ -554,6 +823,380 @@ impl Gateway {
             group_size,
             notify_at,
         })
+    }
+
+    /// Execute an approved action by namespace, tenant, ID, and HMAC signature.
+    ///
+    /// Verifies the HMAC signature, atomically claims the approval, re-evaluates
+    /// rules (TOCTOU protection), then executes the original action. If any step
+    /// after claiming fails, the claim key is released so the approval can be
+    /// retried.
+    pub async fn execute_approval(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+        expires_at: i64,
+    ) -> Result<ActionOutcome, GatewayError> {
+        // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+            return Err(GatewayError::ApprovalNotFound);
+        }
+
+        // 2. Atomically claim the approval (first writer wins)
+        let claim_key = StateKey::new(namespace, tenant, KeyKind::Approval, format!("{id}:claim"));
+        let is_claimed = self
+            .state
+            .check_and_set(&claim_key, "approved", Some(Duration::from_secs(86400)))
+            .await?;
+        if !is_claimed {
+            return Err(GatewayError::ApprovalAlreadyDecided(
+                "concurrent update".into(),
+            ));
+        }
+
+        // Execute the rest, releasing the claim on failure
+        let result = self.execute_approval_inner(namespace, tenant, id).await;
+        if result.is_err() {
+            let _ = self.state.delete(&claim_key).await;
+        }
+        result
+    }
+
+    /// Inner logic for `execute_approval`, called after the claim is acquired.
+    #[allow(clippy::too_many_lines)]
+    async fn execute_approval_inner(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<ActionOutcome, GatewayError> {
+        // 3. Read the approval record
+        let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
+        let val = self
+            .state
+            .get(&approval_key)
+            .await?
+            .ok_or(GatewayError::ApprovalNotFound)?;
+        let record: ApprovalRecord = serde_json::from_str(&val)
+            .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
+
+        if record.status != "pending" {
+            return Err(GatewayError::ApprovalAlreadyDecided(record.status));
+        }
+
+        // 4. Update status to "approved"
+        let mut updated = record.clone();
+        updated.status = "approved".to_string();
+        updated.decided_at = Some(Utc::now());
+        let updated_json = serde_json::to_string(&updated).map_err(|e| {
+            GatewayError::Configuration(format!("failed to serialize approval: {e}"))
+        })?;
+        self.state.set(&approval_key, &updated_json, None).await?;
+
+        // 5. TOCTOU: re-evaluate rules against the stored action
+        let action = &record.action;
+        let eval_ctx = EvalContext::new(action, self.state.as_ref(), &self.environment);
+        let verdict = self.engine.evaluate(&eval_ctx).await?;
+
+        match &verdict {
+            // Rules now suppress/deny => refuse execution
+            RuleVerdict::Suppress(rule) | RuleVerdict::Deny(rule) => {
+                info!(
+                    rule = %rule,
+                    "rules changed since approval, action suppressed on re-evaluation"
+                );
+                Ok(ActionOutcome::Suppressed { rule: rule.clone() })
+            }
+            // Other verdicts (reroute, throttle, modify) => apply them
+            RuleVerdict::Reroute {
+                rule: _,
+                target_provider,
+            } => self.handle_reroute(action, target_provider).await,
+            RuleVerdict::Throttle {
+                rule: _,
+                max_count: _,
+                window_seconds,
+            } => Ok(ActionOutcome::Throttled {
+                retry_after: Duration::from_secs(*window_seconds),
+            }),
+            RuleVerdict::Modify { rule: _, changes } => {
+                let mut modified = action.clone();
+                json_patch::merge(&mut modified.payload, changes);
+                Ok(self.execute_action(&modified).await)
+            }
+            // Allow, RequestApproval (human already approved), dedup, state machine, group => execute
+            _ => {
+                let outcome = self.execute_action(action).await;
+                Ok(outcome)
+            }
+        }
+    }
+
+    /// Reject a pending approval by namespace, tenant, ID, and HMAC signature.
+    ///
+    /// If any step after claiming fails, the claim key is released so the
+    /// approval can be retried.
+    pub async fn reject_approval(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+        expires_at: i64,
+    ) -> Result<(), GatewayError> {
+        // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+            return Err(GatewayError::ApprovalNotFound);
+        }
+
+        // 2. Atomically claim the approval (first writer wins)
+        let claim_key = StateKey::new(namespace, tenant, KeyKind::Approval, format!("{id}:claim"));
+        let is_claimed = self
+            .state
+            .check_and_set(&claim_key, "rejected", Some(Duration::from_secs(86400)))
+            .await?;
+        if !is_claimed {
+            return Err(GatewayError::ApprovalAlreadyDecided(
+                "concurrent update".into(),
+            ));
+        }
+
+        // Execute the rest, releasing the claim on failure
+        let result = self.reject_approval_inner(namespace, tenant, id).await;
+        if result.is_err() {
+            let _ = self.state.delete(&claim_key).await;
+        }
+        result
+    }
+
+    /// Inner logic for `reject_approval`, called after the claim is acquired.
+    async fn reject_approval_inner(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<(), GatewayError> {
+        // 3. Read the approval record
+        let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
+        let val = self
+            .state
+            .get(&approval_key)
+            .await?
+            .ok_or(GatewayError::ApprovalNotFound)?;
+        let record: ApprovalRecord = serde_json::from_str(&val)
+            .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
+
+        if record.status != "pending" {
+            return Err(GatewayError::ApprovalAlreadyDecided(record.status));
+        }
+
+        // 4. Update status to "rejected"
+        let mut updated = record;
+        updated.status = "rejected".to_string();
+        updated.decided_at = Some(Utc::now());
+        let updated_json = serde_json::to_string(&updated).map_err(|e| {
+            GatewayError::Configuration(format!("failed to serialize approval: {e}"))
+        })?;
+        self.state.set(&approval_key, &updated_json, None).await?;
+
+        Ok(())
+    }
+
+    /// Retry sending the notification for a pending approval.
+    ///
+    /// Re-reads the approval record, re-sends the notification via the provider
+    /// specified in the original rule, and updates `notification_sent` on success.
+    /// Returns `true` if the notification was successfully sent.
+    #[allow(clippy::too_many_lines)]
+    pub async fn retry_approval_notification(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<bool, GatewayError> {
+        // Read the approval record
+        let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
+        let val = self
+            .state
+            .get(&approval_key)
+            .await?
+            .ok_or(GatewayError::ApprovalNotFound)?;
+        let record: ApprovalRecord = serde_json::from_str(&val)
+            .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
+
+        if record.status != "pending" || record.notification_sent {
+            return Ok(false);
+        }
+
+        // Check if expired
+        if record.expires_at <= Utc::now() {
+            return Ok(false);
+        }
+
+        // Compute HMAC signature for the URLs (includes expires_at)
+        let expires_ts = record.expires_at.timestamp();
+        let sig = self.compute_approval_sig(namespace, tenant, id, expires_ts);
+
+        let external_url = self
+            .external_url
+            .as_deref()
+            .unwrap_or("http://localhost:8080");
+        let approve_url = format!(
+            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/approve?sig={sig}&expires_at={expires_ts}"
+        );
+        let reject_url = format!(
+            "{external_url}/v1/approvals/{namespace}/{tenant}/{id}/reject?sig={sig}&expires_at={expires_ts}"
+        );
+
+        let notification_payload = serde_json::json!({
+            "subject": format!("Approval Required: {}", record.action.action_type),
+            "body": format!(
+                "Action '{}' requires approval.\n\nReason: {}\n\nApprove: {}\nReject: {}",
+                record.action.action_type,
+                record.message.as_deref().unwrap_or("Approval required"),
+                approve_url,
+                reject_url,
+            ),
+            "approval_url": &approve_url,
+            "reject_url": &reject_url,
+            "action_id": record.action.id.to_string(),
+            "action_type": &record.action.action_type,
+            "namespace": namespace,
+            "tenant": tenant,
+            "expires_at": record.expires_at.to_rfc3339(),
+        });
+
+        // Look up the notification provider from the rule that created this approval.
+        // We re-evaluate rules to find the matching RequestApproval rule.
+        let eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment);
+        let verdict = self.engine.evaluate(&eval_ctx).await?;
+
+        let notify_provider = if let RuleVerdict::RequestApproval {
+            notify_provider, ..
+        } = &verdict
+        {
+            notify_provider.clone()
+        } else {
+            // Rules changed; can't determine the provider
+            warn!(
+                approval_id = %id,
+                "rules changed since approval was created, cannot determine notification provider"
+            );
+            return Ok(false);
+        };
+
+        let Some(provider) = self.providers.get(&notify_provider) else {
+            error!(
+                provider = %notify_provider,
+                approval_id = %id,
+                "notification provider not found during retry"
+            );
+            return Ok(false);
+        };
+
+        let notification = Action::new(
+            namespace,
+            tenant,
+            notify_provider.as_str(),
+            "approval_notification",
+            notification_payload,
+        );
+        let result = self
+            .executor
+            .execute(&notification, provider.as_ref())
+            .await;
+
+        if let ActionOutcome::Failed(err) = &result {
+            error!(
+                error = %err.message,
+                approval_id = %id,
+                "approval notification retry failed"
+            );
+            return Ok(false);
+        }
+
+        // Update the record with notification_sent = true
+        let mut updated = record;
+        updated.notification_sent = true;
+        let updated_json = serde_json::to_string(&updated).map_err(|e| {
+            GatewayError::Configuration(format!("failed to serialize approval: {e}"))
+        })?;
+
+        // Preserve the original TTL by computing remaining time
+        let remaining = updated.expires_at - Utc::now();
+        #[allow(clippy::cast_sign_loss)]
+        let ttl = if remaining.num_seconds() > 0 {
+            Some(Duration::from_secs(remaining.num_seconds() as u64))
+        } else {
+            None
+        };
+        self.state.set(&approval_key, &updated_json, ttl).await?;
+
+        info!(approval_id = %id, "approval notification retry succeeded");
+        Ok(true)
+    }
+
+    /// Get the status of an approval by namespace, tenant, ID, and HMAC signature.
+    pub async fn get_approval_status(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+        sig: &str,
+        expires_at: i64,
+    ) -> Result<Option<ApprovalStatus>, GatewayError> {
+        // Verify HMAC signature
+        if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig) {
+            return Ok(None);
+        }
+
+        let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
+        let Some(val) = self.state.get(&approval_key).await? else {
+            return Ok(None);
+        };
+
+        let record: ApprovalRecord = serde_json::from_str(&val)
+            .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
+
+        Ok(Some(ApprovalStatus {
+            token: record.token,
+            status: record.status,
+            rule: record.rule,
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            decided_at: record.decided_at,
+            message: record.message,
+        }))
+    }
+
+    /// List pending approvals for a namespace/tenant.
+    pub async fn list_pending_approvals(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<Vec<ApprovalStatus>, GatewayError> {
+        let entries = self
+            .state
+            .scan_keys(namespace, tenant, KeyKind::Approval, None)
+            .await?;
+
+        let mut results = Vec::new();
+        for (_key, val) in entries {
+            if let Ok(record) = serde_json::from_str::<ApprovalRecord>(&val) {
+                results.push(ApprovalStatus {
+                    token: record.token,
+                    status: record.status,
+                    rule: record.rule,
+                    created_at: record.created_at,
+                    expires_at: record.expires_at,
+                    decided_at: record.decided_at,
+                    message: record.message,
+                });
+            }
+        }
+        Ok(results)
     }
 
     /// Register a state machine configuration.
@@ -589,6 +1232,7 @@ fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
         RuleVerdict::Modify { .. } => "modify",
         RuleVerdict::StateMachine { .. } => "state_machine",
         RuleVerdict::Group { .. } => "group",
+        RuleVerdict::RequestApproval { .. } => "request_approval",
     }
 }
 
@@ -602,7 +1246,8 @@ fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
         | RuleVerdict::Throttle { rule, .. }
         | RuleVerdict::Modify { rule, .. }
         | RuleVerdict::StateMachine { rule, .. }
-        | RuleVerdict::Group { rule, .. } => Some(rule.clone()),
+        | RuleVerdict::Group { rule, .. }
+        | RuleVerdict::RequestApproval { rule, .. } => Some(rule.clone()),
     }
 }
 
@@ -617,6 +1262,7 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Failed(_) => "failed",
         ActionOutcome::Grouped { .. } => "grouped",
         ActionOutcome::StateChanged { .. } => "state_changed",
+        ActionOutcome::PendingApproval { .. } => "pending_approval",
     }
 }
 
@@ -684,6 +1330,16 @@ fn build_audit_record(
             "previous_state": previous_state,
             "new_state": new_state,
             "notify": notify,
+        }),
+        ActionOutcome::PendingApproval {
+            approval_id,
+            expires_at,
+            notification_sent,
+            ..
+        } => serde_json::json!({
+            "approval_id": approval_id,
+            "expires_at": expires_at.to_rfc3339(),
+            "notification_sent": notification_sent,
         }),
     };
 

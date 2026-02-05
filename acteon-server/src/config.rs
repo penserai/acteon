@@ -103,6 +103,15 @@ pub struct ServerConfig {
     /// individual audit backend connection timeout.
     #[serde(default = "default_shutdown_timeout")]
     pub shutdown_timeout_seconds: u64,
+    /// External URL for building approval links (e.g. `https://acteon.example.com`).
+    ///
+    /// If not set, defaults to `http://localhost:{port}`.
+    pub external_url: Option<String>,
+    /// Hex-encoded HMAC secret for signing approval URLs.
+    ///
+    /// If not set, a random secret is generated on startup (approval URLs
+    /// will not survive server restarts).
+    pub approval_secret: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -111,6 +120,8 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             shutdown_timeout_seconds: default_shutdown_timeout(),
+            external_url: None,
+            approval_secret: None,
         }
     }
 }
@@ -254,6 +265,7 @@ pub enum RateLimitErrorBehavior {
 
 /// Configuration for background processing (group flushing, timeouts).
 #[derive(Debug, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BackgroundProcessingConfig {
     /// Whether background processing is enabled.
     #[serde(default = "default_background_enabled")]
@@ -273,6 +285,9 @@ pub struct BackgroundProcessingConfig {
     /// Whether to process state machine timeouts.
     #[serde(default = "default_enable_timeout_processing")]
     pub enable_timeout_processing: bool,
+    /// Whether to retry failed approval notifications.
+    #[serde(default = "default_enable_approval_retry")]
+    pub enable_approval_retry: bool,
     /// Namespace to scan for timeouts (required for timeout processing).
     #[serde(default)]
     pub namespace: String,
@@ -290,6 +305,7 @@ impl Default for BackgroundProcessingConfig {
             cleanup_interval_seconds: default_cleanup_interval_bg(),
             enable_group_flush: default_enable_group_flush(),
             enable_timeout_processing: default_enable_timeout_processing(),
+            enable_approval_retry: default_enable_approval_retry(),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -317,5 +333,9 @@ fn default_enable_group_flush() -> bool {
 }
 
 fn default_enable_timeout_processing() -> bool {
+    true
+}
+
+fn default_enable_approval_retry() -> bool {
     true
 }

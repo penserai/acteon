@@ -33,6 +33,8 @@ pub struct GatewayBuilder {
     dlq_enabled: bool,
     state_machines: HashMap<String, StateMachineConfig>,
     group_manager: Option<Arc<GroupManager>>,
+    external_url: Option<String>,
+    approval_secret: Option<Vec<u8>>,
 }
 
 impl GatewayBuilder {
@@ -52,6 +54,8 @@ impl GatewayBuilder {
             dlq_enabled: false,
             state_machines: HashMap::new(),
             group_manager: None,
+            external_url: None,
+            approval_secret: None,
         }
     }
 
@@ -158,6 +162,26 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the external URL for building approval links.
+    ///
+    /// This URL is used to construct approve/reject URLs in approval
+    /// notifications. If not set, defaults to `http://localhost:8080`.
+    #[must_use]
+    pub fn external_url(mut self, url: impl Into<String>) -> Self {
+        self.external_url = Some(url.into());
+        self
+    }
+
+    /// Set the HMAC secret used to sign approval URLs.
+    ///
+    /// If not set, a random 32-byte secret is generated automatically.
+    /// Pass a stable secret for approval URLs that survive server restarts.
+    #[must_use]
+    pub fn approval_secret(mut self, secret: impl Into<Vec<u8>>) -> Self {
+        self.approval_secret = Some(secret.into());
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -192,6 +216,16 @@ impl GatewayBuilder {
             .group_manager
             .unwrap_or_else(|| Arc::new(GroupManager::new()));
 
+        // Use provided approval secret or generate a random one from UUIDs.
+        let approval_secret = self.approval_secret.unwrap_or_else(|| {
+            let a = uuid::Uuid::new_v4();
+            let b = uuid::Uuid::new_v4();
+            let mut secret = Vec::with_capacity(32);
+            secret.extend_from_slice(a.as_bytes());
+            secret.extend_from_slice(b.as_bytes());
+            secret
+        });
+
         Ok(Gateway {
             state,
             lock,
@@ -207,6 +241,8 @@ impl GatewayBuilder {
             dlq,
             state_machines: self.state_machines,
             group_manager,
+            external_url: self.external_url,
+            approval_secret,
         })
     }
 }
