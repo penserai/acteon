@@ -30,6 +30,9 @@ members = [
     "crates/rules/yaml",
     "crates/rules/cel",
 
+    # LLM
+    "crates/llm",
+
     # Integrations
     "crates/integrations/email",
     "crates/integrations/slack",
@@ -71,6 +74,9 @@ acteon-audit-elasticsearch = { path = "crates/audit/elasticsearch" }
 acteon-rules = { path = "crates/rules/rules" }
 acteon-rules-yaml = { path = "crates/rules/yaml" }
 acteon-rules-cel = { path = "crates/rules/cel" }
+
+# LLM
+acteon-llm = { path = "crates/llm" }
 
 # Integrations
 acteon-email = { path = "crates/integrations/email" }

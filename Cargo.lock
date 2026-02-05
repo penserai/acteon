@@ -151,6 +151,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-llm"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "acteon-provider"
 version = "0.1.0"
 dependencies = [
