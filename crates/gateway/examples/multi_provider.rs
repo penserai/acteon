@@ -165,5 +165,10 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
             expires_at,
             ..
         } => format!("PendingApproval (id: {approval_id}, expires: {expires_at})"),
+        ActionOutcome::ChainStarted {
+            chain_id,
+            chain_name,
+            ..
+        } => format!("ChainStarted (id: {chain_id}, chain: {chain_name})"),
     }
 }

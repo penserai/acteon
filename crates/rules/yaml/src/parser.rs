@@ -201,6 +201,11 @@ pub enum YamlAction {
         /// Optional message to include in the approval notification.
         message: Option<String>,
     },
+    /// Execute action through a task chain.
+    Chain {
+        /// Name of the chain configuration to use.
+        chain: String,
+    },
 }
 
 #[cfg(test)]

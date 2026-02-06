@@ -291,6 +291,9 @@ fn compile_action(action: &YamlAction) -> RuleAction {
             timeout_seconds: *timeout_seconds,
             message: message.clone(),
         },
+        YamlAction::Chain { chain } => RuleAction::Chain {
+            chain: chain.clone(),
+        },
     }
 }
 

@@ -781,6 +781,13 @@ pub enum RuleVerdict {
         /// Optional message to include in the approval notification.
         message: Option<String>,
     },
+    /// Execute action as the first step of a named task chain.
+    Chain {
+        /// Name of the rule that triggered the chain.
+        rule: String,
+        /// Name of the chain configuration to use.
+        chain: String,
+    },
 }
 
 impl RuleVerdict {
@@ -797,7 +804,8 @@ impl RuleVerdict {
             | Self::Modify { rule, .. }
             | Self::StateMachine { rule, .. }
             | Self::Group { rule, .. }
-            | Self::RequestApproval { rule, .. } => Some(rule),
+            | Self::RequestApproval { rule, .. }
+            | Self::Chain { rule, .. } => Some(rule),
         }
     }
 }
@@ -1012,6 +1020,10 @@ fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVerdict {
             notify_provider: notify_provider.clone(),
             timeout_seconds: *timeout_seconds,
             message: message.clone(),
+        },
+        RuleAction::Chain { chain } => RuleVerdict::Chain {
+            rule: rule_name.to_owned(),
+            chain: chain.clone(),
         },
     }
 }
@@ -2146,6 +2158,41 @@ mod tests {
             .rule_name(),
             Some("approval-rule")
         );
+    }
+
+    #[test]
+    fn rule_verdict_chain() {
+        let verdict = RuleVerdict::Chain {
+            rule: "chain-rule".into(),
+            chain: "my-chain".into(),
+        };
+        assert_eq!(verdict.rule_name(), Some("chain-rule"));
+    }
+
+    #[tokio::test]
+    async fn engine_chain_verdict() {
+        let rule = Rule::new(
+            "start-chain",
+            Expr::Bool(true),
+            RuleAction::Chain {
+                chain: "search-summarize".into(),
+            },
+        );
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = test_context(&action, &store, &env);
+
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        match verdict {
+            RuleVerdict::Chain { rule, chain } => {
+                assert_eq!(rule, "start-chain");
+                assert_eq!(chain, "search-summarize");
+            }
+            other => panic!("expected Chain, got {other:?}"),
+        }
     }
 
     #[test]

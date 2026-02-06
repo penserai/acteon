@@ -44,6 +44,18 @@ pub struct MetricsResponse {
     /// LLM guardrail evaluation errors.
     #[schema(example = 0)]
     pub llm_guardrail_errors: u64,
+    /// Task chains started.
+    #[schema(example = 0)]
+    pub chains_started: u64,
+    /// Task chains completed successfully.
+    #[schema(example = 0)]
+    pub chains_completed: u64,
+    /// Task chains failed.
+    #[schema(example = 0)]
+    pub chains_failed: u64,
+    /// Task chains cancelled.
+    #[schema(example = 0)]
+    pub chains_cancelled: u64,
 }
 
 /// Summary of a loaded rule.

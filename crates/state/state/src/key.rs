@@ -26,6 +26,10 @@ pub enum KeyKind {
     Approval,
     /// Index of pending approvals by action ID.
     PendingApprovals,
+    /// Task chain execution state.
+    Chain,
+    /// Index of pending chain steps awaiting advancement.
+    PendingChains,
     Custom(String),
 }
 
@@ -47,6 +51,8 @@ impl KeyKind {
             Self::ActiveEvents => "active_events",
             Self::Approval => "approval",
             Self::PendingApprovals => "pending_approvals",
+            Self::Chain => "chain",
+            Self::PendingChains => "pending_chains",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -130,6 +136,8 @@ mod tests {
         assert_eq!(KeyKind::ActiveEvents.as_str(), "active_events");
         assert_eq!(KeyKind::Approval.as_str(), "approval");
         assert_eq!(KeyKind::PendingApprovals.as_str(), "pending_approvals");
+        assert_eq!(KeyKind::Chain.as_str(), "chain");
+        assert_eq!(KeyKind::PendingChains.as_str(), "pending_chains");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

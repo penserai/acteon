@@ -71,6 +71,11 @@ pub enum RuleAction {
         /// Optional message to include in the approval notification.
         message: Option<String>,
     },
+    /// Execute action as the first step of a named task chain.
+    Chain {
+        /// Name of the chain configuration to use.
+        chain: String,
+    },
 }
 
 /// Where a rule was loaded from.
@@ -256,6 +261,9 @@ mod tests {
                 notify_provider: "email".into(),
                 timeout_seconds: 86400,
                 message: Some("Requires approval".into()),
+            },
+            RuleAction::Chain {
+                chain: "search-summarize-email".into(),
             },
         ];
 

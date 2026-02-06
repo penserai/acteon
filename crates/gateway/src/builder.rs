@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use acteon_audit::store::AuditStore;
-use acteon_core::StateMachineConfig;
+use acteon_core::{ChainConfig, StateMachineConfig};
 use acteon_executor::{DeadLetterQueue, DeadLetterSink, ExecutorConfig};
 use acteon_provider::{DynProvider, ProviderRegistry};
 use acteon_rules::{Rule, RuleEngine};
@@ -42,6 +43,8 @@ pub struct GatewayBuilder {
     llm_policy: String,
     llm_policies: HashMap<String, String>,
     llm_fail_open: bool,
+    chains: HashMap<String, ChainConfig>,
+    completed_chain_ttl: Option<Duration>,
 }
 
 impl GatewayBuilder {
@@ -68,6 +71,8 @@ impl GatewayBuilder {
             llm_policy: String::new(),
             llm_policies: HashMap::new(),
             llm_fail_open: true,
+            chains: HashMap::new(),
+            completed_chain_ttl: None,
         }
     }
 
@@ -246,6 +251,24 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a task chain configuration.
+    #[must_use]
+    pub fn chain(mut self, config: ChainConfig) -> Self {
+        self.chains.insert(config.name.clone(), config);
+        self
+    }
+
+    /// Set the TTL for completed/failed/cancelled chain state records.
+    ///
+    /// After a chain reaches a terminal status, its state record is kept for
+    /// this duration for audit purposes. If not set, terminal chain state
+    /// persists indefinitely.
+    #[must_use]
+    pub fn completed_chain_ttl(mut self, ttl: Duration) -> Self {
+        self.completed_chain_ttl = Some(ttl);
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -315,6 +338,8 @@ impl GatewayBuilder {
             llm_policy: self.llm_policy,
             llm_policies: self.llm_policies,
             llm_fail_open: self.llm_fail_open,
+            chains: self.chains,
+            completed_chain_ttl: self.completed_chain_ttl,
         })
     }
 }

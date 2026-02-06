@@ -1,5 +1,6 @@
 pub mod background;
 pub mod builder;
+pub mod chain;
 pub mod error;
 pub mod gateway;
 pub mod group_manager;
@@ -9,7 +10,7 @@ pub mod watcher;
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};
 pub use background::{
     ApprovalRetryEvent, BackgroundConfig, BackgroundProcessor, BackgroundProcessorBuilder,
-    GroupFlushEvent, TimeoutEvent,
+    ChainAdvanceEvent, GroupFlushEvent, TimeoutEvent,
 };
 pub use builder::GatewayBuilder;
 pub use error::GatewayError;

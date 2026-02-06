@@ -34,4 +34,8 @@ pub enum GatewayError {
     /// The approval has already been approved or rejected.
     #[error("approval already decided: {0}")]
     ApprovalAlreadyDecided(String),
+
+    /// An error occurred during chain execution.
+    #[error("chain error: {0}")]
+    ChainError(String),
 }

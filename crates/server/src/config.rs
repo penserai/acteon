@@ -32,6 +32,9 @@ pub struct ActeonConfig {
     /// LLM guardrail configuration.
     #[serde(default)]
     pub llm_guardrail: LlmGuardrailServerConfig,
+    /// Task chain definitions.
+    #[serde(default)]
+    pub chains: ChainsConfig,
 }
 
 /// Configuration for the state store backend.
@@ -424,4 +427,80 @@ fn default_llm_model() -> String {
 
 fn default_llm_fail_open() -> bool {
     true
+}
+
+/// Configuration for task chain definitions.
+#[derive(Debug, Deserialize)]
+pub struct ChainsConfig {
+    /// List of chain definitions.
+    #[serde(default)]
+    pub definitions: Vec<ChainConfigToml>,
+    /// Maximum number of chain steps advancing concurrently.
+    #[serde(default = "default_max_concurrent_advances")]
+    pub max_concurrent_advances: usize,
+    /// TTL in seconds for completed/failed/cancelled chain state records.
+    ///
+    /// After a chain reaches a terminal status, the state record is kept for
+    /// this duration for audit purposes before expiring. Defaults to 7 days.
+    #[serde(default = "default_completed_chain_ttl")]
+    pub completed_chain_ttl_seconds: u64,
+}
+
+impl Default for ChainsConfig {
+    fn default() -> Self {
+        Self {
+            definitions: Vec::new(),
+            max_concurrent_advances: default_max_concurrent_advances(),
+            completed_chain_ttl_seconds: default_completed_chain_ttl(),
+        }
+    }
+}
+
+fn default_max_concurrent_advances() -> usize {
+    16
+}
+
+fn default_completed_chain_ttl() -> u64 {
+    604_800 // 7 days
+}
+
+/// A single chain definition loaded from TOML.
+#[derive(Debug, Deserialize)]
+pub struct ChainConfigToml {
+    /// Unique name for the chain.
+    pub name: String,
+    /// Ordered steps in the chain.
+    pub steps: Vec<ChainStepConfigToml>,
+    /// Failure policy: `"abort"` (default) or `"abort_no_dlq"`.
+    pub on_failure: Option<String>,
+    /// Optional timeout in seconds for the entire chain.
+    pub timeout_seconds: Option<u64>,
+    /// Optional notification target dispatched when the chain is cancelled.
+    pub on_cancel: Option<ChainNotificationTargetToml>,
+}
+
+/// Notification target for chain cancellation events (TOML representation).
+#[derive(Debug, Deserialize)]
+pub struct ChainNotificationTargetToml {
+    /// Provider to dispatch the notification through.
+    pub provider: String,
+    /// Action type for the notification action.
+    pub action_type: String,
+}
+
+/// A single step in a chain definition loaded from TOML.
+#[derive(Debug, Deserialize)]
+pub struct ChainStepConfigToml {
+    /// Step name (used for `{{steps.NAME.*}}` template references).
+    pub name: String,
+    /// Provider to execute this step with.
+    pub provider: String,
+    /// Action type for the synthetic action.
+    pub action_type: String,
+    /// JSON payload template with `{{...}}` placeholders.
+    pub payload_template: serde_json::Value,
+    /// Per-step failure policy override: `"abort"`, `"skip"`, or `"dlq"`.
+    pub on_failure: Option<String>,
+    /// Optional delay in seconds before executing this step.
+    pub delay_seconds: Option<u64>,
 }

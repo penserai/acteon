@@ -53,6 +53,11 @@ impl RuleAction {
         matches!(self, Self::RequestApproval { .. })
     }
 
+    /// Returns `true` if this action triggers a task chain.
+    pub fn is_chain(&self) -> bool {
+        matches!(self, Self::Chain { .. })
+    }
+
     /// Returns a human-readable label for the action kind.
     pub fn kind_label(&self) -> &'static str {
         match self {
@@ -67,6 +72,7 @@ impl RuleAction {
             Self::StateMachine { .. } => "state_machine",
             Self::Group { .. } => "group",
             Self::RequestApproval { .. } => "request_approval",
+            Self::Chain { .. } => "chain",
         }
     }
 }
@@ -163,6 +169,16 @@ mod tests {
             .kind_label(),
             "group"
         );
+    }
+
+    #[test]
+    fn chain_predicates() {
+        let chain = RuleAction::Chain {
+            chain: "my-chain".into(),
+        };
+        assert!(chain.is_chain());
+        assert!(!chain.is_allow());
+        assert_eq!(chain.kind_label(), "chain");
     }
 
     #[test]

@@ -28,6 +28,14 @@ pub struct GatewayMetrics {
     pub llm_guardrail_denied: AtomicU64,
     /// LLM guardrail evaluation errors.
     pub llm_guardrail_errors: AtomicU64,
+    /// Task chains started.
+    pub chains_started: AtomicU64,
+    /// Task chains completed successfully.
+    pub chains_completed: AtomicU64,
+    /// Task chains failed.
+    pub chains_failed: AtomicU64,
+    /// Task chains cancelled.
+    pub chains_cancelled: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -86,6 +94,26 @@ impl GatewayMetrics {
         self.llm_guardrail_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the chains started counter.
+    pub fn increment_chains_started(&self) {
+        self.chains_started.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the chains completed counter.
+    pub fn increment_chains_completed(&self) {
+        self.chains_completed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the chains failed counter.
+    pub fn increment_chains_failed(&self) {
+        self.chains_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the chains cancelled counter.
+    pub fn increment_chains_cancelled(&self) {
+        self.chains_cancelled.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -100,6 +128,10 @@ impl GatewayMetrics {
             llm_guardrail_allowed: self.llm_guardrail_allowed.load(Ordering::Relaxed),
             llm_guardrail_denied: self.llm_guardrail_denied.load(Ordering::Relaxed),
             llm_guardrail_errors: self.llm_guardrail_errors.load(Ordering::Relaxed),
+            chains_started: self.chains_started.load(Ordering::Relaxed),
+            chains_completed: self.chains_completed.load(Ordering::Relaxed),
+            chains_failed: self.chains_failed.load(Ordering::Relaxed),
+            chains_cancelled: self.chains_cancelled.load(Ordering::Relaxed),
         }
     }
 }
@@ -129,6 +161,14 @@ pub struct MetricsSnapshot {
     pub llm_guardrail_denied: u64,
     /// LLM guardrail evaluation errors.
     pub llm_guardrail_errors: u64,
+    /// Task chains started.
+    pub chains_started: u64,
+    /// Task chains completed successfully.
+    pub chains_completed: u64,
+    /// Task chains failed.
+    pub chains_failed: u64,
+    /// Task chains cancelled.
+    pub chains_cancelled: u64,
 }
 
 #[cfg(test)]
@@ -150,6 +190,10 @@ mod tests {
         assert_eq!(snap.llm_guardrail_allowed, 0);
         assert_eq!(snap.llm_guardrail_denied, 0);
         assert_eq!(snap.llm_guardrail_errors, 0);
+        assert_eq!(snap.chains_started, 0);
+        assert_eq!(snap.chains_completed, 0);
+        assert_eq!(snap.chains_failed, 0);
+        assert_eq!(snap.chains_cancelled, 0);
     }
 
     #[test]
@@ -167,6 +211,10 @@ mod tests {
         m.increment_llm_guardrail_allowed();
         m.increment_llm_guardrail_denied();
         m.increment_llm_guardrail_errors();
+        m.increment_chains_started();
+        m.increment_chains_completed();
+        m.increment_chains_failed();
+        m.increment_chains_cancelled();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -180,5 +228,9 @@ mod tests {
         assert_eq!(snap.llm_guardrail_allowed, 1);
         assert_eq!(snap.llm_guardrail_denied, 1);
         assert_eq!(snap.llm_guardrail_errors, 1);
+        assert_eq!(snap.chains_started, 1);
+        assert_eq!(snap.chains_completed, 1);
+        assert_eq!(snap.chains_failed, 1);
+        assert_eq!(snap.chains_cancelled, 1);
     }
 }

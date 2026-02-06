@@ -155,6 +155,35 @@ impl SideEffectAssertions {
         );
     }
 
+    /// Assert that an outcome matches the `ChainStarted` variant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `ChainStarted`.
+    pub fn assert_chain_started(outcome: &ActionOutcome) {
+        assert!(
+            matches!(outcome, ActionOutcome::ChainStarted { .. }),
+            "expected ChainStarted, got {outcome:?}"
+        );
+    }
+
+    /// Assert that a chain was started with a specific chain name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `ChainStarted` or the chain name doesn't match.
+    pub fn assert_chain_started_with_name(outcome: &ActionOutcome, expected_name: &str) {
+        match outcome {
+            ActionOutcome::ChainStarted { chain_name, .. } => {
+                assert_eq!(
+                    chain_name, expected_name,
+                    "expected chain name '{expected_name}', got '{chain_name}'"
+                );
+            }
+            _ => panic!("expected ChainStarted, got {outcome:?}"),
+        }
+    }
+
     /// Assert that a state transition occurred to a specific state.
     ///
     /// # Panics
@@ -283,6 +312,9 @@ pub trait ActionOutcomeExt {
     /// Assert this outcome is `StateChanged`.
     fn assert_state_changed(&self);
 
+    /// Assert this outcome is `ChainStarted`.
+    fn assert_chain_started(&self);
+
     /// Check if this outcome is `Executed`.
     fn is_executed(&self) -> bool;
 
@@ -306,6 +338,9 @@ pub trait ActionOutcomeExt {
 
     /// Check if this outcome is `StateChanged`.
     fn is_state_changed(&self) -> bool;
+
+    /// Check if this outcome is `ChainStarted`.
+    fn is_chain_started(&self) -> bool;
 }
 
 impl ActionOutcomeExt for ActionOutcome {
@@ -341,6 +376,10 @@ impl ActionOutcomeExt for ActionOutcome {
         SideEffectAssertions::assert_state_changed(self);
     }
 
+    fn assert_chain_started(&self) {
+        SideEffectAssertions::assert_chain_started(self);
+    }
+
     fn is_executed(&self) -> bool {
         matches!(self, ActionOutcome::Executed(_))
     }
@@ -371,6 +410,10 @@ impl ActionOutcomeExt for ActionOutcome {
 
     fn is_state_changed(&self) -> bool {
         matches!(self, ActionOutcome::StateChanged { .. })
+    }
+
+    fn is_chain_started(&self) -> bool {
+        matches!(self, ActionOutcome::ChainStarted { .. })
     }
 }
 
@@ -575,5 +618,52 @@ mod tests {
         };
         assert!(state_changed.is_state_changed());
         assert!(!state_changed.is_executed());
+    }
+
+    #[test]
+    fn assert_chain_started_passes() {
+        let outcome = ActionOutcome::ChainStarted {
+            chain_id: "chain-123".into(),
+            chain_name: "search-summarize-email".into(),
+            total_steps: 3,
+            first_step: "search".into(),
+        };
+        SideEffectAssertions::assert_chain_started(&outcome);
+        outcome.assert_chain_started();
+    }
+
+    #[test]
+    fn assert_chain_started_with_name_passes() {
+        let outcome = ActionOutcome::ChainStarted {
+            chain_id: "chain-123".into(),
+            chain_name: "search-summarize-email".into(),
+            total_steps: 3,
+            first_step: "search".into(),
+        };
+        SideEffectAssertions::assert_chain_started_with_name(&outcome, "search-summarize-email");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected chain name 'other-chain'")]
+    fn assert_chain_started_with_name_fails_on_wrong_name() {
+        let outcome = ActionOutcome::ChainStarted {
+            chain_id: "chain-123".into(),
+            chain_name: "search-summarize-email".into(),
+            total_steps: 3,
+            first_step: "search".into(),
+        };
+        SideEffectAssertions::assert_chain_started_with_name(&outcome, "other-chain");
+    }
+
+    #[test]
+    fn is_chain_started_works() {
+        let chain_started = ActionOutcome::ChainStarted {
+            chain_id: "chain-123".into(),
+            chain_name: "search-summarize-email".into(),
+            total_steps: 3,
+            first_step: "search".into(),
+        };
+        assert!(chain_started.is_chain_started());
+        assert!(!chain_started.is_executed());
     }
 }

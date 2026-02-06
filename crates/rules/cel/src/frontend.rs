@@ -79,6 +79,11 @@ enum CelAction {
         /// JSON value describing the modifications.
         changes: serde_json::Value,
     },
+    /// Execute action through a task chain.
+    Chain {
+        /// Name of the chain configuration to use.
+        chain: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +169,9 @@ fn compile_action(action: &CelAction) -> RuleAction {
         },
         CelAction::Modify { changes } => RuleAction::Modify {
             changes: changes.clone(),
+        },
+        CelAction::Chain { chain } => RuleAction::Chain {
+            chain: chain.clone(),
         },
     }
 }

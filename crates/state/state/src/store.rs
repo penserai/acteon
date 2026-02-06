@@ -104,4 +104,30 @@ pub trait StateStore: Send + Sync {
     /// Returns a list of canonical key strings. This is O(log N + M) where M is
     /// the number of expired keys, compared to O(N) for scanning all timeouts.
     async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError>;
+
+    /// Add a chain to the ready index with a `ready_at` timestamp (ms).
+    ///
+    /// Chains with `ready_at <= now` will be returned by [`get_ready_chains`].
+    async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
+        let _ = (key, ready_at_ms);
+        Ok(())
+    }
+
+    /// Remove a chain from the ready index.
+    async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let _ = key;
+        Ok(())
+    }
+
+    /// Get all chains that are ready for advancement (`ready_at <= now_ms`).
+    ///
+    /// Returns canonical key strings. The default implementation falls back to
+    /// [`scan_keys_by_kind`] with `PendingChains` (O(N)).
+    async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let _ = now_ms;
+        let entries = self
+            .scan_keys_by_kind(crate::key::KeyKind::PendingChains)
+            .await?;
+        Ok(entries.into_iter().map(|(k, _)| k).collect())
+    }
 }

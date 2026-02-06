@@ -8,6 +8,9 @@ use acteon_core::{
 use super::approvals::{
     ApprovalActionResponse, ApprovalQueryParams, ApprovalStatusResponse, ListApprovalsResponse,
 };
+use super::chains::{
+    ChainCancelRequest, ChainDetailResponse, ChainStepStatus, ChainSummary, ListChainsResponse,
+};
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
 use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
@@ -34,7 +37,8 @@ use super::schemas::{
         (name = "DLQ", description = "Dead-letter queue for failed actions"),
         (name = "Events", description = "Event lifecycle state management"),
         (name = "Groups", description = "Event group management for batched notifications"),
-        (name = "Approvals", description = "Human-in-the-loop approval workflow")
+        (name = "Approvals", description = "Human-in-the-loop approval workflow"),
+        (name = "Chains", description = "Task chain orchestration")
     ),
     paths(
         super::health::health,
@@ -58,6 +62,9 @@ use super::schemas::{
         super::approvals::reject,
         super::approvals::get_approval,
         super::approvals::list_approvals,
+        super::chains::list_chains,
+        super::chains::get_chain,
+        super::chains::cancel_chain,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -70,6 +77,7 @@ use super::schemas::{
         EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
         GroupSummary, ListGroupsResponse, GroupDetailResponse, FlushGroupResponse,
         ApprovalActionResponse, ApprovalStatusResponse, ApprovalQueryParams, ListApprovalsResponse,
+        ChainSummary, ListChainsResponse, ChainDetailResponse, ChainStepStatus, ChainCancelRequest,
     ))
 )]
 pub struct ApiDoc;

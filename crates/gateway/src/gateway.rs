@@ -10,7 +10,10 @@ use tracing::{debug, error, info, instrument, warn};
 
 use acteon_audit::AuditRecord;
 use acteon_audit::store::AuditStore;
-use acteon_core::{Action, ActionOutcome, Caller, StateMachineConfig, compute_fingerprint};
+use acteon_core::{
+    Action, ActionOutcome, Caller, ChainConfig, ChainState, ChainStatus, StateMachineConfig,
+    StepResult, compute_fingerprint,
+};
 use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
 use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
@@ -150,6 +153,8 @@ pub struct Gateway {
     pub(crate) llm_policy: String,
     pub(crate) llm_policies: HashMap<String, String>,
     pub(crate) llm_fail_open: bool,
+    pub(crate) chains: HashMap<String, ChainConfig>,
+    pub(crate) completed_chain_ttl: Option<Duration>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -277,6 +282,7 @@ impl Gateway {
                 )
                 .await?
             }
+            RuleVerdict::Chain { rule: _, chain } => self.handle_chain(&action, chain).await?,
         };
 
         // 5. Emit audit record (tracked async task for graceful shutdown).
@@ -988,6 +994,584 @@ impl Gateway {
         })
     }
 
+    /// Handle the chain verdict: create chain state and start async execution.
+    async fn handle_chain(
+        &self,
+        action: &Action,
+        chain_name: &str,
+    ) -> Result<ActionOutcome, GatewayError> {
+        let chain_config = self.chains.get(chain_name).ok_or_else(|| {
+            GatewayError::ChainError(format!("chain configuration not found: {chain_name}"))
+        })?;
+
+        if chain_config.steps.is_empty() {
+            return Err(GatewayError::ChainError(format!(
+                "chain '{chain_name}' has no steps"
+            )));
+        }
+
+        let chain_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let total_steps = chain_config.steps.len();
+        let first_step = chain_config.steps[0].name.clone();
+
+        #[allow(clippy::cast_possible_wrap)]
+        let expires_at = chain_config
+            .timeout_seconds
+            .map(|secs| now + chrono::Duration::seconds(secs as i64));
+
+        let chain_state = ChainState {
+            chain_id: chain_id.clone(),
+            chain_name: chain_name.to_owned(),
+            origin_action: action.clone(),
+            current_step: 0,
+            total_steps,
+            status: ChainStatus::Running,
+            step_results: vec![None; total_steps],
+            started_at: now,
+            updated_at: now,
+            expires_at,
+            namespace: action.namespace.to_string(),
+            tenant: action.tenant.to_string(),
+            cancel_reason: None,
+            cancelled_by: None,
+        };
+
+        // Persist chain state.
+        let chain_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::Chain,
+            &chain_id,
+        );
+        let state_json = serde_json::to_string(&chain_state).map_err(|e| {
+            GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
+        })?;
+        self.state.set(&chain_key, &state_json, None).await?;
+
+        // Add to pending chains index.
+        let pending_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::PendingChains,
+            &chain_id,
+        );
+        let pending_val = serde_json::json!({
+            "chain_id": &chain_id,
+            "chain_name": chain_name,
+            "started_at": now.to_rfc3339(),
+        });
+        self.state
+            .set(&pending_key, &pending_val.to_string(), None)
+            .await?;
+        let ready_at = chain_config.steps[0]
+            .delay_seconds
+            .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+        self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+        self.metrics.increment_chains_started();
+
+        info!(
+            chain_id = %chain_id,
+            chain_name = %chain_name,
+            total_steps = total_steps,
+            "chain execution started"
+        );
+
+        Ok(ActionOutcome::ChainStarted {
+            chain_id,
+            chain_name: chain_name.to_owned(),
+            total_steps,
+            first_step,
+        })
+    }
+
+    /// Advance a chain execution by running the next pending step.
+    ///
+    /// This method is called by the background processor to resume chain
+    /// execution after the initial dispatch or a crash.
+    #[allow(clippy::too_many_lines)]
+    pub async fn advance_chain(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+    ) -> Result<(), GatewayError> {
+        let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
+
+        // Acquire a lock to prevent concurrent advancement.
+        let lock_name = format!("chain:{chain_id}");
+        let guard = self
+            .lock
+            .acquire(&lock_name, Duration::from_secs(60), Duration::from_secs(5))
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        // Load current chain state.
+        let state_json = self.state.get(&chain_key).await?.ok_or_else(|| {
+            GatewayError::ChainError(format!("chain state not found: {chain_id}"))
+        })?;
+        let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
+            GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
+        })?;
+
+        // Remove from the ready index to prevent double-scheduling.
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
+        self.state.remove_chain_ready_index(&pending_key).await?;
+
+        // Check if chain is still running.
+        if chain_state.status != ChainStatus::Running {
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            return Ok(());
+        }
+
+        // Check timeout.
+        if let Some(expires_at) = chain_state.expires_at
+            && Utc::now() >= expires_at
+        {
+            chain_state.status = ChainStatus::TimedOut;
+            chain_state.updated_at = Utc::now();
+            self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                .await?;
+            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                .await?;
+            self.metrics.increment_chains_failed();
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            warn!(chain_id = %chain_id, "chain timed out");
+            return Ok(());
+        }
+
+        let chain_config = self.chains.get(&chain_state.chain_name).ok_or_else(|| {
+            GatewayError::ChainError(format!(
+                "chain configuration not found: {}",
+                chain_state.chain_name
+            ))
+        })?;
+
+        let step_idx = chain_state.current_step;
+        let step_config = &chain_config.steps[step_idx];
+
+        // Resolve the payload template.
+        let payload = crate::chain::resolve_template(
+            &step_config.payload_template,
+            &chain_state.origin_action,
+            &chain_state.step_results,
+            &chain_config.steps,
+            chain_id,
+            step_idx,
+        );
+
+        // Build and execute the synthetic action.
+        let step_action = Action::new(
+            namespace,
+            tenant,
+            step_config.provider.as_str(),
+            &step_config.action_type,
+            payload,
+        );
+
+        // Idempotency: ensure this step is not executed twice.
+        let step_dedup_key = StateKey::new(
+            namespace,
+            tenant,
+            KeyKind::Dedup,
+            format!("chain-step:{chain_id}:{step_idx}"),
+        );
+        let dedup_ttl = chain_state.expires_at.map_or(
+            Duration::from_secs(86400), // 24h default
+            |ea| {
+                let remaining = ea - Utc::now();
+                Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
+            },
+        );
+        let is_new = self
+            .state
+            .check_and_set(&step_dedup_key, "dispatched", Some(dedup_ttl))
+            .await?;
+
+        if !is_new {
+            // Step was previously dispatched. Reload chain state to check progress.
+            let already_advanced = if let Some(json) = self.state.get(&chain_key).await? {
+                serde_json::from_str::<ChainState>(&json)
+                    .map(|fresh| fresh.current_step > step_idx)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            if already_advanced {
+                // Result was persisted; skip gracefully.
+                debug!(
+                    chain_id = %chain_id,
+                    step_idx = step_idx,
+                    "step already completed, skipping"
+                );
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                return Ok(());
+            }
+
+            // Crash between execute and persist: mark as interrupted failure.
+            warn!(
+                chain_id = %chain_id,
+                step_idx = step_idx,
+                "step previously dispatched but not persisted, marking as failed"
+            );
+            chain_state.step_results[step_idx] = Some(StepResult {
+                step_name: step_config.name.clone(),
+                success: false,
+                response_body: None,
+                error: Some("step interrupted (duplicate dispatch detected)".to_string()),
+                completed_at: Utc::now(),
+            });
+            chain_state.status = ChainStatus::Failed;
+            chain_state.updated_at = Utc::now();
+            self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                .await?;
+            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                .await?;
+            self.metrics.increment_chains_failed();
+            let _ = self.state.delete(&step_dedup_key).await;
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            return Ok(());
+        }
+
+        let outcome = self.execute_action(&step_action).await;
+        let now = Utc::now();
+
+        match &outcome {
+            ActionOutcome::Executed(resp) => {
+                chain_state.step_results[step_idx] = Some(StepResult {
+                    step_name: step_config.name.clone(),
+                    success: true,
+                    response_body: Some(resp.body.clone()),
+                    error: None,
+                    completed_at: now,
+                });
+
+                if step_idx + 1 >= chain_state.total_steps {
+                    // Chain completed successfully.
+                    chain_state.status = ChainStatus::Completed;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                        .await?;
+                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                        .await?;
+                    self.metrics.increment_chains_completed();
+                    info!(chain_id = %chain_id, "chain completed successfully");
+                } else {
+                    // Advance to the next step.
+                    chain_state.current_step = step_idx + 1;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(&chain_key, &chain_state, None)
+                        .await?;
+                    let ready_at = chain_config.steps[step_idx + 1]
+                        .delay_seconds
+                        .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                    self.state.index_chain_ready(&pending_key, ready_at).await?;
+                }
+            }
+            ActionOutcome::Failed(err) => {
+                let step_policy = step_config
+                    .on_failure
+                    .as_ref()
+                    .unwrap_or(&acteon_core::chain::StepFailurePolicy::Abort);
+
+                chain_state.step_results[step_idx] = Some(StepResult {
+                    step_name: step_config.name.clone(),
+                    success: false,
+                    response_body: None,
+                    error: Some(err.message.clone()),
+                    completed_at: now,
+                });
+
+                match step_policy {
+                    acteon_core::chain::StepFailurePolicy::Abort => {
+                        chain_state.status = ChainStatus::Failed;
+                        chain_state.updated_at = now;
+                        self.persist_chain_state(
+                            &chain_key,
+                            &chain_state,
+                            self.completed_chain_ttl,
+                        )
+                        .await?;
+                        self.cleanup_pending_chain(namespace, tenant, chain_id)
+                            .await?;
+                        self.metrics.increment_chains_failed();
+                        warn!(
+                            chain_id = %chain_id,
+                            step = %step_config.name,
+                            "chain step failed, aborting"
+                        );
+                    }
+                    acteon_core::chain::StepFailurePolicy::Skip => {
+                        if step_idx + 1 >= chain_state.total_steps {
+                            chain_state.status = ChainStatus::Completed;
+                            chain_state.updated_at = now;
+                            self.persist_chain_state(
+                                &chain_key,
+                                &chain_state,
+                                self.completed_chain_ttl,
+                            )
+                            .await?;
+                            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                .await?;
+                            self.metrics.increment_chains_completed();
+                        } else {
+                            chain_state.current_step = step_idx + 1;
+                            chain_state.updated_at = now;
+                            self.persist_chain_state(&chain_key, &chain_state, None)
+                                .await?;
+                            let ready_at = chain_config.steps[step_idx + 1]
+                                .delay_seconds
+                                .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                            self.state.index_chain_ready(&pending_key, ready_at).await?;
+                        }
+                    }
+                    acteon_core::chain::StepFailurePolicy::Dlq => {
+                        if let Some(ref dlq) = self.dlq {
+                            dlq.push(step_action, err.message.clone(), err.attempts)
+                                .await;
+                        }
+                        chain_state.status = ChainStatus::Failed;
+                        chain_state.updated_at = now;
+                        self.persist_chain_state(
+                            &chain_key,
+                            &chain_state,
+                            self.completed_chain_ttl,
+                        )
+                        .await?;
+                        self.cleanup_pending_chain(namespace, tenant, chain_id)
+                            .await?;
+                        self.metrics.increment_chains_failed();
+                    }
+                }
+            }
+            _ => {
+                // Unexpected outcome — treat as failure.
+                chain_state.step_results[step_idx] = Some(StepResult {
+                    step_name: step_config.name.clone(),
+                    success: false,
+                    response_body: None,
+                    error: Some(format!("unexpected outcome: {outcome:?}")),
+                    completed_at: now,
+                });
+                chain_state.status = ChainStatus::Failed;
+                chain_state.updated_at = now;
+                self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                    .await?;
+                self.cleanup_pending_chain(namespace, tenant, chain_id)
+                    .await?;
+                self.metrics.increment_chains_failed();
+            }
+        }
+
+        // Clean up the dedup key after the step result has been persisted.
+        let _ = self.state.delete(&step_dedup_key).await;
+
+        guard
+            .release()
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        Ok(())
+    }
+
+    /// Persist chain state to the state store.
+    ///
+    /// When `ttl` is `Some`, the record will expire after the given duration.
+    /// Use this for terminal chain states (completed, failed, cancelled, timed out)
+    /// so they are automatically cleaned up.
+    async fn persist_chain_state(
+        &self,
+        chain_key: &StateKey,
+        chain_state: &ChainState,
+        ttl: Option<Duration>,
+    ) -> Result<(), GatewayError> {
+        let json = serde_json::to_string(chain_state).map_err(|e| {
+            GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
+        })?;
+        self.state.set(chain_key, &json, ttl).await?;
+        Ok(())
+    }
+
+    /// Remove a chain from the pending chains index.
+    async fn cleanup_pending_chain(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+    ) -> Result<(), GatewayError> {
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
+        let _ = self.state.delete(&pending_key).await;
+        let _ = self.state.remove_chain_ready_index(&pending_key).await;
+        Ok(())
+    }
+
+    /// Get the current state of a chain execution.
+    pub async fn get_chain_status(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+    ) -> Result<Option<ChainState>, GatewayError> {
+        let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
+        match self.state.get(&chain_key).await? {
+            Some(json) => {
+                let state: ChainState = serde_json::from_str(&json).map_err(|e| {
+                    GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
+                })?;
+                Ok(Some(state))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// List chain executions, optionally filtered by status.
+    pub async fn list_chains(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        status_filter: Option<&ChainStatus>,
+    ) -> Result<Vec<ChainState>, GatewayError> {
+        // Scan the pending chains index for active chains.
+        let entries = self
+            .state
+            .scan_keys(namespace, tenant, KeyKind::PendingChains, None)
+            .await?;
+
+        let mut chains = Vec::new();
+        for (_, val) in &entries {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(val)
+                && let Some(chain_id) = parsed.get("chain_id").and_then(|v| v.as_str())
+                && let Ok(Some(state)) = self.get_chain_status(namespace, tenant, chain_id).await
+                && (status_filter.is_none() || status_filter == Some(&state.status))
+            {
+                chains.push(state);
+            }
+        }
+
+        Ok(chains)
+    }
+
+    /// Cancel a running chain. Sets status to `Cancelled` and removes from pending index.
+    ///
+    /// After updating the chain state, dispatches a cancel notification through
+    /// the gateway pipeline. The notification target is taken from the chain
+    /// config's `on_cancel` field, falling back to provider `"webhook"` and
+    /// action type `"chain_cancelled"`.
+    pub async fn cancel_chain(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+        reason: Option<String>,
+        cancelled_by: Option<String>,
+    ) -> Result<ChainState, GatewayError> {
+        let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
+
+        let lock_name = format!("chain:{chain_id}");
+        let guard = self
+            .lock
+            .acquire(&lock_name, Duration::from_secs(30), Duration::from_secs(5))
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        let state_json = self
+            .state
+            .get(&chain_key)
+            .await?
+            .ok_or_else(|| GatewayError::ChainError(format!("chain not found: {chain_id}")))?;
+        let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
+            GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
+        })?;
+
+        if chain_state.status != ChainStatus::Running {
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            return Err(GatewayError::ChainError(format!(
+                "chain is not running (status: {:?})",
+                chain_state.status
+            )));
+        }
+
+        let cancelled_at = Utc::now();
+        chain_state.status = ChainStatus::Cancelled;
+        chain_state.updated_at = cancelled_at;
+        chain_state.cancel_reason.clone_from(&reason);
+        chain_state.cancelled_by.clone_from(&cancelled_by);
+        self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+            .await?;
+        self.cleanup_pending_chain(namespace, tenant, chain_id)
+            .await?;
+        self.metrics.increment_chains_cancelled();
+
+        guard
+            .release()
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        info!(chain_id = %chain_id, "chain cancelled");
+
+        // Dispatch a cancel notification through the gateway pipeline.
+        let chain_config = self.chains.get(&chain_state.chain_name);
+        let (notify_provider, notify_action_type) = chain_config
+            .and_then(|c| c.on_cancel.as_ref())
+            .map_or(("webhook", "chain_cancelled"), |t| {
+                (t.provider.as_str(), t.action_type.as_str())
+            });
+
+        let notification_payload = serde_json::json!({
+            "chain_id": chain_id,
+            "chain_name": chain_state.chain_name,
+            "cancel_reason": reason,
+            "cancelled_by": cancelled_by,
+            "current_step": chain_state.current_step,
+            "total_steps": chain_state.total_steps,
+            "cancelled_at": cancelled_at.to_rfc3339(),
+        });
+
+        let notification = Action::new(
+            namespace,
+            tenant,
+            notify_provider,
+            notify_action_type,
+            notification_payload,
+        );
+
+        match self.dispatch(notification, None).await {
+            Ok(outcome) => {
+                debug!(
+                    chain_id = %chain_id,
+                    ?outcome,
+                    "chain cancel notification dispatched"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    chain_id = %chain_id,
+                    error = %e,
+                    "failed to dispatch chain cancel notification"
+                );
+            }
+        }
+
+        Ok(chain_state)
+    }
+
     /// Execute an approved action by namespace, tenant, ID, and HMAC signature.
     ///
     /// Verifies the HMAC signature, atomically claims the approval, re-evaluates
@@ -1399,6 +1983,7 @@ fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
         RuleVerdict::StateMachine { .. } => "state_machine",
         RuleVerdict::Group { .. } => "group",
         RuleVerdict::RequestApproval { .. } => "request_approval",
+        RuleVerdict::Chain { .. } => "chain",
     }
 }
 
@@ -1413,7 +1998,8 @@ fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
         | RuleVerdict::Modify { rule, .. }
         | RuleVerdict::StateMachine { rule, .. }
         | RuleVerdict::Group { rule, .. }
-        | RuleVerdict::RequestApproval { rule, .. } => Some(rule.clone()),
+        | RuleVerdict::RequestApproval { rule, .. }
+        | RuleVerdict::Chain { rule, .. } => Some(rule.clone()),
     }
 }
 
@@ -1429,6 +2015,7 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Grouped { .. } => "grouped",
         ActionOutcome::StateChanged { .. } => "state_changed",
         ActionOutcome::PendingApproval { .. } => "pending_approval",
+        ActionOutcome::ChainStarted { .. } => "chain_started",
     }
 }
 
@@ -1506,6 +2093,17 @@ fn build_audit_record(
             "approval_id": approval_id,
             "expires_at": expires_at.to_rfc3339(),
             "notification_sent": notification_sent,
+        }),
+        ActionOutcome::ChainStarted {
+            chain_id,
+            chain_name,
+            total_steps,
+            first_step,
+        } => serde_json::json!({
+            "chain_id": chain_id,
+            "chain_name": chain_name,
+            "total_steps": total_steps,
+            "first_step": first_step,
         }),
     };
 

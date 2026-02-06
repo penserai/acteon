@@ -6,7 +6,10 @@ use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
 use tracing::info;
 
-use acteon_core::Action;
+use acteon_core::{
+    Action, ChainConfig, ChainFailurePolicy, ChainNotificationTarget, ChainStepConfig,
+    StepFailurePolicy,
+};
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
 use acteon_gateway::background::{BackgroundConfig, BackgroundProcessorBuilder};
@@ -256,6 +259,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Wire task chain definitions.
+    for chain_toml in &config.chains.definitions {
+        let on_failure = match chain_toml.on_failure.as_deref() {
+            Some("abort_no_dlq") => ChainFailurePolicy::AbortNoDlq,
+            _ => ChainFailurePolicy::Abort,
+        };
+        let mut chain_config = ChainConfig::new(&chain_toml.name).with_on_failure(on_failure);
+        if let Some(timeout) = chain_toml.timeout_seconds {
+            chain_config = chain_config.with_timeout(timeout);
+        }
+        if let Some(ref on_cancel) = chain_toml.on_cancel {
+            chain_config = chain_config.with_on_cancel(ChainNotificationTarget {
+                provider: on_cancel.provider.clone(),
+                action_type: on_cancel.action_type.clone(),
+            });
+        }
+        for step_toml in &chain_toml.steps {
+            let mut step = ChainStepConfig::new(
+                &step_toml.name,
+                &step_toml.provider,
+                &step_toml.action_type,
+                step_toml.payload_template.clone(),
+            );
+            if let Some(ref policy) = step_toml.on_failure {
+                let step_policy = match policy.as_str() {
+                    "skip" => StepFailurePolicy::Skip,
+                    "dlq" => StepFailurePolicy::Dlq,
+                    _ => StepFailurePolicy::Abort,
+                };
+                step = step.with_on_failure(step_policy);
+            }
+            if let Some(delay) = step_toml.delay_seconds {
+                step = step.with_delay(delay);
+            }
+            chain_config = chain_config.with_step(step);
+        }
+        builder = builder.chain(chain_config);
+    }
+    if !config.chains.definitions.is_empty() {
+        builder = builder.completed_chain_ttl(Duration::from_secs(
+            config.chains.completed_chain_ttl_seconds,
+        ));
+        info!(
+            count = config.chains.definitions.len(),
+            "task chains registered"
+        );
+    }
+
     if let Some(ref audit) = audit_store {
         builder = builder
             .audit(Arc::clone(audit))
@@ -345,14 +396,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enable_group_flush: config.background.enable_group_flush,
             enable_timeout_processing: config.background.enable_timeout_processing,
             enable_approval_retry: config.background.enable_approval_retry,
+            enable_chain_advancement: !config.chains.definitions.is_empty(),
+            chain_check_interval: Duration::from_secs(5),
             namespace: config.background.namespace.clone(),
             tenant: config.background.tenant.clone(),
         };
 
-        // Create channels for receiving flush, timeout, and approval retry events.
+        // Create channels for receiving flush, timeout, approval retry, and chain advance events.
         let (flush_tx, mut flush_rx) = tokio::sync::mpsc::channel(100);
         let (timeout_tx, mut timeout_rx) = tokio::sync::mpsc::channel(100);
         let (approval_retry_tx, mut approval_retry_rx) = tokio::sync::mpsc::channel(100);
+        let (chain_advance_tx, mut chain_advance_rx) = tokio::sync::mpsc::channel(100);
 
         let mut bg_builder = BackgroundProcessorBuilder::new()
             .config(bg_config)
@@ -363,6 +417,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if config.background.enable_approval_retry {
             bg_builder = bg_builder.approval_retry_channel(approval_retry_tx);
+        }
+
+        if !config.chains.definitions.is_empty() {
+            bg_builder = bg_builder.chain_advance_channel(chain_advance_tx);
         }
 
         let (mut processor, shutdown_tx) = bg_builder
@@ -540,6 +598,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 }
+            }
+        });
+
+        // Spawn consumer for chain advance events.
+        // Each advance runs in its own task, bounded by a semaphore.
+        let chain_gateway = Arc::clone(&gateway);
+        let max_concurrent = config.chains.max_concurrent_advances;
+        tokio::spawn(async move {
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+            while let Some(event) = chain_advance_rx.recv().await {
+                let permit = Arc::clone(&semaphore).acquire_owned().await;
+                let Ok(permit) = permit else {
+                    break; // semaphore closed
+                };
+                let gw = Arc::clone(&chain_gateway);
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    info!(
+                        chain_id = %event.chain_id,
+                        namespace = %event.namespace,
+                        tenant = %event.tenant,
+                        "advancing chain"
+                    );
+
+                    let gw = gw.read().await;
+                    if let Err(e) = gw
+                        .advance_chain(&event.namespace, &event.tenant, &event.chain_id)
+                        .await
+                    {
+                        tracing::error!(
+                            chain_id = %event.chain_id,
+                            error = %e,
+                            "chain advancement failed"
+                        );
+                    }
+                });
             }
         });
 

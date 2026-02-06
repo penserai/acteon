@@ -443,6 +443,55 @@ impl StateStore for RedisStateStore {
 
         Ok(clean_keys)
     }
+
+    async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let index_key = format!("{}:chain_ready_index", self.prefix);
+
+        let mut conn = self.conn().await?;
+
+        redis::cmd("ZADD")
+            .arg(&index_key)
+            .arg(ready_at_ms)
+            .arg(&canonical)
+            .query_async::<i64>(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let index_key = format!("{}:chain_ready_index", self.prefix);
+
+        let mut conn = self.conn().await?;
+
+        redis::cmd("ZREM")
+            .arg(&index_key)
+            .arg(&canonical)
+            .query_async::<i64>(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let index_key = format!("{}:chain_ready_index", self.prefix);
+
+        let mut conn = self.conn().await?;
+
+        let keys: Vec<String> = redis::cmd("ZRANGEBYSCORE")
+            .arg(&index_key)
+            .arg("-inf")
+            .arg(now_ms)
+            .query_async(&mut conn)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(keys)
+    }
 }
 
 #[cfg(all(test, feature = "integration"))]
