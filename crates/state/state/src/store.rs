@@ -107,10 +107,10 @@ pub trait StateStore: Send + Sync {
 
     /// Add a chain to the ready index with a `ready_at` timestamp (ms).
     ///
-    /// Chains with `ready_at <= now` will be returned by [`get_ready_chains`].
+    /// Chains with `ready_at <= now` will be returned by [`StateStore::get_ready_chains`].
     ///
     /// The default implementation stores the timestamp as a
-    /// `Custom("chain_ready_at")` key so that [`get_ready_chains`] can filter
+    /// `Custom("chain_ready_at")` key so that [`StateStore::get_ready_chains`] can filter
     /// by time. Backends with native sorted-set support (Memory, Redis) should
     /// override this for O(log N) performance.
     async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
@@ -126,7 +126,7 @@ pub trait StateStore: Send + Sync {
     /// Remove a chain from the ready index.
     ///
     /// The default implementation deletes the `Custom("chain_ready_at")` key
-    /// written by [`index_chain_ready`].
+    /// written by [`StateStore::index_chain_ready`].
     async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
         let ready_key = StateKey::new(
             key.namespace.clone(),
