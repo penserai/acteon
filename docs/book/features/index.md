@@ -1,0 +1,76 @@
+# Features
+
+Acteon provides a rich set of features for controlling action dispatch. Each feature is implemented as a rule action type and can be combined with any condition.
+
+## Rule-Based Processing
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+### [Deduplication](deduplication.md)
+Prevent duplicate processing using configurable keys and TTLs.
+</div>
+
+<div class="card" markdown>
+### [Suppression](suppression.md)
+Block actions matching specific conditions — spam filtering, maintenance windows, etc.
+</div>
+
+<div class="card" markdown>
+### [Throttling](throttling.md)
+Rate-limit actions per tenant, provider, or action type with automatic retry-after hints.
+</div>
+
+<div class="card" markdown>
+### [Rerouting](rerouting.md)
+Dynamically redirect actions to different providers based on priority, load, or content.
+</div>
+
+<div class="card" markdown>
+### [Payload Modification](modification.md)
+Transform action payloads before execution — redaction, enrichment, normalization.
+</div>
+
+</div>
+
+## Event Lifecycle
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+### [Event Grouping](event-grouping.md)
+Batch related events together for consolidated notifications.
+</div>
+
+<div class="card" markdown>
+### [State Machines](state-machines.md)
+Track event lifecycle through configurable states with automatic timeouts.
+</div>
+
+</div>
+
+## Advanced Features
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+### [Human Approvals](approvals.md)
+Require human approval before executing sensitive actions.
+</div>
+
+<div class="card" markdown>
+### [Task Chains](chains.md)
+Orchestrate multi-step workflows where each step feeds the next.
+</div>
+
+<div class="card" markdown>
+### [LLM Guardrails](llm-guardrails.md)
+AI-powered content evaluation and action gating.
+</div>
+
+<div class="card" markdown>
+### [Audit Trail](audit-trail.md)
+Comprehensive, searchable record of every action and its outcome.
+</div>
+
+</div>
