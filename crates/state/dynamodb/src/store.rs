@@ -638,6 +638,114 @@ impl StateStore for DynamoStateStore {
 
         Ok(results)
     }
+
+    async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let partition_key = format!("{}:chain_ready_index", self.prefix);
+        let sort_key = format!("{ready_at_ms:020}#{canonical}");
+
+        self.client
+            .put_item()
+            .table_name(&self.table_name)
+            .item("pk", AttributeValue::S(partition_key))
+            .item("sk", AttributeValue::S(sort_key))
+            .item("key", AttributeValue::S(canonical))
+            .item("ready_at_ms", AttributeValue::N(ready_at_ms.to_string()))
+            .send()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let partition_key = format!("{}:chain_ready_index", self.prefix);
+
+        // We don't know the ready_at_ms, so query for items with this key and delete them.
+        let mut exclusive_start_key = None;
+
+        loop {
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .key_condition_expression("pk = :pk")
+                .filter_expression("#key_attr = :key_val")
+                .expression_attribute_names("#key_attr", "key")
+                .expression_attribute_values(":pk", AttributeValue::S(partition_key.clone()))
+                .expression_attribute_values(":key_val", AttributeValue::S(canonical.clone()));
+
+            if let Some(start_key) = exclusive_start_key {
+                query = query.set_exclusive_start_key(Some(start_key));
+            }
+
+            let response = query
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for item in response.items() {
+                if let Some(AttributeValue::S(sk)) = item.get("sk") {
+                    self.client
+                        .delete_item()
+                        .table_name(&self.table_name)
+                        .key("pk", AttributeValue::S(partition_key.clone()))
+                        .key("sk", AttributeValue::S(sk.clone()))
+                        .send()
+                        .await
+                        .map_err(|e| StateError::Backend(e.to_string()))?;
+                }
+            }
+
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let pk = format!("{}:chain_ready_index", self.prefix);
+        let max_sk = format!("{now_ms:020}~");
+
+        let mut results = Vec::new();
+        let mut exclusive_start_key = None;
+
+        loop {
+            let mut query = self
+                .client
+                .query()
+                .table_name(&self.table_name)
+                .key_condition_expression("pk = :pk AND sk < :max_sk")
+                .expression_attribute_values(":pk", AttributeValue::S(pk.clone()))
+                .expression_attribute_values(":max_sk", AttributeValue::S(max_sk.clone()));
+
+            if let Some(start_key) = exclusive_start_key {
+                query = query.set_exclusive_start_key(Some(start_key));
+            }
+
+            let response = query
+                .send()
+                .await
+                .map_err(|e| StateError::Backend(e.to_string()))?;
+
+            for item in response.items() {
+                if let Some(AttributeValue::S(key)) = item.get("key") {
+                    results.push(key.clone());
+                }
+            }
+
+            exclusive_start_key = response.last_evaluated_key().cloned();
+            if exclusive_start_key.is_none() {
+                break;
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 /// Parse the counter value from an `UpdateItem` response.

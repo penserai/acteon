@@ -36,6 +36,11 @@ impl ClickHouseConfig {
     pub(crate) fn timeout_index_table(&self) -> String {
         format!("{}timeout_index", self.table_prefix)
     }
+
+    /// Return the chain ready index table name (`{prefix}chain_ready_index`).
+    pub(crate) fn chain_ready_index_table(&self) -> String {
+        format!("{}chain_ready_index", self.table_prefix)
+    }
 }
 
 #[cfg(test)]

@@ -40,6 +40,11 @@ impl PostgresConfig {
     pub(crate) fn timeout_index_table(&self) -> String {
         format!("{}.{}timeout_index", self.schema, self.table_prefix)
     }
+
+    /// Return the fully-qualified chain ready index table name (`schema.prefix_chain_ready_index`).
+    pub(crate) fn chain_ready_index_table(&self) -> String {
+        format!("{}.{}chain_ready_index", self.schema, self.table_prefix)
+    }
 }
 
 #[cfg(test)]

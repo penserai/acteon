@@ -55,9 +55,24 @@ pub async fn run_migrations(
         ORDER BY (expires_at_ms, key)"
     );
 
+    // Chain ready index table for efficient O(log N) queries on ready chains.
+    // Uses ReplacingMergeTree with version for upsert semantics.
+    // ORDER BY (ready_at_ms, key) allows efficient range queries.
+    let chain_ready_index_table = config.chain_ready_index_table();
+    let create_chain_ready_index = format!(
+        "CREATE TABLE IF NOT EXISTS {chain_ready_index_table} (
+            key String,
+            ready_at_ms Int64,
+            version UInt64 DEFAULT 1,
+            is_deleted UInt8 DEFAULT 0
+        ) ENGINE = ReplacingMergeTree(version)
+        ORDER BY (ready_at_ms, key)"
+    );
+
     client.query(&create_state).execute().await?;
     client.query(&create_locks).execute().await?;
     client.query(&create_timeout_index).execute().await?;
+    client.query(&create_chain_ready_index).execute().await?;
 
     Ok(())
 }

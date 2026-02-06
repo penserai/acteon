@@ -46,10 +46,28 @@ pub async fn run_migrations(pool: &PgPool, config: &PostgresConfig) -> Result<()
         config.table_prefix
     );
 
+    // Chain ready index table for efficient O(log N) queries on ready chains.
+    let chain_ready_index_table = config.chain_ready_index_table();
+    let create_chain_ready_index = format!(
+        "CREATE TABLE IF NOT EXISTS {chain_ready_index_table} (
+            key TEXT PRIMARY KEY,
+            ready_at_ms BIGINT NOT NULL
+        )"
+    );
+
+    let create_chain_ready_index_idx = format!(
+        "CREATE INDEX IF NOT EXISTS {}chain_ready_at_idx ON {chain_ready_index_table} (ready_at_ms)",
+        config.table_prefix
+    );
+
     sqlx::query(&create_state).execute(pool).await?;
     sqlx::query(&create_locks).execute(pool).await?;
     sqlx::query(&create_timeout_index).execute(pool).await?;
     sqlx::query(&create_timeout_index_idx).execute(pool).await?;
+    sqlx::query(&create_chain_ready_index).execute(pool).await?;
+    sqlx::query(&create_chain_ready_index_idx)
+        .execute(pool)
+        .await?;
 
     Ok(())
 }

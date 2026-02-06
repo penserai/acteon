@@ -66,6 +66,21 @@ struct TimeoutVersionRow {
     version: u64,
 }
 
+/// Row type used when inserting into the chain ready index table.
+#[derive(clickhouse::Row, serde::Serialize)]
+struct ChainReadyIndexRow {
+    key: String,
+    ready_at_ms: i64,
+    version: u64,
+    is_deleted: u8,
+}
+
+/// Row type used for reading version from chain ready index.
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct ChainReadyVersionRow {
+    version: u64,
+}
+
 /// `ClickHouse`-backed implementation of [`StateStore`].
 ///
 /// Uses a `ReplacingMergeTree(version)` table to emulate mutable state on top
@@ -81,6 +96,7 @@ pub struct ClickHouseStateStore {
     client: clickhouse::Client,
     state_table: String,
     timeout_index_table: String,
+    chain_ready_index_table: String,
 }
 
 impl ClickHouseStateStore {
@@ -106,6 +122,7 @@ impl ClickHouseStateStore {
             client,
             state_table: config.state_table(),
             timeout_index_table: config.timeout_index_table(),
+            chain_ready_index_table: config.chain_ready_index_table(),
         })
     }
 
@@ -129,6 +146,7 @@ impl ClickHouseStateStore {
             client,
             state_table: config.state_table(),
             timeout_index_table: config.timeout_index_table(),
+            chain_ready_index_table: config.chain_ready_index_table(),
         })
     }
 
@@ -513,6 +531,97 @@ impl StateStore for ClickHouseStateStore {
              WHERE expires_at_ms <= ? AND is_deleted = 0 \
              ORDER BY expires_at_ms",
             self.timeout_index_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(now_ms)
+            .fetch_all::<TimeoutKeyRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|r| r.key).collect())
+    }
+
+    async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+
+        let row = ChainReadyIndexRow {
+            key: canonical,
+            ready_at_ms,
+            version: 1,
+            is_deleted: 0,
+        };
+
+        let mut insert = self
+            .client
+            .insert(&self.chain_ready_index_table)
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .write(&row)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .end()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+
+        // Get current version to insert a tombstone with version + 1.
+        let query = format!(
+            "SELECT max(version) as version FROM {} FINAL WHERE key = ?",
+            self.chain_ready_index_table
+        );
+
+        let rows = self
+            .client
+            .query(&query)
+            .bind(&canonical)
+            .fetch_all::<ChainReadyVersionRow>()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        let current_version = rows.first().map_or(0, |r| r.version);
+
+        let tombstone = ChainReadyIndexRow {
+            key: canonical,
+            ready_at_ms: 0,
+            version: current_version + 1,
+            is_deleted: 1,
+        };
+
+        let mut insert = self
+            .client
+            .insert(&self.chain_ready_index_table)
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .write(&tombstone)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        insert
+            .end()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let query = format!(
+            "SELECT key FROM {} FINAL \
+             WHERE ready_at_ms <= ? AND is_deleted = 0 \
+             ORDER BY ready_at_ms",
+            self.chain_ready_index_table
         );
 
         let rows = self
