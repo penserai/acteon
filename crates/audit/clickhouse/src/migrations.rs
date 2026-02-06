@@ -55,5 +55,10 @@ pub async fn run_migrations(
         client.query(stmt).execute().await?;
     }
 
+    // Add chain_id column (idempotent).
+    let chain_id_stmt =
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS chain_id Nullable(String)");
+    client.query(&chain_id_stmt).execute().await?;
+
     Ok(())
 }

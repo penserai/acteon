@@ -11,8 +11,8 @@ use tracing::{debug, error, info, instrument, warn};
 use acteon_audit::AuditRecord;
 use acteon_audit::store::AuditStore;
 use acteon_core::{
-    Action, ActionOutcome, Caller, ChainConfig, ChainState, ChainStatus, StateMachineConfig,
-    StepResult, compute_fingerprint,
+    Action, ActionOutcome, Caller, ChainConfig, ChainState, ChainStatus, ChainStepConfig,
+    StateMachineConfig, StepResult, compute_fingerprint,
 };
 use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
 use acteon_provider::ProviderRegistry;
@@ -1139,6 +1139,7 @@ impl Gateway {
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_failed();
+            self.emit_chain_terminal_audit(&chain_state, "chain_timed_out");
             guard
                 .release()
                 .await
@@ -1239,6 +1240,18 @@ impl Gateway {
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_failed();
+            if let Some(ref sr) = chain_state.step_results[step_idx] {
+                self.emit_chain_step_audit(
+                    &chain_state,
+                    step_config,
+                    step_idx,
+                    "chain_step_failed",
+                    sr,
+                    Duration::ZERO,
+                    None,
+                );
+            }
+            self.emit_chain_terminal_audit(&chain_state, "chain_failed");
             let _ = self.state.delete(&step_dedup_key).await;
             guard
                 .release()
@@ -1247,7 +1260,10 @@ impl Gateway {
             return Ok(());
         }
 
+        let step_payload = step_action.payload.clone();
+        let step_start = std::time::Instant::now();
         let outcome = self.execute_action(&step_action).await;
+        let step_duration = step_start.elapsed();
         let now = Utc::now();
 
         match &outcome {
@@ -1269,6 +1285,19 @@ impl Gateway {
                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                         .await?;
                     self.metrics.increment_chains_completed();
+                    // #3: step success, chain completed
+                    if let Some(ref sr) = chain_state.step_results[step_idx] {
+                        self.emit_chain_step_audit(
+                            &chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_completed",
+                            sr,
+                            step_duration,
+                            Some(&step_payload),
+                        );
+                    }
+                    self.emit_chain_terminal_audit(&chain_state, "chain_completed");
                     info!(chain_id = %chain_id, "chain completed successfully");
                 } else {
                     // Advance to the next step.
@@ -1280,6 +1309,18 @@ impl Gateway {
                         .delay_seconds
                         .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
                     self.state.index_chain_ready(&pending_key, ready_at).await?;
+                    // #4: step success, more steps
+                    if let Some(ref sr) = chain_state.step_results[step_idx] {
+                        self.emit_chain_step_audit(
+                            &chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_completed",
+                            sr,
+                            step_duration,
+                            Some(&step_payload),
+                        );
+                    }
                 }
             }
             ActionOutcome::Failed(err) => {
@@ -1309,6 +1350,19 @@ impl Gateway {
                         self.cleanup_pending_chain(namespace, tenant, chain_id)
                             .await?;
                         self.metrics.increment_chains_failed();
+                        // #5: step failed, Abort
+                        if let Some(ref sr) = chain_state.step_results[step_idx] {
+                            self.emit_chain_step_audit(
+                                &chain_state,
+                                step_config,
+                                step_idx,
+                                "chain_step_failed",
+                                sr,
+                                step_duration,
+                                Some(&step_payload),
+                            );
+                        }
+                        self.emit_chain_terminal_audit(&chain_state, "chain_failed");
                         warn!(
                             chain_id = %chain_id,
                             step = %step_config.name,
@@ -1328,6 +1382,19 @@ impl Gateway {
                             self.cleanup_pending_chain(namespace, tenant, chain_id)
                                 .await?;
                             self.metrics.increment_chains_completed();
+                            // #6: step failed, Skip, chain completed
+                            if let Some(ref sr) = chain_state.step_results[step_idx] {
+                                self.emit_chain_step_audit(
+                                    &chain_state,
+                                    step_config,
+                                    step_idx,
+                                    "chain_step_skipped",
+                                    sr,
+                                    step_duration,
+                                    Some(&step_payload),
+                                );
+                            }
+                            self.emit_chain_terminal_audit(&chain_state, "chain_completed");
                         } else {
                             chain_state.current_step = step_idx + 1;
                             chain_state.updated_at = now;
@@ -1337,6 +1404,18 @@ impl Gateway {
                                 .delay_seconds
                                 .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
                             self.state.index_chain_ready(&pending_key, ready_at).await?;
+                            // #7: step failed, Skip, more steps
+                            if let Some(ref sr) = chain_state.step_results[step_idx] {
+                                self.emit_chain_step_audit(
+                                    &chain_state,
+                                    step_config,
+                                    step_idx,
+                                    "chain_step_skipped",
+                                    sr,
+                                    step_duration,
+                                    Some(&step_payload),
+                                );
+                            }
                         }
                     }
                     acteon_core::chain::StepFailurePolicy::Dlq => {
@@ -1355,6 +1434,19 @@ impl Gateway {
                         self.cleanup_pending_chain(namespace, tenant, chain_id)
                             .await?;
                         self.metrics.increment_chains_failed();
+                        // #8: step failed, Dlq
+                        if let Some(ref sr) = chain_state.step_results[step_idx] {
+                            self.emit_chain_step_audit(
+                                &chain_state,
+                                step_config,
+                                step_idx,
+                                "chain_step_failed",
+                                sr,
+                                step_duration,
+                                Some(&step_payload),
+                            );
+                        }
+                        self.emit_chain_terminal_audit(&chain_state, "chain_failed");
                     }
                 }
             }
@@ -1374,6 +1466,19 @@ impl Gateway {
                 self.cleanup_pending_chain(namespace, tenant, chain_id)
                     .await?;
                 self.metrics.increment_chains_failed();
+                // #9: unexpected outcome
+                if let Some(ref sr) = chain_state.step_results[step_idx] {
+                    self.emit_chain_step_audit(
+                        &chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_failed",
+                        sr,
+                        step_duration,
+                        Some(&step_payload),
+                    );
+                }
+                self.emit_chain_terminal_audit(&chain_state, "chain_failed");
             }
         }
 
@@ -1417,6 +1522,170 @@ impl Gateway {
         let _ = self.state.delete(&pending_key).await;
         let _ = self.state.remove_chain_ready_index(&pending_key).await;
         Ok(())
+    }
+
+    /// Emit a step-level audit record for a chain step event.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_chain_step_audit(
+        &self,
+        chain_state: &ChainState,
+        step_config: &ChainStepConfig,
+        step_idx: usize,
+        outcome: &str,
+        step_result: &StepResult,
+        step_duration: std::time::Duration,
+        step_payload: Option<&serde_json::Value>,
+    ) {
+        if let Some(ref audit) = self.audit {
+            let mut outcome_details = serde_json::json!({
+                "step_name": step_config.name,
+                "step_index": step_idx,
+                "total_steps": chain_state.total_steps,
+            });
+            if let Some(ref body) = step_result.response_body {
+                outcome_details["response_body"] = body.clone();
+            }
+            if let Some(ref err) = step_result.error {
+                outcome_details["error"] = serde_json::Value::String(err.clone());
+            }
+
+            #[allow(clippy::cast_possible_truncation)]
+            let dispatched_at = step_result.completed_at
+                - chrono::Duration::milliseconds(step_duration.as_millis() as i64);
+
+            #[allow(clippy::cast_possible_wrap)]
+            let expires_at = self
+                .audit_ttl_seconds
+                .map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
+
+            let action_payload = if self.audit_store_payload {
+                step_payload.cloned()
+            } else {
+                None
+            };
+
+            let record = AuditRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_id: chain_state.origin_action.id.to_string(),
+                chain_id: Some(chain_state.chain_id.clone()),
+                namespace: chain_state.namespace.clone(),
+                tenant: chain_state.tenant.clone(),
+                provider: step_config.provider.clone(),
+                action_type: step_config.action_type.clone(),
+                verdict: "chain".to_owned(),
+                matched_rule: None,
+                outcome: outcome.to_owned(),
+                action_payload,
+                verdict_details: serde_json::json!({}),
+                outcome_details,
+                metadata: serde_json::to_value(&chain_state.origin_action.metadata)
+                    .unwrap_or_default(),
+                dispatched_at,
+                completed_at: step_result.completed_at,
+                duration_ms: u64::try_from(step_duration.as_millis()).unwrap_or(u64::MAX),
+                expires_at,
+                caller_id: String::new(),
+                auth_method: String::new(),
+            };
+
+            let audit = Arc::clone(audit);
+            self.audit_tracker.spawn(async move {
+                if let Err(e) = audit.record(record).await {
+                    warn!(error = %e, "chain step audit recording failed");
+                }
+            });
+        }
+    }
+
+    /// Emit a terminal summary audit record for a chain lifecycle event.
+    fn emit_chain_terminal_audit(&self, chain_state: &ChainState, outcome: &str) {
+        if let Some(ref audit) = self.audit {
+            let now = Utc::now();
+
+            let step_results_json: Vec<serde_json::Value> = chain_state
+                .step_results
+                .iter()
+                .map(|sr| match sr {
+                    Some(r) => {
+                        let mut v = serde_json::json!({
+                            "step_name": r.step_name,
+                            "success": r.success,
+                            "completed_at": r.completed_at.to_rfc3339(),
+                        });
+                        if let Some(ref err) = r.error {
+                            v["error"] = serde_json::Value::String(err.clone());
+                        }
+                        v
+                    }
+                    None => serde_json::Value::Null,
+                })
+                .collect();
+
+            let status_str = match chain_state.status {
+                ChainStatus::Running => "running",
+                ChainStatus::Completed => "completed",
+                ChainStatus::Failed => "failed",
+                ChainStatus::Cancelled => "cancelled",
+                ChainStatus::TimedOut => "timed_out",
+            };
+
+            let outcome_details = serde_json::json!({
+                "chain_name": chain_state.chain_name,
+                "total_steps": chain_state.total_steps,
+                "completed_steps": chain_state.step_results.iter().filter(|r| r.is_some()).count(),
+                "current_step": chain_state.current_step,
+                "status": status_str,
+                "cancel_reason": chain_state.cancel_reason,
+                "cancelled_by": chain_state.cancelled_by,
+                "step_results": step_results_json,
+            });
+
+            #[allow(clippy::cast_possible_wrap)]
+            let expires_at = self
+                .audit_ttl_seconds
+                .map(|secs| chain_state.started_at + chrono::Duration::seconds(secs as i64));
+
+            let action_payload = if self.audit_store_payload {
+                Some(chain_state.origin_action.payload.clone())
+            } else {
+                None
+            };
+
+            let duration_ms = (now - chain_state.started_at).num_milliseconds();
+            #[allow(clippy::cast_sign_loss)]
+            let duration_ms = duration_ms.max(0) as u64;
+
+            let record = AuditRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_id: chain_state.origin_action.id.to_string(),
+                chain_id: Some(chain_state.chain_id.clone()),
+                namespace: chain_state.namespace.clone(),
+                tenant: chain_state.tenant.clone(),
+                provider: "chain".to_owned(),
+                action_type: chain_state.chain_name.clone(),
+                verdict: "chain".to_owned(),
+                matched_rule: None,
+                outcome: outcome.to_owned(),
+                action_payload,
+                verdict_details: serde_json::json!({}),
+                outcome_details,
+                metadata: serde_json::to_value(&chain_state.origin_action.metadata)
+                    .unwrap_or_default(),
+                dispatched_at: chain_state.started_at,
+                completed_at: now,
+                duration_ms,
+                expires_at,
+                caller_id: String::new(),
+                auth_method: String::new(),
+            };
+
+            let audit = Arc::clone(audit);
+            self.audit_tracker.spawn(async move {
+                if let Err(e) = audit.record(record).await {
+                    warn!(error = %e, "chain terminal audit recording failed");
+                }
+            });
+        }
     }
 
     /// Get the current state of a chain execution.
@@ -1518,6 +1787,7 @@ impl Gateway {
         self.cleanup_pending_chain(namespace, tenant, chain_id)
             .await?;
         self.metrics.increment_chains_cancelled();
+        self.emit_chain_terminal_audit(&chain_state, "chain_cancelled");
 
         guard
             .release()
@@ -2107,9 +2377,15 @@ fn build_audit_record(
         }),
     };
 
+    let chain_id = match outcome {
+        ActionOutcome::ChainStarted { chain_id, .. } => Some(chain_id.clone()),
+        _ => None,
+    };
+
     AuditRecord {
         id: uuid::Uuid::new_v4().to_string(),
         action_id: action.id.to_string(),
+        chain_id,
         namespace: action.namespace.to_string(),
         tenant: action.tenant.to_string(),
         provider: action.provider.to_string(),

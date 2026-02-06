@@ -25,6 +25,7 @@ use super::schemas::ErrorResponse;
         ("outcome" = Option<String>, Query, description = "Filter by outcome"),
         ("verdict" = Option<String>, Query, description = "Filter by verdict"),
         ("matched_rule" = Option<String>, Query, description = "Filter by matched rule name"),
+        ("chain_id" = Option<String>, Query, description = "Filter by chain execution ID"),
         ("from" = Option<String>, Query, description = "Start of time range (RFC 3339)"),
         ("to" = Option<String>, Query, description = "End of time range (RFC 3339)"),
         ("limit" = Option<u32>, Query, description = "Max records to return (default 50, max 1000)"),

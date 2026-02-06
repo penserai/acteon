@@ -67,5 +67,16 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
         sqlx::query(stmt).execute(pool).await?;
     }
 
+    // Add chain_id column (idempotent).
+    let chain_id_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS chain_id TEXT"),
+        format!(
+            "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_chain_id ON {table} (chain_id) WHERE chain_id IS NOT NULL"
+        ),
+    ];
+    for stmt in &chain_id_stmts {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
     Ok(())
 }

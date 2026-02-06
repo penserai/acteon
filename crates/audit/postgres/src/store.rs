@@ -50,17 +50,17 @@ impl AuditStore for PostgresAuditStore {
         let sql = format!(
             r"
             INSERT INTO {} (
-                id, action_id, namespace, tenant, provider, action_type,
+                id, action_id, chain_id, namespace, tenant, provider, action_type,
                 verdict, matched_rule, outcome,
                 action_payload, verdict_details, outcome_details, metadata,
                 dispatched_at, completed_at, duration_ms, expires_at,
                 caller_id, auth_method
             ) VALUES (
-                $1, $2, $3, $4, $5, $6,
-                $7, $8, $9,
-                $10, $11, $12, $13,
-                $14, $15, $16, $17,
-                $18, $19
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10,
+                $11, $12, $13, $14,
+                $15, $16, $17, $18,
+                $19, $20
             )
             ",
             self.table
@@ -72,6 +72,7 @@ impl AuditStore for PostgresAuditStore {
         sqlx::query(&sql)
             .bind(&entry.id)
             .bind(&entry.action_id)
+            .bind(&entry.chain_id)
             .bind(&entry.namespace)
             .bind(&entry.tenant)
             .bind(&entry.provider)
@@ -215,6 +216,7 @@ fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>, Option<u32>, 
         (&query.verdict, "verdict"),
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
+        (&query.chain_id, "chain_id"),
     ];
 
     for (value, col) in fields {
@@ -257,6 +259,7 @@ fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>, Option<u32>, 
 struct AuditRow {
     id: String,
     action_id: String,
+    chain_id: Option<String>,
     namespace: String,
     tenant: String,
     provider: String,
@@ -284,6 +287,7 @@ impl From<AuditRow> for AuditRecord {
         Self {
             id: row.id,
             action_id: row.action_id,
+            chain_id: row.chain_id,
             namespace: row.namespace,
             tenant: row.tenant,
             provider: row.provider,
