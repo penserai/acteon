@@ -1,0 +1,157 @@
+site_name: Acteon — Operations Manual
+site_description: Complete documentation for the Acteon action gateway
+site_url: https://penserai.github.io/acteon
+repo_url: https://github.com/penserai/acteon
+repo_name: penserai/acteon
+edit_uri: edit/main/docs/book/
+
+docs_dir: docs/book
+
+theme:
+  name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/penserai/acteon
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; 2026 Penserai Inc. — Apache 2.0 License
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - getting-started/index.md
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+    - Configuration: getting-started/configuration.md
+  - Concepts:
+    - concepts/index.md
+    - Architecture: concepts/architecture.md
+    - Actions & Outcomes: concepts/actions.md
+    - The Dispatch Pipeline: concepts/pipeline.md
+    - Rule System: concepts/rules.md
+    - Providers: concepts/providers.md
+  - Features:
+    - features/index.md
+    - Deduplication: features/deduplication.md
+    - Suppression: features/suppression.md
+    - Throttling: features/throttling.md
+    - Rerouting: features/rerouting.md
+    - Payload Modification: features/modification.md
+    - Event Grouping: features/event-grouping.md
+    - State Machines: features/state-machines.md
+    - Human Approvals: features/approvals.md
+    - Task Chains: features/chains.md
+    - LLM Guardrails: features/llm-guardrails.md
+    - Audit Trail: features/audit-trail.md
+  - Backends:
+    - backends/index.md
+    - State Backends: backends/state-backends.md
+    - Memory: backends/memory.md
+    - Redis: backends/redis.md
+    - PostgreSQL: backends/postgres.md
+    - DynamoDB: backends/dynamodb.md
+    - ClickHouse: backends/clickhouse-state.md
+    - Audit Backends: backends/audit-backends.md
+    - PostgreSQL Audit: backends/postgres-audit.md
+    - ClickHouse Audit: backends/clickhouse-audit.md
+    - Elasticsearch Audit: backends/elasticsearch-audit.md
+  - API Reference:
+    - api/index.md
+    - REST API: api/rest-api.md
+    - Rust Client: api/rust-client.md
+    - Polyglot Clients: api/polyglot-clients.md
+    - YAML Rule Reference: api/rule-reference.md
+    - Authentication: api/authentication.md
+  - Examples:
+    - examples/index.md
+    - Basic Usage: examples/basic-usage.md
+    - Advanced Patterns: examples/advanced-patterns.md
+    - Simulation & Testing: examples/simulation.md
+  - Reference:
+    - reference/index.md
+    - Type Reference: reference/types.md
+    - Error Handling: reference/errors.md
+    - Performance Guide: reference/performance.md
+    - Deployment: reference/deployment.md
