@@ -155,6 +155,40 @@ rules:
       type: suppress
 "#;
 
+/// PagerDuty escalation with grouping: critical → PagerDuty immediately,
+/// warning/error → grouped before sending to Slack
+const PAGERDUTY_ESCALATION_RULES: &str = r#"
+rules:
+  # Critical alerts escalate to PagerDuty immediately (no grouping)
+  - name: pagerduty-critical-escalation
+    priority: 1
+    condition:
+      all:
+        - field: action.action_type
+          eq: incident
+        - field: action.payload.severity
+          eq: critical
+    action:
+      type: reroute
+      target_provider: pagerduty
+
+  # Non-critical incidents get grouped by service before alerting
+  - name: group-incidents-by-service
+    priority: 10
+    condition:
+      field: action.action_type
+      eq: incident
+    action:
+      type: group
+      group_by:
+        - tenant
+        - payload.service
+        - payload.severity
+      group_wait_seconds: 45
+      group_interval_seconds: 300
+      max_group_size: 25
+"#;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔══════════════════════════════════════════════════════════════╗");
@@ -637,10 +671,102 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n✓ Simulation cluster shut down\n");
 
     // =========================================================================
-    // SCENARIO 9: High Volume Batch
+    // SCENARIO 9: PagerDuty Escalation with Grouping
     // =========================================================================
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 9: HIGH VOLUME BATCH (GROUPED vs NON-GROUPED)");
+    println!("  SCENARIO 9: PAGERDUTY ESCALATION + GROUPING");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    let harness = SimulationHarness::start(
+        SimulationConfig::builder()
+            .nodes(1)
+            .add_recording_provider("slack")
+            .add_recording_provider("pagerduty")
+            .add_rule_yaml(PAGERDUTY_ESCALATION_RULES)
+            .build(),
+    )
+    .await?;
+
+    println!("✓ Started with PAGERDUTY escalation + grouping rules:");
+    println!("  - Critical incidents → PagerDuty (immediate)");
+    println!("  - Non-critical incidents → grouped by service/severity\n");
+
+    // Critical incident - escalated to PagerDuty immediately
+    let critical = Action::new(
+        "monitoring",
+        "acme",
+        "slack",
+        "incident",
+        serde_json::json!({
+            "service": "payment-api",
+            "severity": "critical",
+            "message": "Payment processing completely down",
+        }),
+    );
+
+    println!("→ CRITICAL incident (payment-api): should escalate to PagerDuty");
+    let outcome = harness.dispatch(&critical).await?;
+    println!("  Outcome: {:?}", outcome);
+
+    // Warning incidents from same service - should be grouped together
+    let warnings = vec![
+        ("auth-service", "warning", "Elevated login failures"),
+        ("auth-service", "warning", "Session store latency high"),
+        ("auth-service", "warning", "OAuth token refresh slow"),
+    ];
+
+    for (service, severity, message) in &warnings {
+        let action = Action::new(
+            "monitoring",
+            "acme",
+            "slack",
+            "incident",
+            serde_json::json!({
+                "service": service,
+                "severity": severity,
+                "message": message,
+            }),
+        );
+
+        println!("→ WARNING incident ({service}): \"{message}\"");
+        let outcome = harness.dispatch(&action).await?;
+        println!("  Outcome: {:?}", outcome);
+    }
+
+    // Error from a different service - separate group
+    let error = Action::new(
+        "monitoring",
+        "acme",
+        "slack",
+        "incident",
+        serde_json::json!({
+            "service": "search-api",
+            "severity": "error",
+            "message": "Search index replication lag > 30s",
+        }),
+    );
+
+    println!("→ ERROR incident (search-api): separate group from auth-service");
+    let outcome = harness.dispatch(&error).await?;
+    println!("  Outcome: {:?}", outcome);
+
+    println!(
+        "\n  Slack provider calls: {} (non-critical incidents grouped)",
+        harness.provider("slack").unwrap().call_count()
+    );
+    println!(
+        "  PagerDuty provider calls: {} (critical escalated immediately!)",
+        harness.provider("pagerduty").unwrap().call_count()
+    );
+
+    harness.teardown().await?;
+    println!("\n✓ Simulation cluster shut down\n");
+
+    // =========================================================================
+    // SCENARIO 10: High Volume Batch
+    // =========================================================================
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  SCENARIO 10: HIGH VOLUME BATCH (GROUPED vs NON-GROUPED)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // First: without grouping
@@ -749,7 +875,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("║    4. Notification batching by user                          ║");
     println!("║    6. Critical bypass + grouping combined                    ║");
     println!("║    7. Multi-node group coordination                          ║");
-    println!("║    9. High volume batch comparison                           ║");
+    println!("║    9. PagerDuty escalation + incident grouping               ║");
+    println!("║   10. High volume batch comparison                           ║");
     println!("║                                                              ║");
     println!("║  WITHOUT GROUPING:                                           ║");
     println!("║    2. Direct execution (no rules)                            ║");
