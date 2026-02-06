@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::crypto::SecretString;
+
 /// Top-level schema for `auth.toml`.
 #[derive(Debug, Deserialize)]
 pub struct AuthFileConfig {
@@ -14,7 +16,9 @@ pub struct AuthFileConfig {
 #[derive(Debug, Deserialize)]
 pub struct AuthSettings {
     /// JWT signing secret (may be `ENC[...]` before decryption).
-    pub jwt_secret: String,
+    ///
+    /// Wrapped in [`SecretString`] so it is redacted in logs.
+    pub jwt_secret: SecretString,
     /// JWT token lifetime in seconds.
     #[serde(default = "default_jwt_expiry")]
     pub jwt_expiry_seconds: u64,
@@ -29,7 +33,9 @@ fn default_jwt_expiry() -> u64 {
 pub struct UserConfig {
     pub username: String,
     /// Argon2 password hash (may be `ENC[...]` before decryption).
-    pub password_hash: String,
+    ///
+    /// Wrapped in [`SecretString`] so it is redacted in logs.
+    pub password_hash: SecretString,
     /// Role: `"admin"`, `"operator"`, or `"viewer"`.
     pub role: String,
     #[serde(default)]
@@ -52,7 +58,9 @@ pub struct Grant {
 pub struct ApiKeyConfig {
     pub name: String,
     /// SHA-256 hash of the raw key (may be `ENC[...]` before decryption).
-    pub key_hash: String,
+    ///
+    /// Wrapped in [`SecretString`] so it is redacted in logs.
+    pub key_hash: SecretString,
     /// Role: `"admin"`, `"operator"`, or `"viewer"`.
     pub role: String,
     #[serde(default)]

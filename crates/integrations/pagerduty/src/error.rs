@@ -22,6 +22,14 @@ pub enum PagerDutyError {
     /// The provider received an HTTP 429 (Too Many Requests) response.
     #[error("rate limited by PagerDuty")]
     RateLimited,
+
+    /// The requested `PagerDuty` service ID is not in the configured services map.
+    #[error("unknown PagerDuty service: {0}")]
+    UnknownService(String),
+
+    /// No `service_id` was provided and no default service is configured.
+    #[error("no service_id in payload and no default service configured")]
+    NoDefaultService,
 }
 
 impl From<PagerDutyError> for ProviderError {
@@ -31,6 +39,10 @@ impl From<PagerDutyError> for ProviderError {
             PagerDutyError::Api(msg) => ProviderError::ExecutionFailed(msg),
             PagerDutyError::InvalidPayload(msg) => ProviderError::Serialization(msg),
             PagerDutyError::RateLimited => ProviderError::RateLimited,
+            PagerDutyError::UnknownService(msg) => ProviderError::Configuration(msg),
+            PagerDutyError::NoDefaultService => ProviderError::Configuration(
+                "no service_id in payload and no default service configured".into(),
+            ),
         }
     }
 }
@@ -62,6 +74,20 @@ mod tests {
     }
 
     #[test]
+    fn unknown_service_maps_to_configuration() {
+        let provider_err: ProviderError = PagerDutyError::UnknownService("PSVC999".into()).into();
+        assert!(!provider_err.is_retryable());
+        assert!(matches!(provider_err, ProviderError::Configuration(_)));
+    }
+
+    #[test]
+    fn no_default_service_maps_to_configuration() {
+        let provider_err: ProviderError = PagerDutyError::NoDefaultService.into();
+        assert!(!provider_err.is_retryable());
+        assert!(matches!(provider_err, ProviderError::Configuration(_)));
+    }
+
+    #[test]
     fn display_messages() {
         let err = PagerDutyError::Api("invalid routing key".into());
         assert_eq!(err.to_string(), "PagerDuty API error: invalid routing key");
@@ -71,5 +97,14 @@ mod tests {
 
         let err = PagerDutyError::RateLimited;
         assert_eq!(err.to_string(), "rate limited by PagerDuty");
+
+        let err = PagerDutyError::UnknownService("PSVC123".into());
+        assert_eq!(err.to_string(), "unknown PagerDuty service: PSVC123");
+
+        let err = PagerDutyError::NoDefaultService;
+        assert_eq!(
+            err.to_string(),
+            "no service_id in payload and no default service configured"
+        );
     }
 }

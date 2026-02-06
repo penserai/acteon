@@ -23,6 +23,7 @@ pub struct PagerDutyProvider {
 #[derive(Debug, Deserialize)]
 struct EventPayload {
     event_action: String,
+    service_id: Option<String>,
     summary: Option<String>,
     severity: Option<String>,
     source: Option<String>,
@@ -91,6 +92,11 @@ impl PagerDutyProvider {
     /// Build a [`PagerDutyEvent`] from the deserialized action payload,
     /// applying config defaults where appropriate.
     fn build_event(&self, payload: EventPayload) -> Result<PagerDutyEvent, PagerDutyError> {
+        let routing_key = self
+            .config
+            .resolve_routing_key(payload.service_id.as_deref())?
+            .to_owned();
+
         match payload.event_action.as_str() {
             "trigger" => {
                 let summary = payload.summary.ok_or_else(|| {
@@ -109,7 +115,7 @@ impl PagerDutyProvider {
                     .unwrap_or_else(|| "acteon".to_owned());
 
                 Ok(PagerDutyEvent {
-                    routing_key: self.config.routing_key.clone(),
+                    routing_key,
                     event_action: "trigger".into(),
                     dedup_key: payload.dedup_key,
                     payload: Some(PagerDutyPayload {
@@ -134,7 +140,7 @@ impl PagerDutyProvider {
                 })?;
 
                 Ok(PagerDutyEvent {
-                    routing_key: self.config.routing_key.clone(),
+                    routing_key,
                     event_action: payload.event_action,
                     dedup_key: Some(dedup_key),
                     payload: None,
@@ -243,6 +249,36 @@ mod tests {
             stream.shutdown().await.unwrap();
         }
 
+        /// Accept one connection, capture the request body, and respond with
+        /// the given status code and JSON body.
+        async fn respond_once_capturing(self, status_code: u16, response_body: &str) -> String {
+            let response_body = response_body.to_owned();
+            let (mut stream, _) = self.listener.accept().await.unwrap();
+
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let mut buf = vec![0u8; 16384];
+            let n = stream.read(&mut buf).await.unwrap();
+            let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+
+            // Extract the body after the blank line separating headers from body.
+            let request_body = raw.split("\r\n\r\n").nth(1).unwrap_or("").to_owned();
+
+            let response = format!(
+                "HTTP/1.1 {status_code} OK\r\n\
+                 Content-Type: application/json\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\
+                 \r\n\
+                 {response_body}",
+                response_body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+
+            request_body
+        }
+
         /// Accept one connection and respond with HTTP 429 (rate limited).
         async fn respond_rate_limited(self) {
             let body = r#"{"status":"throttle event creation","message":"Rate limit reached","dedup_key":null}"#;
@@ -256,7 +292,7 @@ mod tests {
 
     #[test]
     fn provider_name() {
-        let config = PagerDutyConfig::new("test-routing-key");
+        let config = PagerDutyConfig::single_service("test-svc", "test-routing-key");
         let provider = PagerDutyProvider::new(config);
         assert_eq!(provider.name(), "pagerduty");
     }
@@ -264,7 +300,8 @@ mod tests {
     #[tokio::test]
     async fn execute_trigger_success() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key").with_api_base_url(&server.base_url);
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url(&server.base_url);
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -293,7 +330,8 @@ mod tests {
     #[tokio::test]
     async fn execute_trigger_with_images_and_links() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key").with_api_base_url(&server.base_url);
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url(&server.base_url);
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -328,7 +366,8 @@ mod tests {
     #[tokio::test]
     async fn execute_acknowledge_success() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key").with_api_base_url(&server.base_url);
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url(&server.base_url);
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -353,7 +392,8 @@ mod tests {
     #[tokio::test]
     async fn execute_resolve_success() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key").with_api_base_url(&server.base_url);
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url(&server.base_url);
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -377,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn execute_trigger_uses_config_defaults() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key")
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
             .with_api_base_url(&server.base_url)
             .with_default_severity("warning")
             .with_default_source("acteon-test");
@@ -403,7 +443,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_trigger_missing_summary() {
-        let config = PagerDutyConfig::new("test-key").with_api_base_url("http://localhost:1");
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url("http://localhost:1");
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -418,7 +459,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_invalid_event_action() {
-        let config = PagerDutyConfig::new("test-key").with_api_base_url("http://localhost:1");
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url("http://localhost:1");
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -433,7 +475,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_ack_missing_dedup_key() {
-        let config = PagerDutyConfig::new("test-key").with_api_base_url("http://localhost:1");
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url("http://localhost:1");
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -448,7 +491,8 @@ mod tests {
     #[tokio::test]
     async fn execute_rate_limited() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key").with_api_base_url(&server.base_url);
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url(&server.base_url);
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -470,7 +514,8 @@ mod tests {
     #[tokio::test]
     async fn execute_api_error() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key").with_api_base_url(&server.base_url);
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url(&server.base_url);
         let provider = PagerDutyProvider::new(config);
 
         let action = make_action(serde_json::json!({
@@ -493,7 +538,8 @@ mod tests {
     #[tokio::test]
     async fn health_check_success() {
         let server = MockPagerDutyServer::start().await;
-        let config = PagerDutyConfig::new("test-key").with_api_base_url(&server.base_url);
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url(&server.base_url);
         let provider = PagerDutyProvider::new(config);
 
         // Even a 400 response means the endpoint is reachable.
@@ -511,11 +557,138 @@ mod tests {
     #[tokio::test]
     async fn health_check_connection_failure() {
         // Point to a port that nothing is listening on.
-        let config = PagerDutyConfig::new("test-key").with_api_base_url("http://127.0.0.1:1");
+        let config = PagerDutyConfig::single_service("test-svc", "test-key")
+            .with_api_base_url("http://127.0.0.1:1");
         let provider = PagerDutyProvider::new(config);
 
         let err = provider.health_check().await.unwrap_err();
         assert!(matches!(err, ProviderError::Connection(_)));
         assert!(err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn execute_trigger_explicit_service_id() {
+        let server = MockPagerDutyServer::start().await;
+        let config = PagerDutyConfig::new()
+            .with_service("SVC_A", "routing-key-a")
+            .with_service("SVC_B", "routing-key-b")
+            .with_default_service("SVC_A")
+            .with_api_base_url(&server.base_url);
+        let provider = PagerDutyProvider::new(config);
+
+        let action = make_action(serde_json::json!({
+            "event_action": "trigger",
+            "service_id": "SVC_B",
+            "summary": "Alert for service B"
+        }));
+
+        let response_body =
+            r#"{"status":"success","message":"Event processed","dedup_key":"key-b"}"#;
+        let server_handle =
+            tokio::spawn(async move { server.respond_once_capturing(202, response_body).await });
+
+        let result = provider.execute(&action).await;
+        let request_body = server_handle.await.unwrap();
+
+        assert!(result.is_ok());
+        // Verify the correct routing key was sent.
+        let sent: serde_json::Value = serde_json::from_str(&request_body).unwrap();
+        assert_eq!(sent["routing_key"], "routing-key-b");
+    }
+
+    #[tokio::test]
+    async fn execute_trigger_default_service() {
+        let server = MockPagerDutyServer::start().await;
+        let config = PagerDutyConfig::new()
+            .with_service("SVC_A", "routing-key-a")
+            .with_service("SVC_B", "routing-key-b")
+            .with_default_service("SVC_A")
+            .with_api_base_url(&server.base_url);
+        let provider = PagerDutyProvider::new(config);
+
+        // No service_id — should fall back to default (SVC_A).
+        let action = make_action(serde_json::json!({
+            "event_action": "trigger",
+            "summary": "Alert using default"
+        }));
+
+        let response_body =
+            r#"{"status":"success","message":"Event processed","dedup_key":"key-a"}"#;
+        let server_handle =
+            tokio::spawn(async move { server.respond_once_capturing(202, response_body).await });
+
+        let result = provider.execute(&action).await;
+        let request_body = server_handle.await.unwrap();
+
+        assert!(result.is_ok());
+        let sent: serde_json::Value = serde_json::from_str(&request_body).unwrap();
+        assert_eq!(sent["routing_key"], "routing-key-a");
+    }
+
+    #[tokio::test]
+    async fn execute_trigger_unknown_service_id() {
+        let config = PagerDutyConfig::single_service("SVC_A", "routing-key-a")
+            .with_api_base_url("http://localhost:1");
+        let provider = PagerDutyProvider::new(config);
+
+        let action = make_action(serde_json::json!({
+            "event_action": "trigger",
+            "service_id": "SVC_UNKNOWN",
+            "summary": "This should fail"
+        }));
+
+        let err = provider.execute(&action).await.unwrap_err();
+        assert!(matches!(err, ProviderError::Configuration(_)));
+        assert!(!err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn execute_trigger_no_default_no_service_id() {
+        let config = PagerDutyConfig::new()
+            .with_service("SVC_A", "routing-key-a")
+            .with_service("SVC_B", "routing-key-b")
+            .with_api_base_url("http://localhost:1");
+        let provider = PagerDutyProvider::new(config);
+
+        // Multiple services, no default, no service_id — should error.
+        let action = make_action(serde_json::json!({
+            "event_action": "trigger",
+            "summary": "This should fail"
+        }));
+
+        let err = provider.execute(&action).await.unwrap_err();
+        assert!(matches!(err, ProviderError::Configuration(_)));
+        assert!(!err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn execute_ack_with_service_id() {
+        let server = MockPagerDutyServer::start().await;
+        let config = PagerDutyConfig::new()
+            .with_service("SVC_A", "routing-key-a")
+            .with_service("SVC_B", "routing-key-b")
+            .with_api_base_url(&server.base_url);
+        let provider = PagerDutyProvider::new(config);
+
+        let action = make_action(serde_json::json!({
+            "event_action": "acknowledge",
+            "service_id": "SVC_B",
+            "dedup_key": "incident-123"
+        }));
+
+        let response_body =
+            r#"{"status":"success","message":"Event processed","dedup_key":"incident-123"}"#;
+        let server_handle =
+            tokio::spawn(async move { server.respond_once_capturing(202, response_body).await });
+
+        let result = provider.execute(&action).await;
+        let request_body = server_handle.await.unwrap();
+
+        let response = result.expect("execute should succeed");
+        assert_eq!(response.status, acteon_core::ResponseStatus::Success);
+
+        let sent: serde_json::Value = serde_json::from_str(&request_body).unwrap();
+        assert_eq!(sent["routing_key"], "routing-key-b");
+        assert_eq!(sent["event_action"], "acknowledge");
     }
 }

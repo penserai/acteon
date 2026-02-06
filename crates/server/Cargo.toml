@@ -42,6 +42,7 @@ acteon-provider = { workspace = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }
+acteon-crypto = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 chrono = { workspace = true }
@@ -64,8 +65,6 @@ jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-aes-gcm = { workspace = true }
-base64 = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

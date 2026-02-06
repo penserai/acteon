@@ -93,6 +93,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-crypto"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "hex",
+ "regex",
+ "secrecy",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
 name = "acteon-email"
 version = "0.1.0"
 dependencies = [
@@ -170,6 +183,7 @@ name = "acteon-pagerduty"
 version = "0.1.0"
 dependencies = [
  "acteon-core",
+ "acteon-crypto",
  "acteon-provider",
  "reqwest",
  "serde",
@@ -250,6 +264,7 @@ dependencies = [
  "acteon-audit-memory",
  "acteon-audit-postgres",
  "acteon-core",
+ "acteon-crypto",
  "acteon-executor",
  "acteon-gateway",
  "acteon-llm",
@@ -262,12 +277,10 @@ dependencies = [
  "acteon-state-memory",
  "acteon-state-postgres",
  "acteon-state-redis",
- "aes-gcm",
  "argon2",
  "async-trait",
  "axum 0.8.8",
  "axum-test",
- "base64",
  "chrono",
  "clap",
  "hex",
@@ -3811,6 +3824,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "secrecy"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
+dependencies = [
+ "serde",
+ "zeroize",
+]
+
+[[package]]
 name = "security-framework"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5461,6 +5484,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85a5b4158499876c763cb03bc4e49185d3cccbabb15b33c627f7884f43db852e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "zerotrie"

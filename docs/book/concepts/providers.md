@@ -163,11 +163,31 @@ The `acteon-slack` crate provides a Slack messaging provider.
 
 The `acteon-pagerduty` crate provides a PagerDuty Events API v2 provider for incident management. It supports triggering, acknowledging, and resolving incidents.
 
+**Configuration:**
+
+Single service (routing key only):
+
+```rust
+let config = PagerDutyConfig::single_service("PABC123", "your-routing-key");
+```
+
+Multiple services:
+
+```rust
+let config = PagerDutyConfig::new()
+    .with_service("PABC123", "routing-key-1")
+    .with_service("PXYZ789", "routing-key-2")
+    .with_default_service("PABC123");
+```
+
+When multiple services are configured, each action payload can specify a `service_id` to target a specific service. If omitted, the default service is used. With a single service, `service_id` is optional.
+
 **Trigger payload:**
 
 ```json
 {
   "event_action": "trigger",
+  "service_id": "PABC123",
   "summary": "CPU usage exceeded 90% on web-01",
   "severity": "critical",
   "source": "monitoring",
@@ -193,6 +213,7 @@ The `acteon-pagerduty` crate provides a PagerDuty Events API v2 provider for inc
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `event_action` | Yes | — | `"trigger"`, `"acknowledge"`, or `"resolve"` |
+| `service_id` | No | Config default | PagerDuty service ID to route the event to |
 | `summary` | Trigger only | — | Brief description of the event |
 | `severity` | No | Config default | `"critical"`, `"error"`, `"warning"`, or `"info"` |
 | `source` | No | Config default | Event source (e.g. hostname or service) |

@@ -1,0 +1,19 @@
+[package]
+name = "acteon-crypto"
+description = "Shared AES-256-GCM encryption utilities for Acteon config secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+regex = { workspace = true }
+secrecy = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+
+[lints]
+workspace = true

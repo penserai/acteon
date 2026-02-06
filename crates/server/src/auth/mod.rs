@@ -17,6 +17,7 @@ use tracing::info;
 
 use self::api_key::{ApiKeyEntry, authenticate_api_key, build_api_key_table};
 use self::config::{AuthFileConfig, Grant};
+use self::crypto::{ExposeSecret, SecretString};
 use self::identity::CallerIdentity;
 use self::jwt::JwtManager;
 use self::role::Role;
@@ -24,7 +25,7 @@ use self::role::Role;
 /// In-memory user entry for fast lookup.
 #[derive(Debug, Clone)]
 pub struct UserEntry {
-    pub password_hash: String,
+    pub password_hash: SecretString,
     pub role: Role,
     pub grants: Vec<Grant>,
 }
@@ -53,7 +54,7 @@ impl AuthProvider {
     /// Build the auth provider from a decrypted config and a state store reference.
     pub fn new(config: &AuthFileConfig, state_store: Arc<dyn StateStore>) -> Result<Self, String> {
         let jwt_manager = JwtManager::new(
-            &config.settings.jwt_secret,
+            config.settings.jwt_secret.expose_secret(),
             config.settings.jwt_expiry_seconds,
         );
 
@@ -124,7 +125,7 @@ impl AuthProvider {
             .get(username)
             .ok_or_else(|| "invalid credentials".to_owned())?;
 
-        if !password::verify_password(&user.password_hash, password_candidate) {
+        if !password::verify_password(user.password_hash.expose_secret(), password_candidate) {
             return Err("invalid credentials".to_owned());
         }
 

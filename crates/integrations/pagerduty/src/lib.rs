@@ -9,9 +9,17 @@
 //! ```rust,no_run
 //! use acteon_pagerduty::{PagerDutyConfig, PagerDutyProvider};
 //!
-//! let config = PagerDutyConfig::new("your-routing-key")
+//! // Single service
+//! let config = PagerDutyConfig::single_service("PABC123", "your-routing-key")
 //!     .with_default_severity("critical")
 //!     .with_default_source("monitoring");
+//! let provider = PagerDutyProvider::new(config);
+//!
+//! // Multiple services
+//! let config = PagerDutyConfig::new()
+//!     .with_service("PABC123", "routing-key-1")
+//!     .with_service("PXYZ789", "routing-key-2")
+//!     .with_default_service("PABC123");
 //! let provider = PagerDutyProvider::new(config);
 //! ```
 
