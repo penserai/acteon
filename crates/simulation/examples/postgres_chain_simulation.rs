@@ -199,7 +199,10 @@ rules:
         })
         .await?;
 
-    println!("\n  Audit records in Postgres for chain {chain_id}: {}", page.total);
+    println!(
+        "\n  Audit records in Postgres for chain {chain_id}: {}",
+        page.total
+    );
     for rec in &page.records {
         println!(
             "    [{:>22}] provider={:<12} action_type={}",
