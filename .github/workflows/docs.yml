@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - 'claude/create-operations-manual-*'
     paths:
       - 'docs/book/**'
       - 'mkdocs.yml'
