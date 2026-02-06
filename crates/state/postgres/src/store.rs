@@ -398,6 +398,54 @@ impl StateStore for PostgresStateStore {
 
         Ok(rows.into_iter().map(|(k,)| k).collect())
     }
+
+    async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let table = self.config.chain_ready_index_table();
+
+        let query = format!(
+            "INSERT INTO {table} (key, ready_at_ms) VALUES ($1, $2) \
+             ON CONFLICT (key) DO UPDATE SET ready_at_ms = $2"
+        );
+
+        sqlx::query(&query)
+            .bind(&canonical)
+            .bind(ready_at_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = key.canonical();
+        let table = self.config.chain_ready_index_table();
+
+        let query = format!("DELETE FROM {table} WHERE key = $1");
+
+        sqlx::query(&query)
+            .bind(&canonical)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let table = self.config.chain_ready_index_table();
+
+        let query = format!("SELECT key FROM {table} WHERE ready_at_ms <= $1");
+
+        let rows: Vec<(String,)> = sqlx::query_as(&query)
+            .bind(now_ms)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+
+        Ok(rows.into_iter().map(|(k,)| k).collect())
+    }
 }
 
 #[cfg(all(test, feature = "integration"))]

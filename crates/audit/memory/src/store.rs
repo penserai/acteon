@@ -102,6 +102,11 @@ impl AuditStore for MemoryAuditStore {
                 {
                     return None;
                 }
+                if let Some(ref cid) = query.chain_id
+                    && rec.chain_id.as_deref() != Some(cid.as_str())
+                {
+                    return None;
+                }
                 if let Some(ref from) = query.from
                     && rec.dispatched_at < *from
                 {
@@ -186,6 +191,7 @@ mod tests {
         AuditRecord {
             id: id.to_owned(),
             action_id: action_id.to_owned(),
+            chain_id: None,
             namespace: "ns".to_owned(),
             tenant: "t1".to_owned(),
             provider: "email".to_owned(),

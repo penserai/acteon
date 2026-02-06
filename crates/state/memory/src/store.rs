@@ -41,6 +41,8 @@ pub struct MemoryStateStore {
     /// Sorted index for timeout queries: maps `expiration_ms` -> set of keys.
     /// Using `RwLock` because `BTreeMap` doesn't support concurrent access.
     timeout_index: RwLock<BTreeMap<i64, Vec<String>>>,
+    /// Sorted index for chain-ready queries: maps `ready_at_ms` -> set of keys.
+    chain_ready_index: RwLock<BTreeMap<i64, Vec<String>>>,
 }
 
 impl Default for MemoryStateStore {
@@ -48,6 +50,7 @@ impl Default for MemoryStateStore {
         Self {
             data: DashMap::new(),
             timeout_index: RwLock::new(BTreeMap::new()),
+            chain_ready_index: RwLock::new(BTreeMap::new()),
         }
     }
 }
@@ -57,6 +60,7 @@ impl std::fmt::Debug for MemoryStateStore {
         f.debug_struct("MemoryStateStore")
             .field("data", &self.data)
             .field("timeout_index", &"<RwLock<BTreeMap>>")
+            .field("chain_ready_index", &"<RwLock<BTreeMap>>")
             .finish()
     }
 }
@@ -321,6 +325,49 @@ impl StateStore for MemoryStateStore {
             expired.extend(keys.iter().cloned());
         }
         Ok(expired)
+    }
+
+    async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
+        let canonical = Self::render_key(key);
+        let mut index = self
+            .chain_ready_index
+            .write()
+            .map_err(|_| StateError::Backend("chain ready index lock poisoned".into()))?;
+        index.entry(ready_at_ms).or_default().push(canonical);
+        Ok(())
+    }
+
+    async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let canonical = Self::render_key(key);
+        let mut index = self
+            .chain_ready_index
+            .write()
+            .map_err(|_| StateError::Backend("chain ready index lock poisoned".into()))?;
+
+        let mut empty_buckets = Vec::new();
+        for (ready_at, keys) in index.iter_mut() {
+            keys.retain(|k| k != &canonical);
+            if keys.is_empty() {
+                empty_buckets.push(*ready_at);
+            }
+        }
+        for bucket in empty_buckets {
+            index.remove(&bucket);
+        }
+        Ok(())
+    }
+
+    async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let index = self
+            .chain_ready_index
+            .read()
+            .map_err(|_| StateError::Backend("chain ready index lock poisoned".into()))?;
+
+        let mut ready = Vec::new();
+        for (_ready_at, keys) in index.range(..=now_ms) {
+            ready.extend(keys.iter().cloned());
+        }
+        Ok(ready)
     }
 }
 

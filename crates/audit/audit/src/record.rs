@@ -11,6 +11,9 @@ pub struct AuditRecord {
     // -- Action fields (denormalized) --
     /// The action's unique identifier.
     pub action_id: String,
+    /// Chain execution ID, if this record is part of a chain lifecycle.
+    #[serde(default)]
+    pub chain_id: Option<String>,
     /// Namespace the action belongs to.
     pub namespace: String,
     /// Tenant that owns the action.
@@ -80,6 +83,8 @@ pub struct AuditQuery {
     pub matched_rule: Option<String>,
     /// Filter by caller identity.
     pub caller_id: Option<String>,
+    /// Filter by chain execution ID.
+    pub chain_id: Option<String>,
     /// Only records dispatched at or after this time.
     pub from: Option<DateTime<Utc>>,
     /// Only records dispatched at or before this time.

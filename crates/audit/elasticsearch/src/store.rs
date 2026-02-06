@@ -68,6 +68,7 @@ impl ElasticsearchAuditStore {
                 "properties": {
                     "id":               { "type": "keyword" },
                     "action_id":        { "type": "keyword" },
+                    "chain_id":         { "type": "keyword" },
                     "namespace":        { "type": "keyword" },
                     "tenant":           { "type": "keyword" },
                     "provider":         { "type": "keyword" },
@@ -343,6 +344,7 @@ fn build_es_query(query: &AuditQuery) -> serde_json::Value {
         (&query.verdict, "verdict"),
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
+        (&query.chain_id, "chain_id"),
     ];
 
     for (value, field) in fields {

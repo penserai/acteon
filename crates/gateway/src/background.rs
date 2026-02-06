@@ -21,6 +21,7 @@ use crate::group_manager::GroupManager;
 
 /// Configuration for the background processor.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct BackgroundConfig {
     /// How often to check for ready groups (default: 5 seconds).
     pub group_flush_interval: Duration,
@@ -34,6 +35,10 @@ pub struct BackgroundConfig {
     pub enable_timeout_processing: bool,
     /// Whether approval notification retry is enabled (default: true).
     pub enable_approval_retry: bool,
+    /// Whether chain advancement is enabled (default: true).
+    pub enable_chain_advancement: bool,
+    /// How often to check for pending chains (default: 5 seconds).
+    pub chain_check_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -49,6 +54,8 @@ impl Default for BackgroundConfig {
             enable_group_flush: true,
             enable_timeout_processing: true,
             enable_approval_retry: true,
+            enable_chain_advancement: true,
+            chain_check_interval: Duration::from_secs(5),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -79,6 +86,17 @@ pub struct TimeoutEvent {
     pub fired_at: chrono::DateTime<Utc>,
 }
 
+/// Event emitted when a chain needs advancement.
+#[derive(Debug, Clone)]
+pub struct ChainAdvanceEvent {
+    /// Namespace of the chain.
+    pub namespace: String,
+    /// Tenant of the chain.
+    pub tenant: String,
+    /// The chain execution ID.
+    pub chain_id: String,
+}
+
 /// Event emitted when a pending approval needs notification retry.
 #[derive(Debug, Clone)]
 pub struct ApprovalRetryEvent {
@@ -107,6 +125,8 @@ pub struct BackgroundProcessor {
     timeout_tx: Option<mpsc::Sender<TimeoutEvent>>,
     /// Channel to send approval retry events.
     approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
+    /// Channel to send chain advance events.
+    chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
 }
 
 impl BackgroundProcessor {
@@ -127,6 +147,7 @@ impl BackgroundProcessor {
             group_flush_tx: None,
             timeout_tx: None,
             approval_retry_tx: None,
+            chain_advance_tx: None,
         }
     }
 
@@ -151,6 +172,13 @@ impl BackgroundProcessor {
         self
     }
 
+    /// Set a channel to receive chain advance events.
+    #[must_use]
+    pub fn with_chain_advance_channel(mut self, tx: mpsc::Sender<ChainAdvanceEvent>) -> Self {
+        self.chain_advance_tx = Some(tx);
+        self
+    }
+
     /// Run the background processor until shutdown is signaled.
     pub async fn run(&mut self) {
         info!("background processor starting");
@@ -158,6 +186,7 @@ impl BackgroundProcessor {
         let mut group_interval = interval(self.config.group_flush_interval);
         let mut timeout_interval = interval(self.config.timeout_check_interval);
         let mut cleanup_interval = interval(self.config.cleanup_interval);
+        let mut chain_interval = interval(self.config.chain_check_interval);
 
         loop {
             tokio::select! {
@@ -173,6 +202,11 @@ impl BackgroundProcessor {
                 _ = timeout_interval.tick(), if self.config.enable_timeout_processing => {
                     if let Err(e) = self.process_timeouts().await {
                         error!(error = %e, "error processing timeouts");
+                    }
+                }
+                _ = chain_interval.tick(), if self.config.enable_chain_advancement => {
+                    if let Err(e) = self.advance_pending_chains().await {
+                        error!(error = %e, "error advancing chains");
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -423,6 +457,47 @@ impl BackgroundProcessor {
             debug!(count = retry_count, "emitted approval retry events");
         }
     }
+
+    /// Scan for pending chains and emit advance events.
+    ///
+    /// Uses the chain-ready index for efficient O(log N + M) lookups instead
+    /// of scanning all pending chain keys.
+    async fn advance_pending_chains(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(ref tx) = self.chain_advance_tx else {
+            return Ok(());
+        };
+
+        let now_ms = Utc::now().timestamp_millis();
+        let ready_keys = self.state.get_ready_chains(now_ms).await?;
+
+        if ready_keys.is_empty() {
+            return Ok(());
+        }
+
+        debug!(count = ready_keys.len(), "checking ready chains");
+
+        for key in ready_keys {
+            // Parse namespace:tenant:pending_chains:chain_id from the canonical key.
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                warn!(key = %key, "invalid chain ready key format");
+                continue;
+            }
+
+            let event = ChainAdvanceEvent {
+                namespace: parts[0].to_string(),
+                tenant: parts[1].to_string(),
+                chain_id: parts[3].to_string(),
+            };
+
+            if tx.send(event).await.is_err() {
+                warn!("chain advance event channel closed");
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
 }
 
 /// Builder for creating a background processor.
@@ -434,6 +509,7 @@ pub struct BackgroundProcessorBuilder {
     group_flush_tx: Option<mpsc::Sender<GroupFlushEvent>>,
     timeout_tx: Option<mpsc::Sender<TimeoutEvent>>,
     approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
+    chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -448,6 +524,7 @@ impl BackgroundProcessorBuilder {
             group_flush_tx: None,
             timeout_tx: None,
             approval_retry_tx: None,
+            chain_advance_tx: None,
         }
     }
 
@@ -500,6 +577,13 @@ impl BackgroundProcessorBuilder {
         self
     }
 
+    /// Set the chain advance event channel.
+    #[must_use]
+    pub fn chain_advance_channel(mut self, tx: mpsc::Sender<ChainAdvanceEvent>) -> Self {
+        self.chain_advance_tx = Some(tx);
+        self
+    }
+
     /// Build the background processor.
     ///
     /// Returns the processor and a shutdown sender.
@@ -527,6 +611,10 @@ impl BackgroundProcessorBuilder {
 
         if let Some(tx) = self.approval_retry_tx {
             processor = processor.with_approval_retry_channel(tx);
+        }
+
+        if let Some(tx) = self.chain_advance_tx {
+            processor = processor.with_chain_advance_channel(tx);
         }
 
         Ok((processor, shutdown_tx))
@@ -558,6 +646,8 @@ mod tests {
                 enable_group_flush: true,
                 enable_timeout_processing: true,
                 enable_approval_retry: false,
+                enable_chain_advancement: false,
+                chain_check_interval: Duration::from_secs(5),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -610,6 +700,8 @@ mod tests {
                 enable_group_flush: true,
                 enable_timeout_processing: false,
                 enable_approval_retry: false,
+                enable_chain_advancement: false,
+                chain_check_interval: Duration::from_secs(5),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })

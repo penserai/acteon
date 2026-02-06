@@ -104,4 +104,72 @@ pub trait StateStore: Send + Sync {
     /// Returns a list of canonical key strings. This is O(log N + M) where M is
     /// the number of expired keys, compared to O(N) for scanning all timeouts.
     async fn get_expired_timeouts(&self, now_ms: i64) -> Result<Vec<String>, StateError>;
+
+    /// Add a chain to the ready index with a `ready_at` timestamp (ms).
+    ///
+    /// Chains with `ready_at <= now` will be returned by [`StateStore::get_ready_chains`].
+    ///
+    /// The default implementation stores the timestamp as a
+    /// `Custom("chain_ready_at")` key so that [`StateStore::get_ready_chains`] can filter
+    /// by time. Backends with native sorted-set support (Memory, Redis) should
+    /// override this for O(log N) performance.
+    async fn index_chain_ready(&self, key: &StateKey, ready_at_ms: i64) -> Result<(), StateError> {
+        let ready_key = StateKey::new(
+            key.namespace.clone(),
+            key.tenant.clone(),
+            crate::key::KeyKind::Custom("chain_ready_at".into()),
+            key.id.clone(),
+        );
+        self.set(&ready_key, &ready_at_ms.to_string(), None).await
+    }
+
+    /// Remove a chain from the ready index.
+    ///
+    /// The default implementation deletes the `Custom("chain_ready_at")` key
+    /// written by [`StateStore::index_chain_ready`].
+    async fn remove_chain_ready_index(&self, key: &StateKey) -> Result<(), StateError> {
+        let ready_key = StateKey::new(
+            key.namespace.clone(),
+            key.tenant.clone(),
+            crate::key::KeyKind::Custom("chain_ready_at".into()),
+            key.id.clone(),
+        );
+        let _ = self.delete(&ready_key).await;
+        Ok(())
+    }
+
+    /// Get all chains that are ready for advancement (`ready_at <= now_ms`).
+    ///
+    /// Returns canonical key strings in `PendingChains` format
+    /// (`namespace:tenant:pending_chains:chain_id`).
+    ///
+    /// The default implementation scans `Custom("chain_ready_at")` keys and
+    /// filters by the stored timestamp. This is O(N) in the number of pending
+    /// chains. Backends with native sorted-set support should override for
+    /// O(log N + M) performance.
+    async fn get_ready_chains(&self, now_ms: i64) -> Result<Vec<String>, StateError> {
+        let entries = self
+            .scan_keys_by_kind(crate::key::KeyKind::Custom("chain_ready_at".into()))
+            .await?;
+        let mut ready = Vec::new();
+        for (key, value) in entries {
+            let ready_at: i64 = value.parse().unwrap_or(0);
+            if ready_at <= now_ms {
+                // Convert chain_ready_at key -> pending_chains key:
+                // from: namespace:tenant:chain_ready_at:chain_id
+                // to:   namespace:tenant:pending_chains:chain_id
+                let parts: Vec<&str> = key.splitn(4, ':').collect();
+                if parts.len() >= 4 {
+                    ready.push(format!(
+                        "{}:{}:{}:{}",
+                        parts[0],
+                        parts[1],
+                        crate::key::KeyKind::PendingChains,
+                        parts[3]
+                    ));
+                }
+            }
+        }
+        Ok(ready)
+    }
 }

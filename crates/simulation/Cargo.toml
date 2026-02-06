@@ -73,6 +73,10 @@ name = "postgres_simulation"
 required-features = ["postgres"]
 
 [[example]]
+name = "postgres_chain_simulation"
+required-features = ["postgres"]
+
+[[example]]
 name = "clickhouse_simulation"
 required-features = ["clickhouse"]
 

@@ -17,6 +17,7 @@ use crate::migrations;
 struct AuditInsertRow {
     id: String,
     action_id: String,
+    chain_id: Option<String>,
     namespace: String,
     tenant: String,
     provider: String,
@@ -48,6 +49,7 @@ struct AuditInsertRow {
 struct AuditSelectRow {
     id: String,
     action_id: String,
+    chain_id: Option<String>,
     namespace: String,
     tenant: String,
     provider: String,
@@ -76,6 +78,7 @@ impl From<AuditRecord> for AuditInsertRow {
         Self {
             id: r.id,
             action_id: r.action_id,
+            chain_id: r.chain_id,
             namespace: r.namespace,
             tenant: r.tenant,
             provider: r.provider,
@@ -104,6 +107,7 @@ impl From<AuditSelectRow> for AuditRecord {
         Self {
             id: row.id,
             action_id: row.action_id,
+            chain_id: row.chain_id,
             namespace: row.namespace,
             tenant: row.tenant,
             provider: row.provider,
@@ -141,7 +145,7 @@ fn millis_to_datetime(ms: i64) -> DateTime<Utc> {
 /// The explicit column list used in SELECT statements so that column ordering
 /// is deterministic and matches the `AuditSelectRow` field order.
 const SELECT_COLUMNS: &str = "\
-    id, action_id, namespace, tenant, provider, action_type, verdict, \
+    id, action_id, chain_id, namespace, tenant, provider, action_type, verdict, \
     matched_rule, outcome, action_payload, verdict_details, outcome_details, \
     metadata, dispatched_at, completed_at, duration_ms, expires_at, \
     caller_id, auth_method";
@@ -167,6 +171,7 @@ fn build_where_clause(query: &AuditQuery) -> String {
         (&query.verdict, "verdict"),
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
+        (&query.chain_id, "chain_id"),
     ];
 
     for (value, col) in string_filters {

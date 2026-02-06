@@ -34,6 +34,10 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
             llm_guardrail_allowed: snap.llm_guardrail_allowed,
             llm_guardrail_denied: snap.llm_guardrail_denied,
             llm_guardrail_errors: snap.llm_guardrail_errors,
+            chains_started: snap.chains_started,
+            chains_completed: snap.chains_completed,
+            chains_failed: snap.chains_failed,
+            chains_cancelled: snap.chains_cancelled,
         },
     };
 
@@ -66,6 +70,10 @@ pub async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         llm_guardrail_allowed: snap.llm_guardrail_allowed,
         llm_guardrail_denied: snap.llm_guardrail_denied,
         llm_guardrail_errors: snap.llm_guardrail_errors,
+        chains_started: snap.chains_started,
+        chains_completed: snap.chains_completed,
+        chains_failed: snap.chains_failed,
+        chains_cancelled: snap.chains_cancelled,
     };
 
     (StatusCode::OK, Json(body))

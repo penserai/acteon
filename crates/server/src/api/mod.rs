@@ -1,6 +1,7 @@
 pub mod approvals;
 pub mod audit;
 pub mod auth;
+pub mod chains;
 pub mod dispatch;
 pub mod dlq;
 pub mod events;
@@ -90,6 +91,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/groups", get(groups::list_groups))
         .route("/v1/groups/{group_key}", get(groups::get_group))
         .route("/v1/groups/{group_key}", delete(groups::flush_group))
+        // Chains (task chain orchestration)
+        .route("/v1/chains", get(chains::list_chains))
+        .route("/v1/chains/{chain_id}", get(chains::get_chain))
+        .route("/v1/chains/{chain_id}/cancel", post(chains::cancel_chain))
         // Approvals (list requires auth)
         .route("/v1/approvals", get(approvals::list_approvals))
         // Logout (requires auth)

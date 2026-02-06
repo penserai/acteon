@@ -60,6 +60,17 @@ pub enum ActionOutcome {
         /// Whether the notification was successfully sent to the human.
         notification_sent: bool,
     },
+    /// Action initiated a task chain execution.
+    ChainStarted {
+        /// Unique identifier for this chain execution.
+        chain_id: String,
+        /// Name of the chain configuration.
+        chain_name: String,
+        /// Total number of steps in the chain.
+        total_steps: usize,
+        /// Name of the first step to be executed.
+        first_step: String,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -182,6 +193,22 @@ mod tests {
         assert!(json.contains("approve_url"));
         assert!(json.contains("reject_url"));
         assert!(json.contains("notification_sent"));
+    }
+
+    #[test]
+    fn outcome_chain_started() {
+        let outcome = ActionOutcome::ChainStarted {
+            chain_id: "chain-abc".into(),
+            chain_name: "search-summarize-email".into(),
+            total_steps: 3,
+            first_step: "search".into(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("chain-abc"));
+        assert!(json.contains("search-summarize-email"));
+        assert!(json.contains("total_steps"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ActionOutcome::ChainStarted { .. }));
     }
 
     #[test]
