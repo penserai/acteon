@@ -103,6 +103,7 @@ All crates are organized under `crates/` with logical groupings:
 |-------|-------------|
 | `crates/integrations/email` | Email/SMTP provider |
 | `crates/integrations/slack` | Slack provider |
+| `crates/integrations/pagerduty` | PagerDuty Events API v2 provider |
 
 ## Running locally
 

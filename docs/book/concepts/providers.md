@@ -9,6 +9,7 @@ flowchart LR
     G[Gateway] --> R[Provider Registry]
     R --> E[Email SMTP]
     R --> S[Slack]
+    R --> P[PagerDuty]
     R --> W[Webhook]
     R --> C[Custom Provider]
 ```
@@ -115,6 +116,7 @@ use std::sync::Arc;
 let gateway = GatewayBuilder::new()
     .provider(Arc::new(EmailProvider::new(smtp_config)))
     .provider(Arc::new(SlackProvider::new(slack_token)))
+    .provider(Arc::new(PagerDutyProvider::new(pagerduty_config)))
     .provider(Arc::new(MyWebhookProvider {
         client: reqwest::Client::new(),
         base_url: "https://api.example.com".into(),
@@ -156,6 +158,72 @@ The `acteon-slack` crate provides a Slack messaging provider.
   "blocks": []
 }
 ```
+
+### PagerDuty
+
+The `acteon-pagerduty` crate provides a PagerDuty Events API v2 provider for incident management. It supports triggering, acknowledging, and resolving incidents.
+
+**Configuration:**
+
+Single service (routing key only):
+
+```rust
+let config = PagerDutyConfig::single_service("PABC123", "your-routing-key");
+```
+
+Multiple services:
+
+```rust
+let config = PagerDutyConfig::new()
+    .with_service("PABC123", "routing-key-1")
+    .with_service("PXYZ789", "routing-key-2")
+    .with_default_service("PABC123");
+```
+
+When multiple services are configured, each action payload can specify a `service_id` to target a specific service. If omitted, the default service is used. With a single service, `service_id` is optional.
+
+**Trigger payload:**
+
+```json
+{
+  "event_action": "trigger",
+  "service_id": "PABC123",
+  "summary": "CPU usage exceeded 90% on web-01",
+  "severity": "critical",
+  "source": "monitoring",
+  "component": "web-01",
+  "group": "production",
+  "class": "cpu",
+  "dedup_key": "web-01/cpu-high",
+  "custom_details": { "cpu_percent": 95.2 },
+  "images": [{ "src": "https://example.com/graph.png", "alt": "CPU graph" }],
+  "links": [{ "href": "https://example.com/runbook", "text": "Runbook" }]
+}
+```
+
+**Acknowledge/resolve payload:**
+
+```json
+{
+  "event_action": "acknowledge",
+  "dedup_key": "web-01/cpu-high"
+}
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `event_action` | Yes | — | `"trigger"`, `"acknowledge"`, or `"resolve"` |
+| `service_id` | No | Config default | PagerDuty service ID to route the event to |
+| `summary` | Trigger only | — | Brief description of the event |
+| `severity` | No | Config default | `"critical"`, `"error"`, `"warning"`, or `"info"` |
+| `source` | No | Config default | Event source (e.g. hostname or service) |
+| `dedup_key` | Ack/resolve | — | Deduplication key for correlating events |
+| `component` | No | — | Logical grouping component |
+| `group` | No | — | Logical grouping (e.g. `"production"`) |
+| `class` | No | — | Event class/type (e.g. `"cpu"`) |
+| `custom_details` | No | — | Arbitrary key-value details |
+| `images` | No | — | Images to display in the incident |
+| `links` | No | — | Links to display in the incident |
 
 ## Provider Errors
 

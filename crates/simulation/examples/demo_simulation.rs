@@ -40,6 +40,29 @@ rules:
       target_provider: sms
 "#;
 
+const PAGERDUTY_ESCALATION_RULES: &str = r#"
+rules:
+  # Critical severity incidents get escalated to PagerDuty
+  - name: escalate-critical-to-pagerduty
+    priority: 1
+    condition:
+      field: action.payload.severity
+      eq: "critical"
+    action:
+      type: reroute
+      target_provider: pagerduty
+
+  # High severity incidents get deduplicated (avoid alert storms)
+  - name: dedup-high-severity
+    priority: 5
+    condition:
+      field: action.payload.severity
+      eq: "high"
+    action:
+      type: deduplicate
+      ttl_seconds: 600
+"#;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔══════════════════════════════════════════════════════════════╗");
@@ -403,6 +426,120 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "  Throughput: {:.0} actions/sec",
         100.0 / elapsed.as_secs_f64()
+    );
+
+    harness.teardown().await?;
+    println!("\n✓ Simulation cluster shut down\n");
+
+    // =========================================================================
+    // DEMO 6: PagerDuty Incident Escalation
+    // =========================================================================
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  DEMO 6: PAGERDUTY INCIDENT ESCALATION");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    let harness = SimulationHarness::start(
+        SimulationConfig::builder()
+            .nodes(1)
+            .add_recording_provider("slack")
+            .add_recording_provider("pagerduty")
+            .add_rule_yaml(PAGERDUTY_ESCALATION_RULES)
+            .build(),
+    )
+    .await?;
+
+    println!("✓ Started simulation cluster");
+    println!("✓ Registered 'slack' and 'pagerduty' providers");
+    println!("✓ Loaded escalation rules:");
+    println!("  - critical severity → reroute to pagerduty");
+    println!("  - high severity → deduplicate (10 min window)\n");
+
+    // Low severity alert - goes to slack normally
+    let low_alert = Action::new(
+        "monitoring",
+        "acme-corp",
+        "slack",
+        "alert",
+        serde_json::json!({
+            "severity": "low",
+            "source": "health-check",
+            "message": "Latency slightly above threshold",
+        }),
+    );
+
+    println!("→ Dispatching LOW severity alert to 'slack'...");
+    let outcome = harness.dispatch(&low_alert).await?;
+    println!("  Outcome: {:?}", outcome);
+    println!(
+        "  Slack called: {}, PagerDuty called: {}\n",
+        harness.provider("slack").unwrap().call_count(),
+        harness.provider("pagerduty").unwrap().call_count(),
+    );
+
+    // Critical severity alert - rerouted to pagerduty
+    let critical_alert = Action::new(
+        "monitoring",
+        "acme-corp",
+        "slack",
+        "alert",
+        serde_json::json!({
+            "severity": "critical",
+            "source": "database",
+            "message": "Primary database unreachable",
+        }),
+    );
+
+    println!("→ Dispatching CRITICAL severity alert to 'slack'...");
+    let outcome = harness.dispatch(&critical_alert).await?;
+    println!("  Outcome: {:?}", outcome);
+    println!(
+        "  Slack called: {} (unchanged), PagerDuty called: {} (escalated!)\n",
+        harness.provider("slack").unwrap().call_count(),
+        harness.provider("pagerduty").unwrap().call_count(),
+    );
+
+    // High severity alert - first one executes, duplicate is deduplicated
+    let high_alert = Action::new(
+        "monitoring",
+        "acme-corp",
+        "slack",
+        "alert",
+        serde_json::json!({
+            "severity": "high",
+            "source": "api-gateway",
+            "message": "Error rate above 5%",
+        }),
+    )
+    .with_dedup_key("api-gateway-error-rate");
+
+    println!("→ Dispatching FIRST high severity alert...");
+    let outcome = harness.dispatch(&high_alert).await?;
+    println!("  Outcome: {:?}", outcome);
+
+    let high_alert_dup = Action::new(
+        "monitoring",
+        "acme-corp",
+        "slack",
+        "alert",
+        serde_json::json!({
+            "severity": "high",
+            "source": "api-gateway",
+            "message": "Error rate above 5%",
+        }),
+    )
+    .with_dedup_key("api-gateway-error-rate");
+
+    println!("→ Dispatching DUPLICATE high severity alert...");
+    let outcome = harness.dispatch(&high_alert_dup).await?;
+    println!(
+        "  Outcome: {:?} (deduplicated - alert storm prevented!)",
+        outcome
+    );
+
+    println!(
+        "\n  Final counts: Slack={}, PagerDuty={}",
+        harness.provider("slack").unwrap().call_count(),
+        harness.provider("pagerduty").unwrap().call_count(),
     );
 
     harness.teardown().await?;

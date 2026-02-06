@@ -18,7 +18,7 @@ use acteon_rules_yaml::YamlFrontend;
 use acteon_server::api::AppState;
 use acteon_server::auth::AuthProvider;
 use acteon_server::auth::crypto::{
-    decrypt_auth_config, decrypt_value, encrypt_value, parse_master_key,
+    ExposeSecret, MasterKey, decrypt_auth_config, decrypt_value, encrypt_value, parse_master_key,
 };
 use acteon_server::auth::watcher::AuthWatcher;
 use acteon_server::config::ActeonConfig;
@@ -113,7 +113,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the auth provider if enabled.
     let (auth_provider, _auth_watcher_handle) = if config.auth.enabled {
         let auth_master_key = master_key
-            .ok_or("ACTEON_AUTH_KEY environment variable is required when auth is enabled")?;
+            .as_ref()
+            .ok_or("ACTEON_AUTH_KEY environment variable is required when auth is enabled")?
+            .clone();
 
         let auth_path = config.auth.config_path.as_deref().unwrap_or("auth.toml");
 
@@ -691,13 +693,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// - Plain values are returned as-is regardless of whether a key is available.
 fn require_decrypt(
     value: &str,
-    master_key: Option<&[u8; 32]>,
+    master_key: Option<&MasterKey>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     if value.trim().starts_with("ENC[") {
         let mk = master_key.ok_or(
             "ACTEON_AUTH_KEY environment variable is required to decrypt ENC[...] config values",
         )?;
-        Ok(decrypt_value(value, mk)?)
+        Ok(decrypt_value(value, mk)?.expose_secret().clone())
     } else {
         Ok(value.to_owned())
     }
