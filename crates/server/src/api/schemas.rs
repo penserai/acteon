@@ -56,6 +56,36 @@ pub struct MetricsResponse {
     /// Task chains cancelled.
     #[schema(example = 0)]
     pub chains_cancelled: u64,
+    /// Embedding cache metrics (present when embedding provider is enabled).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<EmbeddingMetricsResponse>,
+}
+
+/// Embedding cache and provider metrics.
+///
+/// Helps operators tune cache capacity and TTL settings. A low hit rate
+/// suggests the cache is too small or the TTL too short. A high
+/// `fail_open_count` indicates the embedding API is unreliable.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct EmbeddingMetricsResponse {
+    /// Topic cache hits.
+    #[schema(example = 500)]
+    pub topic_cache_hits: u64,
+    /// Topic cache misses (required provider API call).
+    #[schema(example = 10)]
+    pub topic_cache_misses: u64,
+    /// Text cache hits.
+    #[schema(example = 200)]
+    pub text_cache_hits: u64,
+    /// Text cache misses (required provider API call).
+    #[schema(example = 50)]
+    pub text_cache_misses: u64,
+    /// Total embedding provider errors.
+    #[schema(example = 0)]
+    pub errors: u64,
+    /// Times fail-open returned similarity `0.0` instead of an error.
+    #[schema(example = 0)]
+    pub fail_open_count: u64,
 }
 
 /// Summary of a loaded rule.

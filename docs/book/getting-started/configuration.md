@@ -124,6 +124,19 @@ action_type = "send_email"
 # policy = "block"                  # "block" | "flag"
 # temperature = 0.0
 # max_tokens = 256
+
+# ─── Embedding / Semantic Routing ────────────────────────
+[embedding]
+# enabled = false
+# endpoint = "https://api.openai.com/v1/embeddings"
+# model = "text-embedding-3-small"
+# api_key = ""                      # Supports ENC[...] encrypted values
+# timeout_seconds = 10
+# fail_open = true                  # Return similarity 0.0 on API failure
+# topic_cache_capacity = 10000      # Max cached topic embeddings
+# topic_cache_ttl_seconds = 3600    # Topic cache TTL (1 hour)
+# text_cache_capacity = 1000        # Max cached text embeddings
+# text_cache_ttl_seconds = 60       # Text cache TTL (1 minute)
 ```
 
 ## Section Details
@@ -226,12 +239,33 @@ See [Authentication](../api/authentication.md) for auth config file format.
 
 See [Task Chains](../features/chains.md) for detailed chain configuration.
 
+### `[embedding]`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the embedding provider |
+| `endpoint` | string | `"https://api.openai.com/v1/embeddings"` | OpenAI-compatible embeddings API endpoint |
+| `model` | string | `"text-embedding-3-small"` | Embedding model name |
+| `api_key` | string | `""` | API key (supports `ENC[...]` encrypted values) |
+| `timeout_seconds` | u64 | `10` | Request timeout |
+| `fail_open` | bool | `true` | Return similarity `0.0` on API failure instead of erroring |
+| `topic_cache_capacity` | u64 | `10000` | Max cached topic embeddings |
+| `topic_cache_ttl_seconds` | u64 | `3600` | Topic cache TTL (1 hour) |
+| `text_cache_capacity` | u64 | `1000` | Max cached text embeddings |
+| `text_cache_ttl_seconds` | u64 | `60` | Text cache TTL (1 minute) |
+
+!!! tip "Secret Management"
+    The `api_key` field supports encrypted values. Set `ACTEON_AUTH_KEY` and use `acteon-server encrypt` to generate an `ENC[...]` token. See [Semantic Routing](../features/semantic-routing.md) for details.
+
+See [Semantic Routing](../features/semantic-routing.md) for feature documentation.
+
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `RUST_LOG` | Log verbosity (`error`, `warn`, `info`, `debug`, `trace`) |
 | `OPENAI_API_KEY` | API key for LLM guardrail evaluations |
+| `ACTEON_AUTH_KEY` | Hex-encoded 256-bit master key for decrypting `ENC[...]` config values |
 
 ## Example Configurations
 

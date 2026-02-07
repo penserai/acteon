@@ -261,6 +261,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Wire embedding provider for semantic routing if enabled.
+    let embedding_bridge: Option<Arc<acteon_embedding::EmbeddingBridge>> =
+        if config.embedding.enabled {
+            let api_key = require_decrypt(&config.embedding.api_key, master_key.as_ref())?;
+
+            let embedding_config = acteon_embedding::EmbeddingConfig {
+                endpoint: config.embedding.endpoint.clone(),
+                model: config.embedding.model.clone(),
+                api_key,
+                timeout_seconds: config.embedding.timeout_seconds,
+            };
+            let provider = acteon_embedding::HttpEmbeddingProvider::new(embedding_config)
+                .map_err(|e| format!("failed to create embedding provider: {e}"))?;
+            let bridge_config = acteon_embedding::EmbeddingBridgeConfig {
+                topic_cache_capacity: config.embedding.topic_cache_capacity,
+                topic_cache_ttl_seconds: config.embedding.topic_cache_ttl_seconds,
+                text_cache_capacity: config.embedding.text_cache_capacity,
+                text_cache_ttl_seconds: config.embedding.text_cache_ttl_seconds,
+                fail_open: config.embedding.fail_open,
+            };
+            let bridge = Arc::new(acteon_embedding::EmbeddingBridge::new(
+                Arc::new(provider),
+                bridge_config,
+            ));
+            builder = builder.embedding_support(
+                Arc::clone(&bridge) as Arc<dyn acteon_rules::EmbeddingEvalSupport>
+            );
+            info!(
+                model = %config.embedding.model,
+                fail_open = config.embedding.fail_open,
+                "embedding provider enabled for semantic routing"
+            );
+            Some(bridge)
+        } else {
+            None
+        };
+
     // Wire task chain definitions.
     for chain_toml in &config.chains.definitions {
         let on_failure = match chain_toml.on_failure.as_deref() {
@@ -334,6 +371,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!(count, directory = %dir, "loaded rules from directory");
         } else {
             tracing::warn!(directory = %dir, "rules directory does not exist");
+        }
+    }
+
+    // Pre-warm the embedding topic cache with topics from loaded rules.
+    if let Some(ref bridge) = embedding_bridge {
+        let topics: Vec<&str> = gateway
+            .rules()
+            .iter()
+            .flat_map(|r| r.condition.semantic_topics())
+            .collect();
+        if !topics.is_empty() {
+            info!(count = topics.len(), "pre-warming embedding topic cache");
+            bridge.warm_topics(&topics).await;
         }
     }
 
@@ -650,6 +700,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit: audit_store,
         auth: auth_provider,
         rate_limiter,
+        embedding: embedding_bridge
+            .as_ref()
+            .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
+        embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
     };
     let app = acteon_server::api::router(state);
 

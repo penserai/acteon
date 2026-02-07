@@ -61,6 +61,8 @@ impl TestServer {
             audit: Some(audit),
             auth: None,
             rate_limiter: None,
+            embedding: None,
+            embedding_metrics: None,
         };
 
         // Build router

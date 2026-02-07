@@ -105,6 +105,16 @@ Use LLM-based evaluation to gate actions through AI-powered guardrails. Block or
 
 <div class="card" markdown>
 
+### Semantic Routing
+
+Route actions by meaning, not just field values. Use vector embeddings and cosine similarity to match actions against topic descriptions in natural language.
+
+[Learn more](features/semantic-routing.md)
+
+</div>
+
+<div class="card" markdown>
+
 ### Enterprise Ready
 
 Multi-tenant isolation, API key and JWT authentication, hot-reload for rules and auth config, graceful shutdown, and comprehensive audit trails.

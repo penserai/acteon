@@ -113,6 +113,18 @@ impl RateLimiter {
             .unwrap_or(&self.config.tenants.default)
     }
 
+    /// Check and record a request for an arbitrary bucket with a custom tier.
+    ///
+    /// This is useful for endpoints that need their own tight rate limits
+    /// outside the normal caller/tenant tiers.
+    pub async fn check_custom_limit(
+        &self,
+        bucket: &str,
+        tier: &RateLimitTier,
+    ) -> Result<RateLimitResult, RateLimitExceeded> {
+        self.check_limit(bucket, tier).await
+    }
+
     /// Core rate limiting logic using the sliding window approximation algorithm.
     ///
     /// Algorithm (used by Cloudflare, has ~2% error margin):

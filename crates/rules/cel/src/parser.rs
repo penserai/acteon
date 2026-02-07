@@ -292,6 +292,33 @@ fn parse_function_or_ident(input: &str) -> IResult<&str, Expr> {
             }
             "int" => Expr::Call("to_int".to_owned(), args),
             "string" => Expr::Call("to_string".to_owned(), args),
+            #[allow(clippy::cast_precision_loss)]
+            "semantic_match" if args.len() == 2 || args.len() == 3 => {
+                let mut args_iter = args.into_iter();
+                let topic_expr = args_iter.next().expect("checked length");
+                let threshold_expr = args_iter.next().expect("checked length");
+                let text_field_expr = args_iter.next();
+
+                let Expr::String(topic) = topic_expr else {
+                    let mut full = vec![topic_expr, threshold_expr];
+                    full.extend(text_field_expr);
+                    return Ok((rest3, Expr::Call("semantic_match".to_owned(), full)));
+                };
+                let threshold = match threshold_expr {
+                    Expr::Float(f) => f,
+                    Expr::Int(i) => i as f64,
+                    other => {
+                        let mut full = vec![Expr::String(topic), other];
+                        full.extend(text_field_expr);
+                        return Ok((rest3, Expr::Call("semantic_match".to_owned(), full)));
+                    }
+                };
+                Expr::SemanticMatch {
+                    topic,
+                    threshold,
+                    text_field: text_field_expr.map(Box::new),
+                }
+            }
             _ => Expr::Call(ident.to_owned(), args),
         };
         return Ok((rest3, expr));
@@ -378,6 +405,39 @@ fn compile_method_call(receiver: Expr, method: &str, args: Vec<Expr>) -> Expr {
             Box::new(args.into_iter().next().expect("checked length")),
         ),
         "size" if args.is_empty() => Expr::Call("len".to_owned(), vec![receiver]),
+        #[allow(clippy::cast_precision_loss)]
+        "semanticMatch" if args.len() == 1 || args.len() == 2 => {
+            let mut args_iter = args.into_iter();
+            let topic_expr = args_iter.next().expect("checked length");
+            let Expr::String(topic) = topic_expr else {
+                return Expr::Call("semanticMatch".to_owned(), {
+                    let mut full = vec![receiver];
+                    full.push(topic_expr);
+                    full.extend(args_iter);
+                    full
+                });
+            };
+            let threshold = if let Some(t) = args_iter.next() {
+                match t {
+                    Expr::Float(f) => f,
+                    Expr::Int(i) => i as f64,
+                    _ => {
+                        return Expr::Call("semanticMatch".to_owned(), {
+                            let mut full = vec![receiver, Expr::String(topic), t];
+                            full.extend(args_iter);
+                            full
+                        });
+                    }
+                }
+            } else {
+                0.8
+            };
+            Expr::SemanticMatch {
+                topic,
+                threshold,
+                text_field: Some(Box::new(receiver)),
+            }
+        }
         _ => {
             // Generic method call: receiver becomes the first argument.
             let mut full_args = vec![receiver];
@@ -1338,6 +1398,79 @@ mod tests {
                 assert!(matches!(items[2], Expr::Bool(true)));
             }
             other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    // --- Semantic match ---
+
+    #[test]
+    fn parse_semantic_match_method_with_threshold() {
+        let expr = parse_cel_expr(r#"action.payload.message.semanticMatch("server issues", 0.75)"#)
+            .unwrap();
+        match expr {
+            Expr::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                assert_eq!(topic, "server issues");
+                assert!((threshold - 0.75).abs() < f64::EPSILON);
+                assert!(text_field.is_some());
+            }
+            other => panic!("expected SemanticMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_semantic_match_method_default_threshold() {
+        let expr =
+            parse_cel_expr(r#"action.payload.message.semanticMatch("server issues")"#).unwrap();
+        match expr {
+            Expr::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                assert_eq!(topic, "server issues");
+                assert!((threshold - 0.8).abs() < f64::EPSILON);
+                assert!(text_field.is_some());
+            }
+            other => panic!("expected SemanticMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_semantic_match_function_two_args() {
+        let expr = parse_cel_expr(r#"semantic_match("billing issues", 0.7)"#).unwrap();
+        match expr {
+            Expr::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                assert_eq!(topic, "billing issues");
+                assert!((threshold - 0.7).abs() < f64::EPSILON);
+                assert!(text_field.is_none());
+            }
+            other => panic!("expected SemanticMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_semantic_match_function_three_args() {
+        let expr =
+            parse_cel_expr(r#"semantic_match("billing issues", 0.7, action.payload.msg)"#).unwrap();
+        match expr {
+            Expr::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                assert_eq!(topic, "billing issues");
+                assert!((threshold - 0.7).abs() < f64::EPSILON);
+                assert!(text_field.is_some());
+            }
+            other => panic!("expected SemanticMatch, got {other:?}"),
         }
     }
 }

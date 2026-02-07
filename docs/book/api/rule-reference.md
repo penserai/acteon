@@ -85,6 +85,38 @@ condition:
         eq: "true"
 ```
 
+### Semantic Match
+
+Match actions based on meaning using vector embeddings:
+
+```yaml
+condition:
+  semantic_match: "Infrastructure issues, server problems"
+  threshold: 0.75
+  text_field: action.payload.message
+```
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `semantic_match` | string | Yes | — | Topic description to match against |
+| `threshold` | float | No | `0.8` | Minimum cosine similarity (0.0 to 1.0) |
+| `text_field` | string | No | — | Field path for the text. When omitted, the entire payload is used |
+
+`semantic_match` can be used inside `all` / `any` blocks:
+
+```yaml
+condition:
+  all:
+    - field: action.payload.severity
+      eq: "critical"
+    - semantic_match: "Infrastructure and server issues"
+      threshold: 0.7
+      text_field: action.payload.description
+```
+
+!!! note
+    Requires the `[embedding]` section in `acteon.toml`. See [Semantic Routing](../features/semantic-routing.md) for configuration details.
+
 ### Expression Functions
 
 ```yaml

@@ -69,6 +69,11 @@ AI-powered content evaluation and action gating.
 </div>
 
 <div class="card" markdown>
+### [Semantic Routing](semantic-routing.md)
+Route actions by meaning using vector embeddings and cosine similarity.
+</div>
+
+<div class="card" markdown>
 ### [Audit Trail](audit-trail.md)
 Comprehensive, searchable record of every action and its outcome.
 </div>

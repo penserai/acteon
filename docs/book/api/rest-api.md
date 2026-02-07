@@ -335,6 +335,51 @@ Force flush/close a group, triggering immediate notification.
 
 ---
 
+## Embeddings
+
+### `POST /v1/embeddings/similarity`
+
+Compute cosine similarity between a text and a topic using the configured embedding provider. Useful for testing semantic match thresholds before writing rules.
+
+**Rate limit:** 5 requests per minute per caller.
+
+**Required permission:** `Dispatch` (admin or operator role).
+
+**Request Body:**
+
+```json
+{
+  "text": "The database connection pool is exhausted and queries are timing out",
+  "topic": "Infrastructure issues, server problems"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `text` | string | Yes | The text to compare |
+| `topic` | string | Yes | The topic to compare against |
+
+**Response (200):**
+
+```json
+{
+  "similarity": 0.82,
+  "topic": "Infrastructure issues, server problems"
+}
+```
+
+**Error Responses:**
+
+| Status | Description |
+|--------|-------------|
+| `401` | Unauthorized |
+| `403` | Insufficient permissions |
+| `404` | Embedding provider not configured |
+| `429` | Rate limit exceeded |
+| `500` | Embedding computation failed |
+
+---
+
 ## Authentication
 
 ### `POST /v1/auth/login`
@@ -389,5 +434,6 @@ Revoke the current JWT token.
 | `GET` | `/v1/groups` | List groups |
 | `GET` | `/v1/groups/{group_key}` | Get group |
 | `DELETE` | `/v1/groups/{group_key}` | Flush group |
+| `POST` | `/v1/embeddings/similarity` | Compute embedding similarity |
 | `POST` | `/v1/auth/login` | Login |
 | `POST` | `/v1/auth/logout` | Logout |

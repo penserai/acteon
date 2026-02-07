@@ -12,13 +12,14 @@ use super::chains::{
     ChainCancelRequest, ChainDetailResponse, ChainStepStatus, ChainSummary, ListChainsResponse,
 };
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
+use super::embeddings::{SimilarityRequest, SimilarityResponse};
 use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
 };
 use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
 use super::schemas::{
-    ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest, ReloadResponse, RuleSummary,
-    SetEnabledRequest, SetEnabledResponse,
+    EmbeddingMetricsResponse, ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest,
+    ReloadResponse, RuleSummary, SetEnabledRequest, SetEnabledResponse,
 };
 
 #[derive(utoipa::OpenApi)]
@@ -38,7 +39,8 @@ use super::schemas::{
         (name = "Events", description = "Event lifecycle state management"),
         (name = "Groups", description = "Event group management for batched notifications"),
         (name = "Approvals", description = "Human-in-the-loop approval workflow"),
-        (name = "Chains", description = "Task chain orchestration")
+        (name = "Chains", description = "Task chain orchestration"),
+        (name = "Embeddings", description = "Embedding similarity testing")
     ),
     paths(
         super::health::health,
@@ -65,6 +67,7 @@ use super::schemas::{
         super::chains::list_chains,
         super::chains::get_chain,
         super::chains::cancel_chain,
+        super::embeddings::similarity,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -78,6 +81,8 @@ use super::schemas::{
         GroupSummary, ListGroupsResponse, GroupDetailResponse, FlushGroupResponse,
         ApprovalActionResponse, ApprovalStatusResponse, ApprovalQueryParams, ListApprovalsResponse,
         ChainSummary, ListChainsResponse, ChainDetailResponse, ChainStepStatus, ChainCancelRequest,
+        SimilarityRequest, SimilarityResponse,
+        EmbeddingMetricsResponse,
     ))
 )]
 pub struct ApiDoc;
