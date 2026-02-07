@@ -63,6 +63,19 @@ rules:
       ttl_seconds: 600
 "#;
 
+const WEBHOOK_REROUTE_RULES: &str = r#"
+rules:
+  # Reroute critical alerts from Slack to webhook for external integration
+  - name: reroute-critical-to-webhook
+    priority: 1
+    condition:
+      field: action.payload.severity
+      eq: "critical"
+    action:
+      type: reroute
+      target_provider: webhook
+"#;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔══════════════════════════════════════════════════════════════╗");
@@ -540,6 +553,76 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "\n  Final counts: Slack={}, PagerDuty={}",
         harness.provider("slack").unwrap().call_count(),
         harness.provider("pagerduty").unwrap().call_count(),
+    );
+
+    harness.teardown().await?;
+    println!("\n✓ Simulation cluster shut down\n");
+
+    // =========================================================================
+    // DEMO 7: Webhook Dispatch via Rerouting
+    // =========================================================================
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  DEMO 7: WEBHOOK DISPATCH VIA REROUTING");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    let harness = SimulationHarness::start(
+        SimulationConfig::builder()
+            .nodes(1)
+            .add_recording_provider("slack")
+            .add_recording_provider("webhook")
+            .add_rule_yaml(WEBHOOK_REROUTE_RULES)
+            .build(),
+    )
+    .await?;
+
+    println!("✓ Started simulation cluster");
+    println!("✓ Registered 'slack' and 'webhook' providers");
+    println!("✓ Loaded rule: reroute-critical-to-webhook\n");
+
+    // Warning alert - stays on Slack
+    let warning_alert = Action::new(
+        "monitoring",
+        "acme-corp",
+        "slack",
+        "alert",
+        serde_json::json!({
+            "severity": "warning",
+            "source": "api-gateway",
+            "message": "Response times elevated",
+            "webhook_url": "https://hooks.example.com/alerts"
+        }),
+    );
+
+    println!("→ Dispatching WARNING severity alert to 'slack'...");
+    let outcome = harness.dispatch(&warning_alert).await?;
+    println!("  Outcome: {:?}", outcome);
+    println!(
+        "  Slack called: {}, Webhook called: {}\n",
+        harness.provider("slack").unwrap().call_count(),
+        harness.provider("webhook").unwrap().call_count(),
+    );
+
+    // Critical alert - rerouted to webhook
+    let critical_alert = Action::new(
+        "monitoring",
+        "acme-corp",
+        "slack",
+        "alert",
+        serde_json::json!({
+            "severity": "critical",
+            "source": "database",
+            "message": "Primary database unreachable",
+            "webhook_url": "https://hooks.example.com/incidents"
+        }),
+    );
+
+    println!("→ Dispatching CRITICAL severity alert to 'slack'...");
+    let outcome = harness.dispatch(&critical_alert).await?;
+    println!("  Outcome: {:?}", outcome);
+    println!(
+        "  Slack called: {} (unchanged), Webhook called: {} (rerouted!)",
+        harness.provider("slack").unwrap().call_count(),
+        harness.provider("webhook").unwrap().call_count(),
     );
 
     harness.teardown().await?;
