@@ -126,9 +126,67 @@ func (c *Client) Dispatch(ctx context.Context, action *Action) (*ActionOutcome, 
 	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
 }
 
+// DispatchDryRun dispatches a single action in dry-run mode.
+// Rules are evaluated but the action is not executed and no state is mutated.
+func (c *Client) DispatchDryRun(ctx context.Context, action *Action) (*ActionOutcome, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dispatch?dry_run=true", action)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var outcome ActionOutcome
+		if err := json.Unmarshal(body, &outcome); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &outcome, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to parse error response"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
 // DispatchBatch dispatches multiple actions in a single request.
 func (c *Client) DispatchBatch(ctx context.Context, actions []*Action) ([]BatchResult, error) {
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dispatch/batch", actions)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var results []BatchResult
+		if err := json.Unmarshal(body, &results); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return results, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to parse error response"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DispatchBatchDryRun dispatches multiple actions in dry-run mode.
+// Rules are evaluated for each action but none are executed and no state is mutated.
+func (c *Client) DispatchBatchDryRun(ctx context.Context, actions []*Action) ([]BatchResult, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dispatch/batch?dry_run=true", actions)
 	if err != nil {
 		return nil, err
 	}
