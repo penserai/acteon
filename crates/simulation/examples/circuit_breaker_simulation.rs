@@ -413,6 +413,113 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n  [Scenario 4 passed]\n");
 
     // =========================================================================
+    // SCENARIO 5: Multi-Level Fallback Chain
+    // =========================================================================
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  SCENARIO 5: MULTI-LEVEL FALLBACK CHAIN");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    println!("  Demonstrates recursive fallback resolution: US -> EU -> AP.");
+    println!("  When US and EU are both down, traffic cascades to AP.\n");
+
+    let us_region =
+        Arc::new(RecordingProvider::new("region-us").with_failure_mode(FailureMode::Always));
+    let eu_region =
+        Arc::new(RecordingProvider::new("region-eu").with_failure_mode(FailureMode::Always));
+    let ap_region = Arc::new(RecordingProvider::new("region-ap"));
+
+    let gateway = build_gateway(
+        vec![
+            Arc::clone(&us_region),
+            Arc::clone(&eu_region),
+            Arc::clone(&ap_region),
+        ],
+        CircuitBreakerConfig {
+            failure_threshold: 2,
+            success_threshold: 1,
+            recovery_timeout: Duration::from_secs(3600),
+            fallback_provider: None,
+        },
+        vec![
+            (
+                "region-us".to_string(),
+                CircuitBreakerConfig {
+                    failure_threshold: 2,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("region-eu".to_string()),
+                },
+            ),
+            (
+                "region-eu".to_string(),
+                CircuitBreakerConfig {
+                    failure_threshold: 2,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("region-ap".to_string()),
+                },
+            ),
+        ],
+    )
+    .await;
+
+    // Trip both US and EU circuits (2 failures each).
+    println!("  Tripping US circuit...");
+    for _ in 0..2 {
+        let action = make_action("region-us");
+        let _ = gateway.dispatch(action, None).await?;
+    }
+    println!("  Tripping EU circuit...");
+    for _ in 0..2 {
+        let action = make_action("region-eu");
+        let _ = gateway.dispatch(action, None).await?;
+    }
+
+    let cb_registry = gateway.circuit_breakers().unwrap();
+    let us_state = cb_registry.get("region-us").unwrap().state().await;
+    let eu_state = cb_registry.get("region-eu").unwrap().state().await;
+    let ap_state = cb_registry.get("region-ap").unwrap().state().await;
+    println!("    region-us: {us_state}");
+    println!("    region-eu: {eu_state}");
+    println!("    region-ap: {ap_state}\n");
+
+    // Now send requests to US. They should cascade: US(open) -> EU(open) -> AP(closed).
+    println!("  Sending requests to 'region-us' (expecting cascade to 'region-ap')...");
+    for i in 1..=3 {
+        let action = make_action("region-us");
+        let outcome = gateway.dispatch(action, None).await?;
+        match &outcome {
+            ActionOutcome::Rerouted {
+                original_provider,
+                new_provider,
+                ..
+            } => {
+                println!("  Request {i}: REROUTED from '{original_provider}' to '{new_provider}'");
+            }
+            other => {
+                println!("  Request {i}: {:?}", outcome_summary(other));
+            }
+        }
+    }
+
+    assert_eq!(us_region.call_count(), 2, "US only called during tripping");
+    assert_eq!(eu_region.call_count(), 2, "EU only called during tripping");
+    assert_eq!(
+        ap_region.call_count(),
+        3,
+        "AP received all cascaded traffic"
+    );
+    println!(
+        "\n  Call counts: US={}, EU={}, AP={}",
+        us_region.call_count(),
+        eu_region.call_count(),
+        ap_region.call_count(),
+    );
+
+    gateway.shutdown().await;
+    println!("\n  [Scenario 5 passed]\n");
+
+    // =========================================================================
     // Summary
     // =========================================================================
     println!("╔══════════════════════════════════════════════════════════════╗");

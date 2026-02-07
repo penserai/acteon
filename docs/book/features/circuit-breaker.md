@@ -116,9 +116,9 @@ flowchart LR
     E --> G["Return Rerouted"]
 ```
 
-The fallback provider has its own independent circuit breaker. If the fallback's circuit is also open, the request returns `CircuitOpen`.
+Fallback chains are resolved recursively: if the fallback's circuit is also open and it has its own fallback configured, the gateway continues walking the chain until it finds a healthy provider or exhausts the chain. The `CircuitOpen` response includes a `fallback_chain` listing all fallback providers that were tried.
 
-Fallback provider names are validated at build time — the gateway will return an error if a `fallback_provider` references a provider that isn't registered, or references itself.
+Fallback provider names and chains are validated at build time — the gateway will return an error if a `fallback_provider` references a provider that isn't registered, references itself, or creates a cycle (e.g., A→B→C→A).
 
 ## Probe Limiting (Thundering Herd Prevention)
 
@@ -155,7 +155,7 @@ When the circuit is open and no fallback is configured:
 {
   "outcome": "CircuitOpen",
   "provider": "email",
-  "fallback_provider": null
+  "fallback_chain": []
 }
 ```
 

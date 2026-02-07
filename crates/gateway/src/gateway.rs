@@ -21,6 +21,7 @@ use acteon_state::{DistributedLock, KeyKind, StateKey, StateStore};
 
 use serde::{Deserialize, Serialize};
 
+use crate::circuit_breaker::CircuitBreakerRegistry;
 use crate::group_manager::GroupManager;
 
 use crate::error::GatewayError;
@@ -568,13 +569,107 @@ impl Gateway {
 
     // -- Private helpers ------------------------------------------------------
 
+    /// Walk the fallback chain for an open circuit, returning either the name
+    /// of a healthy fallback provider or the list of fallbacks that were tried.
+    async fn resolve_fallback_chain<'a>(
+        &self,
+        registry: &'a CircuitBreakerRegistry,
+        start: &'a str,
+    ) -> Result<&'a str, Vec<String>> {
+        let mut fallback_chain = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(start);
+        let mut current_name: &str = start;
+
+        loop {
+            let next_fallback = registry
+                .get(current_name)
+                .and_then(|cb| cb.config().fallback_provider.as_deref());
+
+            let Some(fallback_name) = next_fallback else {
+                break;
+            };
+
+            // Cycle detection (defense-in-depth; builder also validates).
+            if !visited.insert(fallback_name) {
+                break;
+            }
+
+            fallback_chain.push(fallback_name.to_string());
+
+            if self.providers.get(fallback_name).is_none() {
+                break;
+            }
+
+            // Check the fallback's circuit breaker.
+            if let Some(fallback_cb) = registry.get(fallback_name) {
+                let (fb_state, fb_transition) = fallback_cb.try_acquire_permit().await;
+                if let Some((_from, _to)) = fb_transition {
+                    self.metrics.increment_circuit_transitions();
+                }
+                if fb_state == crate::circuit_breaker::CircuitState::Open {
+                    current_name = fallback_name;
+                    continue;
+                }
+            }
+
+            // Fallback is available (no CB or CB is closed/half-open).
+            return Ok(fallback_name);
+        }
+
+        Err(fallback_chain)
+    }
+
+    /// Execute an action on a fallback provider and record the result.
+    async fn execute_on_fallback(
+        &self,
+        action: &Action,
+        registry: &CircuitBreakerRegistry,
+        target_name: &str,
+    ) -> ActionOutcome {
+        let target = self
+            .providers
+            .get(target_name)
+            .expect("fallback provider existence checked in resolve_fallback_chain");
+
+        debug!(
+            provider = %action.provider,
+            fallback = %target_name,
+            "circuit open, rerouting to fallback provider"
+        );
+        let result = self.executor.execute(action, target.as_ref()).await;
+
+        // Record result in the fallback provider's circuit breaker.
+        if let Some(fallback_cb) = registry.get(target_name) {
+            let fb_transition = match &result {
+                ActionOutcome::Executed(_) => fallback_cb.record_success().await,
+                ActionOutcome::Failed(err) if err.retryable => fallback_cb.record_failure().await,
+                _ => None,
+            };
+            if fb_transition.is_some() {
+                self.metrics.increment_circuit_transitions();
+            }
+        }
+
+        self.metrics.increment_circuit_fallbacks();
+        match result {
+            ActionOutcome::Executed(ref resp) => ActionOutcome::Rerouted {
+                original_provider: action.provider.to_string(),
+                new_provider: target_name.to_string(),
+                response: resp.clone(),
+            },
+            other => other,
+        }
+    }
+
     /// Look up the action's provider and execute through the executor.
     ///
     /// When a circuit breaker is configured for the provider and the circuit
     /// is open, the request is rejected immediately. If a fallback provider is
-    /// configured, the action is rerouted to the fallback instead.
+    /// configured, the gateway walks the fallback chain recursively until it
+    /// finds a healthy provider or exhausts the chain.
     async fn execute_action(&self, action: &Action) -> ActionOutcome {
-        // Check circuit breaker before executing.
+        // Check circuit breaker before executing — walk the fallback chain.
         if let Some(ref registry) = self.circuit_breakers
             && let Some(cb) = registry.get(action.provider.as_str())
         {
@@ -583,65 +678,23 @@ impl Gateway {
                 self.metrics.increment_circuit_transitions();
             }
             if state == crate::circuit_breaker::CircuitState::Open {
-                // Try fallback provider if configured.
-                if let Some(ref fallback_name) = cb.config().fallback_provider
-                    && let Some(fallback) = self.providers.get(fallback_name)
+                match self
+                    .resolve_fallback_chain(registry, action.provider.as_str())
+                    .await
                 {
-                    // Check the fallback provider's circuit breaker too.
-                    if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
-                        let (fb_state, fb_transition) = fallback_cb.try_acquire_permit().await;
-                        if let Some((_from, _to)) = fb_transition {
-                            self.metrics.increment_circuit_transitions();
-                        }
-                        if fb_state == crate::circuit_breaker::CircuitState::Open {
-                            // Fallback is also open — reject the request.
-                            self.metrics.increment_circuit_open();
-                            return ActionOutcome::CircuitOpen {
-                                provider: action.provider.to_string(),
-                                fallback_provider: Some(fallback_name.clone()),
-                            };
-                        }
+                    Ok(target_name) => {
+                        return self
+                            .execute_on_fallback(action, registry, target_name)
+                            .await;
                     }
-
-                    debug!(
-                        provider = %action.provider,
-                        fallback = %fallback_name,
-                        "circuit open, rerouting to fallback provider"
-                    );
-                    let result = self.executor.execute(action, fallback.as_ref()).await;
-
-                    // Record result in the fallback provider's circuit breaker.
-                    // Only retryable failures indicate provider health issues;
-                    // non-retryable errors (400, 401, 403) are client errors.
-                    if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
-                        let fb_transition = match &result {
-                            ActionOutcome::Executed(_) => fallback_cb.record_success().await,
-                            ActionOutcome::Failed(err) if err.retryable => {
-                                fallback_cb.record_failure().await
-                            }
-                            _ => None,
+                    Err(fallback_chain) => {
+                        self.metrics.increment_circuit_open();
+                        return ActionOutcome::CircuitOpen {
+                            provider: action.provider.to_string(),
+                            fallback_chain,
                         };
-                        if fb_transition.is_some() {
-                            self.metrics.increment_circuit_transitions();
-                        }
                     }
-
-                    self.metrics.increment_circuit_fallbacks();
-                    return match result {
-                        ActionOutcome::Executed(ref resp) => ActionOutcome::Rerouted {
-                            original_provider: action.provider.to_string(),
-                            new_provider: fallback_name.clone(),
-                            response: resp.clone(),
-                        },
-                        other => other,
-                    };
                 }
-                // No fallback — reject the request.
-                self.metrics.increment_circuit_open();
-                return ActionOutcome::CircuitOpen {
-                    provider: action.provider.to_string(),
-                    fallback_provider: cb.config().fallback_provider.clone(),
-                };
             }
         }
 
@@ -2594,10 +2647,10 @@ fn build_audit_record(
         }),
         ActionOutcome::CircuitOpen {
             provider,
-            fallback_provider,
+            fallback_chain,
         } => serde_json::json!({
             "provider": provider,
-            "fallback_provider": fallback_provider,
+            "fallback_chain": fallback_chain,
         }),
     };
 
@@ -4023,10 +4076,10 @@ mod tests {
         match outcome3 {
             ActionOutcome::CircuitOpen {
                 provider,
-                fallback_provider,
+                fallback_chain,
             } => {
                 assert_eq!(provider, "email");
-                assert!(fallback_provider.is_none());
+                assert!(fallback_chain.is_empty());
             }
             other => panic!("expected CircuitOpen, got {other:?}"),
         }
@@ -4307,5 +4360,218 @@ mod tests {
             registry.get("sms-fallback").unwrap().state().await,
             CircuitState::Closed
         );
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_multi_level_fallback() {
+        // A→B→C: A and B are open, C is healthy. Should reroute to C.
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(FailingMockProvider::new("provider-a")))
+            .provider(Arc::new(FailingMockProvider::new("provider-b")))
+            .provider(Arc::new(MockProvider::new("provider-c")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker_provider(
+                "provider-a",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("provider-b".into()),
+                },
+            )
+            .circuit_breaker_provider(
+                "provider-b",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("provider-c".into()),
+                },
+            )
+            .build()
+            .expect("gateway should build");
+
+        // Trip A's circuit.
+        let mut action = test_action();
+        action.provider = "provider-a".into();
+        let outcome = gw.dispatch(action.clone(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Failed(_)));
+
+        // Trip B's circuit.
+        action.provider = "provider-b".into();
+        let outcome = gw.dispatch(action.clone(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Failed(_)));
+
+        // Now dispatch to A. A is open, B is open, C is healthy → reroute to C.
+        action.provider = "provider-a".into();
+        let outcome = gw.dispatch(action, None).await.unwrap();
+        match outcome {
+            ActionOutcome::Rerouted {
+                original_provider,
+                new_provider,
+                ..
+            } => {
+                assert_eq!(original_provider, "provider-a");
+                assert_eq!(new_provider, "provider-c");
+            }
+            other => panic!("expected Rerouted to provider-c, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_full_chain_exhausted() {
+        // A→B→C: all three are open. Should return CircuitOpen with full chain.
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(FailingMockProvider::new("provider-a")))
+            .provider(Arc::new(FailingMockProvider::new("provider-b")))
+            .provider(Arc::new(FailingMockProvider::new("provider-c")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker_provider(
+                "provider-a",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("provider-b".into()),
+                },
+            )
+            .circuit_breaker_provider(
+                "provider-b",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("provider-c".into()),
+                },
+            )
+            .circuit_breaker_provider(
+                "provider-c",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: None,
+                },
+            )
+            .build()
+            .expect("gateway should build");
+
+        // Trip all three circuits.
+        let mut action = test_action();
+        for name in ["provider-a", "provider-b", "provider-c"] {
+            action.provider = name.into();
+            let outcome = gw.dispatch(action.clone(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Failed(_)));
+        }
+
+        // Dispatch to A. Entire chain is open → CircuitOpen.
+        action.provider = "provider-a".into();
+        let outcome = gw.dispatch(action, None).await.unwrap();
+        match outcome {
+            ActionOutcome::CircuitOpen {
+                provider,
+                fallback_chain,
+            } => {
+                assert_eq!(provider, "provider-a");
+                assert_eq!(fallback_chain, vec!["provider-b", "provider-c"]);
+            }
+            other => panic!("expected CircuitOpen with full chain, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_long_fallback_chain() {
+        // A→B→C→D: A, B, C open; D healthy. Should reroute to D.
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(FailingMockProvider::new("region-us")))
+            .provider(Arc::new(FailingMockProvider::new("region-eu")))
+            .provider(Arc::new(FailingMockProvider::new("region-ap")))
+            .provider(Arc::new(MockProvider::new("region-backup")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker_provider(
+                "region-us",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("region-eu".into()),
+                },
+            )
+            .circuit_breaker_provider(
+                "region-eu",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("region-ap".into()),
+                },
+            )
+            .circuit_breaker_provider(
+                "region-ap",
+                CircuitBreakerConfig {
+                    failure_threshold: 1,
+                    success_threshold: 1,
+                    recovery_timeout: Duration::from_secs(3600),
+                    fallback_provider: Some("region-backup".into()),
+                },
+            )
+            .build()
+            .expect("gateway should build");
+
+        // Trip first three circuits.
+        let mut action = test_action();
+        for name in ["region-us", "region-eu", "region-ap"] {
+            action.provider = name.into();
+            let outcome = gw.dispatch(action.clone(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Failed(_)));
+        }
+
+        // Dispatch to region-us → should cascade to region-backup.
+        action.provider = "region-us".into();
+        let outcome = gw.dispatch(action, None).await.unwrap();
+        match outcome {
+            ActionOutcome::Rerouted {
+                original_provider,
+                new_provider,
+                ..
+            } => {
+                assert_eq!(original_provider, "region-us");
+                assert_eq!(new_provider, "region-backup");
+            }
+            other => panic!("expected Rerouted to region-backup, got {other:?}"),
+        }
     }
 }

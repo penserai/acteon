@@ -370,6 +370,34 @@ impl GatewayBuilder {
 
             registry.register(name.as_str(), config);
         }
+
+        // Detect cycles in fallback chains (e.g., A→B→C→A).
+        // Build a map of provider → fallback for chain walking.
+        let fallback_map: HashMap<&str, &str> = registry
+            .providers()
+            .into_iter()
+            .filter_map(|name| {
+                registry
+                    .get(name)
+                    .and_then(|cb| cb.config().fallback_provider.as_deref())
+                    .map(|fb| (name, fb))
+            })
+            .collect();
+
+        for start in fallback_map.keys() {
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(*start);
+            let mut current = *start;
+            while let Some(&next) = fallback_map.get(current) {
+                if !visited.insert(next) {
+                    return Err(GatewayError::Configuration(format!(
+                        "circuit breaker fallback chain contains a cycle: {start} → … → {next} → …"
+                    )));
+                }
+                current = next;
+            }
+        }
+
         Ok(Some(registry))
     }
 
@@ -607,5 +635,72 @@ mod tests {
                 .to_string()
                 .contains("self-referencing fallback")
         );
+    }
+
+    #[test]
+    fn build_rejects_fallback_cycle() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(StubProvider::new("a")))
+            .provider(Arc::new(StubProvider::new("b")))
+            .provider(Arc::new(StubProvider::new("c")))
+            .circuit_breaker_provider(
+                "a",
+                CircuitBreakerConfig {
+                    fallback_provider: Some("b".into()),
+                    ..CircuitBreakerConfig::default()
+                },
+            )
+            .circuit_breaker_provider(
+                "b",
+                CircuitBreakerConfig {
+                    fallback_provider: Some("c".into()),
+                    ..CircuitBreakerConfig::default()
+                },
+            )
+            .circuit_breaker_provider(
+                "c",
+                CircuitBreakerConfig {
+                    fallback_provider: Some("a".into()),
+                    ..CircuitBreakerConfig::default()
+                },
+            )
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("cycle"),
+            "should detect A→B→C→A cycle"
+        );
+    }
+
+    #[test]
+    fn build_accepts_valid_fallback_chain() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(StubProvider::new("a")))
+            .provider(Arc::new(StubProvider::new("b")))
+            .provider(Arc::new(StubProvider::new("c")))
+            .circuit_breaker_provider(
+                "a",
+                CircuitBreakerConfig {
+                    fallback_provider: Some("b".into()),
+                    ..CircuitBreakerConfig::default()
+                },
+            )
+            .circuit_breaker_provider(
+                "b",
+                CircuitBreakerConfig {
+                    fallback_provider: Some("c".into()),
+                    ..CircuitBreakerConfig::default()
+                },
+            )
+            .build();
+        assert!(result.is_ok(), "A→B→C (no cycle) should be accepted");
     }
 }

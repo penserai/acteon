@@ -85,8 +85,9 @@ pub enum ActionOutcome {
     CircuitOpen {
         /// Name of the provider whose circuit is open.
         provider: String,
-        /// Fallback provider that was attempted, if any.
-        fallback_provider: Option<String>,
+        /// Chain of fallback providers that were tried (all had open circuits).
+        #[serde(default)]
+        fallback_chain: Vec<String>,
     },
 }
 
@@ -270,12 +271,13 @@ mod tests {
     fn outcome_circuit_open() {
         let outcome = ActionOutcome::CircuitOpen {
             provider: "email".into(),
-            fallback_provider: Some("webhook".into()),
+            fallback_chain: vec!["webhook".into(), "sms".into()],
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("CircuitOpen"));
         assert!(json.contains("email"));
         assert!(json.contains("webhook"));
+        assert!(json.contains("sms"));
         let back: ActionOutcome = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, ActionOutcome::CircuitOpen { .. }));
     }
@@ -284,7 +286,7 @@ mod tests {
     fn outcome_circuit_open_no_fallback() {
         let outcome = ActionOutcome::CircuitOpen {
             provider: "slack".into(),
-            fallback_provider: None,
+            fallback_chain: vec![],
         };
         let json = serde_json::to_string(&outcome).unwrap();
         assert!(json.contains("slack"));
@@ -292,10 +294,10 @@ mod tests {
         match back {
             ActionOutcome::CircuitOpen {
                 provider,
-                fallback_provider,
+                fallback_chain,
             } => {
                 assert_eq!(provider, "slack");
-                assert!(fallback_provider.is_none());
+                assert!(fallback_chain.is_empty());
             }
             _ => panic!("expected CircuitOpen"),
         }
