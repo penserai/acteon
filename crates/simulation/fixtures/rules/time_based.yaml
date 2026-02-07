@@ -1,0 +1,70 @@
+rules:
+  - name: suppress-outside-business-hours
+    priority: 1
+    description: "Suppress non-critical email outside Mon-Fri 9-17 UTC"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - any:
+            - field: time.weekday_num
+              gt: 5
+            - field: time.hour
+              lt: 9
+            - field: time.hour
+              gte: 17
+    action:
+      type: suppress
+
+  - name: reroute-weekend-alerts
+    priority: 2
+    description: "Reroute alerts to on-call PagerDuty during weekends"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "alert"
+        - field: time.weekday_num
+          gt: 5
+    action:
+      type: reroute
+      target_provider: pagerduty
+
+  - name: throttle-night-notifications
+    priority: 5
+    description: "Limit notifications to 10/hour during night hours"
+    condition:
+      any:
+        - field: time.hour
+          lt: 8
+        - field: time.hour
+          gte: 22
+    action:
+      type: throttle
+      max_count: 10
+      window_seconds: 3600
+
+  - name: suppress-saturday
+    priority: 10
+    description: "Suppress all non-alert actions on Saturday"
+    condition:
+      field: time.weekday
+      eq: "Saturday"
+    action:
+      type: suppress
+
+  - name: business-hours-eastern
+    priority: 15
+    description: "Allow email only during Eastern business hours Mon-Fri 9-17"
+    timezone: "US/Eastern"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - field: time.hour
+          gte: 9
+        - field: time.hour
+          lt: 17
+        - field: time.weekday_num
+          lte: 5
+    action:
+      type: allow

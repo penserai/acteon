@@ -1473,4 +1473,56 @@ mod tests {
             other => panic!("expected SemanticMatch, got {other:?}"),
         }
     }
+
+    // --- Time-based expressions ---
+
+    #[test]
+    fn parse_time_hour_field_access() {
+        let expr = parse_cel_expr("time.hour").unwrap();
+        match expr {
+            Expr::Field(base, field) => {
+                assert!(matches!(*base, Expr::Ident(s) if s == "time"));
+                assert_eq!(field, "hour");
+            }
+            other => panic!("expected Field(Ident(time), hour), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_time_business_hours_condition() {
+        let expr =
+            parse_cel_expr("time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5").unwrap();
+        // Should be: And(And(Ge(time.hour, 9), Lt(time.hour, 17)), Le(time.weekday_num, 5))
+        match expr {
+            Expr::Binary(BinaryOp::And, _, _) => {} // nested AND structure
+            other => panic!("expected And(...), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_time_weekday_comparison() {
+        let expr = parse_cel_expr(r#"time.weekday != "Saturday""#).unwrap();
+        match expr {
+            Expr::Binary(BinaryOp::Ne, lhs, rhs) => {
+                match *lhs {
+                    Expr::Field(base, ref field) => {
+                        assert!(matches!(*base, Expr::Ident(ref s) if s == "time"));
+                        assert_eq!(field, "weekday");
+                    }
+                    ref other => panic!("expected Field, got {other:?}"),
+                }
+                assert!(matches!(*rhs, Expr::String(ref s) if s == "Saturday"));
+            }
+            other => panic!("expected Binary(Ne, ...), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_time_combined_with_action() {
+        let expr = parse_cel_expr(
+            r#"action.action_type == "send_email" && time.hour >= 9 && time.hour < 17"#,
+        )
+        .unwrap();
+        assert!(matches!(expr, Expr::Binary(BinaryOp::And, _, _)));
+    }
 }

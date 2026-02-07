@@ -118,6 +118,12 @@ pub struct Rule {
     /// Arbitrary key-value metadata for the rule (e.g. `llm_policy` overrides).
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    /// Optional IANA timezone name for time-based conditions (e.g. `"US/Eastern"`).
+    ///
+    /// When set, `time.*` fields are evaluated in this timezone instead of UTC.
+    /// Overrides the gateway-level `default_timezone`.
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 impl Rule {
@@ -135,6 +141,7 @@ impl Rule {
             source: RuleSource::Inline,
             version: 0,
             metadata: HashMap::new(),
+            timezone: None,
         }
     }
 
@@ -177,6 +184,13 @@ impl Rule {
     #[must_use]
     pub fn with_metadata(mut self, metadata: HashMap<String, String>) -> Self {
         self.metadata = metadata;
+        self
+    }
+
+    /// Set the IANA timezone for time-based conditions (e.g. `"US/Eastern"`).
+    #[must_use]
+    pub fn with_timezone(mut self, tz: impl Into<String>) -> Self {
+        self.timezone = Some(tz.into());
         self
     }
 }
@@ -328,6 +342,33 @@ mod tests {
             back.metadata.get("llm_policy").unwrap(),
             "Block DROP statements"
         );
+    }
+
+    #[test]
+    fn rule_with_timezone() {
+        let rule =
+            Rule::new("tz-rule", Expr::Bool(true), RuleAction::Allow).with_timezone("US/Eastern");
+        assert_eq!(rule.timezone.as_deref(), Some("US/Eastern"));
+    }
+
+    #[test]
+    fn rule_timezone_serde_roundtrip() {
+        let rule = Rule::new("tz-rule", Expr::Bool(true), RuleAction::Allow)
+            .with_timezone("Europe/Berlin");
+        let json = serde_json::to_string(&rule).unwrap();
+        let back: Rule = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.timezone.as_deref(), Some("Europe/Berlin"));
+    }
+
+    #[test]
+    fn rule_timezone_serde_default() {
+        let rule = Rule::new("test", Expr::Bool(true), RuleAction::Allow);
+        let mut json_val: serde_json::Value = serde_json::to_value(&rule).unwrap();
+        json_val.as_object_mut().unwrap().remove("timezone");
+        let json_str = serde_json::to_string(&json_val).unwrap();
+
+        let back: Rule = serde_json::from_str(&json_str).unwrap();
+        assert!(back.timezone.is_none());
     }
 
     #[test]

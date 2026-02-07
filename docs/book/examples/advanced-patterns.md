@@ -344,3 +344,111 @@ curl -s -X POST http://localhost:8080/v1/dispatch \
 ```bash
 cargo run -p acteon-simulation --example webhook_simulation
 ```
+
+---
+
+## Time-Based Rule Activation
+
+Suppress notifications outside business hours and reroute weekend alerts to an on-call provider.
+
+### Rules
+
+```yaml title="rules/time_based.yaml"
+rules:
+  # Suppress non-critical email outside business hours (9-17 UTC, Mon-Fri)
+  - name: suppress-outside-hours
+    priority: 1
+    description: "Suppress email outside Mon-Fri 9-17 UTC"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - any:
+            - field: time.weekday_num
+              gt: 5
+            - field: time.hour
+              lt: 9
+            - field: time.hour
+              gte: 17
+    action:
+      type: suppress
+
+  # Reroute alerts to PagerDuty on weekends
+  - name: reroute-weekend-alerts
+    priority: 2
+    description: "Reroute alerts to on-call during weekends"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "alert"
+        - field: time.weekday_num
+          gt: 5
+    action:
+      type: reroute
+      target_provider: pagerduty
+
+  # Throttle notifications more aggressively at night
+  - name: throttle-night-notifications
+    priority: 5
+    description: "Limit to 10/hour outside business hours"
+    condition:
+      any:
+        - field: time.hour
+          lt: 8
+        - field: time.hour
+          gte: 20
+    action:
+      type: throttle
+      max_count: 10
+      window_seconds: 3600
+```
+
+### CEL Equivalent
+
+```yaml title="rules/time_based.cel"
+rules:
+  - name: suppress-outside-hours
+    priority: 1
+    condition: 'action.action_type == "send_email" && (time.weekday_num > 5 || time.hour < 9 || time.hour >= 17)'
+    action:
+      type: suppress
+
+  - name: reroute-weekend-alerts
+    priority: 2
+    condition: 'action.action_type == "alert" && time.weekday_num > 5'
+    action:
+      type: reroute
+      target_provider: pagerduty
+```
+
+### Dispatch
+
+```bash
+# During business hours → executed normally
+curl -s -X POST http://localhost:8080/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "notifications",
+    "tenant": "acme-corp",
+    "provider": "email",
+    "action_type": "send_email",
+    "payload": {"to": "user@example.com", "subject": "Weekly report"}
+  }' | jq .
+
+# Test what would happen with dry-run
+curl -s -X POST "http://localhost:8080/v1/dispatch?dry_run=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "notifications",
+    "tenant": "acme-corp",
+    "provider": "email",
+    "action_type": "send_email",
+    "payload": {"to": "user@example.com"}
+  }' | jq .
+```
+
+### Simulation
+
+```bash
+cargo run -p acteon-simulation --example time_based_simulation
+```

@@ -66,15 +66,17 @@ Implementation: A background task polls for due actions (similar to the
 existing group flush mechanism). State backends already support TTLs and
 scan operations.
 
-### Cron-Based Rule Activation
+### Cron-Based Rule Activation — IMPLEMENTED
 Rules that only apply during certain time windows. Examples:
 - Suppress non-critical alerts outside business hours
 - Reroute to on-call provider during weekends
 - Enable maintenance-mode suppression on a schedule
 
-Currently conditions are purely data-driven; adding temporal conditions
-(`time.hour >= 9 && time.hour < 17 && time.weekday != "Saturday"`) would
-be powerful without adding much complexity to the rule engine.
+**Implemented**: The rule engine exposes a `time` map with fields `hour`,
+`minute`, `second`, `day`, `month`, `year`, `weekday`, `weekday_num`, and
+`timestamp`. Works in both YAML (`field: time.hour`) and CEL
+(`time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5`) frontends.
+See [Time-Based Rules](book/features/time-based-rules.md) for full docs.
 
 ### Recurring Actions
 Define an action that fires on a cron schedule. Turns Acteon into a
@@ -297,15 +299,15 @@ API surface is ergonomic for library consumers.
 
 Ranked by impact-to-effort ratio:
 
-| Priority | Feature | Effort | Impact | Rationale |
-|----------|---------|--------|--------|-----------|
-| 1 | Generic Webhook Provider | Low | High | Unlocks integration with any HTTP service |
-| 2 | Dry-Run Mode | Low | High | One API parameter, reuses existing rule evaluation |
-| 3 | Circuit Breaker | Medium | High | Critical for production reliability |
-| 4 | Delayed/Scheduled Actions | Medium | High | Opens a whole new class of use cases |
-| 5 | OpenTelemetry Tracing | Medium | High | Table-stakes for enterprise observability |
-| 6 | Field-Level Audit Redaction | Low | Medium | Important for compliance, simple to implement |
-| 7 | Cron-Based Rule Activation | Low | Medium | Natural extension of existing rule engine |
-| 8 | Action Replay | Medium | Medium | High value during incidents |
-| 9 | WebSocket/SSE Stream | Medium | Medium | Enables real-time dashboards |
-| 10 | Conditional Chain Branching | Medium | Medium | Significant workflow upgrade |
+| Priority | Feature | Effort | Impact | Status |
+|----------|---------|--------|--------|--------|
+| 1 | Generic Webhook Provider | Low | High | **DONE** |
+| 2 | Dry-Run Mode | Low | High | **DONE** |
+| 3 | Circuit Breaker | Medium | High | Pending |
+| 4 | Delayed/Scheduled Actions | Medium | High | Pending |
+| 5 | OpenTelemetry Tracing | Medium | High | Pending |
+| 6 | Field-Level Audit Redaction | Low | Medium | **DONE** |
+| 7 | Cron-Based Rule Activation | Low | Medium | **DONE** |
+| 8 | Action Replay | Medium | Medium | Pending |
+| 9 | WebSocket/SSE Stream | Medium | Medium | Pending |
+| 10 | Conditional Chain Branching | Medium | Medium | Pending |

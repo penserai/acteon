@@ -83,4 +83,9 @@ Comprehensive, searchable record of every action and its outcome.
 Test rules without executing actions — see what *would* happen before it happens.
 </div>
 
+<div class="card" markdown>
+### [Time-Based Rules](time-based-rules.md)
+Apply rules based on time of day, day of week, or date — business hours, weekend routing, maintenance windows.
+</div>
+
 </div>

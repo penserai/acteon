@@ -1,850 +1,12 @@
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use regex::Regex;
-use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
-use acteon_state::{KeyKind, StateKey};
-
-use crate::engine::builtins::call_builtin;
 use crate::engine::context::EvalContext;
+use crate::engine::eval::eval;
+use crate::engine::verdict::{RuleVerdict, action_to_verdict};
 use crate::error::RuleError;
-use crate::ir::expr::{BinaryOp, Expr, UnaryOp};
-use crate::ir::rule::{Rule, RuleAction};
-
-/// Runtime value produced by expression evaluation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Value {
-    /// The null value.
-    Null,
-    /// A boolean value.
-    Bool(bool),
-    /// A 64-bit signed integer.
-    Int(i64),
-    /// A 64-bit floating-point number.
-    Float(f64),
-    /// A UTF-8 string.
-    String(String),
-    /// An ordered list of values.
-    List(Vec<Value>),
-    /// A string-keyed map of values.
-    Map(HashMap<String, Value>),
-}
-
-impl Value {
-    /// Convert a `serde_json::Value` into a runtime `Value`.
-    pub fn from_json(json: serde_json::Value) -> Self {
-        match json {
-            serde_json::Value::Null => Self::Null,
-            serde_json::Value::Bool(b) => Self::Bool(b),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    Self::Int(i)
-                } else if let Some(f) = n.as_f64() {
-                    Self::Float(f)
-                } else {
-                    Self::Null
-                }
-            }
-            serde_json::Value::String(s) => Self::String(s),
-            serde_json::Value::Array(arr) => {
-                Self::List(arr.into_iter().map(Self::from_json).collect())
-            }
-            serde_json::Value::Object(obj) => Self::Map(
-                obj.into_iter()
-                    .map(|(k, v)| (k, Self::from_json(v)))
-                    .collect(),
-            ),
-        }
-    }
-
-    /// Returns `true` if this value is considered truthy.
-    ///
-    /// - `Null` is falsy.
-    /// - `Bool` is its own truthiness.
-    /// - `Int(0)` and `Float(0.0)` are falsy.
-    /// - Empty strings, lists, and maps are falsy.
-    pub fn is_truthy(&self) -> bool {
-        match self {
-            Self::Null => false,
-            Self::Bool(b) => *b,
-            Self::Int(n) => *n != 0,
-            Self::Float(f) => *f != 0.0,
-            Self::String(s) => !s.is_empty(),
-            Self::List(v) => !v.is_empty(),
-            Self::Map(m) => !m.is_empty(),
-        }
-    }
-
-    /// Returns a string representation of the value type.
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Self::Null => "null",
-            Self::Bool(_) => "bool",
-            Self::Int(_) => "int",
-            Self::Float(_) => "float",
-            Self::String(_) => "string",
-            Self::List(_) => "list",
-            Self::Map(_) => "map",
-        }
-    }
-
-    /// Returns a human-readable display string for the value.
-    pub fn display_string(&self) -> String {
-        match self {
-            Self::Null => "null".to_owned(),
-            Self::Bool(b) => b.to_string(),
-            Self::Int(n) => n.to_string(),
-            Self::Float(f) => f.to_string(),
-            Self::String(s) => s.clone(),
-            Self::List(v) => format!("{v:?}"),
-            Self::Map(m) => format!("{m:?}"),
-        }
-    }
-
-    /// Access a field by name on this value (for Map values).
-    fn field(&self, name: &str) -> Result<Self, RuleError> {
-        match self {
-            Self::Map(m) => Ok(m.get(name).cloned().unwrap_or(Self::Null)),
-            _ => Err(RuleError::TypeError(format!(
-                "cannot access field '{name}' on {}",
-                self.type_name()
-            ))),
-        }
-    }
-
-    /// Access an index on this value (for List and Map values).
-    #[allow(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap
-    )]
-    fn index(&self, idx: &Self) -> Result<Self, RuleError> {
-        match (self, idx) {
-            (Self::List(v), Self::Int(i)) => {
-                let index = if *i < 0 {
-                    (v.len() as i64 + i) as usize
-                } else {
-                    *i as usize
-                };
-                Ok(v.get(index).cloned().unwrap_or(Self::Null))
-            }
-            (Self::Map(m), Self::String(key)) => Ok(m.get(key).cloned().unwrap_or(Self::Null)),
-            _ => Err(RuleError::TypeError(format!(
-                "cannot index {} with {}",
-                self.type_name(),
-                idx.type_name()
-            ))),
-        }
-    }
-}
-
-/// Recursively evaluate an expression against the provided context.
-pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError> {
-    match expr {
-        Expr::Null => Ok(Value::Null),
-        Expr::Bool(b) => Ok(Value::Bool(*b)),
-        Expr::Int(n) => Ok(Value::Int(*n)),
-        Expr::Float(f) => Ok(Value::Float(*f)),
-        Expr::String(s) => Ok(Value::String(s.clone())),
-
-        Expr::List(items) => {
-            let mut result = Vec::with_capacity(items.len());
-            for item in items {
-                result.push(Box::pin(eval(item, ctx)).await?);
-            }
-            Ok(Value::List(result))
-        }
-
-        Expr::Map(entries) => {
-            let mut result = HashMap::with_capacity(entries.len());
-            for (key, value) in entries {
-                result.insert(key.clone(), Box::pin(eval(value, ctx)).await?);
-            }
-            Ok(Value::Map(result))
-        }
-
-        Expr::Ident(name) => resolve_ident(name, ctx),
-
-        Expr::Field(base, field) => {
-            let base_val = Box::pin(eval(base, ctx)).await?;
-            base_val.field(field)
-        }
-
-        Expr::Index(base, index) => {
-            let base_val = Box::pin(eval(base, ctx)).await?;
-            let index_val = Box::pin(eval(index, ctx)).await?;
-            base_val.index(&index_val)
-        }
-
-        Expr::Unary(op, inner) => {
-            let val = Box::pin(eval(inner, ctx)).await?;
-            eval_unary(*op, &val)
-        }
-
-        Expr::Binary(op, lhs, rhs) => eval_binary(*op, lhs, rhs, ctx).await,
-
-        Expr::Ternary(cond, then_branch, else_branch) => {
-            let cond_val = Box::pin(eval(cond, ctx)).await?;
-            if cond_val.is_truthy() {
-                Box::pin(eval(then_branch, ctx)).await
-            } else {
-                Box::pin(eval(else_branch, ctx)).await
-            }
-        }
-
-        Expr::Call(name, args) => {
-            let mut evaluated_args = Vec::with_capacity(args.len());
-            for arg in args {
-                evaluated_args.push(Box::pin(eval(arg, ctx)).await?);
-            }
-            call_builtin(name, &evaluated_args)
-        }
-
-        Expr::All(exprs) => {
-            for e in exprs {
-                let val = Box::pin(eval(e, ctx)).await?;
-                if !val.is_truthy() {
-                    return Ok(Value::Bool(false));
-                }
-            }
-            Ok(Value::Bool(true))
-        }
-
-        Expr::Any(exprs) => {
-            for e in exprs {
-                let val = Box::pin(eval(e, ctx)).await?;
-                if val.is_truthy() {
-                    return Ok(Value::Bool(true));
-                }
-            }
-            Ok(Value::Bool(false))
-        }
-
-        Expr::StateGet(key_pattern) => eval_state_get(key_pattern, ctx).await,
-        Expr::StateCounter(key_pattern) => eval_state_counter(key_pattern, ctx).await,
-        Expr::StateTimeSince(key_pattern) => eval_state_time_since(key_pattern, ctx).await,
-
-        Expr::HasActiveEvent {
-            event_type,
-            label_value,
-        } => eval_has_active_event(event_type, label_value.as_deref(), ctx).await,
-        Expr::GetEventState(fingerprint_expr) => eval_get_event_state(fingerprint_expr, ctx).await,
-        Expr::EventInState { fingerprint, state } => {
-            eval_event_in_state(fingerprint, state, ctx).await
-        }
-
-        Expr::SemanticMatch {
-            topic,
-            threshold,
-            text_field,
-        } => eval_semantic_match(topic, *threshold, text_field.as_deref(), ctx).await,
-    }
-}
-
-/// Resolve a top-level identifier to a value from the evaluation context.
-fn resolve_ident(name: &str, ctx: &EvalContext<'_>) -> Result<Value, RuleError> {
-    match name {
-        "action" => {
-            let json = serde_json::to_value(ctx.action)
-                .map_err(|e| RuleError::Evaluation(format!("failed to serialize action: {e}")))?;
-            Ok(Value::from_json(json))
-        }
-        "env" | "environment" => {
-            let map: HashMap<String, Value> = ctx
-                .environment
-                .iter()
-                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-                .collect();
-            Ok(Value::Map(map))
-        }
-        "now" => Ok(Value::Int(ctx.now.timestamp())),
-        _ => {
-            // Try environment lookup as a shortcut.
-            if let Some(val) = ctx.environment.get(name) {
-                return Ok(Value::String(val.clone()));
-            }
-            Err(RuleError::UndefinedVariable(name.to_owned()))
-        }
-    }
-}
-
-/// Evaluate a unary operation on a value.
-fn eval_unary(op: UnaryOp, val: &Value) -> Result<Value, RuleError> {
-    match op {
-        UnaryOp::Not => Ok(Value::Bool(!val.is_truthy())),
-        UnaryOp::Neg => match val {
-            Value::Int(n) => Ok(Value::Int(-n)),
-            Value::Float(f) => Ok(Value::Float(-f)),
-            _ => Err(RuleError::TypeError(format!(
-                "cannot negate {}",
-                val.type_name()
-            ))),
-        },
-    }
-}
-
-/// Evaluate a binary operation with short-circuit semantics for And/Or.
-async fn eval_binary(
-    op: BinaryOp,
-    lhs: &Expr,
-    rhs: &Expr,
-    ctx: &EvalContext<'_>,
-) -> Result<Value, RuleError> {
-    // Short-circuit for logical operators.
-    match op {
-        BinaryOp::And => {
-            let left = Box::pin(eval(lhs, ctx)).await?;
-            if !left.is_truthy() {
-                return Ok(Value::Bool(false));
-            }
-            let right = Box::pin(eval(rhs, ctx)).await?;
-            return Ok(Value::Bool(right.is_truthy()));
-        }
-        BinaryOp::Or => {
-            let left = Box::pin(eval(lhs, ctx)).await?;
-            if left.is_truthy() {
-                return Ok(Value::Bool(true));
-            }
-            let right = Box::pin(eval(rhs, ctx)).await?;
-            return Ok(Value::Bool(right.is_truthy()));
-        }
-        _ => {}
-    }
-
-    let left = Box::pin(eval(lhs, ctx)).await?;
-    let right = Box::pin(eval(rhs, ctx)).await?;
-
-    match op {
-        // Arithmetic
-        BinaryOp::Add => eval_add(&left, &right),
-        BinaryOp::Sub => eval_arithmetic(&left, &right, |a, b| a - b, |a, b| a - b, "subtract"),
-        BinaryOp::Mul => eval_arithmetic(&left, &right, |a, b| a * b, |a, b| a * b, "multiply"),
-        BinaryOp::Div => eval_div(&left, &right),
-        BinaryOp::Mod => eval_mod(&left, &right),
-
-        // Comparison
-        BinaryOp::Eq => Ok(Value::Bool(values_equal(&left, &right))),
-        BinaryOp::Ne => Ok(Value::Bool(!values_equal(&left, &right))),
-        BinaryOp::Lt => eval_compare(&left, &right, std::cmp::Ordering::is_lt),
-        BinaryOp::Le => eval_compare(&left, &right, std::cmp::Ordering::is_le),
-        BinaryOp::Gt => eval_compare(&left, &right, std::cmp::Ordering::is_gt),
-        BinaryOp::Ge => eval_compare(&left, &right, std::cmp::Ordering::is_ge),
-
-        // String operations
-        BinaryOp::Contains => eval_contains(&left, &right),
-        BinaryOp::StartsWith => eval_starts_with(&left, &right),
-        BinaryOp::EndsWith => eval_ends_with(&left, &right),
-        BinaryOp::Matches => eval_matches(&left, &right),
-        BinaryOp::In => eval_in(&left, &right),
-
-        // Already handled above, but needed for exhaustiveness.
-        BinaryOp::And | BinaryOp::Or => unreachable!(),
-    }
-}
-
-/// Add two values (supports int, float, and string concatenation).
-#[allow(clippy::cast_precision_loss)]
-fn eval_add(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(*b))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 + b)),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a + *b as f64)),
-        (Value::String(a), Value::String(b)) => Ok(Value::String(format!("{a}{b}"))),
-        _ => Err(RuleError::TypeError(format!(
-            "cannot add {} and {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// Generic arithmetic on two numeric values.
-#[allow(clippy::cast_precision_loss)]
-fn eval_arithmetic(
-    left: &Value,
-    right: &Value,
-    int_op: fn(i64, i64) -> i64,
-    float_op: fn(f64, f64) -> f64,
-    op_name: &str,
-) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(*a, *b))),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(float_op(*a, *b))),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(float_op(*a as f64, *b))),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(float_op(*a, *b as f64))),
-        _ => Err(RuleError::TypeError(format!(
-            "cannot {op_name} {} and {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// Division with zero-check.
-#[allow(clippy::cast_precision_loss)]
-fn eval_div(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::Int(_) | Value::Float(_), Value::Int(0)) => {
-            Err(RuleError::Evaluation("division by zero".into()))
-        }
-        (Value::Int(_) | Value::Float(_), Value::Float(f)) if *f == 0.0 => {
-            Err(RuleError::Evaluation("division by zero".into()))
-        }
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a / b)),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 / b)),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a / *b as f64)),
-        _ => Err(RuleError::TypeError(format!(
-            "cannot divide {} by {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// Modulo with zero-check.
-#[allow(clippy::cast_precision_loss)]
-fn eval_mod(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::Int(_), Value::Int(0)) => Err(RuleError::Evaluation("modulo by zero".into())),
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a % b)),
-        (Value::Float(a), Value::Float(b)) => Ok(Value::Float(a % b)),
-        (Value::Int(a), Value::Float(b)) => Ok(Value::Float(*a as f64 % b)),
-        (Value::Float(a), Value::Int(b)) => Ok(Value::Float(a % *b as f64)),
-        _ => Err(RuleError::TypeError(format!(
-            "cannot modulo {} by {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// Check equality of two values, with type coercion for int/float.
-#[allow(clippy::cast_precision_loss)]
-fn values_equal(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Null, Value::Null) => true,
-        (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::Int(a), Value::Int(b)) => a == b,
-        (Value::Float(a), Value::Float(b)) => (a - b).abs() < f64::EPSILON,
-        (Value::Int(a), Value::Float(b)) | (Value::Float(b), Value::Int(a)) => {
-            (*a as f64 - b).abs() < f64::EPSILON
-        }
-        (Value::String(a), Value::String(b)) => a == b,
-        (Value::List(a), Value::List(b)) => a == b,
-        _ => false,
-    }
-}
-
-/// Ordered comparison returning the `Ordering`.
-#[allow(clippy::cast_precision_loss)]
-fn eval_compare(
-    left: &Value,
-    right: &Value,
-    predicate: fn(std::cmp::Ordering) -> bool,
-) -> Result<Value, RuleError> {
-    let ordering = match (left, right) {
-        (Value::Int(a), Value::Int(b)) => a.cmp(b),
-        (Value::Float(a), Value::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Int(a), Value::Float(b)) => (*a as f64)
-            .partial_cmp(b)
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::Float(a), Value::Int(b)) => a
-            .partial_cmp(&(*b as f64))
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (Value::String(a), Value::String(b)) => a.cmp(b),
-        _ => {
-            return Err(RuleError::TypeError(format!(
-                "cannot compare {} and {}",
-                left.type_name(),
-                right.type_name()
-            )));
-        }
-    };
-    Ok(Value::Bool(predicate(ordering)))
-}
-
-/// String contains check.
-fn eval_contains(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::String(haystack), Value::String(needle)) => {
-            Ok(Value::Bool(haystack.contains(needle.as_str())))
-        }
-        (Value::List(list), needle) => Ok(Value::Bool(list.contains(needle))),
-        _ => Err(RuleError::TypeError(format!(
-            "contains: unsupported types {} and {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// String `starts_with` check.
-fn eval_starts_with(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::String(s), Value::String(prefix)) => {
-            Ok(Value::Bool(s.starts_with(prefix.as_str())))
-        }
-        _ => Err(RuleError::TypeError(format!(
-            "starts_with: unsupported types {} and {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// String `ends_with` check.
-fn eval_ends_with(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::String(s), Value::String(suffix)) => Ok(Value::Bool(s.ends_with(suffix.as_str()))),
-        _ => Err(RuleError::TypeError(format!(
-            "ends_with: unsupported types {} and {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// Regex matches check.
-fn eval_matches(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match (left, right) {
-        (Value::String(s), Value::String(pattern)) => {
-            let re = Regex::new(pattern).map_err(|e| RuleError::InvalidRegex(e.to_string()))?;
-            Ok(Value::Bool(re.is_match(s)))
-        }
-        _ => Err(RuleError::TypeError(format!(
-            "matches: unsupported types {} and {}",
-            left.type_name(),
-            right.type_name()
-        ))),
-    }
-}
-
-/// Membership test: `value in collection`.
-fn eval_in(left: &Value, right: &Value) -> Result<Value, RuleError> {
-    match right {
-        Value::List(list) => Ok(Value::Bool(list.contains(left))),
-        Value::Map(map) => match left {
-            Value::String(key) => Ok(Value::Bool(map.contains_key(key))),
-            _ => Err(RuleError::TypeError(format!(
-                "in: map key must be string, got {}",
-                left.type_name()
-            ))),
-        },
-        Value::String(s) => match left {
-            Value::String(sub) => Ok(Value::Bool(s.contains(sub.as_str()))),
-            _ => Err(RuleError::TypeError(format!(
-                "in: cannot check {} membership in string",
-                left.type_name()
-            ))),
-        },
-        _ => Err(RuleError::TypeError(format!(
-            "in: right-hand side must be list, map, or string, got {}",
-            right.type_name()
-        ))),
-    }
-}
-
-/// Retrieve a state value by key pattern.
-async fn eval_state_get(key_pattern: &str, ctx: &EvalContext<'_>) -> Result<Value, RuleError> {
-    let state_key = StateKey::new(
-        ctx.action.namespace.as_str(),
-        ctx.action.tenant.as_str(),
-        KeyKind::State,
-        key_pattern,
-    );
-    match ctx.state.get(&state_key).await {
-        Ok(Some(val)) => Ok(Value::String(val)),
-        Ok(None) => Ok(Value::Null),
-        Err(e) => Err(RuleError::StateAccess(e.to_string())),
-    }
-}
-
-/// Retrieve a counter value from the state store.
-async fn eval_state_counter(key_pattern: &str, ctx: &EvalContext<'_>) -> Result<Value, RuleError> {
-    let state_key = StateKey::new(
-        ctx.action.namespace.as_str(),
-        ctx.action.tenant.as_str(),
-        KeyKind::Counter,
-        key_pattern,
-    );
-    match ctx.state.get(&state_key).await {
-        Ok(Some(val)) => {
-            let n: i64 = val
-                .parse()
-                .map_err(|e| RuleError::StateAccess(format!("counter is not an integer: {e}")))?;
-            Ok(Value::Int(n))
-        }
-        Ok(None) => Ok(Value::Int(0)),
-        Err(e) => Err(RuleError::StateAccess(e.to_string())),
-    }
-}
-
-/// Compute the duration (in seconds) since the last update for a given state key.
-async fn eval_state_time_since(
-    key_pattern: &str,
-    ctx: &EvalContext<'_>,
-) -> Result<Value, RuleError> {
-    let state_key = StateKey::new(
-        ctx.action.namespace.as_str(),
-        ctx.action.tenant.as_str(),
-        KeyKind::State,
-        key_pattern,
-    );
-    match ctx.state.get(&state_key).await {
-        Ok(Some(val)) => {
-            // Expect the stored value to be an ISO-8601 timestamp.
-            let stored_time = chrono::DateTime::parse_from_rfc3339(&val)
-                .map_err(|e| {
-                    RuleError::StateAccess(format!("cannot parse stored timestamp '{val}': {e}"))
-                })?
-                .with_timezone(&chrono::Utc);
-            let elapsed = ctx.now.signed_duration_since(stored_time);
-            Ok(Value::Int(elapsed.num_seconds()))
-        }
-        Ok(None) => {
-            // No prior state: return a very large number to indicate "never".
-            Ok(Value::Int(i64::MAX))
-        }
-        Err(e) => Err(RuleError::StateAccess(e.to_string())),
-    }
-}
-
-/// Check if an active event exists with the given type and optional label value.
-///
-/// This is used for inhibition: suppressing alerts when a parent alert is active.
-/// For example, suppress pod alerts when a `cluster_down` event is active.
-async fn eval_has_active_event(
-    event_type: &str,
-    label_value_expr: Option<&Expr>,
-    ctx: &EvalContext<'_>,
-) -> Result<Value, RuleError> {
-    // Build the key for looking up active events
-    // Format: {ns}:{tenant}:active_events:{type}:{hash}
-    // where hash is derived from the label value if provided
-
-    let label_suffix = if let Some(expr) = label_value_expr {
-        let val = Box::pin(eval(expr, ctx)).await?;
-        match val {
-            Value::String(s) => format!(":{s}"),
-            Value::Null => String::new(),
-            other => format!(":{}", other.display_string()),
-        }
-    } else {
-        String::new()
-    };
-
-    let key_id = format!("{event_type}{label_suffix}");
-    let state_key = StateKey::new(
-        ctx.action.namespace.as_str(),
-        ctx.action.tenant.as_str(),
-        KeyKind::ActiveEvents,
-        &key_id,
-    );
-
-    match ctx.state.get(&state_key).await {
-        Ok(Some(val)) => {
-            // Check if the stored state indicates an active (non-resolved) event
-            // We store JSON like: {"state": "firing", "fingerprint": "..."}
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val)
-                && let Some(state) = parsed.get("state").and_then(|s| s.as_str())
-            {
-                // Consider "resolved" and "closed" as inactive
-                let is_active = !matches!(state, "resolved" | "closed");
-                return Ok(Value::Bool(is_active));
-            }
-            // If we can't parse, assume it's active
-            Ok(Value::Bool(true))
-        }
-        Ok(None) => Ok(Value::Bool(false)),
-        Err(e) => Err(RuleError::StateAccess(e.to_string())),
-    }
-}
-
-/// Get the current state of an event by fingerprint.
-async fn eval_get_event_state(
-    fingerprint_expr: &Expr,
-    ctx: &EvalContext<'_>,
-) -> Result<Value, RuleError> {
-    let fingerprint = Box::pin(eval(fingerprint_expr, ctx)).await?;
-    let fingerprint_str = match fingerprint {
-        Value::String(s) => s,
-        Value::Null => return Ok(Value::Null),
-        other => other.display_string(),
-    };
-
-    let state_key = StateKey::new(
-        ctx.action.namespace.as_str(),
-        ctx.action.tenant.as_str(),
-        KeyKind::EventState,
-        &fingerprint_str,
-    );
-
-    match ctx.state.get(&state_key).await {
-        Ok(Some(val)) => {
-            // The stored value may be JSON with state info or just the state name
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val)
-                && let Some(state) = parsed.get("state").and_then(|s| s.as_str())
-            {
-                return Ok(Value::String(state.to_string()));
-            }
-            // If not JSON, return the raw value as the state
-            Ok(Value::String(val))
-        }
-        Ok(None) => Ok(Value::Null),
-        Err(e) => Err(RuleError::StateAccess(e.to_string())),
-    }
-}
-
-/// Check if an event is in a specific state.
-async fn eval_event_in_state(
-    fingerprint_expr: &Expr,
-    expected_state: &str,
-    ctx: &EvalContext<'_>,
-) -> Result<Value, RuleError> {
-    let current_state = eval_get_event_state(fingerprint_expr, ctx).await?;
-    match current_state {
-        Value::String(s) => Ok(Value::Bool(s == expected_state)),
-        _ => Ok(Value::Bool(false)),
-    }
-}
-
-/// Evaluate a semantic match condition.
-///
-/// Uses the embedding support in the context to compute cosine similarity
-/// between the text and the topic. Returns `true` when the similarity meets
-/// or exceeds the threshold.
-async fn eval_semantic_match(
-    topic: &str,
-    threshold: f64,
-    text_field: Option<&Expr>,
-    ctx: &EvalContext<'_>,
-) -> Result<Value, RuleError> {
-    let embedding = ctx.embedding.as_ref().ok_or_else(|| {
-        RuleError::Evaluation("semantic_match requires embedding support".to_owned())
-    })?;
-
-    let text = if let Some(expr) = text_field {
-        let val = Box::pin(eval(expr, ctx)).await?;
-        val.display_string()
-    } else {
-        ctx.action.payload.to_string()
-    };
-
-    if text.is_empty() || text == "null" {
-        return Ok(Value::Bool(false));
-    }
-
-    let similarity = embedding.similarity(&text, topic).await?;
-    Ok(Value::Bool(similarity >= threshold))
-}
-
-/// The verdict produced by the rule engine after evaluating all rules.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RuleVerdict {
-    /// Allow the action to proceed.
-    ///
-    /// Contains the name of the matched rule, if any. `None` when no rule
-    /// matched and the engine fell through to the default allow.
-    Allow(Option<String>),
-    /// Deny the action with a reason.
-    Deny(String),
-    /// Deduplicate with an optional TTL.
-    Deduplicate {
-        /// Time-to-live in seconds.
-        ttl_seconds: Option<u64>,
-    },
-    /// Suppress the action with a reason.
-    Suppress(String),
-    /// Reroute to a different provider.
-    Reroute {
-        /// Name of the rule that triggered the reroute.
-        rule: String,
-        /// The target provider.
-        target_provider: String,
-    },
-    /// Throttle the action.
-    Throttle {
-        /// Name of the rule that triggered throttling.
-        rule: String,
-        /// Maximum count in the window.
-        max_count: u64,
-        /// Window size in seconds.
-        window_seconds: u64,
-    },
-    /// Modify the action.
-    Modify {
-        /// Name of the rule that triggered the modification.
-        rule: String,
-        /// The JSON changes to apply.
-        changes: serde_json::Value,
-    },
-    /// Process through a state machine.
-    StateMachine {
-        /// Name of the rule that triggered the state machine.
-        rule: String,
-        /// Name of the state machine to use.
-        state_machine: String,
-        /// Fields to use for computing the fingerprint.
-        fingerprint_fields: Vec<String>,
-    },
-    /// Group events for batched notification.
-    Group {
-        /// Name of the rule that triggered grouping.
-        rule: String,
-        /// Fields to group events by.
-        group_by: Vec<String>,
-        /// Seconds to wait before sending first notification.
-        group_wait_seconds: u64,
-        /// Minimum seconds between notifications for same group.
-        group_interval_seconds: u64,
-        /// Maximum events in a single group.
-        max_group_size: usize,
-        /// Optional template name for group notification.
-        template: Option<String>,
-    },
-    /// Request human approval before executing the action.
-    RequestApproval {
-        /// Name of the rule that triggered the approval request.
-        rule: String,
-        /// Provider to use for sending the approval notification.
-        notify_provider: String,
-        /// Timeout in seconds before the approval request expires.
-        timeout_seconds: u64,
-        /// Optional message to include in the approval notification.
-        message: Option<String>,
-    },
-    /// Execute action as the first step of a named task chain.
-    Chain {
-        /// Name of the rule that triggered the chain.
-        rule: String,
-        /// Name of the chain configuration to use.
-        chain: String,
-    },
-}
-
-impl RuleVerdict {
-    /// Extract the rule name from the verdict, if any.
-    ///
-    /// Returns `None` for `Allow` and `Deduplicate` (which don't carry a rule name).
-    pub fn rule_name(&self) -> Option<&str> {
-        match self {
-            Self::Allow(name) => name.as_deref(),
-            Self::Deduplicate { .. } => None,
-            Self::Deny(name) | Self::Suppress(name) => Some(name),
-            Self::Reroute { rule, .. }
-            | Self::Throttle { rule, .. }
-            | Self::Modify { rule, .. }
-            | Self::StateMachine { rule, .. }
-            | Self::Group { rule, .. }
-            | Self::RequestApproval { rule, .. }
-            | Self::Chain { rule, .. } => Some(rule),
-        }
-    }
-}
+use crate::ir::rule::Rule;
 
 /// The rule engine evaluates a set of rules against an evaluation context.
 ///
@@ -898,7 +60,8 @@ impl RuleEngine {
     /// Evaluate all rules against the given context.
     ///
     /// Returns the verdict from the first matching rule, or `Allow` if no
-    /// rule matches.
+    /// rule matches. If a rule has a `timezone` field, its `time.*` fields
+    /// are evaluated in that timezone instead of the context default.
     #[instrument(skip_all, fields(rules_count = self.rules.len()))]
     pub async fn evaluate(&self, ctx: &EvalContext<'_>) -> Result<RuleVerdict, RuleError> {
         for rule in &self.rules {
@@ -907,7 +70,35 @@ impl RuleEngine {
                 continue;
             }
 
-            let result = eval(&rule.condition, ctx).await?;
+            // If the rule has a per-rule timezone override, create a modified
+            // context with that timezone for this rule's evaluation.
+            let rule_tz = if let Some(ref tz_name) = rule.timezone {
+                Some(
+                    tz_name
+                        .parse::<chrono_tz::Tz>()
+                        .map_err(|_| RuleError::InvalidTimezone(tz_name.clone()))?,
+                )
+            } else {
+                None
+            };
+
+            let eval_ctx;
+            let effective_ctx = if let Some(tz) = rule_tz {
+                eval_ctx = EvalContext {
+                    action: ctx.action,
+                    state: ctx.state,
+                    environment: ctx.environment,
+                    now: ctx.now,
+                    embedding: ctx.embedding.clone(),
+                    timezone: Some(tz),
+                    time_map_cache: std::sync::OnceLock::new(),
+                };
+                &eval_ctx
+            } else {
+                ctx
+            };
+
+            let result = eval(&rule.condition, effective_ctx).await?;
 
             if result.is_truthy() {
                 debug!(rule = %rule.name, "rule matched");
@@ -995,75 +186,6 @@ impl RuleEngine {
     }
 }
 
-/// Convert a `RuleAction` into a `RuleVerdict` with the rule name attached.
-fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVerdict {
-    match action {
-        RuleAction::Allow => RuleVerdict::Allow(Some(rule_name.to_owned())),
-        RuleAction::Deny => RuleVerdict::Deny(rule_name.to_owned()),
-        RuleAction::Deduplicate { ttl_seconds } => RuleVerdict::Deduplicate {
-            ttl_seconds: *ttl_seconds,
-        },
-        RuleAction::Suppress => RuleVerdict::Suppress(rule_name.to_owned()),
-        RuleAction::Reroute { target_provider } => RuleVerdict::Reroute {
-            rule: rule_name.to_owned(),
-            target_provider: target_provider.clone(),
-        },
-        RuleAction::Throttle {
-            max_count,
-            window_seconds,
-        } => RuleVerdict::Throttle {
-            rule: rule_name.to_owned(),
-            max_count: *max_count,
-            window_seconds: *window_seconds,
-        },
-        RuleAction::Modify { changes } => RuleVerdict::Modify {
-            rule: rule_name.to_owned(),
-            changes: changes.clone(),
-        },
-        RuleAction::Custom { name, params: _ } => {
-            // Custom actions fall through as Allow for now, with a debug log.
-            debug!(custom_action = %name, "custom action not handled, allowing");
-            RuleVerdict::Allow(Some(rule_name.to_owned()))
-        }
-        RuleAction::StateMachine {
-            state_machine,
-            fingerprint_fields,
-        } => RuleVerdict::StateMachine {
-            rule: rule_name.to_owned(),
-            state_machine: state_machine.clone(),
-            fingerprint_fields: fingerprint_fields.clone(),
-        },
-        RuleAction::Group {
-            group_by,
-            group_wait_seconds,
-            group_interval_seconds,
-            max_group_size,
-            template,
-        } => RuleVerdict::Group {
-            rule: rule_name.to_owned(),
-            group_by: group_by.clone(),
-            group_wait_seconds: *group_wait_seconds,
-            group_interval_seconds: *group_interval_seconds,
-            max_group_size: *max_group_size,
-            template: template.clone(),
-        },
-        RuleAction::RequestApproval {
-            notify_provider,
-            timeout_seconds,
-            message,
-        } => RuleVerdict::RequestApproval {
-            rule: rule_name.to_owned(),
-            notify_provider: notify_provider.clone(),
-            timeout_seconds: *timeout_seconds,
-            message: message.clone(),
-        },
-        RuleAction::Chain { chain } => RuleVerdict::Chain {
-            rule: rule_name.to_owned(),
-            chain: chain.clone(),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -1074,6 +196,8 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
+    use crate::engine::eval::{build_time_map, resolve_ident};
+    use crate::engine::value::Value;
     use crate::ir::expr::{BinaryOp, Expr, UnaryOp};
     use crate::ir::rule::{Rule, RuleAction};
 
@@ -1638,6 +762,8 @@ mod tests {
 
     #[tokio::test]
     async fn eval_state_get_existing() {
+        use acteon_state::{KeyKind, StateKey};
+
         let action = test_action();
         let store = MemoryStateStore::new();
         let env = HashMap::new();
@@ -1656,6 +782,8 @@ mod tests {
 
     #[tokio::test]
     async fn eval_state_counter_existing() {
+        use acteon_state::{KeyKind, StateKey};
+
         let action = test_action();
         let store = MemoryStateStore::new();
         let env = HashMap::new();
@@ -1681,6 +809,8 @@ mod tests {
 
     #[tokio::test]
     async fn eval_state_time_since_existing() {
+        use acteon_state::{KeyKind, StateKey};
+
         let action = test_action();
         let store = MemoryStateStore::new();
         let env = HashMap::new();
@@ -2336,5 +1466,436 @@ mod tests {
             ))),
         };
         assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Bool(false));
+    }
+
+    // --- Time-based rule activation tests ---
+
+    #[tokio::test]
+    async fn eval_time_ident_returns_map() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = test_context(&action, &store, &env);
+
+        let expr = Expr::Ident("time".into());
+        let result = eval(&expr, &ctx).await.unwrap();
+        assert!(matches!(result, Value::Map(_)));
+    }
+
+    #[tokio::test]
+    async fn eval_time_hour_field() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // Fix to 2026-01-15 14:30:00 UTC (Thursday)
+        let fixed_now = chrono::Utc
+            .with_ymd_and_hms(2026, 1, 15, 14, 30, 45)
+            .unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "hour".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(14));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "minute".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(30));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "second".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(45));
+    }
+
+    #[tokio::test]
+    async fn eval_time_date_fields() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 3, 22, 10, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "day".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(22));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "month".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(3));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "year".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(2026));
+    }
+
+    #[tokio::test]
+    async fn eval_time_weekday_fields() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // 2026-01-15 is a Thursday
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday".into());
+        assert_eq!(
+            eval(&expr, &ctx).await.unwrap(),
+            Value::String("Thursday".into())
+        );
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday_num".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(4)); // Thursday = 4
+    }
+
+    #[tokio::test]
+    async fn eval_time_weekday_saturday() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // 2026-01-17 is a Saturday
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday".into());
+        assert_eq!(
+            eval(&expr, &ctx).await.unwrap(),
+            Value::String("Saturday".into())
+        );
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday_num".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(6)); // Saturday = 6
+    }
+
+    #[tokio::test]
+    async fn eval_time_timestamp() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "timestamp".into());
+        assert_eq!(
+            eval(&expr, &ctx).await.unwrap(),
+            Value::Int(fixed_now.timestamp())
+        );
+    }
+
+    #[tokio::test]
+    async fn eval_business_hours_condition() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Business hours: time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5
+        let business_hours = Expr::All(vec![
+            Expr::Binary(
+                BinaryOp::Ge,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(9)),
+            ),
+            Expr::Binary(
+                BinaryOp::Lt,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(17)),
+            ),
+            Expr::Binary(
+                BinaryOp::Le,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "weekday_num".into(),
+                )),
+                Box::new(Expr::Int(5)),
+            ),
+        ]);
+
+        // Thursday at 14:00 — within business hours
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        assert_eq!(
+            eval(&business_hours, &ctx).await.unwrap(),
+            Value::Bool(true)
+        );
+
+        // Thursday at 20:00 — outside business hours
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 20, 0, 0).unwrap());
+        assert_eq!(
+            eval(&business_hours, &ctx).await.unwrap(),
+            Value::Bool(false)
+        );
+
+        // Saturday at 14:00 — weekend
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 17, 14, 0, 0).unwrap());
+        assert_eq!(
+            eval(&business_hours, &ctx).await.unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn eval_time_weekday_string_comparison() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // 2026-01-17 is a Saturday
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        // time.weekday != "Saturday"
+        let expr = Expr::Binary(
+            BinaryOp::Ne,
+            Box::new(Expr::Field(
+                Box::new(Expr::Ident("time".into())),
+                "weekday".into(),
+            )),
+            Box::new(Expr::String("Saturday".into())),
+        );
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Bool(false));
+    }
+
+    #[tokio::test]
+    async fn engine_time_based_rule() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Suppress emails outside business hours (before 9 AM)
+        let rule = Rule::new(
+            "suppress-outside-hours",
+            Expr::Binary(
+                BinaryOp::Lt,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(9)),
+            ),
+            RuleAction::Suppress,
+        )
+        .with_priority(1);
+
+        let engine = RuleEngine::new(vec![rule]);
+
+        // 3 AM — should suppress
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Suppress(_)));
+
+        // 10 AM — should allow
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    // --- Timezone support tests ---
+
+    #[tokio::test]
+    async fn timezone_context_converts_hour() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // UTC 14:00 = US/Eastern 9:00 (EST, UTC-5)
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap())
+            .with_timezone(chrono_tz::US::Eastern);
+
+        let time_val = build_time_map(&ctx);
+        match time_val {
+            Value::Map(ref m) => {
+                assert_eq!(m.get("hour"), Some(&Value::Int(9)));
+            }
+            _ => panic!("expected Map"),
+        }
+    }
+
+    #[tokio::test]
+    async fn timezone_timestamp_always_utc() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let utc_time = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap();
+
+        let ctx = test_context(&action, &store, &env)
+            .with_now(utc_time)
+            .with_timezone(chrono_tz::US::Eastern);
+
+        let time_val = build_time_map(&ctx);
+        match time_val {
+            Value::Map(ref m) => {
+                assert_eq!(m.get("timestamp"), Some(&Value::Int(utc_time.timestamp())));
+            }
+            _ => panic!("expected Map"),
+        }
+    }
+
+    #[tokio::test]
+    async fn per_rule_timezone_override() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Rule: suppress when hour < 10 (in US/Eastern)
+        // UTC 14:00 = Eastern 9:00, so hour < 10 is true → suppress
+        let rule = Rule::new(
+            "eastern-morning",
+            Expr::Binary(
+                BinaryOp::Lt,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(10)),
+            ),
+            RuleAction::Suppress,
+        )
+        .with_timezone("US/Eastern");
+
+        let engine = RuleEngine::new(vec![rule]);
+
+        // UTC 14:00 = EST 9:00 → hour(9) < 10 → suppress
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Suppress(_)),
+            "expected Suppress at Eastern 9 AM, got {verdict:?}"
+        );
+
+        // UTC 16:00 = EST 11:00 → hour(11) < 10 is false → allow
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 16, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Allow(_)),
+            "expected Allow at Eastern 11 AM, got {verdict:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_timezone_returns_error() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        let rule = Rule::new("bad-tz", Expr::Bool(true), RuleAction::Suppress)
+            .with_timezone("Fake/Timezone");
+
+        let engine = RuleEngine::new(vec![rule]);
+        let ctx = test_context(&action, &store, &env);
+        let result = engine.evaluate(&ctx).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("invalid timezone"));
+    }
+
+    #[tokio::test]
+    async fn business_hours_with_timezone() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Business hours 9-17 Eastern, Mon-Fri
+        // Condition: hour >= 9 && hour < 17 && weekday_num <= 5
+        let rule = Rule::new(
+            "business-hours-eastern",
+            Expr::All(vec![
+                Expr::Binary(
+                    BinaryOp::Ge,
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Ident("time".into())),
+                        "hour".into(),
+                    )),
+                    Box::new(Expr::Int(9)),
+                ),
+                Expr::Binary(
+                    BinaryOp::Lt,
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Ident("time".into())),
+                        "hour".into(),
+                    )),
+                    Box::new(Expr::Int(17)),
+                ),
+                Expr::Binary(
+                    BinaryOp::Le,
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Ident("time".into())),
+                        "weekday_num".into(),
+                    )),
+                    Box::new(Expr::Int(5)),
+                ),
+            ]),
+            RuleAction::Allow,
+        )
+        .with_timezone("US/Eastern");
+
+        let engine = RuleEngine::new(vec![rule]);
+
+        // Thursday 14:00 UTC = Thursday 9:00 Eastern → in business hours → Allow
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(Some(name)) if name == "business-hours-eastern"),
+            "expected Allow(business-hours-eastern), got {verdict:?}"
+        );
+
+        // Thursday 23:00 UTC = Thursday 18:00 Eastern → outside hours → Allow(None)
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 23, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(None)),
+            "expected Allow(None), got {verdict:?}"
+        );
+    }
+
+    #[test]
+    fn time_map_cache_is_reused() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = test_context(&action, &store, &env).with_now(
+            chrono::Utc
+                .with_ymd_and_hms(2026, 6, 15, 10, 30, 0)
+                .unwrap(),
+        );
+
+        // First call populates the cache.
+        let val1 = resolve_ident("time", &ctx).unwrap();
+        assert!(matches!(val1, Value::Map(_)));
+
+        // Cache should now be populated.
+        assert!(ctx.time_map_cache.get().is_some());
+
+        // Second call returns a clone of the cached value — the underlying
+        // OnceLock should still hold the same pointer.
+        let val2 = resolve_ident("time", &ctx).unwrap();
+        assert_eq!(val1, val2);
+
+        // Verify it's the same cached object by comparing pointers.
+        let cached = ctx.time_map_cache.get().unwrap();
+        assert!(std::ptr::eq(cached, ctx.time_map_cache.get().unwrap()));
     }
 }

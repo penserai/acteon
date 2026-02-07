@@ -130,6 +130,24 @@ Rules can match on any part of the action:
 | `action.payload.nested.field` | Nested payload field | `action.payload.user.email` |
 | `action.metadata.key` | Metadata label | `action.metadata.priority` |
 
+### Temporal Fields
+
+Rules can match on the current time at dispatch using the `time` identifier:
+
+| Path | Type | Description | Example |
+|------|------|-------------|---------|
+| `time.hour` | int | Hour (0–23) | `14` |
+| `time.minute` | int | Minute (0–59) | `30` |
+| `time.second` | int | Second (0–59) | `45` |
+| `time.day` | int | Day of month (1–31) | `15` |
+| `time.month` | int | Month (1–12) | `3` |
+| `time.year` | int | Year | `2026` |
+| `time.weekday` | string | English weekday name | `"Thursday"` |
+| `time.weekday_num` | int | ISO weekday (1=Mon … 7=Sun) | `4` |
+| `time.timestamp` | int | Unix timestamp (seconds) | `1768486800` |
+
+See [Time-Based Rules](../features/time-based-rules.md) for examples and patterns.
+
 ## Rule Actions
 
 ### Suppress
@@ -277,6 +295,7 @@ curl -X POST http://localhost:8080/v1/rules/reload
 ## See Also
 
 - [YAML Rule Reference](../api/rule-reference.md) — complete syntax reference
+- [Time-Based Rules](../features/time-based-rules.md) — temporal conditions and scheduling patterns
 - [Deduplication](../features/deduplication.md) — how dedup rules work in practice
 - [Event Grouping](../features/event-grouping.md) — grouping rule details
 - [State Machines](../features/state-machines.md) — state machine rule details

@@ -103,6 +103,43 @@ print(f"Loaded {result.loaded} rules")
 client.set_rule_enabled("block-spam", False)
 ```
 
+## Time-Based Rules
+
+Rules can use `time.*` fields to match on the current UTC time at dispatch. Configure these in your YAML or CEL rule files — no client-side changes needed.
+
+```yaml
+# rules/business_hours.yaml
+rules:
+  - name: suppress-outside-hours
+    priority: 1
+    condition:
+      any:
+        - field: time.hour
+          lt: 9
+        - field: time.hour
+          gte: 17
+    action:
+      type: suppress
+
+  - name: suppress-weekends
+    priority: 2
+    condition:
+      field: time.weekday_num
+      gt: 5
+    action:
+      type: suppress
+```
+
+Use dry-run to test what a time-based rule would do right now:
+
+```python
+outcome = client.dispatch(action, dry_run=True)
+print(f"Verdict: {outcome.verdict}")        # e.g. "suppress"
+print(f"Matched rule: {outcome.matched_rule}")  # e.g. "suppress-outside-hours"
+```
+
+Available `time` fields: `hour` (0–23), `minute`, `second`, `day`, `month`, `year`, `weekday` (`"Monday"`…`"Sunday"`), `weekday_num` (1=Mon…7=Sun), `timestamp`.
+
 ## Audit Trail
 
 ```python

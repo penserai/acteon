@@ -30,6 +30,10 @@ pub enum RuleError {
     /// An invalid regular expression was supplied to a match operation.
     #[error("invalid regex: {0}")]
     InvalidRegex(String),
+
+    /// An invalid IANA timezone name was supplied.
+    #[error("invalid timezone: {0}")]
+    InvalidTimezone(String),
 }
 
 #[cfg(test)]
@@ -58,5 +62,8 @@ mod tests {
 
         let err = RuleError::InvalidRegex("unclosed group".into());
         assert_eq!(err.to_string(), "invalid regex: unclosed group");
+
+        let err = RuleError::InvalidTimezone("Fake/Zone".into());
+        assert_eq!(err.to_string(), "invalid timezone: Fake/Zone");
     }
 }
