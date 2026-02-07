@@ -177,7 +177,7 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
         } => format!("DryRun (verdict: {verdict}, provider: {would_be_provider})"),
         ActionOutcome::CircuitOpen {
             provider,
-            fallback_provider,
-        } => format!("CircuitOpen (provider: {provider}, fallback: {fallback_provider:?})"),
+            fallback_chain,
+        } => format!("CircuitOpen (provider: {provider}, fallback_chain: {fallback_chain:?})"),
     }
 }

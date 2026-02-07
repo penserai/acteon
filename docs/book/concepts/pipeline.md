@@ -33,11 +33,13 @@ flowchart TD
 
     O --> CB{Circuit Breaker}
     CB -->|Closed/HalfOpen| R[Provider Execution with Retries]
-    CB -->|Open + Fallback| FB[Execute via Fallback]
+    CB -->|Open + Fallback| FB[Walk Fallback Chain]
     CB -->|Open + No Fallback| CO[Return CircuitOpen]
+    FB -->|Healthy provider found| FBE[Execute via Fallback]
+    FB -->|Chain exhausted| CO
     R -->|Success| S[Return Executed]
     R -->|All retries failed| T[Return Failed / DLQ]
-    FB -->|Success| RR[Return Rerouted]
+    FBE -->|Success| RR[Return Rerouted]
 
     S --> U[Record Audit Entry]
     RR --> U
@@ -111,8 +113,8 @@ Before executing, the gateway checks the provider's circuit breaker (if enabled)
 | **Closed** | Request proceeds to execution |
 | **HalfOpen** (probe available) | Request proceeds as a recovery probe |
 | **HalfOpen** (probe in flight) | Rejected as `CircuitOpen` |
-| **Open** (fallback configured) | Rerouted to fallback provider, returned as `Rerouted` |
-| **Open** (no fallback) | Rejected immediately as `CircuitOpen` |
+| **Open** (fallback configured) | Rerouted to fallback provider (or next healthy provider in chain), returned as `Rerouted` |
+| **Open** (no fallback / chain exhausted) | Rejected immediately as `CircuitOpen` |
 
 After execution, the result is recorded in the circuit breaker: successes and retryable failures update the consecutive counters and may trigger state transitions.
 

@@ -55,7 +55,7 @@ pub enum ActionOutcome {
     PendingApproval { approval_id: String, expires_at: DateTime<Utc>, approve_url: String, reject_url: String, notification_sent: bool },
     ChainStarted { chain_id: String, chain_name: String, total_steps: usize, first_step: String },
     DryRun { verdict: String, matched_rule: Option<String>, would_be_provider: String },
-    CircuitOpen { provider: String, fallback_provider: Option<String> },
+    CircuitOpen { provider: String, fallback_chain: Vec<String> },
 }
 ```
 
