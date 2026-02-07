@@ -581,3 +581,68 @@ export function parseApprovalListResponse(data: Record<string, unknown>): Approv
     count: data.count as number,
   };
 }
+
+// =============================================================================
+// Webhook Helpers
+// =============================================================================
+
+/**
+ * Payload for webhook actions.
+ *
+ * Use this to build the payload for an Action targeted at the webhook provider.
+ */
+export interface WebhookPayload {
+  /** Target URL for the webhook request. */
+  url: string;
+  /** The JSON body to send to the webhook endpoint. */
+  body: Record<string, unknown>;
+  /** HTTP method (default: "POST"). */
+  method?: string;
+  /** Additional HTTP headers to include. */
+  headers?: Record<string, string>;
+}
+
+/**
+ * Create an Action targeting the webhook provider.
+ *
+ * This is a convenience function that constructs a properly formatted Action
+ * for the webhook provider, wrapping the URL, method, headers, and body into
+ * the payload.
+ *
+ * @example
+ * ```typescript
+ * const action = createWebhookAction(
+ *   "notifications",
+ *   "tenant-1",
+ *   "https://hooks.example.com/alert",
+ *   { message: "Server is down", severity: "critical" },
+ *   { headers: { "X-Custom-Header": "value" } }
+ * );
+ * ```
+ */
+export function createWebhookAction(
+  namespace: string,
+  tenant: string,
+  url: string,
+  body: Record<string, unknown>,
+  options?: {
+    actionType?: string;
+    method?: string;
+    headers?: Record<string, string>;
+    dedupKey?: string;
+    metadata?: Record<string, string>;
+  }
+): Action {
+  const payload: Record<string, unknown> = {
+    url,
+    method: options?.method ?? "POST",
+    body,
+  };
+  if (options?.headers) {
+    payload.headers = options.headers;
+  }
+  return createAction(namespace, tenant, "webhook", options?.actionType ?? "webhook", payload, {
+    dedupKey: options?.dedupKey,
+    metadata: options?.metadata,
+  });
+}

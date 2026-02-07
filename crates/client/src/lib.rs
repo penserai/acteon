@@ -58,6 +58,7 @@
 //! ```
 
 mod error;
+pub mod webhook;
 
 pub use error::Error;
 

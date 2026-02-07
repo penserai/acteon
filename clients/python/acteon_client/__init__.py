@@ -22,6 +22,8 @@ from .models import (
     ApprovalActionResponse,
     ApprovalStatus,
     ApprovalListResponse,
+    WebhookPayload,
+    create_webhook_action,
 )
 
 __version__ = "0.1.0"
@@ -51,4 +53,6 @@ __all__ = [
     "ApprovalActionResponse",
     "ApprovalStatus",
     "ApprovalListResponse",
+    "WebhookPayload",
+    "create_webhook_action",
 ]
