@@ -116,9 +116,86 @@ flowchart LR
     E --> G["Return Rerouted"]
 ```
 
-Fallback chains are resolved recursively: if the fallback's circuit is also open and it has its own fallback configured, the gateway continues walking the chain until it finds a healthy provider or exhausts the chain. The `CircuitOpen` response includes a `fallback_chain` listing all fallback providers that were tried.
+### Recursive Fallback Chains
 
-Fallback provider names and chains are validated at build time — the gateway will return an error if a `fallback_provider` references a provider that isn't registered, references itself, or creates a cycle (e.g., A→B→C→A).
+Fallback chains are resolved **recursively**. If the fallback's circuit is also open and it has its own fallback configured, the gateway continues walking the chain until it finds a healthy provider or exhausts the chain. This enables multi-region failover scenarios where multiple providers can be chained.
+
+```mermaid
+flowchart TD
+    A["Action: region-us"] --> B{"region-us<br/>circuit open?"}
+    B -->|No| C["Execute via region-us"]
+    B -->|Yes| D{"region-eu<br/>circuit open?"}
+    D -->|No| E["Execute via region-eu<br/>(Rerouted)"]
+    D -->|Yes| F{"region-ap<br/>circuit open?"}
+    F -->|No| G["Execute via region-ap<br/>(Rerouted)"]
+    F -->|Yes| H["Return CircuitOpen<br/>fallback_chain: [region-eu, region-ap]"]
+```
+
+#### Example: Multi-Region Failover
+
+```toml title="acteon.toml"
+[circuit_breaker]
+enabled = true
+
+[circuit_breaker.providers.region-us]
+fallback_provider = "region-eu"
+
+[circuit_breaker.providers.region-eu]
+fallback_provider = "region-ap"
+```
+
+```rust
+let gateway = GatewayBuilder::new()
+    .state(state)
+    .lock(lock)
+    .circuit_breaker(CircuitBreakerConfig {
+        failure_threshold: 5,
+        success_threshold: 2,
+        recovery_timeout: Duration::from_secs(60),
+        fallback_provider: None,
+    })
+    .circuit_breaker_provider("region-us", CircuitBreakerConfig {
+        fallback_provider: Some("region-eu".to_string()),
+        ..CircuitBreakerConfig::default()
+    })
+    .circuit_breaker_provider("region-eu", CircuitBreakerConfig {
+        fallback_provider: Some("region-ap".to_string()),
+        ..CircuitBreakerConfig::default()
+    })
+    .provider(us_provider)
+    .provider(eu_provider)
+    .provider(ap_provider)
+    .build()?;
+```
+
+When `region-us` and `region-eu` are both down, traffic cascades automatically to `region-ap`. The `Rerouted` outcome reports the final destination:
+
+```json
+{
+  "outcome": "Rerouted",
+  "original_provider": "region-us",
+  "new_provider": "region-ap",
+  "response": { "status": "success", "body": {} }
+}
+```
+
+If all providers in the chain are open, the `CircuitOpen` outcome includes every fallback that was attempted:
+
+```json
+{
+  "outcome": "CircuitOpen",
+  "provider": "region-us",
+  "fallback_chain": ["region-eu", "region-ap"]
+}
+```
+
+### Build-Time Validation
+
+Fallback provider names and chains are validated at build time. The gateway returns a configuration error if a `fallback_provider`:
+
+- References a provider that isn't registered
+- References itself (self-referencing fallback)
+- Creates a cycle (e.g., A→B→C→A)
 
 ## Probe Limiting (Thundering Herd Prevention)
 
@@ -159,7 +236,17 @@ When the circuit is open and no fallback is configured:
 }
 ```
 
-When the circuit is open and the fallback succeeds:
+When the circuit is open and the full fallback chain is exhausted:
+
+```json
+{
+  "outcome": "CircuitOpen",
+  "provider": "email",
+  "fallback_chain": ["webhook", "sms"]
+}
+```
+
+When the circuit is open and a fallback (direct or via chain) succeeds:
 
 ```json
 {
@@ -246,11 +333,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 !!! tip "Running the Full Simulation"
-    A comprehensive 4-scenario simulation is included:
+    A comprehensive 5-scenario simulation is included:
     ```bash
     cargo run -p acteon-simulation --example circuit_breaker_simulation
     ```
-    It demonstrates basic circuit opening, fallback routing, full recovery lifecycle, and independent per-provider circuits.
+    It demonstrates basic circuit opening, fallback routing, full recovery lifecycle, independent per-provider circuits, and multi-level fallback chains.
 
 ## Design Notes
 
