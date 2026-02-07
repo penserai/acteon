@@ -1,0 +1,29 @@
+[package]
+name = "acteon-webhook"
+description = "Generic HTTP webhook provider for Acteon — dispatches actions to any HTTP endpoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-provider = { workspace = true }
+hmac = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

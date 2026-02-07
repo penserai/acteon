@@ -256,3 +256,91 @@ watch = true
 docker compose --profile postgres up -d
 cargo run -p acteon-server --features "postgres" -- -c acteon.toml
 ```
+
+---
+
+## Webhook Rerouting with Deduplication
+
+This example shows routing critical alerts from Slack to an external webhook endpoint, with deduplication to prevent alert storms.
+
+### Rules
+
+```yaml title="rules/webhook_routing.yaml"
+rules:
+  - name: reroute-critical-to-webhook
+    priority: 1
+    description: "Reroute critical alerts to external webhook"
+    condition:
+      field: action.payload.severity
+      eq: "critical"
+    action:
+      type: reroute
+      target_provider: "webhook"
+
+  - name: dedup-webhook-alerts
+    priority: 5
+    description: "Deduplicate webhook alerts within 5 minutes"
+    condition:
+      field: action.provider
+      eq: "webhook"
+    action:
+      type: deduplicate
+      ttl_seconds: 300
+```
+
+### Dispatch
+
+```bash
+# Warning alert — stays on Slack
+curl -s -X POST http://localhost:8080/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "monitoring",
+    "tenant": "acme-corp",
+    "provider": "slack",
+    "action_type": "alert",
+    "payload": {
+      "severity": "warning",
+      "message": "Response times elevated"
+    }
+  }' | jq .
+# → Executed (via Slack)
+
+# Critical alert — rerouted to webhook
+curl -s -X POST http://localhost:8080/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "monitoring",
+    "tenant": "acme-corp",
+    "provider": "slack",
+    "action_type": "alert",
+    "payload": {
+      "severity": "critical",
+      "message": "Database unreachable"
+    },
+    "dedup_key": "db-unreachable"
+  }' | jq .
+# → Rerouted (Slack → Webhook)
+
+# Same critical alert — deduplicated
+curl -s -X POST http://localhost:8080/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "monitoring",
+    "tenant": "acme-corp",
+    "provider": "slack",
+    "action_type": "alert",
+    "payload": {
+      "severity": "critical",
+      "message": "Database unreachable"
+    },
+    "dedup_key": "db-unreachable"
+  }' | jq .
+# → Deduplicated
+```
+
+### Simulation
+
+```bash
+cargo run -p acteon-simulation --example webhook_simulation
+```

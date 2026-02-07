@@ -485,3 +485,91 @@ class ApprovalListResponse:
             approvals=[ApprovalStatus.from_dict(a) for a in data["approvals"]],
             count=data["count"],
         )
+
+
+# =============================================================================
+# Webhook Helpers
+# =============================================================================
+
+
+@dataclass
+class WebhookPayload:
+    """Payload for webhook actions.
+
+    Use this to build the payload for an Action targeted at the webhook provider.
+
+    Attributes:
+        url: Target URL for the webhook request.
+        method: HTTP method (default: "POST").
+        headers: Additional HTTP headers to include.
+        body: The JSON body to send to the webhook endpoint.
+    """
+    url: str
+    body: dict[str, Any]
+    method: str = "POST"
+    headers: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to payload dictionary for an Action."""
+        result: dict[str, Any] = {
+            "url": self.url,
+            "method": self.method,
+            "body": self.body,
+        }
+        if self.headers:
+            result["headers"] = self.headers
+        return result
+
+
+def create_webhook_action(
+    namespace: str,
+    tenant: str,
+    url: str,
+    body: dict[str, Any],
+    *,
+    action_type: str = "webhook",
+    method: str = "POST",
+    headers: Optional[dict[str, str]] = None,
+    dedup_key: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> Action:
+    """Create an Action targeting the webhook provider.
+
+    This is a convenience function that constructs a properly formatted Action
+    for the webhook provider, wrapping the URL, method, headers, and body into
+    the payload.
+
+    Args:
+        namespace: Logical grouping for the action.
+        tenant: Tenant identifier for multi-tenancy.
+        url: Target URL for the webhook request.
+        body: The JSON body to send to the webhook endpoint.
+        action_type: Action type (default: "webhook").
+        method: HTTP method (default: "POST").
+        headers: Additional HTTP headers to include.
+        dedup_key: Optional deduplication key.
+        metadata: Optional key-value metadata.
+
+    Returns:
+        An Action configured for the webhook provider.
+
+    Example::
+
+        action = create_webhook_action(
+            namespace="notifications",
+            tenant="tenant-1",
+            url="https://hooks.example.com/alert",
+            body={"message": "Server is down", "severity": "critical"},
+            headers={"X-Custom-Header": "value"},
+        )
+    """
+    webhook = WebhookPayload(url=url, body=body, method=method, headers=headers)
+    return Action(
+        namespace=namespace,
+        tenant=tenant,
+        provider="webhook",
+        action_type=action_type,
+        payload=webhook.to_dict(),
+        dedup_key=dedup_key,
+        metadata=metadata,
+    )

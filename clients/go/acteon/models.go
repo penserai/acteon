@@ -377,3 +377,75 @@ type ApprovalListResponse struct {
 	Approvals []ApprovalStatus `json:"approvals"`
 	Count     int              `json:"count"`
 }
+
+// =============================================================================
+// Webhook Helpers
+// =============================================================================
+
+// WebhookPayload represents the payload for a webhook action.
+//
+// Use this to build the payload for an Action targeted at the webhook provider.
+type WebhookPayload struct {
+	// URL is the target URL for the webhook request.
+	URL string `json:"url"`
+	// Method is the HTTP method (default: "POST").
+	Method string `json:"method"`
+	// Body is the JSON body to send to the webhook endpoint.
+	Body map[string]any `json:"body"`
+	// Headers contains additional HTTP headers to include.
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// ToPayload converts the WebhookPayload to a generic map suitable for an Action payload.
+func (w *WebhookPayload) ToPayload() map[string]any {
+	result := map[string]any{
+		"url":    w.URL,
+		"method": w.Method,
+		"body":   w.Body,
+	}
+	if len(w.Headers) > 0 {
+		result["headers"] = w.Headers
+	}
+	return result
+}
+
+// NewWebhookAction creates an Action targeting the webhook provider.
+//
+// This is a convenience function that constructs a properly formatted Action
+// for the webhook provider, wrapping the URL, method, headers, and body into
+// the payload.
+func NewWebhookAction(namespace, tenant, url string, body map[string]any) *Action {
+	payload := &WebhookPayload{
+		URL:    url,
+		Method: "POST",
+		Body:   body,
+	}
+	return NewAction(namespace, tenant, "webhook", "webhook", payload.ToPayload())
+}
+
+// NewWebhookActionWithOptions creates a webhook Action with additional options.
+func NewWebhookActionWithOptions(namespace, tenant, url, method string, body map[string]any, headers map[string]string) *Action {
+	payload := &WebhookPayload{
+		URL:     url,
+		Method:  method,
+		Body:    body,
+		Headers: headers,
+	}
+	return NewAction(namespace, tenant, "webhook", "webhook", payload.ToPayload())
+}
+
+// WithWebhookMethod sets a custom HTTP method for a webhook action.
+func (a *Action) WithWebhookMethod(method string) *Action {
+	if a.Payload != nil {
+		a.Payload["method"] = method
+	}
+	return a
+}
+
+// WithWebhookHeaders sets additional headers for a webhook action.
+func (a *Action) WithWebhookHeaders(headers map[string]string) *Action {
+	if a.Payload != nil {
+		a.Payload["headers"] = headers
+	}
+	return a
+}

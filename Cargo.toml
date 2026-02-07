@@ -41,6 +41,7 @@ members = [
     "crates/integrations/email",
     "crates/integrations/slack",
     "crates/integrations/pagerduty",
+    "crates/integrations/webhook",
 ]
 
 [workspace.package]
@@ -91,6 +92,7 @@ acteon-embedding = { path = "crates/embedding" }
 acteon-email = { path = "crates/integrations/email" }
 acteon-slack = { path = "crates/integrations/slack" }
 acteon-pagerduty = { path = "crates/integrations/pagerduty" }
+acteon-webhook = { path = "crates/integrations/webhook" }
 
 # Parsing
 nom = "7"

@@ -225,6 +225,142 @@ When multiple services are configured, each action payload can specify a `servic
 | `images` | No | — | Images to display in the incident |
 | `links` | No | — | Links to display in the incident |
 
+### Webhook
+
+The `acteon-webhook` crate provides a generic HTTP webhook provider for dispatching actions to any HTTP endpoint. It supports configurable HTTP methods, authentication (Bearer, Basic, API key, HMAC-SHA256), custom headers, and flexible payload modes.
+
+**Configuration:**
+
+```rust
+use acteon_webhook::{WebhookConfig, WebhookProvider, AuthMethod, HttpMethod, PayloadMode};
+
+// Simple webhook
+let provider = WebhookProvider::new(
+    WebhookConfig::new("https://api.example.com/webhook")
+);
+
+// Webhook with authentication and custom settings
+let provider = WebhookProvider::new(
+    WebhookConfig::new("https://api.example.com/webhook")
+        .with_method(HttpMethod::Put)
+        .with_auth(AuthMethod::Bearer("your-token".into()))
+        .with_header("X-Custom-Header", "value")
+        .with_payload_mode(PayloadMode::PayloadOnly)
+        .with_timeout_secs(10)
+);
+
+// Webhook with HMAC signing
+let provider = WebhookProvider::new(
+    WebhookConfig::new("https://api.example.com/webhook")
+        .with_auth(AuthMethod::HmacSha256 {
+            secret: "your-secret".into(),
+            header: "X-Signature".into(),
+        })
+);
+```
+
+**Expected payload:**
+
+```json
+{
+  "url": "https://hooks.example.com/endpoint",
+  "method": "POST",
+  "body": {
+    "message": "Server is down",
+    "severity": "critical"
+  },
+  "headers": {
+    "X-Custom-Header": "value"
+  }
+}
+```
+
+**Client SDK helpers** make constructing webhook payloads easy:
+
+=== "Rust"
+
+    ```rust
+    use acteon_client::webhook;
+
+    let action = webhook::action("notifications", "tenant-1")
+        .url("https://hooks.example.com/alert")
+        .body(serde_json::json!({"message": "Server down"}))
+        .header("X-Custom", "value")
+        .build();
+    ```
+
+=== "Python"
+
+    ```python
+    from acteon_client import create_webhook_action
+
+    action = create_webhook_action(
+        namespace="notifications",
+        tenant="tenant-1",
+        url="https://hooks.example.com/alert",
+        body={"message": "Server down"},
+        headers={"X-Custom": "value"},
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { createWebhookAction } from "@acteon/client";
+
+    const action = createWebhookAction(
+      "notifications", "tenant-1",
+      "https://hooks.example.com/alert",
+      { message: "Server down" },
+      { headers: { "X-Custom": "value" } }
+    );
+    ```
+
+=== "Go"
+
+    ```go
+    action := acteon.NewWebhookAction(
+        "notifications", "tenant-1",
+        "https://hooks.example.com/alert",
+        map[string]any{"message": "Server down"},
+    ).WithWebhookHeaders(map[string]string{"X-Custom": "value"})
+    ```
+
+=== "Java"
+
+    ```java
+    Action action = WebhookAction.builder()
+        .namespace("notifications")
+        .tenant("tenant-1")
+        .url("https://hooks.example.com/alert")
+        .body(Map.of("message", "Server down"))
+        .header("X-Custom", "value")
+        .build();
+    ```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `url` | Yes | — | Target URL for the webhook request |
+| `method` | No | `POST` | HTTP method (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`) |
+| `body` | Yes | — | JSON body to send to the endpoint |
+| `headers` | No | — | Additional HTTP headers |
+
+**Authentication methods:**
+
+| Method | Description |
+|--------|-------------|
+| `Bearer(token)` | `Authorization: Bearer <token>` header |
+| `Basic { username, password }` | HTTP Basic authentication |
+| `ApiKey { header, value }` | Custom header with API key value |
+| `HmacSha256 { secret, header }` | HMAC-SHA256 signature of the request body |
+
+**Payload modes:**
+
+| Mode | Description |
+|------|-------------|
+| `FullAction` | Sends the entire serialized `Action` as the request body |
+| `PayloadOnly` | Sends only `action.payload` as the request body |
+
 ## Provider Errors
 
 | Error | Retryable | Description |

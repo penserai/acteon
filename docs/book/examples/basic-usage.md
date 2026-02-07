@@ -230,3 +230,44 @@ curl -s -X POST http://localhost:8080/v1/dispatch/batch \
     ]
   }' | jq .
 ```
+
+---
+
+## Example 4: Webhook Dispatch
+
+### Dispatch a Webhook Action
+
+```bash
+# Dispatch a webhook action
+curl -s -X POST http://localhost:8080/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "integrations",
+    "tenant": "tenant-1",
+    "provider": "webhook",
+    "action_type": "webhook",
+    "payload": {
+      "url": "https://hooks.example.com/alert",
+      "method": "POST",
+      "body": {
+        "message": "Deployment completed",
+        "environment": "production",
+        "status": "success"
+      },
+      "headers": {
+        "X-Source": "acteon"
+      }
+    }
+  }' | jq .
+```
+
+### Expected Response
+
+```json
+{
+  "Executed": {
+    "status": "success",
+    "body": { "status_code": 200 }
+  }
+}
+```

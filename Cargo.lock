@@ -460,6 +460,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-webhook"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-provider",
+ "base64",
+ "hex",
+ "hmac",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

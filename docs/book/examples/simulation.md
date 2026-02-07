@@ -247,6 +247,18 @@ cargo run -p acteon-simulation --example clickhouse_simulation --features clickh
 cargo run -p acteon-simulation --example dynamodb_simulation --features dynamodb
 ```
 
+### Webhook Simulation
+
+```bash
+cargo run -p acteon-simulation --example webhook_simulation
+```
+
+Tests webhook dispatch, rerouting to webhooks, and deduplication of webhook calls:
+
+- **Basic dispatch** — Action sent directly to webhook provider
+- **Rerouting** — Actions rerouted from email to webhook based on rules
+- **Deduplication** — Duplicate webhook calls are blocked
+
 ### Mixed Backend Simulations
 
 ```bash

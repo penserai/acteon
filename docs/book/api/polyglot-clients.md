@@ -87,6 +87,123 @@ All clients support:
 | **Rule toggle** | Enable/disable rules |
 | **Audit query** | Search audit records |
 | **Audit lookup** | Get record by action ID |
+| **Webhook helpers** | Convenience builders for webhook actions |
+
+## Webhook Helpers
+
+All clients provide convenience types and factory functions for creating webhook-targeted actions without manually constructing the payload.
+
+=== "Rust"
+
+    ```rust
+    use acteon_client::webhook;
+
+    // Simple webhook
+    let action = webhook::action("notifications", "tenant-1")
+        .url("https://hooks.example.com/alert")
+        .body(serde_json::json!({"message": "Alert fired"}))
+        .build();
+
+    // With all options
+    let action = webhook::action("notifications", "tenant-1")
+        .url("https://hooks.example.com/alert")
+        .method("PUT")
+        .body(serde_json::json!({"severity": "critical"}))
+        .header("X-Api-Key", "secret")
+        .dedup_key("alert-123")
+        .build();
+    ```
+
+=== "Python"
+
+    ```python
+    from acteon_client import create_webhook_action, WebhookPayload
+
+    # Simple webhook
+    action = create_webhook_action(
+        namespace="notifications",
+        tenant="tenant-1",
+        url="https://hooks.example.com/alert",
+        body={"message": "Alert fired"},
+    )
+
+    # With all options
+    action = create_webhook_action(
+        namespace="notifications",
+        tenant="tenant-1",
+        url="https://hooks.example.com/alert",
+        body={"severity": "critical"},
+        method="PUT",
+        headers={"X-Api-Key": "secret"},
+        dedup_key="alert-123",
+    )
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    import { createWebhookAction } from "@acteon/client";
+
+    // Simple webhook
+    const action = createWebhookAction(
+      "notifications", "tenant-1",
+      "https://hooks.example.com/alert",
+      { message: "Alert fired" }
+    );
+
+    // With all options
+    const action = createWebhookAction(
+      "notifications", "tenant-1",
+      "https://hooks.example.com/alert",
+      { severity: "critical" },
+      {
+        method: "PUT",
+        headers: { "X-Api-Key": "secret" },
+        dedupKey: "alert-123",
+      }
+    );
+    ```
+
+=== "Go"
+
+    ```go
+    // Simple webhook
+    action := acteon.NewWebhookAction(
+        "notifications", "tenant-1",
+        "https://hooks.example.com/alert",
+        map[string]any{"message": "Alert fired"},
+    )
+
+    // With all options
+    action := acteon.NewWebhookActionWithOptions(
+        "notifications", "tenant-1",
+        "https://hooks.example.com/alert", "PUT",
+        map[string]any{"severity": "critical"},
+        map[string]string{"X-Api-Key": "secret"},
+    ).WithDedupKey("alert-123")
+    ```
+
+=== "Java"
+
+    ```java
+    // Simple webhook
+    Action action = WebhookAction.create(
+        "notifications", "tenant-1",
+        "https://hooks.example.com/alert",
+        Map.of("message", "Alert fired")
+    );
+
+    // With all options
+    Action action = WebhookAction.builder()
+        .namespace("notifications")
+        .tenant("tenant-1")
+        .url("https://hooks.example.com/alert")
+        .method("PUT")
+        .body(Map.of("severity", "critical"))
+        .header("X-Api-Key", "secret")
+        .dedupKey("alert-123")
+        .build();
+    ```
 
 ## Testing with Polyglot Simulation
 
