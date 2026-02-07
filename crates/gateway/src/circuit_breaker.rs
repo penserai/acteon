@@ -411,6 +411,25 @@ impl CircuitBreaker {
         &self.provider
     }
 
+    /// Force the circuit breaker to `Open` state (manual trip).
+    ///
+    /// This is intended for operator intervention during incidents.
+    /// The `last_failure_time_ms` is set to the current time so the normal
+    /// recovery timeout applies from this point forward.
+    pub async fn trip(&self) {
+        if let Some(guard) = self.acquire_mutation_lock().await {
+            let data = CircuitData {
+                state: CircuitState::Open,
+                consecutive_failures: self.config.failure_threshold,
+                consecutive_successes: 0,
+                last_failure_time_ms: Some(Self::now_ms()),
+                probe_started_at_ms: None,
+            };
+            self.save_state(&data).await;
+            let _ = guard.release().await;
+        }
+    }
+
     /// Reset the circuit breaker to `Closed` state.
     pub async fn reset(&self) {
         if let Some(guard) = self.acquire_mutation_lock().await {
@@ -1156,6 +1175,31 @@ mod tests {
         assert_eq!(cb.config().success_threshold, 7);
         assert_eq!(cb.config().recovery_timeout, Duration::from_secs(999));
         assert_eq!(cb.config().fallback_provider.as_deref(), Some("backup"));
+    }
+
+    #[tokio::test]
+    async fn trip_forces_open() {
+        let cb = create_cb(default_config());
+        assert_eq!(cb.state().await, CircuitState::Closed);
+
+        cb.trip().await;
+        assert_eq!(cb.state().await, CircuitState::Open);
+    }
+
+    #[tokio::test]
+    async fn trip_from_half_open() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            recovery_timeout: Duration::ZERO,
+            ..default_config()
+        };
+        let cb = create_cb(config);
+
+        cb.record_failure().await;
+        assert_eq!(try_permit_state(&cb).await, CircuitState::HalfOpen);
+
+        cb.trip().await;
+        assert_eq!(cb.state().await, CircuitState::Open);
     }
 
     #[tokio::test]

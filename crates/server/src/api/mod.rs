@@ -2,6 +2,7 @@ pub mod approvals;
 pub mod audit;
 pub mod auth;
 pub mod chains;
+pub mod circuit_breakers;
 pub mod dispatch;
 pub mod dlq;
 pub mod embeddings;
@@ -109,6 +110,19 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)
         .route("/v1/approvals", get(approvals::list_approvals))
+        // Circuit breaker admin
+        .route(
+            "/admin/circuit-breakers",
+            get(circuit_breakers::list_circuit_breakers),
+        )
+        .route(
+            "/admin/circuit-breakers/{provider}/trip",
+            post(circuit_breakers::trip_circuit_breaker),
+        )
+        .route(
+            "/admin/circuit-breakers/{provider}/reset",
+            post(circuit_breakers::reset_circuit_breaker),
+        )
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
         // Rate limiting runs after auth (so CallerIdentity is available)
