@@ -578,7 +578,7 @@ impl Gateway {
         if let Some(ref registry) = self.circuit_breakers
             && let Some(cb) = registry.get(action.provider.as_str())
         {
-            let (state, transition) = cb.acquire_permit();
+            let (state, transition) = cb.try_acquire_permit();
             if let Some((_from, _to)) = transition {
                 self.metrics.increment_circuit_transitions();
             }
@@ -589,7 +589,7 @@ impl Gateway {
                 {
                     // Check the fallback provider's circuit breaker too.
                     if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
-                        let (fb_state, fb_transition) = fallback_cb.acquire_permit();
+                        let (fb_state, fb_transition) = fallback_cb.try_acquire_permit();
                         if let Some((_from, _to)) = fb_transition {
                             self.metrics.increment_circuit_transitions();
                         }

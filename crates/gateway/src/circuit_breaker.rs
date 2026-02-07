@@ -127,7 +127,7 @@ impl CircuitBreaker {
     ///
     /// Returns `(effective_state, Option<(from, to)>)` where the second
     /// element is `Some` when a state transition occurred.
-    pub fn acquire_permit(&self) -> (CircuitState, Option<(CircuitState, CircuitState)>) {
+    pub fn try_acquire_permit(&self) -> (CircuitState, Option<(CircuitState, CircuitState)>) {
         let mut data = self
             .data
             .write()
@@ -365,8 +365,8 @@ mod tests {
     }
 
     /// Helper: call `check()` and return only the effective state.
-    fn permit_state(cb: &CircuitBreaker) -> CircuitState {
-        cb.acquire_permit().0
+    fn try_permit_state(cb: &CircuitBreaker) -> CircuitState {
+        cb.try_acquire_permit().0
     }
 
     // -- CircuitState tests ---------------------------------------------------
@@ -427,7 +427,7 @@ mod tests {
     fn starts_closed() {
         let cb = CircuitBreaker::new("test", default_config());
         assert_eq!(cb.state(), CircuitState::Closed);
-        assert_eq!(permit_state(&cb), CircuitState::Closed);
+        assert_eq!(try_permit_state(&cb), CircuitState::Closed);
     }
 
     #[test]
@@ -504,14 +504,14 @@ mod tests {
         assert_eq!(cb.state(), CircuitState::Open);
 
         // Recovery timeout is zero, so check() transitions to HalfOpen (probe 1 allowed)
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // First success - still half-open, clears probe_in_flight
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::HalfOpen);
 
         // Allow the next probe through
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // Second success - closes the circuit
         cb.record_success();
@@ -530,7 +530,7 @@ mod tests {
 
         // Trip and transition to half-open
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // Failure in half-open goes back to open
         cb.record_failure();
@@ -547,7 +547,7 @@ mod tests {
         let cb = CircuitBreaker::new("test", config);
 
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::Open);
+        assert_eq!(try_permit_state(&cb), CircuitState::Open);
     }
 
     #[test]
@@ -576,13 +576,13 @@ mod tests {
         let cb = CircuitBreaker::new("test", config);
 
         // Closed -> Open
-        assert_eq!(permit_state(&cb), CircuitState::Closed);
+        assert_eq!(try_permit_state(&cb), CircuitState::Closed);
         cb.record_failure();
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
         // Open -> HalfOpen (recovery timeout is zero)
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // HalfOpen -> Closed
         cb.record_success();
@@ -694,7 +694,7 @@ mod tests {
             let cb = Arc::clone(&cb);
             handles.push(std::thread::spawn(move || {
                 if i % 2 == 0 {
-                    cb.acquire_permit();
+                    cb.try_acquire_permit();
                 } else {
                     cb.record_failure();
                 }
@@ -799,19 +799,19 @@ mod tests {
 
         // Trip and move to HalfOpen (probe 1 allowed).
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // 1st success: still half-open (need 3), clears probe_in_flight.
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::HalfOpen);
 
         // Allow probe 2.
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::HalfOpen);
 
         // Allow probe 3.
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::Closed);
     }
@@ -828,27 +828,27 @@ mod tests {
 
         // Trip and move to HalfOpen (probe 1 allowed).
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // 1st success, allow probe 2, then 2nd success.
         cb.record_success();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
 
         // Failure on probe 3: goes back to Open.
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
         // Transition to HalfOpen again.
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // Need full 3 successes again (previous progress was reset).
         cb.record_success();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::HalfOpen);
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::Closed);
     }
@@ -958,7 +958,7 @@ mod tests {
         let cb = CircuitBreaker::new("test", config);
 
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         cb.reset();
         assert_eq!(cb.state(), CircuitState::Closed);
@@ -1021,7 +1021,7 @@ mod tests {
         cb.record_failure();
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::Closed);
 
@@ -1029,21 +1029,21 @@ mod tests {
         cb.record_failure();
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // Cycle 2: Fail probe -> back to Open
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
         // Cycle 2: Recover
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::Closed);
 
         // Cycle 3: Immediate trip and recovery
         cb.record_failure();
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::Closed);
     }
@@ -1069,7 +1069,7 @@ mod tests {
         assert_eq!(cb.state(), CircuitState::Open);
 
         // With zero timeout, check() immediately transitions to HalfOpen.
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
     }
 
     #[test]
@@ -1086,8 +1086,8 @@ mod tests {
         assert_eq!(cb.state(), CircuitState::Open);
 
         // With a very long timeout, check() should not transition.
-        assert_eq!(permit_state(&cb), CircuitState::Open);
-        assert_eq!(permit_state(&cb), CircuitState::Open);
+        assert_eq!(try_permit_state(&cb), CircuitState::Open);
+        assert_eq!(try_permit_state(&cb), CircuitState::Open);
     }
 
     #[test]
@@ -1102,14 +1102,14 @@ mod tests {
 
         // Trip and transition to HalfOpen.
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // Fail the probe -> back to Open with fresh last_failure_time.
         cb.record_failure();
         assert_eq!(cb.state(), CircuitState::Open);
 
         // With ZERO timeout, immediately back to HalfOpen.
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // Succeed the probe this time.
         cb.record_success();
@@ -1131,7 +1131,7 @@ mod tests {
 
         // Wait longer than the recovery timeout.
         std::thread::sleep(Duration::from_millis(20));
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::Closed);
@@ -1155,7 +1155,7 @@ mod tests {
 
         // Trip and move to HalfOpen.
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         let mut handles = Vec::new();
 
@@ -1200,7 +1200,7 @@ mod tests {
                     cb.record_success();
                 }
                 2 => {
-                    cb.acquire_permit();
+                    cb.try_acquire_permit();
                 }
                 3 => cb.reset(),
                 _ => unreachable!(),
@@ -1232,7 +1232,7 @@ mod tests {
         assert_eq!(cb.state(), CircuitState::Open);
 
         // First check transitions to HalfOpen and allows the probe.
-        let (state, transition) = cb.acquire_permit();
+        let (state, transition) = cb.try_acquire_permit();
         assert_eq!(state, CircuitState::HalfOpen);
         assert_eq!(
             transition,
@@ -1240,7 +1240,7 @@ mod tests {
         );
 
         // Second check while probe is in flight returns Open (rejected).
-        let (state, transition) = cb.acquire_permit();
+        let (state, transition) = cb.try_acquire_permit();
         assert_eq!(state, CircuitState::Open);
         assert!(transition.is_none());
 
@@ -1264,7 +1264,7 @@ mod tests {
         let cb = CircuitBreaker::new("test", config);
 
         cb.record_failure();
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
 
         // Probe fails -> back to Open, probe_in_flight cleared.
         let transition = cb.record_failure();
@@ -1274,7 +1274,7 @@ mod tests {
         );
 
         // Can transition to HalfOpen again and allow a new probe.
-        assert_eq!(permit_state(&cb), CircuitState::HalfOpen);
+        assert_eq!(try_permit_state(&cb), CircuitState::HalfOpen);
         cb.record_success();
         assert_eq!(cb.state(), CircuitState::Closed);
     }
@@ -1307,7 +1307,7 @@ mod tests {
         let cb = CircuitBreaker::new("test", config);
 
         cb.record_failure();
-        permit_state(&cb); // -> HalfOpen
+        try_permit_state(&cb); // -> HalfOpen
 
         let t = cb.record_success();
         assert_eq!(t, Some((CircuitState::HalfOpen, CircuitState::Closed)));
