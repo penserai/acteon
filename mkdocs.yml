@@ -126,6 +126,7 @@ nav:
     - LLM Guardrails: features/llm-guardrails.md
     - Semantic Routing: features/semantic-routing.md
     - Audit Trail: features/audit-trail.md
+    - Circuit Breaker: features/circuit-breaker.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md

@@ -49,6 +49,17 @@ Track event lifecycle through configurable states with automatic timeouts.
 
 </div>
 
+## Infrastructure
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+### [Circuit Breaker](circuit-breaker.md)
+Automatic provider health tracking — stop requests to failing providers, reroute to fallbacks, and recover gracefully.
+</div>
+
+</div>
+
 ## Advanced Features
 
 <div class="grid" markdown>
