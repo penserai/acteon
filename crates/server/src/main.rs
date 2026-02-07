@@ -209,6 +209,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .group_manager(Arc::clone(&group_manager))
         .external_url(external_url);
 
+    if let Some(ref tz) = config.rules.default_timezone {
+        builder = builder.default_timezone(tz);
+    }
+
     if let Some(ref key_configs) = config.server.approval_keys {
         let keys: Vec<acteon_gateway::ApprovalKey> = key_configs
             .iter()

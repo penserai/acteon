@@ -273,18 +273,46 @@ fn resolve_ident(name: &str, ctx: &EvalContext<'_>) -> Result<Value, RuleError> 
 
 /// Build a `Value::Map` containing temporal components derived from `ctx.now`.
 ///
+/// When `ctx.timezone` is `Some(tz)`, date/time components (`hour`, `weekday`,
+/// etc.) are computed in the given timezone. Otherwise they use UTC.
+/// The `timestamp` field always returns the UTC unix timestamp regardless.
+///
 /// Provides the following fields for use in rule conditions:
 /// - `hour` (0–23), `minute` (0–59), `second` (0–59)
 /// - `day` (1–31), `month` (1–12), `year`
 /// - `weekday` — English name (e.g. `"Monday"`)
 /// - `weekday_num` — ISO weekday number (1=Monday … 7=Sunday)
-/// - `timestamp` — Unix timestamp in seconds (same as `now`)
+/// - `timestamp` — Unix timestamp in seconds (always UTC)
 fn build_time_map(ctx: &EvalContext<'_>) -> Value {
     use chrono::Datelike as _;
     use chrono::Timelike as _;
 
-    let dt = ctx.now;
-    let weekday_name = match dt.weekday() {
+    // Extract date/time components in the configured timezone (or UTC).
+    let (hour, minute, second, day, month, year, weekday) = if let Some(tz) = ctx.timezone {
+        let local = ctx.now.with_timezone(&tz);
+        (
+            local.hour(),
+            local.minute(),
+            local.second(),
+            local.day(),
+            local.month(),
+            local.year(),
+            local.weekday(),
+        )
+    } else {
+        let dt = ctx.now;
+        (
+            dt.hour(),
+            dt.minute(),
+            dt.second(),
+            dt.day(),
+            dt.month(),
+            dt.year(),
+            dt.weekday(),
+        )
+    };
+
+    let weekday_name = match weekday {
         chrono::Weekday::Mon => "Monday",
         chrono::Weekday::Tue => "Tuesday",
         chrono::Weekday::Wed => "Wednesday",
@@ -295,18 +323,19 @@ fn build_time_map(ctx: &EvalContext<'_>) -> Value {
     };
 
     let mut map = HashMap::with_capacity(9);
-    map.insert("hour".to_owned(), Value::Int(i64::from(dt.hour())));
-    map.insert("minute".to_owned(), Value::Int(i64::from(dt.minute())));
-    map.insert("second".to_owned(), Value::Int(i64::from(dt.second())));
-    map.insert("day".to_owned(), Value::Int(i64::from(dt.day())));
-    map.insert("month".to_owned(), Value::Int(i64::from(dt.month())));
-    map.insert("year".to_owned(), Value::Int(i64::from(dt.year())));
+    map.insert("hour".to_owned(), Value::Int(i64::from(hour)));
+    map.insert("minute".to_owned(), Value::Int(i64::from(minute)));
+    map.insert("second".to_owned(), Value::Int(i64::from(second)));
+    map.insert("day".to_owned(), Value::Int(i64::from(day)));
+    map.insert("month".to_owned(), Value::Int(i64::from(month)));
+    map.insert("year".to_owned(), Value::Int(i64::from(year)));
     map.insert("weekday".to_owned(), Value::String(weekday_name.to_owned()));
     map.insert(
         "weekday_num".to_owned(),
-        Value::Int(i64::from(dt.weekday().number_from_monday())),
+        Value::Int(i64::from(weekday.number_from_monday())),
     );
-    map.insert("timestamp".to_owned(), Value::Int(dt.timestamp()));
+    // Timestamp is always UTC unix time.
+    map.insert("timestamp".to_owned(), Value::Int(ctx.now.timestamp()));
     Value::Map(map)
 }
 
@@ -938,7 +967,8 @@ impl RuleEngine {
     /// Evaluate all rules against the given context.
     ///
     /// Returns the verdict from the first matching rule, or `Allow` if no
-    /// rule matches.
+    /// rule matches. If a rule has a `timezone` field, its `time.*` fields
+    /// are evaluated in that timezone instead of the context default.
     #[instrument(skip_all, fields(rules_count = self.rules.len()))]
     pub async fn evaluate(&self, ctx: &EvalContext<'_>) -> Result<RuleVerdict, RuleError> {
         for rule in &self.rules {
@@ -947,7 +977,34 @@ impl RuleEngine {
                 continue;
             }
 
-            let result = eval(&rule.condition, ctx).await?;
+            // If the rule has a per-rule timezone override, create a modified
+            // context with that timezone for this rule's evaluation.
+            let rule_tz = if let Some(ref tz_name) = rule.timezone {
+                Some(
+                    tz_name
+                        .parse::<chrono_tz::Tz>()
+                        .map_err(|_| RuleError::InvalidTimezone(tz_name.clone()))?,
+                )
+            } else {
+                None
+            };
+
+            let eval_ctx;
+            let effective_ctx = if let Some(tz) = rule_tz {
+                eval_ctx = EvalContext {
+                    action: ctx.action,
+                    state: ctx.state,
+                    environment: ctx.environment,
+                    now: ctx.now,
+                    embedding: ctx.embedding.clone(),
+                    timezone: Some(tz),
+                };
+                &eval_ctx
+            } else {
+                ctx
+            };
+
+            let result = eval(&rule.condition, effective_ctx).await?;
 
             if result.is_truthy() {
                 debug!(rule = %rule.name, "rule matched");
@@ -2606,5 +2663,176 @@ mod tests {
             .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap());
         let verdict = engine.evaluate(&ctx).await.unwrap();
         assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    // --- Timezone support tests ---
+
+    #[tokio::test]
+    async fn timezone_context_converts_hour() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // UTC 14:00 = US/Eastern 9:00 (EST, UTC-5)
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap())
+            .with_timezone(chrono_tz::US::Eastern);
+
+        let time_val = build_time_map(&ctx);
+        match time_val {
+            Value::Map(ref m) => {
+                assert_eq!(m.get("hour"), Some(&Value::Int(9)));
+            }
+            _ => panic!("expected Map"),
+        }
+    }
+
+    #[tokio::test]
+    async fn timezone_timestamp_always_utc() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let utc_time = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap();
+
+        let ctx = test_context(&action, &store, &env)
+            .with_now(utc_time)
+            .with_timezone(chrono_tz::US::Eastern);
+
+        let time_val = build_time_map(&ctx);
+        match time_val {
+            Value::Map(ref m) => {
+                assert_eq!(m.get("timestamp"), Some(&Value::Int(utc_time.timestamp())));
+            }
+            _ => panic!("expected Map"),
+        }
+    }
+
+    #[tokio::test]
+    async fn per_rule_timezone_override() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Rule: suppress when hour < 10 (in US/Eastern)
+        // UTC 14:00 = Eastern 9:00, so hour < 10 is true → suppress
+        let rule = Rule::new(
+            "eastern-morning",
+            Expr::Binary(
+                BinaryOp::Lt,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(10)),
+            ),
+            RuleAction::Suppress,
+        )
+        .with_timezone("US/Eastern");
+
+        let engine = RuleEngine::new(vec![rule]);
+
+        // UTC 14:00 = EST 9:00 → hour(9) < 10 → suppress
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Suppress(_)),
+            "expected Suppress at Eastern 9 AM, got {verdict:?}"
+        );
+
+        // UTC 16:00 = EST 11:00 → hour(11) < 10 is false → allow
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 16, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Allow(_)),
+            "expected Allow at Eastern 11 AM, got {verdict:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_timezone_returns_error() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        let rule = Rule::new("bad-tz", Expr::Bool(true), RuleAction::Suppress)
+            .with_timezone("Fake/Timezone");
+
+        let engine = RuleEngine::new(vec![rule]);
+        let ctx = test_context(&action, &store, &env);
+        let result = engine.evaluate(&ctx).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("invalid timezone"));
+    }
+
+    #[tokio::test]
+    async fn business_hours_with_timezone() {
+        use chrono::TimeZone as _;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Business hours 9-17 Eastern, Mon-Fri
+        // Condition: hour >= 9 && hour < 17 && weekday_num <= 5
+        let rule = Rule::new(
+            "business-hours-eastern",
+            Expr::All(vec![
+                Expr::Binary(
+                    BinaryOp::Ge,
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Ident("time".into())),
+                        "hour".into(),
+                    )),
+                    Box::new(Expr::Int(9)),
+                ),
+                Expr::Binary(
+                    BinaryOp::Lt,
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Ident("time".into())),
+                        "hour".into(),
+                    )),
+                    Box::new(Expr::Int(17)),
+                ),
+                Expr::Binary(
+                    BinaryOp::Le,
+                    Box::new(Expr::Field(
+                        Box::new(Expr::Ident("time".into())),
+                        "weekday_num".into(),
+                    )),
+                    Box::new(Expr::Int(5)),
+                ),
+            ]),
+            RuleAction::Allow,
+        )
+        .with_timezone("US/Eastern");
+
+        let engine = RuleEngine::new(vec![rule]);
+
+        // Thursday 14:00 UTC = Thursday 9:00 Eastern → in business hours → Allow
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(Some(name)) if name == "business-hours-eastern"),
+            "expected Allow(business-hours-eastern), got {verdict:?}"
+        );
+
+        // Thursday 23:00 UTC = Thursday 18:00 Eastern → outside hours → Allow(None)
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 23, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(None)),
+            "expected Allow(None), got {verdict:?}"
+        );
     }
 }

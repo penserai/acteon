@@ -45,6 +45,9 @@ struct CelRule {
     condition: String,
     /// The action to take when the condition matches.
     action: CelAction,
+    /// Optional IANA timezone for time-based conditions (e.g. `"US/Eastern"`).
+    #[serde(default)]
+    timezone: Option<String>,
 }
 
 /// The action to take when a rule fires.
@@ -135,7 +138,7 @@ fn compile_rule(cel: CelRule, file: Option<&Path>) -> Result<Rule, RuleError> {
         file: file.map(|p| p.display().to_string()),
     };
 
-    Ok(Rule {
+    let mut rule = Rule {
         name: cel.name,
         priority: cel.priority,
         description: cel.description,
@@ -145,7 +148,12 @@ fn compile_rule(cel: CelRule, file: Option<&Path>) -> Result<Rule, RuleError> {
         source,
         version: 0,
         metadata: std::collections::HashMap::new(),
-    })
+        timezone: None,
+    };
+    if let Some(tz) = cel.timezone {
+        rule = rule.with_timezone(tz);
+    }
+    Ok(rule)
 }
 
 /// Compile a [`CelAction`] into a [`RuleAction`].
@@ -680,6 +688,74 @@ rules:
     }
 
     // --- Time-based rule activation tests ---
+
+    #[test]
+    fn parse_rule_with_timezone() {
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: eastern-hours
+    timezone: "US/Eastern"
+    condition: 'time.hour >= 9 && time.hour < 17'
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(content).unwrap();
+        assert_eq!(rules[0].timezone.as_deref(), Some("US/Eastern"));
+    }
+
+    #[test]
+    fn parse_rule_without_timezone_is_none() {
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: no-tz
+    condition: 'true'
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(content).unwrap();
+        assert!(rules[0].timezone.is_none());
+    }
+
+    #[tokio::test]
+    async fn e2e_timezone_business_hours() {
+        use chrono::TimeZone as _;
+
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: business-hours-eastern
+    timezone: "US/Eastern"
+    condition: 'time.hour >= 9 && time.hour < 17'
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(content).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // UTC 14:00 = Eastern 9:00 → in business hours → Allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(Some(name)) if name == "business-hours-eastern"),
+            "expected Allow at Eastern 9 AM, got {verdict:?}"
+        );
+
+        // UTC 12:00 = Eastern 7:00 → outside business hours → Allow(None)
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(None)),
+            "expected Allow(None) at Eastern 7 AM, got {verdict:?}"
+        );
+    }
 
     #[tokio::test]
     async fn e2e_time_based_suppress_outside_hours() {

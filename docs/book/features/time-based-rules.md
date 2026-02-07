@@ -4,13 +4,13 @@ Rules can include temporal conditions that match on the current time at dispatch
 
 ## How It Works
 
-The rule engine exposes a `time` identifier containing the current UTC timestamp broken into components. You can use `time.*` fields in conditions just like `action.*` fields — no special syntax or configuration required.
+The rule engine exposes a `time` identifier containing the current timestamp broken into components. You can use `time.*` fields in conditions just like `action.*` fields — no special syntax or configuration required. By default, `time.*` fields use UTC, but you can configure a timezone at the gateway or per-rule level.
 
 ## Available Fields
 
 | Field | Type | Range | Description |
 |-------|------|-------|-------------|
-| `time.hour` | int | 0–23 | Hour of the day (UTC) |
+| `time.hour` | int | 0–23 | Hour of the day |
 | `time.minute` | int | 0–59 | Minute of the hour |
 | `time.second` | int | 0–59 | Second of the minute |
 | `time.day` | int | 1–31 | Day of the month |
@@ -21,7 +21,58 @@ The rule engine exposes a `time` identifier containing the current UTC timestamp
 | `time.timestamp` | int | — | Unix timestamp in seconds |
 
 !!! note
-    All temporal values are in **UTC**. If your business logic requires a specific timezone, adjust the hour boundaries accordingly (e.g., 9 AM US/Eastern = 14:00 UTC during EST).
+    By default, all temporal values (except `timestamp`) use **UTC**. Use the `timezone` field on a rule or the `default_timezone` gateway setting to evaluate in a specific timezone. The `timestamp` field always returns the UTC unix timestamp regardless of timezone.
+
+## Timezone Support
+
+Rules can specify an IANA timezone (e.g. `"US/Eastern"`, `"Europe/Berlin"`) so that `time.*` fields are evaluated in local time. This avoids manual UTC offset calculations and correctly handles DST transitions.
+
+**Resolution order** (most specific wins):
+
+1. Per-rule `timezone` field
+2. Gateway-level `default_timezone` (set in `acteon.toml` under `[rules]`)
+3. UTC (implicit default)
+
+### Per-Rule Timezone
+
+```yaml title="rules/eastern_business_hours.yaml"
+rules:
+  - name: business-hours-eastern
+    timezone: "US/Eastern"
+    condition:
+      all:
+        - field: time.hour
+          gte: 9
+        - field: time.hour
+          lt: 17
+        - field: time.weekday_num
+          lte: 5
+    action:
+      type: allow
+```
+
+### Gateway Default Timezone
+
+Set in `acteon.toml`:
+
+```toml
+[rules]
+directory = "rules/"
+default_timezone = "US/Eastern"
+```
+
+All rules without an explicit `timezone` field will use `US/Eastern` for `time.*` fields.
+
+### CEL with Timezone
+
+```yaml title="rules/eastern_hours.cel"
+rules:
+  - name: business-hours-eastern
+    timezone: "US/Eastern"
+    condition: 'time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5'
+    action:
+      type: allow
+```
 
 ## YAML Examples
 

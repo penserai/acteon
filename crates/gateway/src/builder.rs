@@ -46,6 +46,7 @@ pub struct GatewayBuilder {
     chains: HashMap<String, ChainConfig>,
     completed_chain_ttl: Option<Duration>,
     embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
+    default_timezone: Option<String>,
 }
 
 impl GatewayBuilder {
@@ -75,6 +76,7 @@ impl GatewayBuilder {
             chains: HashMap::new(),
             completed_chain_ttl: None,
             embedding: None,
+            default_timezone: None,
         }
     }
 
@@ -281,6 +283,16 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the default IANA timezone for time-based rule conditions.
+    ///
+    /// When set, `time.*` fields use this timezone unless a rule provides
+    /// its own `timezone` override. If not set, UTC is used.
+    #[must_use]
+    pub fn default_timezone(mut self, tz: impl Into<String>) -> Self {
+        self.default_timezone = Some(tz.into());
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -293,6 +305,17 @@ impl GatewayBuilder {
         let lock = self
             .lock
             .ok_or_else(|| GatewayError::Configuration("distributed lock is required".into()))?;
+
+        // Parse the default timezone if provided.
+        let default_timezone = self
+            .default_timezone
+            .as_deref()
+            .map(|tz_name| {
+                tz_name.parse::<chrono_tz::Tz>().map_err(|_| {
+                    GatewayError::Configuration(format!("invalid default_timezone: {tz_name}"))
+                })
+            })
+            .transpose()?;
 
         let engine = RuleEngine::new(self.rules);
 
@@ -353,6 +376,7 @@ impl GatewayBuilder {
             chains: self.chains,
             completed_chain_ttl: self.completed_chain_ttl,
             embedding: self.embedding,
+            default_timezone,
         })
     }
 }

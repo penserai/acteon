@@ -51,7 +51,7 @@ fn compile_rule(yaml: YamlRule, file: Option<&Path>) -> Result<Rule, RuleError> 
         file: file.map(|p| p.display().to_string()),
     };
 
-    Ok(Rule {
+    let mut rule = Rule {
         name: yaml.name,
         priority: yaml.priority,
         description: yaml.description,
@@ -61,7 +61,12 @@ fn compile_rule(yaml: YamlRule, file: Option<&Path>) -> Result<Rule, RuleError> 
         source,
         version: 0,
         metadata: yaml.metadata,
-    })
+        timezone: None,
+    };
+    if let Some(tz) = yaml.timezone {
+        rule = rule.with_timezone(tz);
+    }
+    Ok(rule)
 }
 
 /// Compile a `YamlCondition` into an `Expr`.
@@ -1179,6 +1184,83 @@ rules:
             .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap());
         let verdict = engine.evaluate(&ctx).await.unwrap();
         assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    #[test]
+    fn parse_rule_timezone_passthrough() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: eastern-hours
+    timezone: "US/Eastern"
+    condition:
+      field: time.hour
+      gte: 9
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules[0].timezone.as_deref(), Some("US/Eastern"));
+    }
+
+    #[test]
+    fn parse_rule_no_timezone_is_none() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: no-tz
+    condition:
+      field: time.hour
+      gte: 9
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert!(rules[0].timezone.is_none());
+    }
+
+    #[tokio::test]
+    async fn end_to_end_timezone_business_hours() {
+        use chrono::TimeZone as _;
+
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: business-hours-eastern
+    timezone: "US/Eastern"
+    condition:
+      all:
+        - field: time.hour
+          gte: 9
+        - field: time.hour
+          lt: 17
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // UTC 14:00 = Eastern 9:00 → in business hours → Allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(Some(name)) if name == "business-hours-eastern"),
+            "expected Allow at Eastern 9 AM, got {verdict:?}"
+        );
+
+        // UTC 12:00 = Eastern 7:00 → outside business hours → Allow(None)
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(&verdict, RuleVerdict::Allow(None)),
+            "expected Allow(None) at Eastern 7 AM, got {verdict:?}"
+        );
     }
 
     #[test]

@@ -59,6 +59,9 @@ pub struct YamlRule {
     /// Arbitrary key-value metadata (e.g. `llm_policy` overrides).
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    /// Optional IANA timezone for time-based conditions (e.g. `"US/Eastern"`).
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// A condition expression that can combine multiple predicates.
@@ -531,6 +534,37 @@ rules:
 "#;
         let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(file.rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_rule_with_timezone() {
+        let yaml = r#"
+rules:
+  - name: eastern-hours
+    timezone: "US/Eastern"
+    condition:
+      field: time.hour
+      gte: 9
+    action:
+      type: allow
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules[0].timezone.as_deref(), Some("US/Eastern"));
+    }
+
+    #[test]
+    fn parse_rule_without_timezone_defaults_none() {
+        let yaml = r"
+rules:
+  - name: no-tz
+    condition:
+      field: x
+      eq: 1
+    action:
+      type: allow
+";
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(file.rules[0].timezone.is_none());
     }
 
     #[test]

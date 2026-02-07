@@ -156,6 +156,7 @@ pub struct Gateway {
     pub(crate) chains: HashMap<String, ChainConfig>,
     pub(crate) completed_chain_ttl: Option<Duration>,
     pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
+    pub(crate) default_timezone: Option<chrono_tz::Tz>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -237,6 +238,9 @@ impl Gateway {
         let mut eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment);
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
+        if let Some(tz) = self.default_timezone {
+            eval_ctx = eval_ctx.with_timezone(tz);
         }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 
@@ -1987,6 +1991,9 @@ impl Gateway {
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
         }
+        if let Some(tz) = self.default_timezone {
+            eval_ctx = eval_ctx.with_timezone(tz);
+        }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 
         match &verdict {
@@ -2163,6 +2170,9 @@ impl Gateway {
         let mut eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment);
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
+        if let Some(tz) = self.default_timezone {
+            eval_ctx = eval_ctx.with_timezone(tz);
         }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 

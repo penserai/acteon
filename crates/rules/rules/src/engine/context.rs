@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 
 use acteon_core::Action;
 use acteon_state::StateStore;
@@ -39,6 +40,10 @@ pub struct EvalContext<'a> {
     pub now: DateTime<Utc>,
     /// Optional embedding support for semantic matching.
     pub embedding: Option<Arc<dyn EmbeddingEvalSupport>>,
+    /// Optional timezone for evaluating `time.*` fields in local time.
+    ///
+    /// When `None`, `time.*` fields use UTC (backward-compatible default).
+    pub timezone: Option<Tz>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -54,6 +59,7 @@ impl<'a> EvalContext<'a> {
             environment,
             now: Utc::now(),
             embedding: None,
+            timezone: None,
         }
     }
 
@@ -68,6 +74,13 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_embedding(mut self, embedding: Arc<dyn EmbeddingEvalSupport>) -> Self {
         self.embedding = Some(embedding);
+        self
+    }
+
+    /// Set the timezone for evaluating `time.*` fields.
+    #[must_use]
+    pub fn with_timezone(mut self, tz: Tz) -> Self {
+        self.timezone = Some(tz);
         self
     }
 }
