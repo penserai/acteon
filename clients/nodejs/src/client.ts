@@ -152,10 +152,18 @@ export class ActeonClient {
 
   /**
    * Dispatch a single action.
+   *
+   * @param options.dryRun - When true, evaluates rules without executing the action.
    */
-  async dispatch(action: Action): Promise<ActionOutcome> {
+  async dispatch(
+    action: Action,
+    options?: { dryRun?: boolean }
+  ): Promise<ActionOutcome> {
+    const params =
+      options?.dryRun ? new URLSearchParams({ dry_run: "true" }) : undefined;
     const response = await this.request("POST", "/v1/dispatch", {
       body: actionToRequest(action),
+      params,
     });
 
     const data = (await response.json()) as Record<string, unknown>;
@@ -172,11 +180,27 @@ export class ActeonClient {
   }
 
   /**
-   * Dispatch multiple actions in a single request.
+   * Dispatch a single action in dry-run mode.
+   * Rules are evaluated but the action is not executed and no state is mutated.
    */
-  async dispatchBatch(actions: Action[]): Promise<BatchResult[]> {
+  async dispatchDryRun(action: Action): Promise<ActionOutcome> {
+    return this.dispatch(action, { dryRun: true });
+  }
+
+  /**
+   * Dispatch multiple actions in a single request.
+   *
+   * @param options.dryRun - When true, evaluates rules without executing any actions.
+   */
+  async dispatchBatch(
+    actions: Action[],
+    options?: { dryRun?: boolean }
+  ): Promise<BatchResult[]> {
+    const params =
+      options?.dryRun ? new URLSearchParams({ dry_run: "true" }) : undefined;
     const response = await this.request("POST", "/v1/dispatch/batch", {
       body: actions.map(actionToRequest),
+      params,
     });
 
     if (response.ok) {
@@ -190,6 +214,14 @@ export class ActeonClient {
         (data.retryable as boolean) ?? false
       );
     }
+  }
+
+  /**
+   * Dispatch multiple actions in dry-run mode.
+   * Rules are evaluated for each action but none are executed and no state is mutated.
+   */
+  async dispatchBatchDryRun(actions: Action[]): Promise<BatchResult[]> {
+    return this.dispatchBatch(actions, { dryRun: true });
   }
 
   // =========================================================================

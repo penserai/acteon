@@ -123,11 +123,14 @@ class ActeonClient:
     # Action Dispatch
     # =========================================================================
 
-    def dispatch(self, action: Action) -> ActionOutcome:
+    def dispatch(
+        self, action: Action, *, dry_run: bool = False
+    ) -> ActionOutcome:
         """Dispatch a single action.
 
         Args:
             action: The action to dispatch.
+            dry_run: When True, evaluates rules without executing the action.
 
         Returns:
             The outcome of the action.
@@ -136,7 +139,10 @@ class ActeonClient:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns an error.
         """
-        response = self._request("POST", "/v1/dispatch", json=action.to_dict())
+        params = {"dry_run": "true"} if dry_run else None
+        response = self._request(
+            "POST", "/v1/dispatch", json=action.to_dict(), params=params
+        )
 
         if response.status_code == 200:
             return ActionOutcome.from_dict(response.json())
@@ -148,11 +154,31 @@ class ActeonClient:
                 retryable=data.get("retryable", False),
             )
 
-    def dispatch_batch(self, actions: list[Action]) -> list[BatchResult]:
+    def dispatch_dry_run(self, action: Action) -> ActionOutcome:
+        """Dispatch a single action in dry-run mode.
+
+        Rules are evaluated but the action is not executed and no state is mutated.
+
+        Args:
+            action: The action to evaluate.
+
+        Returns:
+            A DryRun outcome describing what would happen.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns an error.
+        """
+        return self.dispatch(action, dry_run=True)
+
+    def dispatch_batch(
+        self, actions: list[Action], *, dry_run: bool = False
+    ) -> list[BatchResult]:
         """Dispatch multiple actions in a single request.
 
         Args:
             actions: List of actions to dispatch.
+            dry_run: When True, evaluates rules without executing any actions.
 
         Returns:
             List of results, one per action.
@@ -161,10 +187,12 @@ class ActeonClient:
             ConnectionError: If unable to connect to the server.
             ApiError: If the server returns a batch-level error.
         """
+        params = {"dry_run": "true"} if dry_run else None
         response = self._request(
             "POST",
             "/v1/dispatch/batch",
             json=[a.to_dict() for a in actions],
+            params=params,
         )
 
         if response.status_code == 200:
@@ -176,6 +204,23 @@ class ActeonClient:
                 message=data.get("message", "Unknown error"),
                 retryable=data.get("retryable", False),
             )
+
+    def dispatch_batch_dry_run(self, actions: list[Action]) -> list[BatchResult]:
+        """Dispatch multiple actions in dry-run mode.
+
+        Rules are evaluated for each action but none are executed and no state is mutated.
+
+        Args:
+            actions: List of actions to evaluate.
+
+        Returns:
+            List of DryRun results, one per action.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a batch-level error.
+        """
+        return self.dispatch_batch(actions, dry_run=True)
 
     # =========================================================================
     # Rules Management
@@ -648,8 +693,13 @@ class AsyncActeonClient:
         except ConnectionError:
             return False
 
-    async def dispatch(self, action: Action) -> ActionOutcome:
-        response = await self._request("POST", "/v1/dispatch", json=action.to_dict())
+    async def dispatch(
+        self, action: Action, *, dry_run: bool = False
+    ) -> ActionOutcome:
+        params = {"dry_run": "true"} if dry_run else None
+        response = await self._request(
+            "POST", "/v1/dispatch", json=action.to_dict(), params=params
+        )
         if response.status_code == 200:
             return ActionOutcome.from_dict(response.json())
         else:
@@ -660,11 +710,18 @@ class AsyncActeonClient:
                 retryable=data.get("retryable", False),
             )
 
-    async def dispatch_batch(self, actions: list[Action]) -> list[BatchResult]:
+    async def dispatch_dry_run(self, action: Action) -> ActionOutcome:
+        return await self.dispatch(action, dry_run=True)
+
+    async def dispatch_batch(
+        self, actions: list[Action], *, dry_run: bool = False
+    ) -> list[BatchResult]:
+        params = {"dry_run": "true"} if dry_run else None
         response = await self._request(
             "POST",
             "/v1/dispatch/batch",
             json=[a.to_dict() for a in actions],
+            params=params,
         )
         if response.status_code == 200:
             return [BatchResult.from_dict(r) for r in response.json()]
@@ -675,6 +732,11 @@ class AsyncActeonClient:
                 message=data.get("message", "Unknown error"),
                 retryable=data.get("retryable", False),
             )
+
+    async def dispatch_batch_dry_run(
+        self, actions: list[Action]
+    ) -> list[BatchResult]:
+        return await self.dispatch_batch(actions, dry_run=True)
 
     async def list_rules(self) -> list[RuleInfo]:
         response = await self._request("GET", "/v1/rules")

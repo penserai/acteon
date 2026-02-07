@@ -143,12 +143,78 @@ public class ActeonClient implements AutoCloseable {
     }
 
     /**
+     * Dispatches a single action in dry-run mode.
+     * Rules are evaluated but the action is not executed and no state is mutated.
+     */
+    public ActionOutcome dispatchDryRun(Action action) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(action);
+            HttpRequest request = requestBuilder("/v1/dispatch?dry_run=true")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                Map<String, Object> data = objectMapper.readValue(
+                    response.body(),
+                    new TypeReference<Map<String, Object>>() {}
+                );
+                return ActionOutcome.fromMap(data);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
      * Dispatches multiple actions in a single request.
      */
     public List<BatchResult> dispatchBatch(List<Action> actions) throws ActeonException {
         try {
             String body = objectMapper.writeValueAsString(actions);
             HttpRequest request = requestBuilder("/v1/dispatch/batch")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                List<Map<String, Object>> data = objectMapper.readValue(
+                    response.body(),
+                    new TypeReference<List<Map<String, Object>>>() {}
+                );
+                List<BatchResult> results = new ArrayList<>();
+                for (Map<String, Object> item : data) {
+                    results.add(BatchResult.fromMap(item));
+                }
+                return results;
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Dispatches multiple actions in dry-run mode.
+     * Rules are evaluated for each action but none are executed and no state is mutated.
+     */
+    public List<BatchResult> dispatchBatchDryRun(List<Action> actions) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(actions);
+            HttpRequest request = requestBuilder("/v1/dispatch/batch?dry_run=true")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
 

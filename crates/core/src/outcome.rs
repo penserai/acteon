@@ -71,6 +71,15 @@ pub enum ActionOutcome {
         /// Name of the first step to be executed.
         first_step: String,
     },
+    /// Dry-run mode: shows what *would* happen without executing or recording state.
+    DryRun {
+        /// The verdict that would be applied (e.g., "allow", "suppress", "reroute").
+        verdict: String,
+        /// Name of the matched rule, if any.
+        matched_rule: Option<String>,
+        /// The provider that would handle the action.
+        would_be_provider: String,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -209,6 +218,44 @@ mod tests {
         assert!(json.contains("total_steps"));
         let back: ActionOutcome = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, ActionOutcome::ChainStarted { .. }));
+    }
+
+    #[test]
+    fn outcome_dry_run() {
+        let outcome = ActionOutcome::DryRun {
+            verdict: "allow".into(),
+            matched_rule: None,
+            would_be_provider: "email".into(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("DryRun"));
+        assert!(json.contains("allow"));
+        assert!(json.contains("email"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ActionOutcome::DryRun { .. }));
+    }
+
+    #[test]
+    fn outcome_dry_run_with_rule() {
+        let outcome = ActionOutcome::DryRun {
+            verdict: "suppress".into(),
+            matched_rule: Some("block-spam".into()),
+            would_be_provider: "email".into(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("block-spam"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::DryRun {
+                verdict,
+                matched_rule,
+                ..
+            } => {
+                assert_eq!(verdict, "suppress");
+                assert_eq!(matched_rule.unwrap(), "block-spam");
+            }
+            _ => panic!("expected DryRun"),
+        }
     }
 
     #[test]

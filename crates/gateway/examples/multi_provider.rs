@@ -170,5 +170,10 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
             chain_name,
             ..
         } => format!("ChainStarted (id: {chain_id}, chain: {chain_name})"),
+        ActionOutcome::DryRun {
+            verdict,
+            would_be_provider,
+            ..
+        } => format!("DryRun (verdict: {verdict}, provider: {would_be_provider})"),
     }
 }

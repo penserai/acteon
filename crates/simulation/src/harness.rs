@@ -177,6 +177,11 @@ impl SimulationHarness {
         self.dispatch_to(0, action).await
     }
 
+    /// Dispatch an action to the first node in dry-run mode.
+    pub async fn dispatch_dry_run(&self, action: &Action) -> Result<ActionOutcome, GatewayError> {
+        self.dispatch_dry_run_to(0, action).await
+    }
+
     /// Dispatch an action to a specific node.
     pub async fn dispatch_to(
         &self,
@@ -191,12 +196,34 @@ impl SimulationHarness {
         node.dispatch(action.clone()).await
     }
 
+    /// Dispatch an action to a specific node in dry-run mode.
+    pub async fn dispatch_dry_run_to(
+        &self,
+        node_index: usize,
+        action: &Action,
+    ) -> Result<ActionOutcome, GatewayError> {
+        let node = self
+            .nodes
+            .get(node_index)
+            .ok_or_else(|| GatewayError::Configuration(format!("node {node_index} not found")))?;
+
+        node.dispatch_dry_run(action.clone()).await
+    }
+
     /// Dispatch a batch of actions to the first node.
     pub async fn dispatch_batch(
         &self,
         actions: &[Action],
     ) -> Vec<Result<ActionOutcome, GatewayError>> {
         self.dispatch_batch_to(0, actions).await
+    }
+
+    /// Dispatch a batch of actions to the first node in dry-run mode.
+    pub async fn dispatch_batch_dry_run(
+        &self,
+        actions: &[Action],
+    ) -> Vec<Result<ActionOutcome, GatewayError>> {
+        self.dispatch_batch_dry_run_to(0, actions).await
     }
 
     /// Dispatch a batch of actions to a specific node.
@@ -217,6 +244,26 @@ impl SimulationHarness {
         };
 
         node.dispatch_batch(actions.to_vec()).await
+    }
+
+    /// Dispatch a batch of actions to a specific node in dry-run mode.
+    pub async fn dispatch_batch_dry_run_to(
+        &self,
+        node_index: usize,
+        actions: &[Action],
+    ) -> Vec<Result<ActionOutcome, GatewayError>> {
+        let Some(node) = self.nodes.get(node_index) else {
+            return actions
+                .iter()
+                .map(|_| {
+                    Err(GatewayError::Configuration(format!(
+                        "node {node_index} not found"
+                    )))
+                })
+                .collect();
+        };
+
+        node.dispatch_batch_dry_run(actions.to_vec()).await
     }
 
     /// Reset all recording providers, clearing captured calls.

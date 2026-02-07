@@ -184,6 +184,18 @@ impl SideEffectAssertions {
         }
     }
 
+    /// Assert that an outcome matches the `DryRun` variant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `DryRun`.
+    pub fn assert_dry_run(outcome: &ActionOutcome) {
+        assert!(
+            matches!(outcome, ActionOutcome::DryRun { .. }),
+            "expected DryRun, got {outcome:?}"
+        );
+    }
+
     /// Assert that a state transition occurred to a specific state.
     ///
     /// # Panics
@@ -315,6 +327,9 @@ pub trait ActionOutcomeExt {
     /// Assert this outcome is `ChainStarted`.
     fn assert_chain_started(&self);
 
+    /// Assert this outcome is `DryRun`.
+    fn assert_dry_run(&self);
+
     /// Check if this outcome is `Executed`.
     fn is_executed(&self) -> bool;
 
@@ -341,6 +356,9 @@ pub trait ActionOutcomeExt {
 
     /// Check if this outcome is `ChainStarted`.
     fn is_chain_started(&self) -> bool;
+
+    /// Check if this outcome is `DryRun`.
+    fn is_dry_run(&self) -> bool;
 }
 
 impl ActionOutcomeExt for ActionOutcome {
@@ -380,6 +398,10 @@ impl ActionOutcomeExt for ActionOutcome {
         SideEffectAssertions::assert_chain_started(self);
     }
 
+    fn assert_dry_run(&self) {
+        SideEffectAssertions::assert_dry_run(self);
+    }
+
     fn is_executed(&self) -> bool {
         matches!(self, ActionOutcome::Executed(_))
     }
@@ -414,6 +436,10 @@ impl ActionOutcomeExt for ActionOutcome {
 
     fn is_chain_started(&self) -> bool {
         matches!(self, ActionOutcome::ChainStarted { .. })
+    }
+
+    fn is_dry_run(&self) -> bool {
+        matches!(self, ActionOutcome::DryRun { .. })
     }
 }
 
@@ -665,5 +691,27 @@ mod tests {
         };
         assert!(chain_started.is_chain_started());
         assert!(!chain_started.is_executed());
+    }
+
+    #[test]
+    fn assert_dry_run_passes() {
+        let outcome = ActionOutcome::DryRun {
+            verdict: "allow".into(),
+            matched_rule: None,
+            would_be_provider: "email".into(),
+        };
+        SideEffectAssertions::assert_dry_run(&outcome);
+        outcome.assert_dry_run();
+    }
+
+    #[test]
+    fn is_dry_run_works() {
+        let dry_run = ActionOutcome::DryRun {
+            verdict: "allow".into(),
+            matched_rule: None,
+            would_be_provider: "email".into(),
+        };
+        assert!(dry_run.is_dry_run());
+        assert!(!dry_run.is_executed());
     }
 }

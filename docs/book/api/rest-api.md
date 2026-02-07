@@ -66,6 +66,12 @@ Dispatch counters only.
 
 Dispatch a single action through the gateway pipeline.
 
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dry_run` | bool | `false` | When `true`, evaluates rules without executing. See [Dry-Run Mode](../features/dry-run.md). |
+
 **Request Body:**
 
 ```json
@@ -135,6 +141,12 @@ Dispatch a single action through the gateway pipeline.
 ### `POST /v1/dispatch/batch`
 
 Dispatch multiple actions in a single request.
+
+**Query Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dry_run` | bool | `false` | When `true`, evaluates rules without executing. See [Dry-Run Mode](../features/dry-run.md). |
 
 **Request Body:**
 

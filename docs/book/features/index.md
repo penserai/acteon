@@ -78,4 +78,9 @@ Route actions by meaning using vector embeddings and cosine similarity.
 Comprehensive, searchable record of every action and its outcome.
 </div>
 
+<div class="card" markdown>
+### [Dry-Run Mode](dry-run.md)
+Test rules without executing actions — see what *would* happen before it happens.
+</div>
+
 </div>

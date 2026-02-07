@@ -54,6 +54,22 @@ cargo run -p acteon-simulation --example postgres_simulation --features postgres
 - `acteon-audit-*` - Audit backend implementations
 - `acteon-rules-*` - Rule parsing frontends
 
+## Feature Implementation Steps
+
+When implementing a new feature (provider, capability, etc.), follow this layered approach:
+
+1. **Core types** – Add/modify types in `acteon-core` (e.g., new `ActionOutcome` variant, new config struct)
+2. **Crate implementation** – Create or modify the relevant crate under `crates/` (provider, gateway logic, etc.)
+3. **Register in workspace** – Add new crate to `Cargo.toml` workspace members and `[workspace.dependencies]`
+4. **Server integration** – Wire into `acteon-server` (routes, handlers, query params, OpenAPI annotations)
+5. **Gateway integration** – Update `acteon-gateway` dispatch pipeline if needed
+6. **Rust client** – Add helper methods to `acteon-client` (`crates/client/src/`)
+7. **Polyglot client SDKs** – Update Python, Node.js, Go, and Java clients in `clients/`
+8. **Tests** – Add unit tests in the crate, SDK tests, and simulation framework tests
+9. **Documentation** – Update `docs/book/` pages (concepts, API reference, examples)
+10. **Simulation example** – Add a simulation example in `crates/simulation/examples/`
+11. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace`
+
 ## Common Clippy Fixes
 
 - Use `#[must_use]` on builder methods returning `Self`

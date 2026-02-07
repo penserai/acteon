@@ -148,6 +148,17 @@ harness.dispatch(&action).await.unwrap()
     .assert_state_changed(); // State transitioned
     .assert_pending_approval(); // Needs approval
     .assert_chain_started(); // Chain initiated
+    .assert_dry_run();       // Dry-run verdict returned
+```
+
+### Dry-Run Dispatch
+
+```rust
+// Dry-run: evaluate rules without executing
+let outcome = harness.dispatch_dry_run(&action).await.unwrap();
+outcome.assert_dry_run();
+// Provider was NOT called
+harness.provider("email").unwrap().assert_not_called();
 ```
 
 ## Test Scenarios
@@ -246,6 +257,20 @@ cargo run -p acteon-simulation --example postgres_simulation --features postgres
 cargo run -p acteon-simulation --example clickhouse_simulation --features clickhouse
 cargo run -p acteon-simulation --example dynamodb_simulation --features dynamodb
 ```
+
+### Dry-Run Simulation
+
+```bash
+cargo run -p acteon-simulation --example dry_run_simulation
+```
+
+Tests dry-run dispatch across multiple rule types:
+
+- **Allow verdict** — No rules match, action would be allowed
+- **Suppression verdict** — Rule would suppress the action
+- **Rerouting verdict** — Rule would reroute to a different provider
+- **Batch dry-run** — Multiple actions evaluated without executing
+- **Provider not called** — Verifies no side effects during dry-run
 
 ### Webhook Simulation
 
