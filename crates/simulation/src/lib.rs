@@ -117,7 +117,7 @@ pub use provider::{CapturedCall, FailingProvider, FailureMode, FailureType, Reco
 // Re-export acteon-client types for convenience
 pub use acteon_client::{
     ActeonClient, ActeonClientBuilder, AuditPage, AuditQuery, AuditRecord, BatchResult,
-    ReloadResult, RuleInfo,
+    ReloadResult, ReplayQuery, ReplayResult, ReplaySummary, RuleInfo,
 };
 
 /// Prelude module for convenient imports.

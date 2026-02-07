@@ -46,6 +46,7 @@ acteon-embedding = { workspace = true }
 acteon-crypto = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
+futures = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

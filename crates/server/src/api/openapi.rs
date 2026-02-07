@@ -17,6 +17,7 @@ use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
 };
 use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
+use super::replay::{ReplayResult, ReplaySummary};
 use super::schemas::{
     EmbeddingMetricsResponse, ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest,
     ReloadResponse, RuleSummary, SetEnabledRequest, SetEnabledResponse,
@@ -52,6 +53,8 @@ use super::schemas::{
         super::rules::set_rule_enabled,
         super::audit::query_audit,
         super::audit::get_audit_by_action,
+        super::replay::replay_action,
+        super::replay::replay_audit,
         super::dlq::dlq_stats,
         super::dlq::dlq_drain,
         super::events::list_events,
@@ -77,6 +80,7 @@ use super::schemas::{
         ErrorResponse,
         AuditRecord, AuditQuery, AuditPage,
         DlqStatsResponse, DlqEntry, DlqDrainResponse,
+        ReplayResult, ReplaySummary,
         EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
         GroupSummary, ListGroupsResponse, GroupDetailResponse, FlushGroupResponse,
         ApprovalActionResponse, ApprovalStatusResponse, ApprovalQueryParams, ListApprovalsResponse,

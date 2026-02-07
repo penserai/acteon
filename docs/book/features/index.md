@@ -88,4 +88,9 @@ Test rules without executing actions — see what *would* happen before it happe
 Apply rules based on time of day, day of week, or date — business hours, weekend routing, maintenance windows.
 </div>
 
+<div class="card" markdown>
+### [Action Replay](action-replay.md)
+Reconstruct and re-dispatch actions from the audit trail — recover from outages, fix suppressed actions, bulk reprocess.
+</div>
+
 </div>

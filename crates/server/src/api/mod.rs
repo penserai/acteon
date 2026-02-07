@@ -9,6 +9,7 @@ pub mod events;
 pub mod groups;
 pub mod health;
 pub mod openapi;
+pub mod replay;
 pub mod rules;
 pub mod schemas;
 
@@ -83,7 +84,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/rules/{name}/enabled", put(rules::set_rule_enabled))
         // Audit
         .route("/v1/audit", get(audit::query_audit))
+        .route("/v1/audit/replay", post(replay::replay_audit))
         .route("/v1/audit/{action_id}", get(audit::get_audit_by_action))
+        .route("/v1/audit/{action_id}/replay", post(replay::replay_action))
         // Dead-letter queue
         .route("/v1/dlq/stats", get(dlq::dlq_stats))
         .route("/v1/dlq/drain", post(dlq::dlq_drain))

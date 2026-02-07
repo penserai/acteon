@@ -657,3 +657,71 @@ export function createWebhookAction(
     metadata: options?.metadata,
   });
 }
+
+// =============================================================================
+// Replay Types
+// =============================================================================
+
+/** Result of replaying a single action. */
+export interface ReplayResult {
+  originalActionId: string;
+  newActionId: string;
+  success: boolean;
+  error?: string;
+}
+
+/** Summary of a bulk replay operation. */
+export interface ReplaySummary {
+  replayed: number;
+  failed: number;
+  skipped: number;
+  results: ReplayResult[];
+}
+
+/** Query parameters for bulk audit replay. */
+export interface ReplayQuery {
+  namespace?: string;
+  tenant?: string;
+  provider?: string;
+  actionType?: string;
+  outcome?: string;
+  verdict?: string;
+  matchedRule?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}
+
+export function parseReplayResult(data: Record<string, unknown>): ReplayResult {
+  return {
+    originalActionId: data.original_action_id as string,
+    newActionId: data.new_action_id as string,
+    success: data.success as boolean,
+    error: data.error as string | undefined,
+  };
+}
+
+export function parseReplaySummary(data: Record<string, unknown>): ReplaySummary {
+  const results = (data.results as Record<string, unknown>[]).map(parseReplayResult);
+  return {
+    replayed: data.replayed as number,
+    failed: data.failed as number,
+    skipped: data.skipped as number,
+    results,
+  };
+}
+
+export function replayQueryToParams(query: ReplayQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  if (query.namespace !== undefined) params.set("namespace", query.namespace);
+  if (query.tenant !== undefined) params.set("tenant", query.tenant);
+  if (query.provider !== undefined) params.set("provider", query.provider);
+  if (query.actionType !== undefined) params.set("action_type", query.actionType);
+  if (query.outcome !== undefined) params.set("outcome", query.outcome);
+  if (query.verdict !== undefined) params.set("verdict", query.verdict);
+  if (query.matchedRule !== undefined) params.set("matched_rule", query.matchedRule);
+  if (query.from !== undefined) params.set("from", query.from);
+  if (query.to !== undefined) params.set("to", query.to);
+  if (query.limit !== undefined) params.set("limit", query.limit.toString());
+  return params;
+}

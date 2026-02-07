@@ -472,3 +472,33 @@ func (a *Action) WithWebhookHeaders(headers map[string]string) *Action {
 	}
 	return a
 }
+
+// ReplayResult is the result of replaying a single action.
+type ReplayResult struct {
+	OriginalActionID string  `json:"original_action_id"`
+	NewActionID      string  `json:"new_action_id"`
+	Success          bool    `json:"success"`
+	Error            *string `json:"error,omitempty"`
+}
+
+// ReplaySummary is the summary of a bulk replay operation.
+type ReplaySummary struct {
+	Replayed int            `json:"replayed"`
+	Failed   int            `json:"failed"`
+	Skipped  int            `json:"skipped"`
+	Results  []ReplayResult `json:"results"`
+}
+
+// ReplayQuery contains query parameters for bulk audit replay.
+type ReplayQuery struct {
+	Namespace   string
+	Tenant      string
+	Provider    string
+	ActionType  string
+	Outcome     string
+	Verdict     string
+	MatchedRule string
+	From        string
+	To          string
+	Limit       int
+}
