@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use acteon_core::{Action, ActionOutcome};
+use acteon_executor::ExecutorConfig;
 use acteon_gateway::{CircuitBreakerConfig, GatewayBuilder};
 use acteon_simulation::provider::{FailureMode, RecordingProvider};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
@@ -27,6 +28,10 @@ async fn build_gateway(
     let mut builder = GatewayBuilder::new()
         .state(state)
         .lock(lock)
+        .executor_config(ExecutorConfig {
+            max_retries: 0,
+            ..ExecutorConfig::default()
+        })
         .circuit_breaker(cb_default);
 
     for (name, config) in cb_overrides {

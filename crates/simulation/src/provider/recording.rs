@@ -202,7 +202,9 @@ impl DynProvider for RecordingProvider {
 
         // Check failure mode
         let result = if self.should_fail(call_number) {
-            Err(ProviderError::ExecutionFailed(format!(
+            // Use Connection (retryable) so circuit breakers treat
+            // simulated failures as provider health issues.
+            Err(ProviderError::Connection(format!(
                 "simulated failure on call #{call_number}"
             )))
         } else if let Some(ref response_fn) = self.response_fn {

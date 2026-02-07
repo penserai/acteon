@@ -578,7 +578,7 @@ impl Gateway {
         if let Some(ref registry) = self.circuit_breakers
             && let Some(cb) = registry.get(action.provider.as_str())
         {
-            let (state, transition) = cb.check();
+            let (state, transition) = cb.acquire_permit();
             if let Some((_from, _to)) = transition {
                 self.metrics.increment_circuit_transitions();
             }
@@ -589,7 +589,7 @@ impl Gateway {
                 {
                     // Check the fallback provider's circuit breaker too.
                     if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
-                        let (fb_state, fb_transition) = fallback_cb.check();
+                        let (fb_state, fb_transition) = fallback_cb.acquire_permit();
                         if let Some((_from, _to)) = fb_transition {
                             self.metrics.increment_circuit_transitions();
                         }
@@ -611,10 +611,14 @@ impl Gateway {
                     let result = self.executor.execute(action, fallback.as_ref()).await;
 
                     // Record result in the fallback provider's circuit breaker.
+                    // Only retryable failures indicate provider health issues;
+                    // non-retryable errors (400, 401, 403) are client errors.
                     if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
                         let fb_transition = match &result {
                             ActionOutcome::Executed(_) => fallback_cb.record_success(),
-                            ActionOutcome::Failed(_) => fallback_cb.record_failure(),
+                            ActionOutcome::Failed(err) if err.retryable => {
+                                fallback_cb.record_failure()
+                            }
                             _ => None,
                         };
                         if fb_transition.is_some() {
@@ -653,12 +657,15 @@ impl Gateway {
         let result = self.executor.execute(action, provider.as_ref()).await;
 
         // Record result in circuit breaker.
+        // Only retryable failures indicate provider health issues;
+        // non-retryable errors (400, 401, 403) are client errors that
+        // should not trip the circuit.
         if let Some(ref registry) = self.circuit_breakers
             && let Some(cb) = registry.get(action.provider.as_str())
         {
             let transition = match &result {
                 ActionOutcome::Executed(_) => cb.record_success(),
-                ActionOutcome::Failed(_) => cb.record_failure(),
+                ActionOutcome::Failed(err) if err.retryable => cb.record_failure(),
                 _ => None,
             };
             if transition.is_some() {
@@ -3053,7 +3060,9 @@ mod tests {
         }
 
         async fn execute(&self, _action: &Action) -> Result<ProviderResponse, ProviderError> {
-            Err(ProviderError::ExecutionFailed("provider down".into()))
+            // Use Connection (retryable) so circuit breaker counts this as
+            // a provider health issue.
+            Err(ProviderError::Connection("provider down".into()))
         }
 
         async fn health_check(&self) -> Result<(), ProviderError> {
