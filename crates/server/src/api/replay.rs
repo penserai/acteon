@@ -334,11 +334,7 @@ pub async fn replay_audit(
             let caller = &caller;
             let identity = &identity;
             async move {
-                if !identity.is_authorized(
-                    &record.tenant,
-                    &record.namespace,
-                    &record.action_type,
-                ) {
+                if !identity.is_authorized(&record.tenant, &record.namespace, &record.action_type) {
                     return None; // skipped
                 }
 
