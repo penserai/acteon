@@ -1650,8 +1650,7 @@ impl Gateway {
                 action_payload,
                 verdict_details: serde_json::json!({}),
                 outcome_details,
-                metadata: serde_json::to_value(&chain_state.origin_action.metadata)
-                    .unwrap_or_default(),
+                metadata: enrich_audit_metadata(&chain_state.origin_action),
                 dispatched_at,
                 completed_at: step_result.completed_at,
                 duration_ms: u64::try_from(step_duration.as_millis()).unwrap_or(u64::MAX),
@@ -1741,8 +1740,7 @@ impl Gateway {
                 action_payload,
                 verdict_details: serde_json::json!({}),
                 outcome_details,
-                metadata: serde_json::to_value(&chain_state.origin_action.metadata)
-                    .unwrap_or_default(),
+                metadata: enrich_audit_metadata(&chain_state.origin_action),
                 dispatched_at: chain_state.started_at,
                 completed_at: now,
                 duration_ms,
@@ -2374,6 +2372,31 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
     }
 }
 
+/// Enrich serialized action metadata with extra `Action` fields so that
+/// replays can reconstruct the full action. System fields use a `__` prefix
+/// to distinguish them from user-supplied labels.
+fn enrich_audit_metadata(action: &Action) -> serde_json::Value {
+    let mut meta = serde_json::to_value(&action.metadata).unwrap_or_default();
+    if let Some(obj) = meta.as_object_mut() {
+        if let Some(k) = &action.dedup_key {
+            obj.insert("__dedup_key".into(), serde_json::json!(k));
+        }
+        if let Some(f) = &action.fingerprint {
+            obj.insert("__fingerprint".into(), serde_json::json!(f));
+        }
+        if let Some(s) = &action.status {
+            obj.insert("__status".into(), serde_json::json!(s));
+        }
+        if let Some(t) = action.starts_at {
+            obj.insert("__starts_at".into(), serde_json::json!(t));
+        }
+        if let Some(t) = action.ends_at {
+            obj.insert("__ends_at".into(), serde_json::json!(t));
+        }
+    }
+    meta
+}
+
 /// Build an `AuditRecord` from the dispatch context.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_audit_record(
@@ -2491,7 +2514,7 @@ fn build_audit_record(
         action_payload,
         verdict_details: serde_json::json!({ "verdict": verdict_tag(verdict) }),
         outcome_details,
-        metadata: serde_json::to_value(&action.metadata).unwrap_or_default(),
+        metadata: enrich_audit_metadata(action),
         dispatched_at,
         completed_at,
         duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),

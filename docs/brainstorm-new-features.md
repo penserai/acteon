@@ -155,13 +155,16 @@ already exported. Panels for: throughput, latency percentiles, rule match
 distribution, provider health, error rates, per-tenant usage. Reduces
 time-to-value significantly.
 
-### Action Replay from Audit Trail
+### Action Replay from Audit Trail — IMPLEMENTED
 Replay failed or historical actions from the audit log. Invaluable for
 incident response: "replay everything that was suppressed during the outage"
 or "re-execute all actions that hit the dead letter queue in the last hour."
 
-API: `POST /v1/audit/{action_id}/replay` or bulk
-`POST /v1/audit/replay?query=...`
+**Implemented**: Single replay via `POST /v1/audit/{action_id}/replay` and
+bulk replay via `POST /v1/audit/replay` with full query filters (namespace,
+tenant, provider, action_type, outcome, verdict, matched_rule, time range).
+Replayed actions get new UUIDs and `replayed_from` metadata for provenance.
+See [Action Replay](book/features/action-replay.md) for full docs.
 
 ### Dry-Run Mode
 `POST /v1/dispatch?dry_run=true` evaluates rules and returns what *would*
@@ -308,6 +311,6 @@ Ranked by impact-to-effort ratio:
 | 5 | OpenTelemetry Tracing | Medium | High | Pending |
 | 6 | Field-Level Audit Redaction | Low | Medium | **DONE** |
 | 7 | Cron-Based Rule Activation | Low | Medium | **DONE** |
-| 8 | Action Replay | Medium | Medium | Pending |
+| 8 | Action Replay | Medium | Medium | **DONE** |
 | 9 | WebSocket/SSE Stream | Medium | Medium | Pending |
 | 10 | Conditional Chain Branching | Medium | Medium | Pending |

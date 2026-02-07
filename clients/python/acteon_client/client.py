@@ -24,6 +24,9 @@ from .models import (
     ApprovalActionResponse,
     ApprovalStatus,
     ApprovalListResponse,
+    ReplayResult,
+    ReplaySummary,
+    ReplayQuery,
 )
 
 
@@ -326,6 +329,55 @@ class ActeonClient:
             return None
         else:
             raise HttpError(response.status_code, f"Failed to get audit record")
+
+    # =========================================================================
+    # Audit Replay
+    # =========================================================================
+
+    def replay_action(self, action_id: str) -> ReplayResult:
+        """Replay a single action from the audit trail by its action ID.
+
+        Args:
+            action_id: The action ID to replay.
+
+        Returns:
+            The replay result with new action ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the audit record is not found (404) or has no payload (422).
+        """
+        response = self._request("POST", f"/v1/audit/{action_id}/replay")
+
+        if response.status_code == 200:
+            return ReplayResult.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Audit record not found: {action_id}")
+        elif response.status_code == 422:
+            raise HttpError(422, "No stored payload available for replay")
+        else:
+            raise HttpError(response.status_code, "Failed to replay action")
+
+    def replay_audit(self, query: Optional[ReplayQuery] = None) -> ReplaySummary:
+        """Bulk replay actions from the audit trail matching the given query.
+
+        Args:
+            query: Optional query parameters to filter which records to replay.
+
+        Returns:
+            Summary of the replay operation.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params = query.to_params() if query else {}
+        response = self._request("POST", "/v1/audit/replay", params=params)
+
+        if response.status_code == 200:
+            return ReplaySummary.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to replay audit")
 
     # =========================================================================
     # Events (State Machine Lifecycle)
@@ -777,6 +829,31 @@ class AsyncActeonClient:
             return None
         else:
             raise HttpError(response.status_code, f"Failed to get audit record")
+
+    # =========================================================================
+    # Audit Replay
+    # =========================================================================
+
+    async def replay_action(self, action_id: str) -> ReplayResult:
+        """Replay a single action from the audit trail."""
+        response = await self._request("POST", f"/v1/audit/{action_id}/replay")
+        if response.status_code == 200:
+            return ReplayResult.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Audit record not found: {action_id}")
+        elif response.status_code == 422:
+            raise HttpError(422, "No stored payload available for replay")
+        else:
+            raise HttpError(response.status_code, "Failed to replay action")
+
+    async def replay_audit(self, query: Optional[ReplayQuery] = None) -> ReplaySummary:
+        """Bulk replay actions from the audit trail."""
+        params = query.to_params() if query else {}
+        response = await self._request("POST", "/v1/audit/replay", params=params)
+        if response.status_code == 200:
+            return ReplaySummary.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to replay audit")
 
     # =========================================================================
     # Events (State Machine Lifecycle)

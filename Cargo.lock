@@ -303,6 +303,7 @@ dependencies = [
  "axum-test",
  "chrono",
  "clap",
+ "futures",
  "hex",
  "jsonwebtoken",
  "notify",

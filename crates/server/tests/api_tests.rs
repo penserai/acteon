@@ -1086,3 +1086,141 @@ async fn approval_expired_link_returns_404() {
         "expired approval should return 404"
     );
 }
+
+// -- Replay tests -----------------------------------------------------------
+
+#[tokio::test]
+async fn replay_single_action_works() {
+    let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
+    let state = build_test_state_with_audit(vec![], Some(Arc::clone(&audit)));
+
+    // 1. Dispatch original action
+    let action = test_action();
+    let original_id = action.id.to_string();
+    let action_body = serde_json::to_string(&action).unwrap();
+
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(action_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Wait for audit
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 2. Replay the action
+    let app2 = build_app(state.clone());
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(format!("/v1/audit/{original_id}/replay"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(result["original_action_id"], original_id);
+    assert!(result["success"].as_bool().unwrap());
+    let new_id = result["new_action_id"].as_str().unwrap().to_string();
+    assert_ne!(new_id, original_id);
+
+    // Wait for replay audit
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 3. Verify replayed action in audit
+    let app3 = build_app(state);
+    let response = app3
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v1/audit/{new_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(json["action_id"], new_id);
+    // Check metadata
+    let metadata = json["metadata"].as_object().unwrap();
+    assert_eq!(metadata["replayed_from"].as_str().unwrap(), original_id);
+}
+
+#[tokio::test]
+async fn replay_bulk_actions_works() {
+    let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
+    let state = build_test_state_with_audit(vec![], Some(Arc::clone(&audit)));
+
+    // 1. Dispatch multiple actions
+    for i in 0..3 {
+        let mut action = test_action();
+        action
+            .metadata
+            .labels
+            .insert("batch_id".into(), "test-batch".into());
+        // Modify payload slightly to differentiate if needed, though not strictly required
+        action.payload = serde_json::json!({"i": i});
+
+        let action_body = serde_json::to_string(&action).unwrap();
+        let app = build_app(state.clone());
+        let _ = app
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/v1/dispatch")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(action_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
+    // Wait for audit
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // 2. Bulk replay
+    let app2 = build_app(state.clone());
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/audit/replay?namespace=notifications&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let summary: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(summary["replayed"].as_u64().unwrap(), 3);
+    assert_eq!(summary["failed"].as_u64().unwrap(), 0);
+    assert_eq!(summary["skipped"].as_u64().unwrap(), 0);
+    assert_eq!(summary["results"].as_array().unwrap().len(), 3);
+}

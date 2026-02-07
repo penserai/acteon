@@ -337,6 +337,99 @@ func (c *Client) GetAuditRecord(ctx context.Context, actionID string) (*AuditRec
 }
 
 // =============================================================================
+// Audit Replay
+// =============================================================================
+
+// ReplayAction replays a single action from the audit trail by its action ID.
+// The action is reconstructed from the stored payload and dispatched with a new ID.
+func (c *Client) ReplayAction(ctx context.Context, actionID string) (*ReplayResult, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/audit/%s/replay", actionID), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result ReplayResult
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Audit record not found: %s", actionID)}
+	}
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "No stored payload available for replay"}
+	}
+
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to replay action"}
+}
+
+// ReplayAudit replays actions from the audit trail matching the given query.
+func (c *Client) ReplayAudit(ctx context.Context, query *ReplayQuery) (*ReplaySummary, error) {
+	path := "/v1/audit/replay"
+	if query != nil {
+		params := url.Values{}
+		if query.Namespace != "" {
+			params.Set("namespace", query.Namespace)
+		}
+		if query.Tenant != "" {
+			params.Set("tenant", query.Tenant)
+		}
+		if query.Provider != "" {
+			params.Set("provider", query.Provider)
+		}
+		if query.ActionType != "" {
+			params.Set("action_type", query.ActionType)
+		}
+		if query.Outcome != "" {
+			params.Set("outcome", query.Outcome)
+		}
+		if query.Verdict != "" {
+			params.Set("verdict", query.Verdict)
+		}
+		if query.MatchedRule != "" {
+			params.Set("matched_rule", query.MatchedRule)
+		}
+		if query.From != "" {
+			params.Set("from", query.From)
+		}
+		if query.To != "" {
+			params.Set("to", query.To)
+		}
+		if query.Limit > 0 {
+			params.Set("limit", strconv.Itoa(query.Limit))
+		}
+		if len(params) > 0 {
+			path += "?" + params.Encode()
+		}
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to replay audit"}
+	}
+
+	var summary ReplaySummary
+	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &summary, nil
+}
+
+// =============================================================================
 // Events (State Machine Lifecycle)
 // =============================================================================
 

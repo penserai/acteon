@@ -589,3 +589,78 @@ def create_webhook_action(
         dedup_key=dedup_key,
         metadata=metadata,
     )
+
+
+@dataclass
+class ReplayResult:
+    """Result of replaying a single action."""
+    original_action_id: str
+    new_action_id: str
+    success: bool
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReplayResult":
+        return cls(
+            original_action_id=data["original_action_id"],
+            new_action_id=data["new_action_id"],
+            success=data["success"],
+            error=data.get("error"),
+        )
+
+
+@dataclass
+class ReplaySummary:
+    """Summary of a bulk replay operation."""
+    replayed: int
+    failed: int
+    skipped: int
+    results: list[ReplayResult]
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReplaySummary":
+        return cls(
+            replayed=data["replayed"],
+            failed=data["failed"],
+            skipped=data["skipped"],
+            results=[ReplayResult.from_dict(r) for r in data["results"]],
+        )
+
+
+@dataclass
+class ReplayQuery:
+    """Query parameters for bulk audit replay."""
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    provider: Optional[str] = None
+    action_type: Optional[str] = None
+    outcome: Optional[str] = None
+    verdict: Optional[str] = None
+    matched_rule: Optional[str] = None
+    from_time: Optional[str] = None
+    to_time: Optional[str] = None
+    limit: Optional[int] = None
+
+    def to_params(self) -> dict:
+        params = {}
+        if self.namespace is not None:
+            params["namespace"] = self.namespace
+        if self.tenant is not None:
+            params["tenant"] = self.tenant
+        if self.provider is not None:
+            params["provider"] = self.provider
+        if self.action_type is not None:
+            params["action_type"] = self.action_type
+        if self.outcome is not None:
+            params["outcome"] = self.outcome
+        if self.verdict is not None:
+            params["verdict"] = self.verdict
+        if self.matched_rule is not None:
+            params["matched_rule"] = self.matched_rule
+        if self.from_time is not None:
+            params["from"] = self.from_time
+        if self.to_time is not None:
+            params["to"] = self.to_time
+        if self.limit is not None:
+            params["limit"] = self.limit
+        return params

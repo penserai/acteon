@@ -403,6 +403,91 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Audit Replay
+    // =========================================================================
+
+    /**
+     * Replays a single action from the audit trail by its action ID.
+     * The action is reconstructed from the stored payload and dispatched with a new ID.
+     */
+    public ReplayResult replayAction(String actionId) throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/audit/" + URLEncoder.encode(actionId, StandardCharsets.UTF_8) + "/replay")
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ReplayResult.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Audit record not found: " + actionId);
+            } else if (response.statusCode() == 422) {
+                throw new HttpException(response.statusCode(), "No stored payload available for replay");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to replay action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Bulk replays actions from the audit trail matching the given query parameters.
+     */
+    public ReplaySummary replayAudit(AuditQuery query) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/audit/replay");
+            List<String> params = new ArrayList<>();
+
+            if (query != null) {
+                if (query.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (query.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (query.getProvider() != null) {
+                    params.add("provider=" + URLEncoder.encode(query.getProvider(), StandardCharsets.UTF_8));
+                }
+                if (query.getActionType() != null) {
+                    params.add("action_type=" + URLEncoder.encode(query.getActionType(), StandardCharsets.UTF_8));
+                }
+                if (query.getOutcome() != null) {
+                    params.add("outcome=" + URLEncoder.encode(query.getOutcome(), StandardCharsets.UTF_8));
+                }
+                if (query.getLimit() != null) {
+                    params.add("limit=" + query.getLimit());
+                }
+            }
+
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString())
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ReplaySummary.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to replay audit");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Events (State Machine Lifecycle)
     // =========================================================================
 

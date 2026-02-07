@@ -22,6 +22,9 @@ import {
   ApprovalActionResponse,
   ApprovalStatus,
   ApprovalListResponse,
+  ReplayResult,
+  ReplaySummary,
+  ReplayQuery,
   actionToRequest,
   auditQueryToParams,
   eventQueryToParams,
@@ -39,6 +42,9 @@ import {
   parseApprovalActionResponse,
   parseApprovalStatus,
   parseApprovalListResponse,
+  parseReplayResult,
+  parseReplaySummary,
+  replayQueryToParams,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -299,6 +305,44 @@ export class ActeonClient {
       return null;
     } else {
       throw new HttpError(response.status, "Failed to get audit record");
+    }
+  }
+
+  // =========================================================================
+  // Audit Replay
+  // =========================================================================
+
+  /**
+   * Replay a single action from the audit trail by its action ID.
+   * The action is reconstructed from the stored payload and dispatched with a new ID.
+   */
+  async replayAction(actionId: string): Promise<ReplayResult> {
+    const response = await this.request("POST", `/v1/audit/${actionId}/replay`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseReplayResult(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Audit record not found: ${actionId}`);
+    } else if (response.status === 422) {
+      throw new HttpError(422, "No stored payload available for replay");
+    } else {
+      throw new HttpError(response.status, "Failed to replay action");
+    }
+  }
+
+  /**
+   * Bulk replay actions from the audit trail matching the given query.
+   */
+  async replayAudit(query?: ReplayQuery): Promise<ReplaySummary> {
+    const params = query ? replayQueryToParams(query) : undefined;
+    const response = await this.request("POST", "/v1/audit/replay", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseReplaySummary(data);
+    } else {
+      throw new HttpError(response.status, "Failed to replay audit");
     }
   }
 
