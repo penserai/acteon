@@ -101,12 +101,25 @@ impl ServerNode {
         self.gateway.dispatch(action, None).await
     }
 
+    /// Dispatch an action through this node's gateway in dry-run mode.
+    pub async fn dispatch_dry_run(&self, action: Action) -> Result<ActionOutcome, GatewayError> {
+        self.gateway.dispatch_dry_run(action, None).await
+    }
+
     /// Dispatch a batch of actions through this node's gateway.
     pub async fn dispatch_batch(
         &self,
         actions: Vec<Action>,
     ) -> Vec<Result<ActionOutcome, GatewayError>> {
         self.gateway.dispatch_batch(actions, None).await
+    }
+
+    /// Dispatch a batch of actions through this node's gateway in dry-run mode.
+    pub async fn dispatch_batch_dry_run(
+        &self,
+        actions: Vec<Action>,
+    ) -> Vec<Result<ActionOutcome, GatewayError>> {
+        self.gateway.dispatch_batch_dry_run(actions, None).await
     }
 
     /// Gracefully stop this node.

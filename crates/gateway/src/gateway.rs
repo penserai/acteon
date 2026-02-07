@@ -180,11 +180,31 @@ impl Gateway {
             action.provider = %action.provider,
         )
     )]
-    #[allow(clippy::too_many_lines)]
     pub async fn dispatch(
         &self,
         action: Action,
         caller: Option<&Caller>,
+    ) -> Result<ActionOutcome, GatewayError> {
+        self.dispatch_inner(action, caller, false).await
+    }
+
+    /// Dispatch in dry-run mode: evaluates rules and returns the verdict without
+    /// executing, recording state, or emitting audit records.
+    pub async fn dispatch_dry_run(
+        &self,
+        action: Action,
+        caller: Option<&Caller>,
+    ) -> Result<ActionOutcome, GatewayError> {
+        self.dispatch_inner(action, caller, true).await
+    }
+
+    /// Inner dispatch implementation shared by normal and dry-run modes.
+    #[allow(clippy::too_many_lines)]
+    async fn dispatch_inner(
+        &self,
+        action: Action,
+        caller: Option<&Caller>,
+        dry_run: bool,
     ) -> Result<ActionOutcome, GatewayError> {
         self.metrics.increment_dispatched();
         let start = std::time::Instant::now();
@@ -196,14 +216,22 @@ impl Gateway {
             action.namespace, action.tenant, action.id
         );
 
-        // 2. Acquire the distributed lock with a 30-second TTL and 5-second timeout.
-        let guard = self
-            .lock
-            .acquire(&lock_name, Duration::from_secs(30), Duration::from_secs(5))
-            .await
-            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+        // In dry-run mode, skip lock acquisition, state mutation, and audit.
+        let guard = if dry_run {
+            None
+        } else {
+            // 2. Acquire the distributed lock with a 30-second TTL and 5-second timeout.
+            Some(
+                self.lock
+                    .acquire(&lock_name, Duration::from_secs(30), Duration::from_secs(5))
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?,
+            )
+        };
 
-        info!("distributed lock acquired");
+        if !dry_run {
+            info!("distributed lock acquired");
+        }
 
         // 3. Build the evaluation context and evaluate rules.
         let mut eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment);
@@ -216,6 +244,21 @@ impl Gateway {
 
         // 3b. LLM guardrail check (skipped for already-denied/suppressed verdicts).
         let verdict = self.apply_llm_guardrail(&action, verdict).await;
+
+        // 3c. In dry-run mode, return early with the verdict without executing.
+        if dry_run {
+            let would_be_provider = match &verdict {
+                RuleVerdict::Reroute {
+                    target_provider, ..
+                } => target_provider.clone(),
+                _ => action.provider.to_string(),
+            };
+            return Ok(ActionOutcome::DryRun {
+                verdict: verdict_tag(&verdict).to_owned(),
+                matched_rule: matched_rule_name(&verdict),
+                would_be_provider,
+            });
+        }
 
         // 4. Handle the verdict.
         let outcome = match &verdict {
@@ -310,10 +353,12 @@ impl Gateway {
         }
 
         // 6. Release the lock explicitly.
-        guard
-            .release()
-            .await
-            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+        if let Some(guard) = guard {
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+        }
 
         info!(?outcome, "dispatch complete");
 
@@ -329,6 +374,25 @@ impl Gateway {
         actions: Vec<Action>,
         caller: Option<&Caller>,
     ) -> Vec<Result<ActionOutcome, GatewayError>> {
+        self.dispatch_batch_inner(actions, caller, false).await
+    }
+
+    /// Dispatch a batch in dry-run mode.
+    pub async fn dispatch_batch_dry_run(
+        &self,
+        actions: Vec<Action>,
+        caller: Option<&Caller>,
+    ) -> Vec<Result<ActionOutcome, GatewayError>> {
+        self.dispatch_batch_inner(actions, caller, true).await
+    }
+
+    /// Inner batch dispatch implementation.
+    async fn dispatch_batch_inner(
+        &self,
+        actions: Vec<Action>,
+        caller: Option<&Caller>,
+        dry_run: bool,
+    ) -> Vec<Result<ActionOutcome, GatewayError>> {
         use futures::stream::{self, StreamExt};
 
         // Process actions in parallel with bounded concurrency.
@@ -337,7 +401,7 @@ impl Gateway {
         const BATCH_CONCURRENCY: usize = 32;
 
         stream::iter(actions)
-            .map(|action| self.dispatch(action, caller))
+            .map(|action| self.dispatch_inner(action, caller, dry_run))
             .buffer_unordered(BATCH_CONCURRENCY)
             .collect()
             .await
@@ -2296,11 +2360,12 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::StateChanged { .. } => "state_changed",
         ActionOutcome::PendingApproval { .. } => "pending_approval",
         ActionOutcome::ChainStarted { .. } => "chain_started",
+        ActionOutcome::DryRun { .. } => "dry_run",
     }
 }
 
 /// Build an `AuditRecord` from the dispatch context.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_audit_record(
     action: &Action,
     verdict: &RuleVerdict,
@@ -2385,11 +2450,21 @@ fn build_audit_record(
             "total_steps": total_steps,
             "first_step": first_step,
         }),
+        ActionOutcome::DryRun {
+            verdict,
+            matched_rule,
+            would_be_provider,
+        } => serde_json::json!({
+            "verdict": verdict,
+            "matched_rule": matched_rule,
+            "would_be_provider": would_be_provider,
+        }),
     };
 
-    let chain_id = match outcome {
-        ActionOutcome::ChainStarted { chain_id, .. } => Some(chain_id.clone()),
-        _ => None,
+    let chain_id = if let ActionOutcome::ChainStarted { chain_id, .. } = outcome {
+        Some(chain_id.clone())
+    } else {
+        None
     };
 
     AuditRecord {
@@ -3579,5 +3654,156 @@ mod tests {
         assert_eq!(policies.len(), 1);
         // Rule metadata should win over action-type policy.
         assert_eq!(policies[0], "Rule-level policy");
+    }
+
+    // -- Dry-run tests --------------------------------------------------------
+
+    #[tokio::test]
+    async fn dry_run_allow_no_rules() {
+        let gw = build_gateway(vec![]);
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::DryRun {
+                verdict,
+                matched_rule,
+                would_be_provider,
+            } => {
+                assert_eq!(verdict, "allow");
+                assert!(matched_rule.is_none());
+                assert_eq!(would_be_provider, "email");
+            }
+            other => panic!("expected DryRun, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dry_run_suppress() {
+        let rules = vec![Rule::new(
+            "block-all",
+            Expr::Bool(true),
+            RuleAction::Suppress,
+        )];
+        let gw = build_gateway(rules);
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::DryRun {
+                verdict,
+                matched_rule,
+                would_be_provider,
+            } => {
+                assert_eq!(verdict, "suppress");
+                assert_eq!(matched_rule.as_deref(), Some("block-all"));
+                assert_eq!(would_be_provider, "email");
+            }
+            other => panic!("expected DryRun, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dry_run_reroute() {
+        let rules = vec![Rule::new(
+            "reroute-sms",
+            Expr::Bool(true),
+            RuleAction::Reroute {
+                target_provider: "sms-fallback".into(),
+            },
+        )];
+        let gw = build_gateway(rules);
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::DryRun {
+                verdict,
+                matched_rule,
+                would_be_provider,
+            } => {
+                assert_eq!(verdict, "reroute");
+                assert_eq!(matched_rule.as_deref(), Some("reroute-sms"));
+                assert_eq!(would_be_provider, "sms-fallback");
+            }
+            other => panic!("expected DryRun, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dry_run_does_not_execute_provider() {
+        let (gw, captured) = build_capturing_gateway(vec![]);
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::DryRun { .. }));
+        // Provider should NOT have been called.
+        assert!(captured.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dry_run_does_not_record_dedup_key() {
+        let rules = vec![Rule::new(
+            "dedup",
+            Expr::Bool(true),
+            RuleAction::Deduplicate {
+                ttl_seconds: Some(300),
+            },
+        )];
+        let gw = build_gateway(rules);
+
+        let mut action = test_action();
+        action.dedup_key = Some("unique-key".into());
+
+        // Dry-run should return the verdict without recording the dedup key.
+        let dry_outcome = gw.dispatch_dry_run(action.clone(), None).await.unwrap();
+        match &dry_outcome {
+            ActionOutcome::DryRun { verdict, .. } => assert_eq!(verdict, "deduplicate"),
+            other => panic!("expected DryRun, got {other:?}"),
+        }
+
+        // Normal dispatch should still execute (key was NOT recorded by dry-run).
+        let normal_outcome = gw.dispatch(action.clone(), None).await.unwrap();
+        assert!(
+            matches!(normal_outcome, ActionOutcome::Executed(_)),
+            "first normal dispatch should execute because dry-run did not record dedup key"
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_batch() {
+        let rules = vec![Rule::new(
+            "block-all",
+            Expr::Bool(true),
+            RuleAction::Suppress,
+        )];
+        let gw = build_gateway(rules);
+
+        let actions = vec![test_action(), test_action()];
+        let results = gw.dispatch_batch_dry_run(actions, None).await;
+        assert_eq!(results.len(), 2);
+        for result in results {
+            let outcome = result.unwrap();
+            assert!(matches!(outcome, ActionOutcome::DryRun { .. }));
+        }
+    }
+
+    #[tokio::test]
+    async fn dry_run_throttle() {
+        let rules = vec![Rule::new(
+            "rate-limit",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: 100,
+                window_seconds: 60,
+            },
+        )];
+        let gw = build_gateway(rules);
+
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::DryRun {
+                verdict,
+                matched_rule,
+                would_be_provider,
+            } => {
+                assert_eq!(verdict, "throttle");
+                assert_eq!(matched_rule.as_deref(), Some("rate-limit"));
+                assert_eq!(would_be_provider, "email");
+            }
+            other => panic!("expected DryRun, got {other:?}"),
+        }
     }
 }

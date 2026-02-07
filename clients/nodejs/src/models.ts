@@ -102,7 +102,8 @@ export type ActionOutcome =
       response: ProviderResponse;
     }
   | { type: "throttled"; retryAfterSecs: number }
-  | { type: "failed"; error: ActionError };
+  | { type: "failed"; error: ActionError }
+  | { type: "dry_run"; verdict: string; matchedRule?: string; wouldBeProvider: string };
 
 /**
  * Error details when an action fails.
@@ -182,6 +183,16 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
         retryable: (failed.retryable as boolean) ?? false,
         attempts: (failed.attempts as number) ?? 0,
       },
+    };
+  }
+
+  if ("DryRun" in obj) {
+    const dryRun = obj.DryRun as Record<string, unknown>;
+    return {
+      type: "dry_run",
+      verdict: (dryRun.verdict as string) ?? "",
+      matchedRule: dryRun.matched_rule as string | undefined,
+      wouldBeProvider: (dryRun.would_be_provider as string) ?? "",
     };
   }
 

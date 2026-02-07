@@ -1,7 +1,8 @@
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use serde::Deserialize;
 
 use acteon_core::{Action, ActionOutcome};
 
@@ -12,17 +13,31 @@ use crate::error::ServerError;
 use super::AppState;
 use super::schemas::ErrorResponse;
 
+/// Query parameters for dispatch endpoints.
+#[derive(Debug, Deserialize, Default)]
+pub struct DispatchQuery {
+    /// When `true`, evaluates rules and returns the verdict without executing
+    /// the action, recording state, or emitting audit records.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 /// `POST /v1/dispatch` -- dispatch a single action through the gateway pipeline.
 ///
 /// Expects a JSON body that deserializes to an [`Action`]. Returns the
 /// resulting [`ActionOutcome`] as JSON.
+///
+/// Pass `?dry_run=true` to evaluate rules without executing the action.
 #[utoipa::path(
     post,
     path = "/v1/dispatch",
     tag = "Dispatch",
     summary = "Dispatch action",
-    description = "Sends a single action through the gateway pipeline (lock, rules, execute) and returns the outcome.",
+    description = "Sends a single action through the gateway pipeline (lock, rules, execute) and returns the outcome. Pass ?dry_run=true to evaluate rules without executing.",
     request_body(content = Action, description = "Action to dispatch"),
+    params(
+        ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing the action")
+    ),
     responses(
         (status = 200, description = "Action dispatched successfully", body = ActionOutcome),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
@@ -33,6 +48,7 @@ use super::schemas::ErrorResponse;
 pub async fn dispatch(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(query): Query<DispatchQuery>,
     Json(action): Json<Action>,
 ) -> Result<impl IntoResponse, ServerError> {
     // Check role permission.
@@ -58,8 +74,9 @@ pub async fn dispatch(
         ));
     }
 
-    // Check per-tenant rate limit if enabled.
-    if let Some(ref limiter) = state.rate_limiter
+    // Check per-tenant rate limit if enabled (skip for dry-run).
+    if !query.dry_run
+        && let Some(ref limiter) = state.rate_limiter
         && limiter.config().tenants.enabled
         && let Err(e) = limiter.check_tenant_limit(&action.tenant).await
     {
@@ -70,7 +87,13 @@ pub async fn dispatch(
 
     let caller = identity.to_caller();
     let gw = state.gateway.read().await;
-    match gw.dispatch(action, Some(&caller)).await {
+    let result = if query.dry_run {
+        gw.dispatch_dry_run(action, Some(&caller)).await
+    } else {
+        gw.dispatch(action, Some(&caller)).await
+    };
+
+    match result {
         Ok(outcome) => Ok((StatusCode::OK, Json(serde_json::json!(outcome)))),
         Err(e) => Ok((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -85,13 +108,18 @@ pub async fn dispatch(
 ///
 /// Expects a JSON array of [`Action`] objects. Returns an array of results,
 /// where each element is either an `ActionOutcome` or an error object.
+///
+/// Pass `?dry_run=true` to evaluate rules without executing any actions.
 #[utoipa::path(
     post,
     path = "/v1/dispatch/batch",
     tag = "Dispatch",
     summary = "Batch dispatch",
-    description = "Dispatches multiple actions through the gateway pipeline and returns an array of outcomes or errors.",
+    description = "Dispatches multiple actions through the gateway pipeline and returns an array of outcomes or errors. Pass ?dry_run=true to evaluate rules without executing.",
     request_body(content = Vec<Action>, description = "Actions to dispatch"),
+    params(
+        ("dry_run" = Option<bool>, Query, description = "Evaluate rules without executing any actions")
+    ),
     responses(
         (status = 200, description = "Array of dispatch outcomes", body = Vec<serde_json::Value>)
     )
@@ -99,6 +127,7 @@ pub async fn dispatch(
 pub async fn dispatch_batch(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(query): Query<DispatchQuery>,
     Json(actions): Json<Vec<Action>>,
 ) -> Result<impl IntoResponse, ServerError> {
     // Check role permission.
@@ -126,8 +155,9 @@ pub async fn dispatch_batch(
         }
     }
 
-    // Check per-tenant rate limits for all tenants in the batch if enabled.
-    if let Some(ref limiter) = state.rate_limiter
+    // Check per-tenant rate limits for all tenants in the batch if enabled (skip for dry-run).
+    if !query.dry_run
+        && let Some(ref limiter) = state.rate_limiter
         && limiter.config().tenants.enabled
     {
         // Collect unique tenants to avoid duplicate checks.
@@ -145,7 +175,11 @@ pub async fn dispatch_batch(
 
     let caller = identity.to_caller();
     let gw = state.gateway.read().await;
-    let results = gw.dispatch_batch(actions, Some(&caller)).await;
+    let results = if query.dry_run {
+        gw.dispatch_batch_dry_run(actions, Some(&caller)).await
+    } else {
+        gw.dispatch_batch(actions, Some(&caller)).await
+    };
 
     let body: Vec<serde_json::Value> = results
         .into_iter()

@@ -63,13 +63,15 @@ class ActionOutcome:
 
     Attributes:
         outcome_type: One of "executed", "deduplicated", "suppressed",
-                      "rerouted", "throttled", "failed".
+                      "rerouted", "throttled", "failed", "dry_run".
         response: Provider response (for executed/rerouted).
         rule: Rule name (for suppressed).
         original_provider: Original provider (for rerouted).
         new_provider: New provider (for rerouted).
         retry_after_secs: Seconds to wait (for throttled).
         error: Error details (for failed).
+        verdict_details: Dry-run details including verdict, matched_rule,
+                         and would_be_provider (for dry_run).
     """
     outcome_type: str
     response: Optional[ProviderResponse] = None
@@ -78,6 +80,7 @@ class ActionOutcome:
     new_provider: Optional[str] = None
     retry_after_secs: Optional[float] = None
     error: Optional[dict[str, Any]] = None
+    verdict_details: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionOutcome":
@@ -115,6 +118,16 @@ class ActionOutcome:
             return cls(outcome_type="throttled", retry_after_secs=secs)
         elif "Failed" in data:
             return cls(outcome_type="failed", error=data["Failed"])
+        elif "DryRun" in data:
+            dry_run = data["DryRun"]
+            return cls(
+                outcome_type="dry_run",
+                verdict_details={
+                    "verdict": dry_run.get("verdict"),
+                    "matched_rule": dry_run.get("matched_rule"),
+                    "would_be_provider": dry_run.get("would_be_provider"),
+                },
+            )
         else:
             return cls(outcome_type="unknown")
 
@@ -135,6 +148,9 @@ class ActionOutcome:
 
     def is_failed(self) -> bool:
         return self.outcome_type == "failed"
+
+    def is_dry_run(self) -> bool:
+        return self.outcome_type == "dry_run"
 
 
 @dataclass

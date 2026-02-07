@@ -67,6 +67,9 @@ type ActionOutcome struct {
 	NewProvider      string            // For Rerouted
 	RetryAfter       time.Duration     // For Throttled
 	Error            *ActionError      // For Failed
+	Verdict          string            // For DryRun
+	MatchedRule      *string           // For DryRun
+	WouldBeProvider  string            // For DryRun
 }
 
 // OutcomeType represents the type of action outcome.
@@ -79,6 +82,7 @@ const (
 	OutcomeRerouted     OutcomeType = "rerouted"
 	OutcomeThrottled    OutcomeType = "throttled"
 	OutcomeFailed       OutcomeType = "failed"
+	OutcomeDryRun       OutcomeType = "dry_run"
 )
 
 // ActionError represents error details when an action fails.
@@ -171,6 +175,22 @@ func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	if dryRun, ok := raw["DryRun"]; ok {
+		o.Type = OutcomeDryRun
+		var d struct {
+			Verdict         string  `json:"verdict"`
+			MatchedRule     *string `json:"matched_rule"`
+			WouldBeProvider string  `json:"would_be_provider"`
+		}
+		if err := json.Unmarshal(dryRun, &d); err != nil {
+			return err
+		}
+		o.Verdict = d.Verdict
+		o.MatchedRule = d.MatchedRule
+		o.WouldBeProvider = d.WouldBeProvider
+		return nil
+	}
+
 	o.Type = OutcomeFailed
 	o.Error = &ActionError{Code: "UNKNOWN", Message: "Unknown outcome"}
 	return nil
@@ -193,6 +213,9 @@ func (o *ActionOutcome) IsThrottled() bool { return o.Type == OutcomeThrottled }
 
 // IsFailed returns true if the outcome is Failed.
 func (o *ActionOutcome) IsFailed() bool { return o.Type == OutcomeFailed }
+
+// IsDryRun returns true if the outcome is DryRun.
+func (o *ActionOutcome) IsDryRun() bool { return o.Type == OutcomeDryRun }
 
 // ErrorResponse represents an error response from the API.
 type ErrorResponse struct {

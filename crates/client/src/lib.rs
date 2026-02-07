@@ -229,7 +229,38 @@ impl ActeonClient {
     /// # }
     /// ```
     pub async fn dispatch(&self, action: &Action) -> Result<ActionOutcome, Error> {
-        let url = format!("{}/v1/dispatch", self.base_url);
+        self.dispatch_inner(action, false).await
+    }
+
+    /// Dispatch a single action in dry-run mode.
+    ///
+    /// Evaluates rules and returns the verdict without executing the action,
+    /// recording state, or emitting audit records.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    /// use acteon_core::Action;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
+    ///
+    /// let outcome = client.dispatch_dry_run(&action).await?;
+    /// println!("Would result in: {:?}", outcome);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn dispatch_dry_run(&self, action: &Action) -> Result<ActionOutcome, Error> {
+        self.dispatch_inner(action, true).await
+    }
+
+    async fn dispatch_inner(&self, action: &Action, dry_run: bool) -> Result<ActionOutcome, Error> {
+        let mut url = format!("{}/v1/dispatch", self.base_url);
+        if dry_run {
+            url.push_str("?dry_run=true");
+        }
 
         let response = self
             .add_auth(self.client.post(&url))
@@ -285,7 +316,29 @@ impl ActeonClient {
     /// # }
     /// ```
     pub async fn dispatch_batch(&self, actions: &[Action]) -> Result<Vec<BatchResult>, Error> {
-        let url = format!("{}/v1/dispatch/batch", self.base_url);
+        self.dispatch_batch_inner(actions, false).await
+    }
+
+    /// Dispatch multiple actions in dry-run mode.
+    ///
+    /// Evaluates rules for each action and returns the verdicts without
+    /// executing any actions.
+    pub async fn dispatch_batch_dry_run(
+        &self,
+        actions: &[Action],
+    ) -> Result<Vec<BatchResult>, Error> {
+        self.dispatch_batch_inner(actions, true).await
+    }
+
+    async fn dispatch_batch_inner(
+        &self,
+        actions: &[Action],
+        dry_run: bool,
+    ) -> Result<Vec<BatchResult>, Error> {
+        let mut url = format!("{}/v1/dispatch/batch", self.base_url);
+        if dry_run {
+            url.push_str("?dry_run=true");
+        }
 
         let response = self
             .add_auth(self.client.post(&url))

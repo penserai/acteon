@@ -16,9 +16,12 @@ public class ActionOutcome {
     private String newProvider;
     private Duration retryAfter;
     private ActionError error;
+    private String verdict;
+    private String matchedRule;
+    private String wouldBeProvider;
 
     public enum OutcomeType {
-        EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED
+        EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN
     }
 
     // Getters and setters
@@ -43,12 +46,22 @@ public class ActionOutcome {
     public ActionError getError() { return error; }
     public void setError(ActionError error) { this.error = error; }
 
+    public String getVerdict() { return verdict; }
+    public void setVerdict(String verdict) { this.verdict = verdict; }
+
+    public String getMatchedRule() { return matchedRule; }
+    public void setMatchedRule(String matchedRule) { this.matchedRule = matchedRule; }
+
+    public String getWouldBeProvider() { return wouldBeProvider; }
+    public void setWouldBeProvider(String wouldBeProvider) { this.wouldBeProvider = wouldBeProvider; }
+
     public boolean isExecuted() { return type == OutcomeType.EXECUTED; }
     public boolean isDeduplicated() { return type == OutcomeType.DEDUPLICATED; }
     public boolean isSuppressed() { return type == OutcomeType.SUPPRESSED; }
     public boolean isRerouted() { return type == OutcomeType.REROUTED; }
     public boolean isThrottled() { return type == OutcomeType.THROTTLED; }
     public boolean isFailed() { return type == OutcomeType.FAILED; }
+    public boolean isDryRun() { return type == OutcomeType.DRY_RUN; }
 
     /**
      * Parse an ActionOutcome from a raw JSON string.
@@ -114,6 +127,12 @@ public class ActionOutcome {
             outcome.type = OutcomeType.FAILED;
             Map<String, Object> failed = (Map<String, Object>) data.get("Failed");
             outcome.error = ActionError.fromMap(failed);
+        } else if (data.containsKey("DryRun")) {
+            outcome.type = OutcomeType.DRY_RUN;
+            Map<String, Object> dryRun = (Map<String, Object>) data.get("DryRun");
+            outcome.verdict = (String) dryRun.get("verdict");
+            outcome.matchedRule = (String) dryRun.get("matched_rule");
+            outcome.wouldBeProvider = (String) dryRun.get("would_be_provider");
         } else {
             outcome.type = OutcomeType.FAILED;
             outcome.error = new ActionError("UNKNOWN", "Unknown outcome", false, 0);
