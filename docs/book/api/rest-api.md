@@ -392,6 +392,78 @@ Compute cosine similarity between a text and a topic using the configured embedd
 
 ---
 
+## Circuit Breaker Admin
+
+These endpoints require the **admin** or **operator** role.
+
+### `GET /admin/circuit-breakers`
+
+List all circuit breakers with their current distributed state and configuration.
+
+**Response:**
+
+```json
+{
+  "circuit_breakers": [
+    {
+      "provider": "email",
+      "state": "closed",
+      "failure_threshold": 5,
+      "success_threshold": 2,
+      "recovery_timeout_seconds": 60,
+      "fallback_provider": "webhook"
+    }
+  ]
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| `200` | List of circuit breakers |
+| `404` | Circuit breakers not enabled |
+
+### `POST /admin/circuit-breakers/{provider}/trip`
+
+Force-open a circuit breaker, immediately rejecting requests to the provider.
+
+**Response:**
+
+```json
+{
+  "provider": "email",
+  "state": "open",
+  "message": "circuit breaker tripped"
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| `200` | Circuit breaker tripped |
+| `403` | Insufficient permissions |
+| `404` | Circuit breaker not found or not enabled |
+
+### `POST /admin/circuit-breakers/{provider}/reset`
+
+Force-close a circuit breaker, restoring normal request flow.
+
+**Response:**
+
+```json
+{
+  "provider": "email",
+  "state": "closed",
+  "message": "circuit breaker reset"
+}
+```
+
+| Status | Description |
+|--------|-------------|
+| `200` | Circuit breaker reset |
+| `403` | Insufficient permissions |
+| `404` | Circuit breaker not found or not enabled |
+
+---
+
 ## Authentication
 
 ### `POST /v1/auth/login`
@@ -447,5 +519,8 @@ Revoke the current JWT token.
 | `GET` | `/v1/groups/{group_key}` | Get group |
 | `DELETE` | `/v1/groups/{group_key}` | Flush group |
 | `POST` | `/v1/embeddings/similarity` | Compute embedding similarity |
+| `GET` | `/admin/circuit-breakers` | List circuit breakers |
+| `POST` | `/admin/circuit-breakers/{provider}/trip` | Force-open circuit breaker |
+| `POST` | `/admin/circuit-breakers/{provider}/reset` | Force-close circuit breaker |
 | `POST` | `/v1/auth/login` | Login |
 | `POST` | `/v1/auth/logout` | Logout |
