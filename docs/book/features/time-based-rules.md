@@ -23,9 +23,15 @@ The rule engine exposes a `time` identifier containing the current timestamp bro
 !!! note
     By default, all temporal values (except `timestamp`) use **UTC**. Use the `timezone` field on a rule or the `default_timezone` gateway setting to evaluate in a specific timezone. The `timestamp` field always returns the UTC unix timestamp regardless of timezone.
 
+!!! tip "Prefer `weekday_num` for programmatic logic"
+    The `weekday` field returns English names (`"Monday"`, etc.) which are convenient for readability but hardcode a locale. Use `weekday_num` (1=Monday … 7=Sunday) for conditions that should be language-independent.
+
 ## Timezone Support
 
 Rules can specify an IANA timezone (e.g. `"US/Eastern"`, `"Europe/Berlin"`) so that `time.*` fields are evaluated in local time. This avoids manual UTC offset calculations and correctly handles DST transitions.
+
+!!! warning "DST edge cases"
+    During "spring forward" transitions, `time.hour == 2` may never occur (the clock jumps from 1:59 to 3:00). During "fall back", `time.hour == 1` occurs twice. Avoid exact-hour equality checks near DST boundaries. Range checks like `time.hour >= 9 && time.hour < 17` are safe because business hours don't overlap the 1–3 AM DST window.
 
 **Resolution order** (most specific wins):
 
