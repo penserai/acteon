@@ -97,7 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap()
             .get("email")
             .unwrap()
-            .state();
+            .state()
+            .await;
         match &outcome {
             ActionOutcome::Failed(err) => {
                 println!(
@@ -255,11 +256,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "    Request {i}: {} | Circuit: {}",
             outcome_summary(&outcome),
-            cb.state()
+            cb.state().await
         );
     }
     assert_eq!(
-        cb.state().to_string(),
+        cb.state().await.to_string(),
         "open",
         "circuit should be open after 3 failures"
     );
@@ -274,23 +275,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // recording a success in HalfOpen state.
     let action = make_action("recovering");
     let outcome = gateway.dispatch(action, None).await?;
+    let cb_state = cb.state().await;
     println!(
         "    Request 4: {} | Circuit: {}",
         outcome_summary(&outcome),
-        cb.state()
+        cb_state
     );
 
     // One more success to meet success_threshold=2
     let action = make_action("recovering");
     let outcome = gateway.dispatch(action, None).await?;
+    let cb_state = cb.state().await;
     println!(
         "    Request 5: {} | Circuit: {}",
         outcome_summary(&outcome),
-        cb.state()
+        cb_state
     );
 
     assert_eq!(
-        cb.state().to_string(),
+        cb.state().await.to_string(),
         "closed",
         "circuit should be closed after 2 successes in half-open"
     );
@@ -301,10 +304,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let action = make_action("recovering");
     let outcome = gateway.dispatch(action, None).await?;
     assert!(outcome.is_executed(), "should execute normally");
+    let cb_state = cb.state().await;
     println!(
         "    Request 6: {} | Circuit: {}",
         outcome_summary(&outcome),
-        cb.state()
+        cb_state
     );
 
     println!("\n  Total provider calls: {}", recovering.call_count());
@@ -352,7 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let action = make_action("email");
         let _ = gateway.dispatch(action, None).await?;
     }
-    let email_state = cb_registry.get("email").unwrap().state();
+    let email_state = cb_registry.get("email").unwrap().state().await;
     println!("    email circuit: {email_state}");
 
     // SMS should still be working fine
@@ -362,7 +366,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let outcome = gateway.dispatch(action, None).await?;
         assert!(outcome.is_executed(), "sms should execute normally");
     }
-    let sms_state = cb_registry.get("sms").unwrap().state();
+    let sms_state = cb_registry.get("sms").unwrap().state().await;
     println!("    sms circuit: {sms_state}");
 
     // Webhook had 1 failure (FirstN(1)), then succeeded -- still closed
@@ -371,7 +375,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let action = make_action("webhook");
         let _ = gateway.dispatch(action, None).await?;
     }
-    let webhook_state = cb_registry.get("webhook").unwrap().state();
+    let webhook_state = cb_registry.get("webhook").unwrap().state().await;
     println!("    webhook circuit: {webhook_state}");
 
     // Verify states

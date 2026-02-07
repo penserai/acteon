@@ -578,7 +578,7 @@ impl Gateway {
         if let Some(ref registry) = self.circuit_breakers
             && let Some(cb) = registry.get(action.provider.as_str())
         {
-            let (state, transition) = cb.try_acquire_permit();
+            let (state, transition) = cb.try_acquire_permit().await;
             if let Some((_from, _to)) = transition {
                 self.metrics.increment_circuit_transitions();
             }
@@ -589,7 +589,7 @@ impl Gateway {
                 {
                     // Check the fallback provider's circuit breaker too.
                     if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
-                        let (fb_state, fb_transition) = fallback_cb.try_acquire_permit();
+                        let (fb_state, fb_transition) = fallback_cb.try_acquire_permit().await;
                         if let Some((_from, _to)) = fb_transition {
                             self.metrics.increment_circuit_transitions();
                         }
@@ -615,9 +615,9 @@ impl Gateway {
                     // non-retryable errors (400, 401, 403) are client errors.
                     if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
                         let fb_transition = match &result {
-                            ActionOutcome::Executed(_) => fallback_cb.record_success(),
+                            ActionOutcome::Executed(_) => fallback_cb.record_success().await,
                             ActionOutcome::Failed(err) if err.retryable => {
-                                fallback_cb.record_failure()
+                                fallback_cb.record_failure().await
                             }
                             _ => None,
                         };
@@ -664,8 +664,8 @@ impl Gateway {
             && let Some(cb) = registry.get(action.provider.as_str())
         {
             let transition = match &result {
-                ActionOutcome::Executed(_) => cb.record_success(),
-                ActionOutcome::Failed(err) if err.retryable => cb.record_failure(),
+                ActionOutcome::Executed(_) => cb.record_success().await,
+                ActionOutcome::Failed(err) if err.retryable => cb.record_failure().await,
                 _ => None,
             };
             if transition.is_some() {
@@ -4103,7 +4103,7 @@ mod tests {
         // Circuit should still be closed (successes don't trip it).
         let cb_registry = gw.circuit_breakers().expect("should have circuit breakers");
         let cb = cb_registry.get("email").expect("should have email breaker");
-        assert_eq!(cb.state(), CircuitState::Closed);
+        assert_eq!(cb.state().await, CircuitState::Closed);
     }
 
     #[tokio::test]
@@ -4233,21 +4233,21 @@ mod tests {
 
         let registry = gw.circuit_breakers().expect("should have registry");
         let cb = registry.get("email").expect("should have email breaker");
-        assert_eq!(cb.state(), CircuitState::Open);
+        assert_eq!(cb.state().await, CircuitState::Open);
 
         // With recovery_timeout=ZERO, the next dispatch transitions to
         // HalfOpen internally, allows the probe (provider still fails),
         // and records the failure -> back to Open.
         let outcome2 = gw.dispatch(test_action(), None).await.unwrap();
         assert!(matches!(outcome2, ActionOutcome::Failed(_)));
-        assert_eq!(cb.state(), CircuitState::Open);
+        assert_eq!(cb.state().await, CircuitState::Open);
 
         // While a probe is NOT in flight, the next dispatch can try again.
         // The probe failed above which cleared probe_in_flight, so another
         // dispatch will attempt another probe.
         let outcome3 = gw.dispatch(test_action(), None).await.unwrap();
         assert!(matches!(outcome3, ActionOutcome::Failed(_)));
-        assert_eq!(cb.state(), CircuitState::Open);
+        assert_eq!(cb.state().await, CircuitState::Open);
     }
 
     #[tokio::test]
@@ -4286,11 +4286,14 @@ mod tests {
 
         // Email circuit is open.
         let registry = gw.circuit_breakers().expect("should have registry");
-        assert_eq!(registry.get("email").unwrap().state(), CircuitState::Open);
+        assert_eq!(
+            registry.get("email").unwrap().state().await,
+            CircuitState::Open
+        );
 
         // sms-fallback circuit should still be closed.
         assert_eq!(
-            registry.get("sms-fallback").unwrap().state(),
+            registry.get("sms-fallback").unwrap().state().await,
             CircuitState::Closed
         );
 
@@ -4301,7 +4304,7 @@ mod tests {
 
         // sms-fallback circuit still closed.
         assert_eq!(
-            registry.get("sms-fallback").unwrap().state(),
+            registry.get("sms-fallback").unwrap().state().await,
             CircuitState::Closed
         );
     }

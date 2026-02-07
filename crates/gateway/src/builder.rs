@@ -333,11 +333,13 @@ impl GatewayBuilder {
         default: Option<CircuitBreakerConfig>,
         overrides: &HashMap<String, CircuitBreakerConfig>,
         providers: &ProviderRegistry,
+        store: Arc<dyn StateStore>,
+        lock: Arc<dyn DistributedLock>,
     ) -> Result<Option<CircuitBreakerRegistry>, GatewayError> {
         let Some(default_config) = default else {
             return Ok(None);
         };
-        let mut registry = CircuitBreakerRegistry::new();
+        let mut registry = CircuitBreakerRegistry::new(store, lock);
         let provider_names: Vec<String> = providers
             .list()
             .iter()
@@ -435,6 +437,8 @@ impl GatewayBuilder {
             self.circuit_breaker_default,
             &self.circuit_breaker_overrides,
             &self.providers,
+            Arc::clone(&state),
+            Arc::clone(&lock),
         )?;
 
         Ok(Gateway {
