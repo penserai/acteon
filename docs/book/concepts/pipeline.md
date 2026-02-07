@@ -31,11 +31,17 @@ flowchart TD
     H --> O
     I --> O
 
-    O --> R[Provider Execution with Retries]
+    O --> CB{Circuit Breaker}
+    CB -->|Closed/HalfOpen| R[Provider Execution with Retries]
+    CB -->|Open + Fallback| FB[Execute via Fallback]
+    CB -->|Open + No Fallback| CO[Return CircuitOpen]
     R -->|Success| S[Return Executed]
     R -->|All retries failed| T[Return Failed / DLQ]
+    FB -->|Success| RR[Return Rerouted]
 
     S --> U[Record Audit Entry]
+    RR --> U
+    CO --> U
     E --> U
     P --> U
     Q --> U
@@ -96,7 +102,23 @@ Depending on the matched rule type:
 | **Chain** | Initiates multi-step chain. Executes first step. Returns `ChainStarted` |
 | **LLM Guardrail** | Sends action to LLM for evaluation. Blocks if flagged |
 
-### 5. Provider Execution
+### 5. Circuit Breaker Check
+
+Before executing, the gateway checks the provider's circuit breaker (if enabled). This happens **before** the executor's retry logic:
+
+| Circuit State | Behavior |
+|---------------|----------|
+| **Closed** | Request proceeds to execution |
+| **HalfOpen** (probe available) | Request proceeds as a recovery probe |
+| **HalfOpen** (probe in flight) | Rejected as `CircuitOpen` |
+| **Open** (fallback configured) | Rerouted to fallback provider, returned as `Rerouted` |
+| **Open** (no fallback) | Rejected immediately as `CircuitOpen` |
+
+After execution, the result is recorded in the circuit breaker: successes and retryable failures update the consecutive counters and may trigger state transitions.
+
+See [Circuit Breaker](../features/circuit-breaker.md) for full details.
+
+### 6. Provider Execution
 
 The executor dispatches the action to the target provider with:
 
@@ -125,7 +147,7 @@ flowchart LR
 | **Constant** | Fixed delay between retries |
 | **Linear** | `initial_delay + increment * attempt` |
 
-### 6. Audit Recording
+### 7. Audit Recording
 
 After the outcome is determined, an audit record is created containing:
 
@@ -135,11 +157,11 @@ After the outcome is determined, an audit record is created containing:
 - Timing information (dispatch time, completion time, duration)
 - Optional payload (if `store_payload` is enabled)
 
-### 7. Lock Release
+### 8. Lock Release
 
 The distributed lock is released, allowing other instances to process the same action key.
 
-### 8. Response
+### 9. Response
 
 The `ActionOutcome` is returned to the caller as an HTTP response or Rust return value.
 

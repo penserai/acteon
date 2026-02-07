@@ -36,6 +36,12 @@ pub struct GatewayMetrics {
     pub chains_failed: AtomicU64,
     /// Task chains cancelled.
     pub chains_cancelled: AtomicU64,
+    /// Actions rejected because the provider circuit breaker was open.
+    pub circuit_open: AtomicU64,
+    /// Circuit breaker state transitions (any direction).
+    pub circuit_transitions: AtomicU64,
+    /// Actions rerouted to a fallback provider due to an open circuit.
+    pub circuit_fallbacks: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -114,6 +120,21 @@ impl GatewayMetrics {
         self.chains_cancelled.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the circuit-open rejection counter.
+    pub fn increment_circuit_open(&self) {
+        self.circuit_open.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the circuit state transition counter.
+    pub fn increment_circuit_transitions(&self) {
+        self.circuit_transitions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the circuit fallback counter.
+    pub fn increment_circuit_fallbacks(&self) {
+        self.circuit_fallbacks.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -132,6 +153,9 @@ impl GatewayMetrics {
             chains_completed: self.chains_completed.load(Ordering::Relaxed),
             chains_failed: self.chains_failed.load(Ordering::Relaxed),
             chains_cancelled: self.chains_cancelled.load(Ordering::Relaxed),
+            circuit_open: self.circuit_open.load(Ordering::Relaxed),
+            circuit_transitions: self.circuit_transitions.load(Ordering::Relaxed),
+            circuit_fallbacks: self.circuit_fallbacks.load(Ordering::Relaxed),
         }
     }
 }
@@ -169,6 +193,12 @@ pub struct MetricsSnapshot {
     pub chains_failed: u64,
     /// Task chains cancelled.
     pub chains_cancelled: u64,
+    /// Actions rejected because the provider circuit breaker was open.
+    pub circuit_open: u64,
+    /// Circuit breaker state transitions.
+    pub circuit_transitions: u64,
+    /// Actions rerouted to a fallback due to an open circuit.
+    pub circuit_fallbacks: u64,
 }
 
 #[cfg(test)]
@@ -194,6 +224,9 @@ mod tests {
         assert_eq!(snap.chains_completed, 0);
         assert_eq!(snap.chains_failed, 0);
         assert_eq!(snap.chains_cancelled, 0);
+        assert_eq!(snap.circuit_open, 0);
+        assert_eq!(snap.circuit_transitions, 0);
+        assert_eq!(snap.circuit_fallbacks, 0);
     }
 
     #[test]
@@ -215,6 +248,9 @@ mod tests {
         m.increment_chains_completed();
         m.increment_chains_failed();
         m.increment_chains_cancelled();
+        m.increment_circuit_open();
+        m.increment_circuit_transitions();
+        m.increment_circuit_fallbacks();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -232,5 +268,8 @@ mod tests {
         assert_eq!(snap.chains_completed, 1);
         assert_eq!(snap.chains_failed, 1);
         assert_eq!(snap.chains_cancelled, 1);
+        assert_eq!(snap.circuit_open, 1);
+        assert_eq!(snap.circuit_transitions, 1);
+        assert_eq!(snap.circuit_fallbacks, 1);
     }
 }

@@ -196,6 +196,18 @@ impl SideEffectAssertions {
         );
     }
 
+    /// Assert that an outcome matches the `CircuitOpen` variant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the outcome is not `CircuitOpen`.
+    pub fn assert_circuit_open(outcome: &ActionOutcome) {
+        assert!(
+            matches!(outcome, ActionOutcome::CircuitOpen { .. }),
+            "expected CircuitOpen, got {outcome:?}"
+        );
+    }
+
     /// Assert that a state transition occurred to a specific state.
     ///
     /// # Panics
@@ -359,6 +371,12 @@ pub trait ActionOutcomeExt {
 
     /// Check if this outcome is `DryRun`.
     fn is_dry_run(&self) -> bool;
+
+    /// Assert this outcome is `CircuitOpen`.
+    fn assert_circuit_open(&self);
+
+    /// Check if this outcome is `CircuitOpen`.
+    fn is_circuit_open(&self) -> bool;
 }
 
 impl ActionOutcomeExt for ActionOutcome {
@@ -440,6 +458,17 @@ impl ActionOutcomeExt for ActionOutcome {
 
     fn is_dry_run(&self) -> bool {
         matches!(self, ActionOutcome::DryRun { .. })
+    }
+
+    fn assert_circuit_open(&self) {
+        assert!(
+            matches!(self, ActionOutcome::CircuitOpen { .. }),
+            "expected CircuitOpen, got {self:?}"
+        );
+    }
+
+    fn is_circuit_open(&self) -> bool {
+        matches!(self, ActionOutcome::CircuitOpen { .. })
     }
 }
 

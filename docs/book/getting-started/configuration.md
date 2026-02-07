@@ -116,6 +116,19 @@ name = "send-email"
 provider = "email"
 action_type = "send_email"
 
+# ─── Circuit Breaker ─────────────────────────────────────
+[circuit_breaker]
+enabled = false                      # Enable circuit breakers
+failure_threshold = 5                # Consecutive failures to open
+success_threshold = 2                # Consecutive successes to close
+recovery_timeout_seconds = 60        # Seconds before probing
+
+# Per-provider overrides
+# [circuit_breaker.providers.email]
+# failure_threshold = 10
+# recovery_timeout_seconds = 120
+# fallback_provider = "webhook"
+
 # ─── LLM Guardrails ──────────────────────────────────────
 [llm_guardrail]
 # endpoint = "https://api.openai.com/v1/chat/completions"
@@ -205,6 +218,28 @@ action_type = "send_email"
 | `watch` | bool | `true` | Hot-reload auth config on file changes |
 
 See [Authentication](../api/authentication.md) for auth config file format.
+
+### `[circuit_breaker]`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable circuit breakers |
+| `failure_threshold` | u32 | `5` | Consecutive failures before opening |
+| `success_threshold` | u32 | `2` | Consecutive successes in `HalfOpen` to close |
+| `recovery_timeout_seconds` | u64 | `60` | Seconds in `Open` before probing |
+
+#### `[circuit_breaker.providers.<name>]`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `failure_threshold` | u32 | No | Override default failure threshold |
+| `success_threshold` | u32 | No | Override default success threshold |
+| `recovery_timeout_seconds` | u64 | No | Override default recovery timeout |
+| `fallback_provider` | string | No | Provider to reroute to when circuit is open |
+
+Per-provider fields inherit from the defaults when not specified. The `fallback_provider` must reference a registered provider and cannot reference itself.
+
+See [Circuit Breaker](../features/circuit-breaker.md) for feature documentation.
 
 ### `[[state_machines]]`
 

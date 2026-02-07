@@ -359,6 +359,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Wire circuit breakers if enabled.
+    if config.circuit_breaker.enabled {
+        let default_cb = acteon_gateway::CircuitBreakerConfig {
+            failure_threshold: config.circuit_breaker.failure_threshold,
+            success_threshold: config.circuit_breaker.success_threshold,
+            recovery_timeout: Duration::from_secs(config.circuit_breaker.recovery_timeout_seconds),
+            fallback_provider: None,
+        };
+        builder = builder.circuit_breaker(default_cb);
+
+        for (provider, override_cfg) in &config.circuit_breaker.providers {
+            let provider_cb = acteon_gateway::CircuitBreakerConfig {
+                failure_threshold: override_cfg
+                    .failure_threshold
+                    .unwrap_or(config.circuit_breaker.failure_threshold),
+                success_threshold: override_cfg
+                    .success_threshold
+                    .unwrap_or(config.circuit_breaker.success_threshold),
+                recovery_timeout: Duration::from_secs(
+                    override_cfg
+                        .recovery_timeout_seconds
+                        .unwrap_or(config.circuit_breaker.recovery_timeout_seconds),
+                ),
+                fallback_provider: override_cfg.fallback_provider.clone(),
+            };
+            builder = builder.circuit_breaker_provider(provider, provider_cb);
+        }
+
+        info!(
+            failure_threshold = config.circuit_breaker.failure_threshold,
+            recovery_timeout_seconds = config.circuit_breaker.recovery_timeout_seconds,
+            overrides = config.circuit_breaker.providers.len(),
+            "circuit breakers enabled"
+        );
+    }
+
     let mut gateway = builder.build()?;
 
     if config.executor.dlq_enabled {
