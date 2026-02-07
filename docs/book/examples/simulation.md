@@ -272,6 +272,19 @@ Tests dry-run dispatch across multiple rule types:
 - **Batch dry-run** — Multiple actions evaluated without executing
 - **Provider not called** — Verifies no side effects during dry-run
 
+### Time-Based Rules Simulation
+
+```bash
+cargo run -p acteon-simulation --example time_based_simulation
+```
+
+Tests time-based rule conditions using `time.*` fields:
+
+- **Temporal suppression** — Rules using `time.year` to conditionally suppress actions
+- **Business hours pattern** — Demonstrates `time.hour` and `time.weekday_num` conditions
+- **Combined conditions** — Time fields combined with action field conditions
+- **Dry-run with time** — Dry-run evaluation of time-based rules
+
 ### Webhook Simulation
 
 ```bash

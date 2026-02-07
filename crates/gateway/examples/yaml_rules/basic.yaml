@@ -8,6 +8,23 @@ rules:
     action:
       type: suppress
 
+  - name: suppress-outside-hours
+    priority: 5
+    description: "Suppress email outside business hours (9-17 UTC, Mon-Fri)"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "send_email"
+        - any:
+            - field: time.weekday_num
+              gt: 5
+            - field: time.hour
+              lt: 9
+            - field: time.hour
+              gte: 17
+    action:
+      type: suppress
+
   - name: dedup-email
     priority: 10
     description: "Deduplicate email actions within 5 minutes"

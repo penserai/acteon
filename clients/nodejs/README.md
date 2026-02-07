@@ -94,6 +94,45 @@ console.log(`Loaded ${result.loaded} rules`);
 await client.setRuleEnabled("block-spam", false);
 ```
 
+## Time-Based Rules
+
+Rules can use `time.*` fields to match on the current UTC time at dispatch. Configure these in your YAML or CEL rule files — no client-side changes needed.
+
+```yaml
+# rules/business_hours.yaml
+rules:
+  - name: suppress-outside-hours
+    priority: 1
+    condition:
+      any:
+        - field: time.hour
+          lt: 9
+        - field: time.hour
+          gte: 17
+    action:
+      type: suppress
+
+  - name: suppress-weekends
+    priority: 2
+    condition:
+      field: time.weekday_num
+      gt: 5
+    action:
+      type: suppress
+```
+
+Use dry-run to test what a time-based rule would do right now:
+
+```typescript
+const outcome = await client.dispatch(action, { dryRun: true });
+if (outcome.type === "dry_run") {
+  console.log(`Verdict: ${outcome.verdict}`);        // e.g. "suppress"
+  console.log(`Matched rule: ${outcome.matchedRule}`); // e.g. "suppress-outside-hours"
+}
+```
+
+Available `time` fields: `hour` (0–23), `minute`, `second`, `day`, `month`, `year`, `weekday` (`"Monday"`…`"Sunday"`), `weekday_num` (1=Mon…7=Sun), `timestamp`.
+
 ## Audit Trail
 
 ```typescript

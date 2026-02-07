@@ -169,6 +169,44 @@ field: action.payload.user.email
 field: action.payload.recipients.0.email
 ```
 
+### Temporal Fields
+
+The `time` identifier provides the current UTC time at dispatch:
+
+| Path | Type | Description |
+|------|------|-------------|
+| `time.hour` | int (0–23) | Hour of the day |
+| `time.minute` | int (0–59) | Minute |
+| `time.second` | int (0–59) | Second |
+| `time.day` | int (1–31) | Day of month |
+| `time.month` | int (1–12) | Month |
+| `time.year` | int | Year |
+| `time.weekday` | string | English name (`"Monday"` … `"Sunday"`) |
+| `time.weekday_num` | int (1–7) | ISO weekday (1=Mon … 7=Sun) |
+| `time.timestamp` | int | Unix seconds |
+
+```yaml
+# Suppress outside business hours
+condition:
+  any:
+    - field: time.hour
+      lt: 9
+    - field: time.hour
+      gte: 17
+
+# Suppress on weekends
+condition:
+  field: time.weekday_num
+  gt: 5
+
+# Match specific weekday by name
+condition:
+  field: time.weekday
+  eq: "Saturday"
+```
+
+See [Time-Based Rules](../features/time-based-rules.md) for more patterns.
+
 ---
 
 ## Actions
