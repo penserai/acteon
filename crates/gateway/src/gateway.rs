@@ -155,6 +155,7 @@ pub struct Gateway {
     pub(crate) llm_fail_open: bool,
     pub(crate) chains: HashMap<String, ChainConfig>,
     pub(crate) completed_chain_ttl: Option<Duration>,
+    pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -205,7 +206,10 @@ impl Gateway {
         info!("distributed lock acquired");
 
         // 3. Build the evaluation context and evaluate rules.
-        let eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment);
+        let mut eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment);
+        if let Some(ref emb) = self.embedding {
+            eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 
         info!(?verdict, "rule evaluation complete");
@@ -1915,7 +1919,10 @@ impl Gateway {
 
         // 5. TOCTOU: re-evaluate rules against the stored action
         let action = &record.action;
-        let eval_ctx = EvalContext::new(action, self.state.as_ref(), &self.environment);
+        let mut eval_ctx = EvalContext::new(action, self.state.as_ref(), &self.environment);
+        if let Some(ref emb) = self.embedding {
+            eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 
         match &verdict {
@@ -2089,7 +2096,10 @@ impl Gateway {
 
         // Look up the notification provider from the rule that created this approval.
         // We re-evaluate rules to find the matching RequestApproval rule.
-        let eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment);
+        let mut eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment);
+        if let Some(ref emb) = self.embedding {
+            eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
 
         let notify_provider = if let RuleVerdict::RequestApproval {

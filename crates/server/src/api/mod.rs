@@ -4,6 +4,7 @@ pub mod auth;
 pub mod chains;
 pub mod dispatch;
 pub mod dlq;
+pub mod embeddings;
 pub mod events;
 pub mod groups;
 pub mod health;
@@ -22,7 +23,9 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use acteon_audit::store::AuditStore;
+use acteon_embedding::EmbeddingMetrics;
 use acteon_gateway::Gateway;
+use acteon_rules::EmbeddingEvalSupport;
 
 use crate::auth::AuthProvider;
 use crate::auth::middleware::AuthLayer;
@@ -42,6 +45,10 @@ pub struct AppState {
     pub auth: Option<Arc<AuthProvider>>,
     /// Optional rate limiter (None when rate limiting is disabled).
     pub rate_limiter: Option<Arc<RateLimiter>>,
+    /// Optional embedding support for similarity testing (None when embedding is disabled).
+    pub embedding: Option<Arc<dyn EmbeddingEvalSupport>>,
+    /// Optional embedding metrics handle (None when embedding is disabled).
+    pub embedding_metrics: Option<Arc<EmbeddingMetrics>>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -95,6 +102,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chains", get(chains::list_chains))
         .route("/v1/chains/{chain_id}", get(chains::get_chain))
         .route("/v1/chains/{chain_id}/cancel", post(chains::cancel_chain))
+        // Embeddings
+        .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)
         .route("/v1/approvals", get(approvals::list_approvals))
         // Logout (requires auth)

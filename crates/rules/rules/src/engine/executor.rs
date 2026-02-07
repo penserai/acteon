@@ -234,6 +234,12 @@ pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError
         Expr::EventInState { fingerprint, state } => {
             eval_event_in_state(fingerprint, state, ctx).await
         }
+
+        Expr::SemanticMatch {
+            topic,
+            threshold,
+            text_field,
+        } => eval_semantic_match(topic, *threshold, text_field.as_deref(), ctx).await,
     }
 }
 
@@ -704,6 +710,36 @@ async fn eval_event_in_state(
         Value::String(s) => Ok(Value::Bool(s == expected_state)),
         _ => Ok(Value::Bool(false)),
     }
+}
+
+/// Evaluate a semantic match condition.
+///
+/// Uses the embedding support in the context to compute cosine similarity
+/// between the text and the topic. Returns `true` when the similarity meets
+/// or exceeds the threshold.
+async fn eval_semantic_match(
+    topic: &str,
+    threshold: f64,
+    text_field: Option<&Expr>,
+    ctx: &EvalContext<'_>,
+) -> Result<Value, RuleError> {
+    let embedding = ctx.embedding.as_ref().ok_or_else(|| {
+        RuleError::Evaluation("semantic_match requires embedding support".to_owned())
+    })?;
+
+    let text = if let Some(expr) = text_field {
+        let val = Box::pin(eval(expr, ctx)).await?;
+        val.display_string()
+    } else {
+        ctx.action.payload.to_string()
+    };
+
+    if text.is_empty() || text == "null" {
+        return Ok(Value::Bool(false));
+    }
+
+    let similarity = embedding.similarity(&text, topic).await?;
+    Ok(Value::Bool(similarity >= threshold))
 }
 
 /// The verdict produced by the rule engine after evaluating all rules.
@@ -2204,5 +2240,101 @@ mod tests {
         assert_eq!(engine.rule_by_name("alpha").unwrap().name, "alpha");
         assert_eq!(engine.rule_by_name("beta").unwrap().name, "beta");
         assert!(engine.rule_by_name("nonexistent").is_none());
+    }
+
+    // --- Semantic match tests ---
+
+    /// A mock embedding support that returns a fixed similarity value.
+    #[derive(Debug)]
+    struct MockEmbedding {
+        similarity: f64,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::engine::context::EmbeddingEvalSupport for MockEmbedding {
+        async fn similarity(&self, _text: &str, _topic: &str) -> Result<f64, RuleError> {
+            Ok(self.similarity)
+        }
+    }
+
+    #[tokio::test]
+    async fn eval_semantic_match_above_threshold() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let embedding = std::sync::Arc::new(MockEmbedding { similarity: 0.9 });
+        let ctx = test_context(&action, &store, &env).with_embedding(embedding);
+
+        let expr = Expr::SemanticMatch {
+            topic: "email notifications".into(),
+            threshold: 0.75,
+            text_field: Some(Box::new(Expr::Field(
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("action".into())),
+                    "payload".into(),
+                )),
+                "subject".into(),
+            ))),
+        };
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn eval_semantic_match_below_threshold() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let embedding = std::sync::Arc::new(MockEmbedding { similarity: 0.5 });
+        let ctx = test_context(&action, &store, &env).with_embedding(embedding);
+
+        let expr = Expr::SemanticMatch {
+            topic: "infrastructure outage".into(),
+            threshold: 0.75,
+            text_field: None,
+        };
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Bool(false));
+    }
+
+    #[tokio::test]
+    async fn eval_semantic_match_no_embedding_errors() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = test_context(&action, &store, &env);
+
+        let expr = Expr::SemanticMatch {
+            topic: "test".into(),
+            threshold: 0.5,
+            text_field: None,
+        };
+        assert!(eval(&expr, &ctx).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn eval_semantic_match_empty_text_returns_false() {
+        let action = Action::new(
+            "notifications",
+            "tenant-1",
+            "email",
+            "send_email",
+            serde_json::json!({"message": ""}),
+        );
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let embedding = std::sync::Arc::new(MockEmbedding { similarity: 1.0 });
+        let ctx = test_context(&action, &store, &env).with_embedding(embedding);
+
+        let expr = Expr::SemanticMatch {
+            topic: "anything".into(),
+            threshold: 0.5,
+            text_field: Some(Box::new(Expr::Field(
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("action".into())),
+                    "payload".into(),
+                )),
+                "message".into(),
+            ))),
+        };
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Bool(false));
     }
 }

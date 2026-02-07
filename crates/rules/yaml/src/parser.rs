@@ -27,6 +27,11 @@ const fn default_approval_timeout() -> u64 {
     3600
 }
 
+/// Default semantic match threshold.
+fn default_semantic_threshold() -> f64 {
+    0.8
+}
+
 /// Top-level YAML rule file containing a list of rules.
 #[derive(Debug, Deserialize)]
 pub struct YamlRuleFile {
@@ -100,6 +105,17 @@ pub enum YamlPredicate {
         /// The comparison operation to apply.
         #[serde(flatten)]
         op: YamlFieldOp,
+    },
+    /// Check if text semantically matches a topic description using embeddings.
+    SemanticMatch {
+        /// Topic description to compare against.
+        semantic_match: String,
+        /// Minimum cosine similarity threshold (0.0 to 1.0). Defaults to 0.8.
+        #[serde(default = "default_semantic_threshold")]
+        threshold: f64,
+        /// Optional dot-separated field path for the text to match.
+        /// When omitted, the entire action payload is used.
+        text_field: Option<String>,
     },
     /// A nested condition (allows recursive `all` / `any` grouping).
     Nested(Box<YamlCondition>),
@@ -483,6 +499,38 @@ rules:
             }
             other => panic!("expected RequestApproval, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_semantic_match_predicate() {
+        let yaml = r#"
+rules:
+  - name: route-infra
+    condition:
+      semantic_match: "Infrastructure issues, server problems"
+      threshold: 0.75
+      text_field: action.payload.message
+    action:
+      type: reroute
+      target_provider: devops-pagerduty
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+    }
+
+    #[test]
+    fn parse_semantic_match_with_defaults() {
+        let yaml = r#"
+rules:
+  - name: route-billing
+    condition:
+      semantic_match: "Billing and payment issues"
+    action:
+      type: reroute
+      target_provider: billing-team
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
     }
 
     #[test]

@@ -125,6 +125,22 @@ pub enum Expr {
         /// The state name to check for.
         state: String,
     },
+
+    // Semantic matching
+    /// Check if a text field semantically matches a topic description.
+    ///
+    /// Uses vector embeddings and cosine similarity to determine whether the
+    /// text is close enough to the topic. Requires an `EmbeddingEvalSupport`
+    /// implementation in the evaluation context.
+    SemanticMatch {
+        /// Topic description to match against (e.g. "Infrastructure issues, server problems").
+        topic: String,
+        /// Minimum cosine similarity threshold (0.0 to 1.0).
+        threshold: f64,
+        /// Optional expression resolving to the text to match. When `None`,
+        /// the entire action payload is stringified.
+        text_field: Option<Box<Expr>>,
+    },
 }
 
 impl Expr {
@@ -134,6 +150,79 @@ impl Expr {
             self,
             Self::Null | Self::Bool(_) | Self::Int(_) | Self::Float(_) | Self::String(_)
         )
+    }
+
+    /// Collect all `SemanticMatch` topic strings from this expression tree.
+    ///
+    /// Walks the AST recursively and returns every topic used in a
+    /// `SemanticMatch` node. Useful for pre-warming the embedding cache
+    /// after loading rules.
+    pub fn semantic_topics(&self) -> Vec<&str> {
+        let mut topics = Vec::new();
+        self.collect_semantic_topics(&mut topics);
+        topics
+    }
+
+    fn collect_semantic_topics<'a>(&'a self, out: &mut Vec<&'a str>) {
+        match self {
+            Self::SemanticMatch {
+                topic, text_field, ..
+            } => {
+                out.push(topic);
+                if let Some(expr) = text_field {
+                    expr.collect_semantic_topics(out);
+                }
+            }
+            Self::Binary(_, lhs, rhs) => {
+                lhs.collect_semantic_topics(out);
+                rhs.collect_semantic_topics(out);
+            }
+            Self::Unary(_, expr) | Self::Field(expr, _) | Self::GetEventState(expr) => {
+                expr.collect_semantic_topics(out);
+            }
+            Self::Index(expr, idx) => {
+                expr.collect_semantic_topics(out);
+                idx.collect_semantic_topics(out);
+            }
+            Self::Ternary(cond, then, els) => {
+                cond.collect_semantic_topics(out);
+                then.collect_semantic_topics(out);
+                els.collect_semantic_topics(out);
+            }
+            Self::All(exprs) | Self::Any(exprs) | Self::List(exprs) => {
+                for e in exprs {
+                    e.collect_semantic_topics(out);
+                }
+            }
+            Self::Call(_, args) => {
+                for a in args {
+                    a.collect_semantic_topics(out);
+                }
+            }
+            Self::Map(pairs) => {
+                for (_, v) in pairs {
+                    v.collect_semantic_topics(out);
+                }
+            }
+            Self::HasActiveEvent { label_value, .. } => {
+                if let Some(expr) = label_value {
+                    expr.collect_semantic_topics(out);
+                }
+            }
+            Self::EventInState { fingerprint, .. } => {
+                fingerprint.collect_semantic_topics(out);
+            }
+            // Leaf nodes — no children to visit.
+            Self::Null
+            | Self::Bool(_)
+            | Self::Int(_)
+            | Self::Float(_)
+            | Self::String(_)
+            | Self::Ident(_)
+            | Self::StateGet(_)
+            | Self::StateCounter(_)
+            | Self::StateTimeSince(_) => {}
+        }
     }
 }
 
@@ -266,5 +355,73 @@ mod tests {
         let json = serde_json::to_string(&expr).unwrap();
         let back: Expr = serde_json::from_str(&json).unwrap();
         assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn semantic_match_expr() {
+        let expr = Expr::SemanticMatch {
+            topic: "Infrastructure issues".into(),
+            threshold: 0.75,
+            text_field: Some(Box::new(Expr::Field(
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("action".into())),
+                    "payload".into(),
+                )),
+                "message".into(),
+            ))),
+        };
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn semantic_match_without_text_field() {
+        let expr = Expr::SemanticMatch {
+            topic: "Server outage".into(),
+            threshold: 0.8,
+            text_field: None,
+        };
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn semantic_topics_single() {
+        let expr = Expr::SemanticMatch {
+            topic: "billing".into(),
+            threshold: 0.7,
+            text_field: None,
+        };
+        assert_eq!(expr.semantic_topics(), vec!["billing"]);
+    }
+
+    #[test]
+    fn semantic_topics_nested_in_binary() {
+        let expr = Expr::Binary(
+            BinaryOp::Or,
+            Box::new(Expr::SemanticMatch {
+                topic: "billing".into(),
+                threshold: 0.7,
+                text_field: None,
+            }),
+            Box::new(Expr::SemanticMatch {
+                topic: "infrastructure".into(),
+                threshold: 0.8,
+                text_field: None,
+            }),
+        );
+        assert_eq!(expr.semantic_topics(), vec!["billing", "infrastructure"]);
+    }
+
+    #[test]
+    fn semantic_topics_empty_for_non_semantic() {
+        let expr = Expr::Binary(
+            BinaryOp::Eq,
+            Box::new(Expr::Ident("x".into())),
+            Box::new(Expr::Int(42)),
+        );
+        assert!(expr.semantic_topics().is_empty());
     }
 }

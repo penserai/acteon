@@ -45,6 +45,7 @@ pub struct GatewayBuilder {
     llm_fail_open: bool,
     chains: HashMap<String, ChainConfig>,
     completed_chain_ttl: Option<Duration>,
+    embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
 }
 
 impl GatewayBuilder {
@@ -73,6 +74,7 @@ impl GatewayBuilder {
             llm_fail_open: true,
             chains: HashMap::new(),
             completed_chain_ttl: None,
+            embedding: None,
         }
     }
 
@@ -269,6 +271,16 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the embedding support for semantic matching in rule conditions.
+    #[must_use]
+    pub fn embedding_support(
+        mut self,
+        support: Arc<dyn acteon_rules::EmbeddingEvalSupport>,
+    ) -> Self {
+        self.embedding = Some(support);
+        self
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -340,6 +352,7 @@ impl GatewayBuilder {
             llm_fail_open: self.llm_fail_open,
             chains: self.chains,
             completed_chain_ttl: self.completed_chain_ttl,
+            embedding: self.embedding,
         })
     }
 }

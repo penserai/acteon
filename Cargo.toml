@@ -34,6 +34,9 @@ members = [
     # LLM
     "crates/llm",
 
+    # Embedding
+    "crates/embedding",
+
     # Integrations
     "crates/integrations/email",
     "crates/integrations/slack",
@@ -81,6 +84,9 @@ acteon-rules-cel = { path = "crates/rules/cel" }
 # LLM
 acteon-llm = { path = "crates/llm" }
 
+# Embedding
+acteon-embedding = { path = "crates/embedding" }
+
 # Integrations
 acteon-email = { path = "crates/integrations/email" }
 acteon-slack = { path = "crates/integrations/slack" }
@@ -119,6 +125,7 @@ bytes = "1"
 
 # Concurrent data structures
 dashmap = "6"
+moka = { version = "0.12", features = ["future"] }
 
 # Redis
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }

@@ -117,6 +117,22 @@ fn compile_predicate(pred: &YamlPredicate) -> Result<Expr, RuleError> {
             let counter_expr = Expr::StateCounter(state_counter.clone());
             compile_field_op(&counter_expr, op)
         }
+        YamlPredicate::SemanticMatch {
+            semantic_match,
+            threshold,
+            text_field,
+        } => {
+            let text_field_expr = text_field
+                .as_ref()
+                .map(|p| parse_field_path(p))
+                .transpose()?
+                .map(Box::new);
+            Ok(Expr::SemanticMatch {
+                topic: semantic_match.clone(),
+                threshold: *threshold,
+                text_field: text_field_expr,
+            })
+        }
         YamlPredicate::Nested(inner_cond) => compile_condition(inner_cond.as_ref()),
     }
 }
@@ -936,6 +952,63 @@ rules:
 "#;
         let rules = fe.parse(yaml).unwrap();
         assert!(rules[0].metadata.is_empty());
+    }
+
+    #[test]
+    fn compile_semantic_match_predicate() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: route-infra
+    condition:
+      semantic_match: "Infrastructure issues"
+      threshold: 0.75
+      text_field: action.payload.message
+    action:
+      type: reroute
+      target_provider: devops-pagerduty
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].condition {
+            Expr::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                assert_eq!(topic, "Infrastructure issues");
+                assert!((threshold - 0.75).abs() < f64::EPSILON);
+                assert!(text_field.is_some());
+            }
+            other => panic!("expected SemanticMatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_semantic_match_no_text_field() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: route-billing
+    condition:
+      semantic_match: "Billing issues"
+    action:
+      type: reroute
+      target_provider: billing-team
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        match &rules[0].condition {
+            Expr::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                assert_eq!(topic, "Billing issues");
+                assert!((threshold - 0.8).abs() < f64::EPSILON); // default
+                assert!(text_field.is_none());
+            }
+            other => panic!("expected SemanticMatch, got {other:?}"),
+        }
     }
 
     #[tokio::test]
