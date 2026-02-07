@@ -80,6 +80,14 @@ pub enum ActionOutcome {
         /// The provider that would handle the action.
         would_be_provider: String,
     },
+    /// The provider's circuit breaker is open — the request was rejected without
+    /// attempting execution.
+    CircuitOpen {
+        /// Name of the provider whose circuit is open.
+        provider: String,
+        /// Fallback provider that was attempted, if any.
+        fallback_provider: Option<String>,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -255,6 +263,41 @@ mod tests {
                 assert_eq!(matched_rule.unwrap(), "block-spam");
             }
             _ => panic!("expected DryRun"),
+        }
+    }
+
+    #[test]
+    fn outcome_circuit_open() {
+        let outcome = ActionOutcome::CircuitOpen {
+            provider: "email".into(),
+            fallback_provider: Some("webhook".into()),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("CircuitOpen"));
+        assert!(json.contains("email"));
+        assert!(json.contains("webhook"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ActionOutcome::CircuitOpen { .. }));
+    }
+
+    #[test]
+    fn outcome_circuit_open_no_fallback() {
+        let outcome = ActionOutcome::CircuitOpen {
+            provider: "slack".into(),
+            fallback_provider: None,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("slack"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::CircuitOpen {
+                provider,
+                fallback_provider,
+            } => {
+                assert_eq!(provider, "slack");
+                assert!(fallback_provider.is_none());
+            }
+            _ => panic!("expected CircuitOpen"),
         }
     }
 

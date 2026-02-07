@@ -12,6 +12,7 @@ use tokio_util::task::TaskTracker;
 
 use acteon_llm::LlmEvaluator;
 
+use crate::circuit_breaker::{CircuitBreakerConfig, CircuitBreakerRegistry};
 use crate::error::GatewayError;
 use crate::gateway::{ApprovalKeySet, Gateway};
 use crate::group_manager::GroupManager;
@@ -47,6 +48,8 @@ pub struct GatewayBuilder {
     completed_chain_ttl: Option<Duration>,
     embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
     default_timezone: Option<String>,
+    circuit_breaker_default: Option<CircuitBreakerConfig>,
+    circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
 }
 
 impl GatewayBuilder {
@@ -77,6 +80,8 @@ impl GatewayBuilder {
             completed_chain_ttl: None,
             embedding: None,
             default_timezone: None,
+            circuit_breaker_default: None,
+            circuit_breaker_overrides: HashMap::new(),
         }
     }
 
@@ -293,6 +298,79 @@ impl GatewayBuilder {
         self
     }
 
+    /// Enable circuit breakers for all registered providers with the given
+    /// default configuration.
+    ///
+    /// Individual providers can be overridden with
+    /// [`circuit_breaker_provider`](Self::circuit_breaker_provider).
+    #[must_use]
+    pub fn circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
+        self.circuit_breaker_default = Some(config);
+        self
+    }
+
+    /// Set a per-provider circuit breaker configuration override.
+    ///
+    /// This also enables circuit breakers (equivalent to calling
+    /// [`circuit_breaker`](Self::circuit_breaker) with default settings
+    /// if not already enabled).
+    #[must_use]
+    pub fn circuit_breaker_provider(
+        mut self,
+        provider: impl Into<String>,
+        config: CircuitBreakerConfig,
+    ) -> Self {
+        if self.circuit_breaker_default.is_none() {
+            self.circuit_breaker_default = Some(CircuitBreakerConfig::default());
+        }
+        self.circuit_breaker_overrides
+            .insert(provider.into(), config);
+        self
+    }
+
+    /// Build and validate the circuit breaker registry if a default config is provided.
+    fn build_circuit_breaker_registry(
+        default: Option<CircuitBreakerConfig>,
+        overrides: &HashMap<String, CircuitBreakerConfig>,
+        providers: &ProviderRegistry,
+    ) -> Result<Option<CircuitBreakerRegistry>, GatewayError> {
+        let Some(default_config) = default else {
+            return Ok(None);
+        };
+        let mut registry = CircuitBreakerRegistry::new();
+        let provider_names: Vec<String> = providers
+            .list()
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        for name in &provider_names {
+            let config = overrides
+                .get(name.as_str())
+                .cloned()
+                .unwrap_or_else(|| default_config.clone());
+
+            config.validate().map_err(|e| {
+                GatewayError::Configuration(format!("circuit breaker config for '{name}': {e}"))
+            })?;
+
+            if let Some(ref fallback) = config.fallback_provider {
+                if fallback == name {
+                    return Err(GatewayError::Configuration(format!(
+                        "circuit breaker for '{name}' has self-referencing fallback"
+                    )));
+                }
+                if !provider_names.iter().any(|p| p == fallback) {
+                    return Err(GatewayError::Configuration(format!(
+                        "circuit breaker for '{name}' references unknown fallback provider '{fallback}'"
+                    )));
+                }
+            }
+
+            registry.register(name.as_str(), config);
+        }
+        Ok(Some(registry))
+    }
+
     /// Consume the builder and produce a configured [`Gateway`].
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
@@ -352,6 +430,13 @@ impl GatewayBuilder {
             ApprovalKeySet::from_single(secret)
         };
 
+        // Build circuit breaker registry if enabled.
+        let circuit_breakers = Self::build_circuit_breaker_registry(
+            self.circuit_breaker_default,
+            &self.circuit_breaker_overrides,
+            &self.providers,
+        )?;
+
         Ok(Gateway {
             state,
             lock,
@@ -377,6 +462,7 @@ impl GatewayBuilder {
             completed_chain_ttl: self.completed_chain_ttl,
             embedding: self.embedding,
             default_timezone,
+            circuit_breakers,
         })
     }
 }
@@ -391,6 +477,30 @@ impl Default for GatewayBuilder {
 mod tests {
     use super::*;
     use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+
+    /// Minimal mock provider for builder validation tests.
+    struct StubProvider(String);
+    impl StubProvider {
+        fn new(name: &str) -> Self {
+            Self(name.into())
+        }
+    }
+    impl acteon_provider::Provider for StubProvider {
+        fn name(&self) -> &str {
+            &self.0
+        }
+        async fn execute(
+            &self,
+            _action: &acteon_core::Action,
+        ) -> Result<acteon_core::ProviderResponse, acteon_provider::ProviderError> {
+            Ok(acteon_core::ProviderResponse::success(
+                serde_json::json!({}),
+            ))
+        }
+        async fn health_check(&self) -> Result<(), acteon_provider::ProviderError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn build_missing_state_returns_error() {
@@ -416,5 +526,82 @@ mod tests {
         let lock = Arc::new(MemoryDistributedLock::new());
         let result = GatewayBuilder::new().state(store).lock(lock).build();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_rejects_invalid_circuit_breaker_config() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let provider = Arc::new(StubProvider::new("email"));
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(provider)
+            .circuit_breaker(CircuitBreakerConfig {
+                failure_threshold: 0,
+                success_threshold: 1,
+                recovery_timeout: Duration::from_secs(60),
+                fallback_provider: None,
+            })
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("failure_threshold")
+        );
+    }
+
+    #[test]
+    fn build_rejects_unknown_fallback_provider() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let provider = Arc::new(StubProvider::new("email"));
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(provider)
+            .circuit_breaker_provider(
+                "email",
+                CircuitBreakerConfig {
+                    fallback_provider: Some("nonexistent".into()),
+                    ..CircuitBreakerConfig::default()
+                },
+            )
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unknown fallback provider")
+        );
+    }
+
+    #[test]
+    fn build_rejects_self_referencing_fallback() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let provider = Arc::new(StubProvider::new("email"));
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(provider)
+            .circuit_breaker_provider(
+                "email",
+                CircuitBreakerConfig {
+                    fallback_provider: Some("email".into()),
+                    ..CircuitBreakerConfig::default()
+                },
+            )
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("self-referencing fallback")
+        );
     }
 }

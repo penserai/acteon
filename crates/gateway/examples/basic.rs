@@ -133,5 +133,6 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::PendingApproval { .. } => "PendingApproval",
         ActionOutcome::ChainStarted { .. } => "ChainStarted",
         ActionOutcome::DryRun { .. } => "DryRun",
+        ActionOutcome::CircuitOpen { .. } => "CircuitOpen",
     }
 }

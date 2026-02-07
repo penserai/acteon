@@ -157,6 +157,7 @@ pub struct Gateway {
     pub(crate) completed_chain_ttl: Option<Duration>,
     pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
     pub(crate) default_timezone: Option<chrono_tz::Tz>,
+    pub(crate) circuit_breakers: Option<crate::circuit_breaker::CircuitBreakerRegistry>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -481,6 +482,11 @@ impl Gateway {
         &self.metrics
     }
 
+    /// Return a reference to the circuit breaker registry, if configured.
+    pub fn circuit_breakers(&self) -> Option<&crate::circuit_breaker::CircuitBreakerRegistry> {
+        self.circuit_breakers.as_ref()
+    }
+
     /// Replace the rule engine's rules with a new set, re-sorting by priority.
     pub fn reload_rules(&mut self, rules: Vec<acteon_rules::Rule>) {
         self.engine = RuleEngine::new(rules);
@@ -563,7 +569,78 @@ impl Gateway {
     // -- Private helpers ------------------------------------------------------
 
     /// Look up the action's provider and execute through the executor.
+    ///
+    /// When a circuit breaker is configured for the provider and the circuit
+    /// is open, the request is rejected immediately. If a fallback provider is
+    /// configured, the action is rerouted to the fallback instead.
     async fn execute_action(&self, action: &Action) -> ActionOutcome {
+        // Check circuit breaker before executing.
+        if let Some(ref registry) = self.circuit_breakers
+            && let Some(cb) = registry.get(action.provider.as_str())
+        {
+            let (state, transition) = cb.check();
+            if let Some((_from, _to)) = transition {
+                self.metrics.increment_circuit_transitions();
+            }
+            if state == crate::circuit_breaker::CircuitState::Open {
+                // Try fallback provider if configured.
+                if let Some(ref fallback_name) = cb.config().fallback_provider
+                    && let Some(fallback) = self.providers.get(fallback_name)
+                {
+                    // Check the fallback provider's circuit breaker too.
+                    if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
+                        let (fb_state, fb_transition) = fallback_cb.check();
+                        if let Some((_from, _to)) = fb_transition {
+                            self.metrics.increment_circuit_transitions();
+                        }
+                        if fb_state == crate::circuit_breaker::CircuitState::Open {
+                            // Fallback is also open — reject the request.
+                            self.metrics.increment_circuit_open();
+                            return ActionOutcome::CircuitOpen {
+                                provider: action.provider.to_string(),
+                                fallback_provider: Some(fallback_name.clone()),
+                            };
+                        }
+                    }
+
+                    debug!(
+                        provider = %action.provider,
+                        fallback = %fallback_name,
+                        "circuit open, rerouting to fallback provider"
+                    );
+                    let result = self.executor.execute(action, fallback.as_ref()).await;
+
+                    // Record result in the fallback provider's circuit breaker.
+                    if let Some(fallback_cb) = registry.get(fallback_name.as_str()) {
+                        let fb_transition = match &result {
+                            ActionOutcome::Executed(_) => fallback_cb.record_success(),
+                            ActionOutcome::Failed(_) => fallback_cb.record_failure(),
+                            _ => None,
+                        };
+                        if fb_transition.is_some() {
+                            self.metrics.increment_circuit_transitions();
+                        }
+                    }
+
+                    self.metrics.increment_circuit_fallbacks();
+                    return match result {
+                        ActionOutcome::Executed(ref resp) => ActionOutcome::Rerouted {
+                            original_provider: action.provider.to_string(),
+                            new_provider: fallback_name.clone(),
+                            response: resp.clone(),
+                        },
+                        other => other,
+                    };
+                }
+                // No fallback — reject the request.
+                self.metrics.increment_circuit_open();
+                return ActionOutcome::CircuitOpen {
+                    provider: action.provider.to_string(),
+                    fallback_provider: cb.config().fallback_provider.clone(),
+                };
+            }
+        }
+
         let Some(provider) = self.providers.get(action.provider.as_str()) else {
             self.metrics.increment_failed();
             return ActionOutcome::Failed(acteon_core::ActionError {
@@ -574,6 +651,21 @@ impl Gateway {
             });
         };
         let result = self.executor.execute(action, provider.as_ref()).await;
+
+        // Record result in circuit breaker.
+        if let Some(ref registry) = self.circuit_breakers
+            && let Some(cb) = registry.get(action.provider.as_str())
+        {
+            let transition = match &result {
+                ActionOutcome::Executed(_) => cb.record_success(),
+                ActionOutcome::Failed(_) => cb.record_failure(),
+                _ => None,
+            };
+            if transition.is_some() {
+                self.metrics.increment_circuit_transitions();
+            }
+        }
+
         match &result {
             ActionOutcome::Executed(_) => self.metrics.increment_executed(),
             ActionOutcome::Failed(_) => self.metrics.increment_failed(),
@@ -2369,6 +2461,7 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::PendingApproval { .. } => "pending_approval",
         ActionOutcome::ChainStarted { .. } => "chain_started",
         ActionOutcome::DryRun { .. } => "dry_run",
+        ActionOutcome::CircuitOpen { .. } => "circuit_open",
     }
 }
 
@@ -2491,6 +2584,13 @@ fn build_audit_record(
             "verdict": verdict,
             "matched_rule": matched_rule,
             "would_be_provider": would_be_provider,
+        }),
+        ActionOutcome::CircuitOpen {
+            provider,
+            fallback_provider,
+        } => serde_json::json!({
+            "provider": provider,
+            "fallback_provider": fallback_provider,
         }),
     };
 
@@ -3838,5 +3938,362 @@ mod tests {
             }
             other => panic!("expected DryRun, got {other:?}"),
         }
+    }
+
+    // -- Circuit breaker integration tests ------------------------------------
+
+    use crate::circuit_breaker::{CircuitBreakerConfig, CircuitState};
+
+    /// Build a gateway with a failing provider and circuit breaker config.
+    fn build_circuit_breaker_gateway(cb_config: CircuitBreakerConfig) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(FailingMockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker(cb_config)
+            .build()
+            .expect("gateway should build")
+    }
+
+    /// Build a gateway with a failing primary provider and a healthy fallback,
+    /// where the circuit breaker is configured with a fallback provider.
+    fn build_circuit_breaker_fallback_gateway(
+        cb_config: CircuitBreakerConfig,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(FailingMockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker_provider("email", cb_config)
+            .build()
+            .expect("gateway should build")
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_opens_after_failures_and_rejects() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            success_threshold: 1,
+            recovery_timeout: Duration::from_secs(3600),
+            fallback_provider: None,
+        };
+        let gw = build_circuit_breaker_gateway(config);
+
+        // The provider always fails, so each dispatch records a failure.
+        let outcome1 = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome1, ActionOutcome::Failed(_)));
+
+        let outcome2 = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome2, ActionOutcome::Failed(_)));
+
+        // Circuit is now open. Next dispatch should be rejected without
+        // calling the provider.
+        let outcome3 = gw.dispatch(test_action(), None).await.unwrap();
+        match outcome3 {
+            ActionOutcome::CircuitOpen {
+                provider,
+                fallback_provider,
+            } => {
+                assert_eq!(provider, "email");
+                assert!(fallback_provider.is_none());
+            }
+            other => panic!("expected CircuitOpen, got {other:?}"),
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert!(snap.circuit_open >= 1);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_uses_fallback_when_open() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 1,
+            recovery_timeout: Duration::from_secs(3600),
+            fallback_provider: Some("sms-fallback".into()),
+        };
+        let gw = build_circuit_breaker_fallback_gateway(config);
+
+        // Trip the circuit with one failure.
+        let outcome1 = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome1, ActionOutcome::Failed(_)));
+
+        // Now circuit is open. Next request should be rerouted to fallback.
+        let outcome2 = gw.dispatch(test_action(), None).await.unwrap();
+        match outcome2 {
+            ActionOutcome::Rerouted {
+                original_provider,
+                new_provider,
+                ..
+            } => {
+                assert_eq!(original_provider, "email");
+                assert_eq!(new_provider, "sms-fallback");
+            }
+            other => panic!("expected Rerouted via fallback, got {other:?}"),
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert!(snap.circuit_fallbacks >= 1);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_records_success() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 5,
+            success_threshold: 1,
+            recovery_timeout: Duration::from_secs(60),
+            fallback_provider: None,
+        };
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        // Use a healthy provider so executions succeed.
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker(config)
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch several successful actions.
+        for _ in 0..5 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        // Circuit should still be closed (successes don't trip it).
+        let cb_registry = gw.circuit_breakers().expect("should have circuit breakers");
+        let cb = cb_registry.get("email").expect("should have email breaker");
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_does_not_affect_unconfigured_providers() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        // Only configure circuit breaker for "sms-fallback", not "email".
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            // No circuit breaker configured at all.
+            .build()
+            .expect("gateway should build");
+
+        // Without circuit breaker, dispatches should always go through.
+        for _ in 0..10 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        assert!(gw.circuit_breakers().is_none());
+    }
+
+    #[tokio::test]
+    async fn builder_creates_circuit_breakers_for_all_providers() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .provider(Arc::new(MockProvider::new("webhook")))
+            .circuit_breaker(CircuitBreakerConfig::default())
+            .build()
+            .expect("gateway should build");
+
+        let registry = gw.circuit_breakers().expect("should have registry");
+        assert_eq!(registry.len(), 3);
+        assert!(registry.get("email").is_some());
+        assert!(registry.get("sms-fallback").is_some());
+        assert!(registry.get("webhook").is_some());
+    }
+
+    #[tokio::test]
+    async fn builder_applies_per_provider_override() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let custom = CircuitBreakerConfig {
+            failure_threshold: 10,
+            success_threshold: 3,
+            recovery_timeout: Duration::from_secs(120),
+            fallback_provider: Some("webhook".into()),
+        };
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("webhook")))
+            .circuit_breaker(CircuitBreakerConfig::default())
+            .circuit_breaker_provider("email", custom)
+            .build()
+            .expect("gateway should build");
+
+        let registry = gw.circuit_breakers().expect("should have registry");
+        let email_cb = registry.get("email").expect("should have email breaker");
+        assert_eq!(email_cb.config().failure_threshold, 10);
+        assert_eq!(email_cb.config().success_threshold, 3);
+        assert_eq!(
+            email_cb.config().fallback_provider.as_deref(),
+            Some("webhook")
+        );
+
+        // Webhook should have default config.
+        let webhook_cb = registry
+            .get("webhook")
+            .expect("should have webhook breaker");
+        assert_eq!(webhook_cb.config().failure_threshold, 5); // default
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_half_open_allows_probe_then_reopens() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 1,
+            recovery_timeout: Duration::ZERO, // Immediate transition for testing
+            fallback_provider: None,
+        };
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        // Use a failing provider to trip the circuit.
+        let gw = GatewayBuilder::new()
+            .state(store.clone())
+            .lock(lock.clone())
+            .rules(vec![])
+            .provider(Arc::new(FailingMockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker(config)
+            .build()
+            .expect("gateway should build");
+
+        // Trip the circuit.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Failed(_)));
+
+        let registry = gw.circuit_breakers().expect("should have registry");
+        let cb = registry.get("email").expect("should have email breaker");
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        // With recovery_timeout=ZERO, the next dispatch transitions to
+        // HalfOpen internally, allows the probe (provider still fails),
+        // and records the failure -> back to Open.
+        let outcome2 = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome2, ActionOutcome::Failed(_)));
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        // While a probe is NOT in flight, the next dispatch can try again.
+        // The probe failed above which cleared probe_in_flight, so another
+        // dispatch will attempt another probe.
+        let outcome3 = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome3, ActionOutcome::Failed(_)));
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_multiple_providers_independent() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let config = CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 1,
+            recovery_timeout: Duration::from_secs(3600),
+            fallback_provider: None,
+        };
+
+        // email always fails, sms-fallback always succeeds.
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(FailingMockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .circuit_breaker(config)
+            .build()
+            .expect("gateway should build");
+
+        // Trip the email circuit.
+        let mut action = test_action();
+        let outcome = gw.dispatch(action.clone(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Failed(_)));
+
+        // Email circuit is open.
+        let registry = gw.circuit_breakers().expect("should have registry");
+        assert_eq!(registry.get("email").unwrap().state(), CircuitState::Open);
+
+        // sms-fallback circuit should still be closed.
+        assert_eq!(
+            registry.get("sms-fallback").unwrap().state(),
+            CircuitState::Closed
+        );
+
+        // Dispatch to sms-fallback should succeed.
+        action.provider = "sms-fallback".into();
+        let outcome2 = gw.dispatch(action, None).await.unwrap();
+        assert!(matches!(outcome2, ActionOutcome::Executed(_)));
+
+        // sms-fallback circuit still closed.
+        assert_eq!(
+            registry.get("sms-fallback").unwrap().state(),
+            CircuitState::Closed
+        );
     }
 }
