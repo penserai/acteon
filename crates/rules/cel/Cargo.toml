@@ -17,6 +17,7 @@ serde_yaml_ng = { workspace = true }
 acteon-core = { workspace = true }
 acteon-state = { workspace = true }
 acteon-state-memory = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true }
 
 [lints]

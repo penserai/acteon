@@ -678,4 +678,152 @@ rules:
         let verdict = engine.evaluate(&ctx).await.unwrap();
         assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
+
+    // --- Time-based rule activation tests ---
+
+    #[tokio::test]
+    async fn e2e_time_based_suppress_outside_hours() {
+        use chrono::TimeZone as _;
+
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: suppress-outside-hours
+    priority: 1
+    description: "Suppress email outside business hours"
+    condition: 'time.hour < 9 || time.hour >= 17'
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(content).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // 3 AM — outside hours, should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Suppress(_)),
+            "expected Suppress at 3 AM, got {verdict:?}"
+        );
+
+        // 10 AM — within hours, should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Allow(_)),
+            "expected Allow at 10 AM, got {verdict:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn e2e_time_based_business_hours() {
+        use chrono::TimeZone as _;
+
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: business-hours-only
+    priority: 1
+    description: "Only suppress during business hours Mon-Fri 9-17"
+    condition: 'time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5'
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(content).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Thursday 14:00 — business hours, should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Suppress(_)));
+
+        // Saturday 14:00 — weekend, should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 17, 14, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+
+        // Thursday 20:00 — evening, should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 20, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    #[tokio::test]
+    async fn e2e_time_combined_with_action_type() {
+        use chrono::TimeZone as _;
+
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: suppress-night-email
+    priority: 1
+    condition: 'action.action_type == "send_email" && time.hour < 6'
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(content).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // 3 AM with email — should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Suppress(_)));
+
+        // 10 AM with email — should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    #[tokio::test]
+    async fn e2e_time_weekday_name_check() {
+        use chrono::TimeZone as _;
+
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: suppress-saturday
+    priority: 1
+    condition: 'time.weekday == "Saturday"'
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(content).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Saturday — should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Suppress(_)));
+
+        // Thursday — should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
 }

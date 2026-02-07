@@ -1047,4 +1047,167 @@ rules:
             other => panic!("expected Throttle, got {other:?}"),
         }
     }
+
+    // --- Time-based rule activation tests ---
+
+    #[tokio::test]
+    async fn end_to_end_time_based_suppress_outside_hours() {
+        use chrono::TimeZone as _;
+
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: suppress-outside-hours
+    priority: 1
+    description: "Suppress email outside business hours (9-17)"
+    condition:
+      any:
+        - field: time.hour
+          lt: 9
+        - field: time.hour
+          gte: 17
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // 3 AM — outside hours, should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Suppress(_)),
+            "expected Suppress at 3 AM, got {verdict:?}"
+        );
+
+        // 10 AM — within hours, should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Allow(_)),
+            "expected Allow at 10 AM, got {verdict:?}"
+        );
+
+        // 18:00 — outside hours, should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 18, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Suppress(_)),
+            "expected Suppress at 18:00, got {verdict:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_to_end_time_based_weekday_check() {
+        use chrono::TimeZone as _;
+
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: suppress-weekends
+    priority: 1
+    description: "Suppress email on weekends"
+    condition:
+      field: time.weekday_num
+      gt: 5
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Thursday (weekday_num=4) — should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Allow(_)),
+            "expected Allow on Thursday, got {verdict:?}"
+        );
+
+        // Saturday (weekday_num=6) — should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(
+            matches!(verdict, RuleVerdict::Suppress(_)),
+            "expected Suppress on Saturday, got {verdict:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_to_end_time_based_weekday_name() {
+        use chrono::TimeZone as _;
+
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: suppress-saturday
+    priority: 1
+    condition:
+      field: time.weekday
+      eq: "Saturday"
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Saturday — should suppress
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Suppress(_)));
+
+        // Thursday — should allow
+        let ctx = EvalContext::new(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    #[test]
+    fn compile_time_field_path() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: hour-check
+    condition:
+      field: time.hour
+      gte: 9
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        // Should compile to: Binary(Ge, Field(Ident("time"), "hour"), Int(9))
+        match &rules[0].condition {
+            Expr::Binary(BinaryOp::Ge, lhs, rhs) => {
+                match lhs.as_ref() {
+                    Expr::Field(base, field) => {
+                        assert!(matches!(base.as_ref(), Expr::Ident(s) if s == "time"));
+                        assert_eq!(field, "hour");
+                    }
+                    other => panic!("expected Field(Ident(time), hour), got {other:?}"),
+                }
+                assert!(matches!(rhs.as_ref(), Expr::Int(9)));
+            }
+            other => panic!("expected Binary(Ge, ...), got {other:?}"),
+        }
+    }
 }

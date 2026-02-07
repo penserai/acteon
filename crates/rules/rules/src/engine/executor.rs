@@ -260,6 +260,7 @@ fn resolve_ident(name: &str, ctx: &EvalContext<'_>) -> Result<Value, RuleError> 
             Ok(Value::Map(map))
         }
         "now" => Ok(Value::Int(ctx.now.timestamp())),
+        "time" => Ok(build_time_map(ctx)),
         _ => {
             // Try environment lookup as a shortcut.
             if let Some(val) = ctx.environment.get(name) {
@@ -268,6 +269,45 @@ fn resolve_ident(name: &str, ctx: &EvalContext<'_>) -> Result<Value, RuleError> 
             Err(RuleError::UndefinedVariable(name.to_owned()))
         }
     }
+}
+
+/// Build a `Value::Map` containing temporal components derived from `ctx.now`.
+///
+/// Provides the following fields for use in rule conditions:
+/// - `hour` (0–23), `minute` (0–59), `second` (0–59)
+/// - `day` (1–31), `month` (1–12), `year`
+/// - `weekday` — English name (e.g. `"Monday"`)
+/// - `weekday_num` — ISO weekday number (1=Monday … 7=Sunday)
+/// - `timestamp` — Unix timestamp in seconds (same as `now`)
+fn build_time_map(ctx: &EvalContext<'_>) -> Value {
+    use chrono::Datelike as _;
+    use chrono::Timelike as _;
+
+    let dt = ctx.now;
+    let weekday_name = match dt.weekday() {
+        chrono::Weekday::Mon => "Monday",
+        chrono::Weekday::Tue => "Tuesday",
+        chrono::Weekday::Wed => "Wednesday",
+        chrono::Weekday::Thu => "Thursday",
+        chrono::Weekday::Fri => "Friday",
+        chrono::Weekday::Sat => "Saturday",
+        chrono::Weekday::Sun => "Sunday",
+    };
+
+    let mut map = HashMap::with_capacity(9);
+    map.insert("hour".to_owned(), Value::Int(i64::from(dt.hour())));
+    map.insert("minute".to_owned(), Value::Int(i64::from(dt.minute())));
+    map.insert("second".to_owned(), Value::Int(i64::from(dt.second())));
+    map.insert("day".to_owned(), Value::Int(i64::from(dt.day())));
+    map.insert("month".to_owned(), Value::Int(i64::from(dt.month())));
+    map.insert("year".to_owned(), Value::Int(i64::from(dt.year())));
+    map.insert("weekday".to_owned(), Value::String(weekday_name.to_owned()));
+    map.insert(
+        "weekday_num".to_owned(),
+        Value::Int(i64::from(dt.weekday().number_from_monday())),
+    );
+    map.insert("timestamp".to_owned(), Value::Int(dt.timestamp()));
+    Value::Map(map)
 }
 
 /// Evaluate a unary operation on a value.
@@ -2336,5 +2376,235 @@ mod tests {
             ))),
         };
         assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Bool(false));
+    }
+
+    // --- Time-based rule activation tests ---
+
+    #[tokio::test]
+    async fn eval_time_ident_returns_map() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = test_context(&action, &store, &env);
+
+        let expr = Expr::Ident("time".into());
+        let result = eval(&expr, &ctx).await.unwrap();
+        assert!(matches!(result, Value::Map(_)));
+    }
+
+    #[tokio::test]
+    async fn eval_time_hour_field() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // Fix to 2026-01-15 14:30:00 UTC (Thursday)
+        let fixed_now = chrono::Utc
+            .with_ymd_and_hms(2026, 1, 15, 14, 30, 45)
+            .unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "hour".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(14));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "minute".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(30));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "second".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(45));
+    }
+
+    #[tokio::test]
+    async fn eval_time_date_fields() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 3, 22, 10, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "day".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(22));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "month".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(3));
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "year".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(2026));
+    }
+
+    #[tokio::test]
+    async fn eval_time_weekday_fields() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // 2026-01-15 is a Thursday
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday".into());
+        assert_eq!(
+            eval(&expr, &ctx).await.unwrap(),
+            Value::String("Thursday".into())
+        );
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday_num".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(4)); // Thursday = 4
+    }
+
+    #[tokio::test]
+    async fn eval_time_weekday_saturday() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // 2026-01-17 is a Saturday
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday".into());
+        assert_eq!(
+            eval(&expr, &ctx).await.unwrap(),
+            Value::String("Saturday".into())
+        );
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "weekday_num".into());
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Int(6)); // Saturday = 6
+    }
+
+    #[tokio::test]
+    async fn eval_time_timestamp() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        let expr = Expr::Field(Box::new(Expr::Ident("time".into())), "timestamp".into());
+        assert_eq!(
+            eval(&expr, &ctx).await.unwrap(),
+            Value::Int(fixed_now.timestamp())
+        );
+    }
+
+    #[tokio::test]
+    async fn eval_business_hours_condition() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Business hours: time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5
+        let business_hours = Expr::All(vec![
+            Expr::Binary(
+                BinaryOp::Ge,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(9)),
+            ),
+            Expr::Binary(
+                BinaryOp::Lt,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(17)),
+            ),
+            Expr::Binary(
+                BinaryOp::Le,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "weekday_num".into(),
+                )),
+                Box::new(Expr::Int(5)),
+            ),
+        ]);
+
+        // Thursday at 14:00 — within business hours
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 14, 0, 0).unwrap());
+        assert_eq!(
+            eval(&business_hours, &ctx).await.unwrap(),
+            Value::Bool(true)
+        );
+
+        // Thursday at 20:00 — outside business hours
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 20, 0, 0).unwrap());
+        assert_eq!(
+            eval(&business_hours, &ctx).await.unwrap(),
+            Value::Bool(false)
+        );
+
+        // Saturday at 14:00 — weekend
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 17, 14, 0, 0).unwrap());
+        assert_eq!(
+            eval(&business_hours, &ctx).await.unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn eval_time_weekday_string_comparison() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // 2026-01-17 is a Saturday
+        let fixed_now = chrono::Utc.with_ymd_and_hms(2026, 1, 17, 12, 0, 0).unwrap();
+        let ctx = test_context(&action, &store, &env).with_now(fixed_now);
+
+        // time.weekday != "Saturday"
+        let expr = Expr::Binary(
+            BinaryOp::Ne,
+            Box::new(Expr::Field(
+                Box::new(Expr::Ident("time".into())),
+                "weekday".into(),
+            )),
+            Box::new(Expr::String("Saturday".into())),
+        );
+        assert_eq!(eval(&expr, &ctx).await.unwrap(), Value::Bool(false));
+    }
+
+    #[tokio::test]
+    async fn engine_time_based_rule() {
+        use chrono::TimeZone as _;
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+
+        // Suppress emails outside business hours (before 9 AM)
+        let rule = Rule::new(
+            "suppress-outside-hours",
+            Expr::Binary(
+                BinaryOp::Lt,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("time".into())),
+                    "hour".into(),
+                )),
+                Box::new(Expr::Int(9)),
+            ),
+            RuleAction::Suppress,
+        )
+        .with_priority(1);
+
+        let engine = RuleEngine::new(vec![rule]);
+
+        // 3 AM — should suppress
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 3, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Suppress(_)));
+
+        // 10 AM — should allow
+        let ctx = test_context(&action, &store, &env)
+            .with_now(chrono::Utc.with_ymd_and_hms(2026, 1, 15, 10, 0, 0).unwrap());
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
     }
 }

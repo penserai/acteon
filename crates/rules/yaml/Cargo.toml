@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 acteon-state-memory = { workspace = true }
+chrono = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
