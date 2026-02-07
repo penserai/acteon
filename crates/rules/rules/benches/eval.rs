@@ -84,7 +84,7 @@ fn bench_simple_expression(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let ctx = EvalContext::new(&action, &store, &env);
-                let result = acteon_rules::engine::executor::eval(black_box(&expr), &ctx).await;
+                let result = acteon_rules::engine::eval::eval(black_box(&expr), &ctx).await;
                 black_box(result)
             })
         });
@@ -102,7 +102,7 @@ fn bench_complex_expression(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let ctx = EvalContext::new(&action, &store, &env);
-                let result = acteon_rules::engine::executor::eval(black_box(&expr), &ctx).await;
+                let result = acteon_rules::engine::eval::eval(black_box(&expr), &ctx).await;
                 black_box(result)
             })
         });
@@ -143,7 +143,7 @@ fn bench_state_access(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let ctx = EvalContext::new(&action, &store, &env);
-                let result = acteon_rules::engine::executor::eval(black_box(&expr), &ctx).await;
+                let result = acteon_rules::engine::eval::eval(black_box(&expr), &ctx).await;
                 black_box(result)
             })
         });

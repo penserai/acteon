@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -44,6 +44,10 @@ pub struct EvalContext<'a> {
     ///
     /// When `None`, `time.*` fields use UTC (backward-compatible default).
     pub timezone: Option<Tz>,
+    /// Lazily cached `time.*` map so that multiple rules sharing the same
+    /// context only allocate one `HashMap`.  Uses `OnceLock` (not `OnceCell`)
+    /// because `&EvalContext` is held across `.await` points, requiring `Sync`.
+    pub(crate) time_map_cache: OnceLock<super::value::Value>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -60,6 +64,7 @@ impl<'a> EvalContext<'a> {
             now: Utc::now(),
             embedding: None,
             timezone: None,
+            time_map_cache: OnceLock::new(),
         }
     }
 
@@ -67,6 +72,7 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_now(mut self, now: DateTime<Utc>) -> Self {
         self.now = now;
+        self.time_map_cache = OnceLock::new();
         self
     }
 
@@ -81,6 +87,7 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_timezone(mut self, tz: Tz) -> Self {
         self.timezone = Some(tz);
+        self.time_map_cache = OnceLock::new();
         self
     }
 }
