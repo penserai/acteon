@@ -86,6 +86,9 @@ pub async fn dispatch(
     }
 
     let caller = identity.to_caller();
+    let mut action = action;
+    action.trace_context = super::trace_context::capture_trace_context();
+
     let gw = state.gateway.read().await;
     let result = if query.dry_run {
         gw.dispatch_dry_run(action, Some(&caller)).await
@@ -174,6 +177,15 @@ pub async fn dispatch_batch(
     }
 
     let caller = identity.to_caller();
+    let trace_context = super::trace_context::capture_trace_context();
+    let actions: Vec<Action> = actions
+        .into_iter()
+        .map(|mut a| {
+            a.trace_context.clone_from(&trace_context);
+            a
+        })
+        .collect();
+
     let gw = state.gateway.read().await;
     let results = if query.dry_run {
         gw.dispatch_batch_dry_run(actions, Some(&caller)).await

@@ -11,7 +11,7 @@ default = []
 
 [dependencies]
 acteon-core = { workspace = true }
-acteon-provider = { workspace = true }
+acteon-provider = { workspace = true, features = ["trace-context"] }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

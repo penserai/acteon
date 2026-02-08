@@ -41,6 +41,9 @@ pub struct ActeonConfig {
     /// Circuit breaker configuration for provider resilience.
     #[serde(default)]
     pub circuit_breaker: CircuitBreakerServerConfig,
+    /// OpenTelemetry distributed tracing configuration.
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 /// Configuration for the state store backend.
@@ -712,4 +715,201 @@ pub struct ChainStepConfigToml {
     pub on_failure: Option<String>,
     /// Optional delay in seconds before executing this step.
     pub delay_seconds: Option<u64>,
+}
+
+/// Configuration for `OpenTelemetry` distributed tracing.
+///
+/// When enabled, Acteon exports trace spans via OTLP to a collector (Jaeger,
+/// Grafana Tempo, etc.), providing end-to-end visibility through the dispatch
+/// pipeline: HTTP ingress, rule evaluation, state operations, provider
+/// execution, and audit recording.
+///
+/// # Example
+///
+/// ```toml
+/// [telemetry]
+/// enabled = true
+/// endpoint = "http://localhost:4317"
+/// service_name = "acteon"
+/// sample_ratio = 1.0
+/// protocol = "grpc"
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct TelemetryConfig {
+    /// Whether `OpenTelemetry` tracing is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// OTLP exporter endpoint.
+    #[serde(default = "default_otel_endpoint")]
+    pub endpoint: String,
+    /// Service name reported in traces.
+    #[serde(default = "default_otel_service_name")]
+    pub service_name: String,
+    /// Sampling ratio (0.0 to 1.0). `1.0` traces every request.
+    #[serde(default = "default_otel_sample_ratio")]
+    pub sample_ratio: f64,
+    /// OTLP transport protocol: `"grpc"` or `"http"`.
+    #[serde(default = "default_otel_protocol")]
+    pub protocol: String,
+    /// Exporter timeout in seconds.
+    #[serde(default = "default_otel_timeout")]
+    pub timeout_seconds: u64,
+    /// Additional resource attributes as `key=value` pairs.
+    #[serde(default)]
+    pub resource_attributes: HashMap<String, String>,
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_otel_endpoint(),
+            service_name: default_otel_service_name(),
+            sample_ratio: default_otel_sample_ratio(),
+            protocol: default_otel_protocol(),
+            timeout_seconds: default_otel_timeout(),
+            resource_attributes: HashMap::new(),
+        }
+    }
+}
+
+fn default_otel_endpoint() -> String {
+    "http://localhost:4317".to_owned()
+}
+
+fn default_otel_service_name() -> String {
+    "acteon".to_owned()
+}
+
+fn default_otel_sample_ratio() -> f64 {
+    1.0
+}
+
+fn default_otel_protocol() -> String {
+    "grpc".to_owned()
+}
+
+fn default_otel_timeout() -> u64 {
+    10
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_defaults() {
+        let config: TelemetryConfig = toml::from_str("").unwrap();
+        assert!(!config.enabled);
+        assert_eq!(config.endpoint, "http://localhost:4317");
+        assert_eq!(config.service_name, "acteon");
+        assert!((config.sample_ratio - 1.0).abs() < f64::EPSILON);
+        assert_eq!(config.protocol, "grpc");
+        assert_eq!(config.timeout_seconds, 10);
+        assert!(config.resource_attributes.is_empty());
+    }
+
+    #[test]
+    fn telemetry_custom_config() {
+        let toml = r#"
+            enabled = true
+            endpoint = "http://collector:4317"
+            service_name = "my-acteon"
+            sample_ratio = 0.5
+            protocol = "http"
+            timeout_seconds = 30
+
+            [resource_attributes]
+            "deployment.environment" = "staging"
+            "host.name" = "node-1"
+        "#;
+
+        let config: TelemetryConfig = toml::from_str(toml).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.endpoint, "http://collector:4317");
+        assert_eq!(config.service_name, "my-acteon");
+        assert!((config.sample_ratio - 0.5).abs() < f64::EPSILON);
+        assert_eq!(config.protocol, "http");
+        assert_eq!(config.timeout_seconds, 30);
+        assert_eq!(config.resource_attributes.len(), 2);
+        assert_eq!(
+            config
+                .resource_attributes
+                .get("deployment.environment")
+                .unwrap(),
+            "staging"
+        );
+        assert_eq!(
+            config.resource_attributes.get("host.name").unwrap(),
+            "node-1"
+        );
+    }
+
+    #[test]
+    fn telemetry_disabled() {
+        let toml = r#"
+            enabled = false
+        "#;
+
+        let config: TelemetryConfig = toml::from_str(toml).unwrap();
+        assert!(!config.enabled);
+        // All other fields should still get defaults
+        assert_eq!(config.endpoint, "http://localhost:4317");
+        assert_eq!(config.service_name, "acteon");
+    }
+
+    #[test]
+    fn telemetry_sample_ratio_bounds() {
+        // Ratio = 0.0 (no sampling)
+        let config: TelemetryConfig = toml::from_str("sample_ratio = 0.0").unwrap();
+        assert!(config.sample_ratio <= 0.0);
+
+        // Ratio = 0.5 (50% sampling)
+        let config: TelemetryConfig = toml::from_str("sample_ratio = 0.5").unwrap();
+        assert!((config.sample_ratio - 0.5).abs() < f64::EPSILON);
+
+        // Ratio = 1.0 (100% sampling — default)
+        let config: TelemetryConfig = toml::from_str("sample_ratio = 1.0").unwrap();
+        assert!((config.sample_ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn telemetry_protocol_grpc() {
+        let config: TelemetryConfig = toml::from_str(r#"protocol = "grpc""#).unwrap();
+        assert_eq!(config.protocol, "grpc");
+    }
+
+    #[test]
+    fn telemetry_protocol_http() {
+        let config: TelemetryConfig = toml::from_str(r#"protocol = "http""#).unwrap();
+        assert_eq!(config.protocol, "http");
+    }
+
+    #[test]
+    fn telemetry_empty_resource_attributes() {
+        let config: TelemetryConfig = toml::from_str("[resource_attributes]").unwrap();
+        assert!(config.resource_attributes.is_empty());
+    }
+
+    #[test]
+    fn telemetry_in_acteon_config() {
+        let toml = r#"
+            [telemetry]
+            enabled = true
+            endpoint = "http://tempo:4317"
+            sample_ratio = 0.1
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert!(config.telemetry.enabled);
+        assert_eq!(config.telemetry.endpoint, "http://tempo:4317");
+        assert!((config.telemetry.sample_ratio - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn telemetry_absent_from_acteon_config_uses_defaults() {
+        let config: ActeonConfig = toml::from_str("").unwrap();
+        assert!(!config.telemetry.enabled);
+        assert_eq!(config.telemetry.endpoint, "http://localhost:4317");
+    }
 }

@@ -72,6 +72,15 @@ Dispatch a single action through the gateway pipeline.
 |-----------|------|---------|-------------|
 | `dry_run` | bool | `false` | When `true`, evaluates rules without executing. See [Dry-Run Mode](../features/dry-run.md). |
 
+**Request Headers:**
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `Content-Type` | Yes | Must be `application/json` |
+| `Authorization` | When auth enabled | Bearer token or API key |
+| `traceparent` | No | W3C Trace Context parent (e.g., `00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01`). When present and [distributed tracing](../features/distributed-tracing.md) is enabled, the server-side trace is linked to the caller's trace. |
+| `tracestate` | No | W3C Trace Context state. Vendor-specific trace data propagated alongside `traceparent`. |
+
 **Request Body:**
 
 ```json
@@ -147,6 +156,10 @@ Dispatch multiple actions in a single request.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `dry_run` | bool | `false` | When `true`, evaluates rules without executing. See [Dry-Run Mode](../features/dry-run.md). |
+
+**Request Headers:**
+
+Supports the same `traceparent` and `tracestate` headers as the single dispatch endpoint. The trace context applies to the batch request span; each individual action creates a child span within it.
 
 **Request Body:**
 

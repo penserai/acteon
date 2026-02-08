@@ -206,6 +206,18 @@ impl Gateway {
 
     /// Inner dispatch implementation shared by normal and dry-run modes.
     #[allow(clippy::too_many_lines)]
+    #[instrument(
+        name = "gateway.dispatch",
+        skip(self, action, caller),
+        fields(
+            action.id = %action.id,
+            action.namespace = %action.namespace,
+            action.tenant = %action.tenant,
+            action.provider = %action.provider,
+            action.action_type = %action.action_type,
+            dry_run,
+        )
+    )]
     async fn dispatch_inner(
         &self,
         action: Action,
@@ -466,6 +478,7 @@ impl Gateway {
     /// Skips the LLM call if no evaluator is configured or if the verdict
     /// is already `Deny` or `Suppress`. On error, behaviour depends on
     /// `llm_fail_open`.
+    #[instrument(name = "gateway.llm_guardrail", skip_all)]
     async fn apply_llm_guardrail(&self, action: &Action, verdict: RuleVerdict) -> RuleVerdict {
         let Some(ref llm) = self.llm_evaluator else {
             return verdict;
@@ -692,6 +705,7 @@ impl Gateway {
     /// is open, the request is rejected immediately. If a fallback provider is
     /// configured, the gateway walks the fallback chain recursively until it
     /// finds a healthy provider or exhausts the chain.
+    #[instrument(name = "gateway.execute_action", skip(self, action), fields(provider = %action.provider))]
     async fn execute_action(&self, action: &Action) -> ActionOutcome {
         // Check circuit breaker before executing — walk the fallback chain.
         if let Some(ref registry) = self.circuit_breakers
@@ -759,6 +773,7 @@ impl Gateway {
     }
 
     /// Handle the deduplication verdict: check state, execute only if new.
+    #[instrument(name = "gateway.handle_dedup", skip(self, action))]
     async fn handle_dedup(
         &self,
         action: &Action,
@@ -788,6 +803,7 @@ impl Gateway {
     }
 
     /// Handle the reroute verdict: execute with the target provider.
+    #[instrument(name = "gateway.handle_reroute", skip(self, action), fields(%target_provider))]
     async fn handle_reroute(
         &self,
         action: &Action,
@@ -818,6 +834,7 @@ impl Gateway {
 
     /// Handle the state machine verdict: track event lifecycle.
     #[allow(clippy::too_many_lines)]
+    #[instrument(name = "gateway.handle_state_machine", skip_all)]
     async fn handle_state_machine(
         &self,
         action: &Action,
@@ -938,6 +955,7 @@ impl Gateway {
                 "transition_to": &timeout_config.transition_to,
                 "expires_at": expires_at.to_rfc3339(),
                 "created_at": Utc::now().to_rfc3339(),
+                "trace_context": &action.trace_context,
             });
             self.state
                 .set(&timeout_key, &timeout_value.to_string(), None)
@@ -1065,6 +1083,7 @@ impl Gateway {
 
     /// Handle the request approval verdict: store approval record, send notification, return pending.
     #[allow(clippy::too_many_lines)]
+    #[instrument(name = "gateway.handle_request_approval", skip_all, fields(%rule, %notify_provider))]
     async fn handle_request_approval(
         &self,
         action: &Action,
@@ -1222,6 +1241,7 @@ impl Gateway {
     }
 
     /// Handle the group verdict: add event to group for batched notification.
+    #[instrument(name = "gateway.handle_group", skip_all)]
     async fn handle_group(
         &self,
         action: &Action,
@@ -1243,6 +1263,7 @@ impl Gateway {
     }
 
     /// Handle the chain verdict: create chain state and start async execution.
+    #[instrument(name = "gateway.handle_chain", skip(self, action), fields(%chain_name))]
     async fn handle_chain(
         &self,
         action: &Action,
@@ -1339,6 +1360,7 @@ impl Gateway {
     /// This method is called by the background processor to resume chain
     /// execution after the initial dispatch or a crash.
     #[allow(clippy::too_many_lines)]
+    #[instrument(name = "gateway.advance_chain", skip(self), fields(%namespace, %tenant, %chain_id))]
     pub async fn advance_chain(
         &self,
         namespace: &str,
@@ -2086,6 +2108,25 @@ impl Gateway {
         }
 
         Ok(chain_state)
+    }
+
+    /// Get the full approval record for the given ID.
+    pub async fn get_approval_record(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, GatewayError> {
+        let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
+        match self.state.get(&approval_key).await? {
+            Some(val) => {
+                let record: ApprovalRecord = serde_json::from_str(&val).map_err(|e| {
+                    GatewayError::Configuration(format!("corrupt approval record: {e}"))
+                })?;
+                Ok(Some(record))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Execute an approved action by namespace, tenant, ID, and HMAC signature.

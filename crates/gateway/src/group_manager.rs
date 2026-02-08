@@ -69,10 +69,15 @@ impl GroupManager {
                     .and_then(|v| v.as_str())
                     .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                     .map_or_else(Utc::now, |dt| dt.with_timezone(&Utc));
+                let trace_context: HashMap<String, String> = metadata
+                    .get("trace_context")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
 
                 // Only recover if not already in memory
                 if !groups.contains_key(&group_key) {
-                    let group = EventGroup::new(&group_id, &group_key, notify_at);
+                    let mut group = EventGroup::new(&group_id, &group_key, notify_at);
+                    group.trace_context = trace_context;
                     groups.insert(group_key.clone(), group);
                     recovered += 1;
                     tracing::info!(
@@ -131,6 +136,9 @@ impl GroupManager {
                 let notify_at = Utc::now() + chrono::Duration::seconds(group_wait_seconds as i64);
                 let mut group = EventGroup::new(&group_id, &group_key, notify_at);
 
+                // Capture trace context from the first event in the group
+                group.trace_context.clone_from(&action.trace_context);
+
                 // Extract common labels from action metadata
                 let mut labels = HashMap::new();
                 for field in group_by {
@@ -161,6 +169,7 @@ impl GroupManager {
             "group_key": &group_key,
             "size": group_size,
             "notify_at": notify_at.to_rfc3339(),
+            "trace_context": &action.trace_context,
         });
         state
             .set(&state_key, &group_value.to_string(), None)

@@ -88,5 +88,9 @@ name = "mixed_backends_simulation"
 name = "polyglot_client_simulation"
 # No required-features - runs external language runtimes
 
+[[example]]
+name = "otel_tracing_simulation"
+# No required-features - uses in-memory backends
+
 [lints]
 workspace = true

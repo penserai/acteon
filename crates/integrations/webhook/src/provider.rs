@@ -154,6 +154,9 @@ impl Provider for WebhookProvider {
         // Apply authentication (may depend on body bytes for HMAC).
         request = self.apply_auth(request, &body_bytes)?;
 
+        // Inject W3C Trace Context so downstream services can join the trace.
+        request = acteon_provider::inject_trace_context(request);
+
         // Send the request.
         let response = request.send().await.map_err(|e| {
             if e.is_timeout() {

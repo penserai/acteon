@@ -72,13 +72,14 @@ impl SlackProvider {
 
         debug!(channel = %request.channel, "posting message to Slack");
 
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.config.token)
-            .json(request)
-            .send()
-            .await?;
+        let response = acteon_provider::inject_trace_context(
+            self.client
+                .post(&url)
+                .bearer_auth(&self.config.token)
+                .json(request),
+        )
+        .send()
+        .await?;
 
         let status = response.status();
 

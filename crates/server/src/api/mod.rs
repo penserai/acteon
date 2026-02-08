@@ -14,10 +14,12 @@ pub mod replay;
 pub mod rules;
 pub mod schemas;
 pub mod stream;
+pub mod trace_context;
 
 use std::sync::Arc;
 
 use axum::Router;
+use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -142,6 +144,9 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
         // Swagger UI
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
+        // W3C Trace Context propagation (extracts traceparent/tracestate from
+        // incoming requests so OTel can link server spans to the caller's trace).
+        .layer(middleware::from_fn(trace_context::propagate_trace_context))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
 }

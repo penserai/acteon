@@ -149,12 +149,24 @@ parent chains).
 
 ## 6. Observability & Operations
 
-### OpenTelemetry Distributed Tracing
+### OpenTelemetry Distributed Tracing — IMPLEMENTED
 Add W3C Trace Context propagation through the full pipeline: HTTP ingress ->
 rule evaluation -> state operations -> provider execution -> audit write.
 Lets users see Acteon actions in their existing tracing infrastructure
 (Jaeger, Tempo, Zipkin). The design document already identifies this as a
 planned feature.
+
+**Implemented**: OTLP export (gRPC and HTTP) via `[telemetry]` config section
+with configurable sampling, service name, and resource attributes. W3C Trace
+Context propagation extracts `traceparent`/`tracestate` headers from incoming
+requests, linking server-side spans to caller traces. The gateway pipeline is
+fully instrumented with `#[instrument]` spans: `gateway.dispatch`,
+`gateway.execute_action`, `gateway.llm_guardrail`, `gateway.handle_dedup`,
+`gateway.handle_reroute`, `gateway.handle_state_machine`,
+`gateway.handle_request_approval`, `gateway.handle_group`,
+`gateway.handle_chain`, and `gateway.advance_chain`. Batch span processor
+with graceful shutdown flush ensures no data loss during deployments.
+See [Distributed Tracing](book/features/distributed-tracing.md) for full docs.
 
 ### Grafana Dashboard Templates
 Ship pre-built Grafana dashboard JSON that visualizes the Prometheus metrics
@@ -315,7 +327,7 @@ Ranked by impact-to-effort ratio:
 | 2 | Dry-Run Mode | Low | High | **DONE** |
 | 3 | Circuit Breaker | Medium | High | Pending |
 | 4 | Delayed/Scheduled Actions | Medium | High | Pending |
-| 5 | OpenTelemetry Tracing | Medium | High | Pending |
+| 5 | OpenTelemetry Tracing | Medium | High | **DONE** |
 | 6 | Field-Level Audit Redaction | Low | Medium | **DONE** |
 | 7 | Cron-Based Rule Activation | Low | Medium | **DONE** |
 | 8 | Action Replay | Medium | Medium | **DONE** |

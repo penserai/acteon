@@ -53,18 +53,16 @@ enum Commands {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing subscriber from RUST_LOG or default to info.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
 
-    // Handle subcommands.
+    // Handle subcommands (need basic tracing before config is loaded).
     if let Some(Commands::Encrypt) = cli.command {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
         return run_encrypt();
     }
 
@@ -73,12 +71,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(&cli.config)?;
         toml::from_str(&contents)?
     } else {
+        toml::from_str("")?
+    };
+
+    // Initialize tracing subscriber (with optional OpenTelemetry layer).
+    // Must happen after config is loaded so we know whether OTel is enabled,
+    // but before any tracing calls.
+    let telemetry_guard = acteon_server::telemetry::init(&config.telemetry);
+
+    if !Path::new(&cli.config).exists() {
         info!(
             path = %cli.config,
             "config file not found, using defaults"
         );
-        toml::from_str("")?
-    };
+    }
 
     // Build the executor config from TOML values.
     let mut exec_config = ExecutorConfig::default();
@@ -530,6 +536,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             while let Some(event) = flush_rx.recv().await {
                 let group = &event.group;
+
+                // Restore trace context from the first event in the group.
+                acteon_server::api::trace_context::restore_trace_context(&group.trace_context);
+
                 info!(
                     group_id = %group.group_id,
                     event_count = group.size(),
@@ -618,6 +628,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let timeout_tenant = config.background.tenant.clone();
         tokio::spawn(async move {
             while let Some(event) = timeout_rx.recv().await {
+                // Restore trace context from the original event that set the timeout.
+                acteon_server::api::trace_context::restore_trace_context(&event.trace_context);
+
                 info!(
                     fingerprint = %event.fingerprint,
                     state_machine = %event.state_machine,
@@ -741,6 +754,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let gw = Arc::clone(&chain_gateway);
                 tokio::spawn(async move {
                     let _permit = permit;
+
+                    // Load chain state to restore trace context before advancing.
+                    let trace_context = {
+                        let gw = gw.read().await;
+                        gw.get_chain_status(&event.namespace, &event.tenant, &event.chain_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|s| s.origin_action.trace_context)
+                    };
+
+                    if let Some(ctx) = trace_context {
+                        acteon_server::api::trace_context::restore_trace_context(&ctx);
+                    }
+
                     info!(
                         chain_id = %event.chain_id,
                         namespace = %event.namespace,
@@ -829,6 +857,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "shutdown timeout exceeded, some audit tasks may be lost"
         );
     }
+
+    // Flush pending OpenTelemetry spans before exit.
+    telemetry_guard.shutdown();
 
     info!("acteon-server shut down");
     Ok(())

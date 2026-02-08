@@ -63,6 +63,11 @@ Automatic provider health tracking — stop requests to failing providers, rerou
 Real-time SSE event stream for dashboards and monitoring — subscribe to action outcomes as they happen.
 </div>
 
+<div class="card" markdown>
+### [Distributed Tracing](distributed-tracing.md)
+OpenTelemetry distributed tracing — end-to-end visibility across the dispatch pipeline with OTLP export to Jaeger, Tempo, Zipkin, and more.
+</div>
+
 </div>
 
 ## Advanced Features

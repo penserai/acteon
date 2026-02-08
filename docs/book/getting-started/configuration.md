@@ -151,6 +151,19 @@ recovery_timeout_seconds = 60        # Seconds before probing
 # topic_cache_ttl_seconds = 3600    # Topic cache TTL (1 hour)
 # text_cache_capacity = 1000        # Max cached text embeddings
 # text_cache_ttl_seconds = 60       # Text cache TTL (1 minute)
+
+# ─── Telemetry / Distributed Tracing ────────────────────
+[telemetry]
+# enabled = false                    # Enable OpenTelemetry tracing
+# endpoint = "http://localhost:4317" # OTLP collector endpoint
+# service_name = "acteon"            # Service name in traces
+# sample_ratio = 1.0                 # 0.0 (none) to 1.0 (all)
+# protocol = "grpc"                  # "grpc" (port 4317) or "http" (port 4318)
+# timeout_seconds = 10               # Exporter timeout
+
+# [telemetry.resource_attributes]
+# "deployment.environment" = "production"
+# "service.instance.id" = "acteon-01"
 ```
 
 ## Section Details
@@ -295,6 +308,23 @@ See [Task Chains](../features/chains.md) for detailed chain configuration.
     The `api_key` field supports encrypted values. Set `ACTEON_AUTH_KEY` and use `acteon-server encrypt` to generate an `ENC[...]` token. See [Semantic Routing](../features/semantic-routing.md) for details.
 
 See [Semantic Routing](../features/semantic-routing.md) for feature documentation.
+
+### `[telemetry]`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable OpenTelemetry distributed tracing |
+| `endpoint` | string | `"http://localhost:4317"` | OTLP exporter endpoint |
+| `service_name` | string | `"acteon"` | Service name reported in traces |
+| `sample_ratio` | f64 | `1.0` | Sampling ratio (`0.0` = none, `1.0` = all requests) |
+| `protocol` | string | `"grpc"` | OTLP transport: `"grpc"` (port 4317) or `"http"` (port 4318) |
+| `timeout_seconds` | u64 | `10` | Exporter timeout in seconds |
+
+#### `[telemetry.resource_attributes]`
+
+Arbitrary key-value pairs added to every exported span as OpenTelemetry resource attributes. Useful for tagging deployment environment, region, or instance ID.
+
+See [Distributed Tracing](../features/distributed-tracing.md) for feature documentation.
 
 ## Environment Variables
 

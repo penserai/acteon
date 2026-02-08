@@ -84,6 +84,8 @@ pub struct TimeoutEvent {
     pub new_state: String,
     /// When the timeout fired.
     pub fired_at: chrono::DateTime<Utc>,
+    /// Captured trace context from the event that created the timeout.
+    pub trace_context: std::collections::HashMap<String, String>,
 }
 
 /// Event emitted when a chain needs advancement.
@@ -334,6 +336,10 @@ impl BackgroundProcessor {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            let trace_context: std::collections::HashMap<String, String> = timeout_data
+                .get("trace_context")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
 
             info!(
                 fingerprint = %fingerprint,
@@ -376,6 +382,7 @@ impl BackgroundProcessor {
                     previous_state: current_state,
                     new_state: transition_to,
                     fired_at: now,
+                    trace_context,
                 };
                 if tx.send(event).await.is_err() {
                     warn!("timeout event channel closed");

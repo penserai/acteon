@@ -121,6 +121,14 @@ pub async fn approve(
 ) -> Result<impl IntoResponse, ServerError> {
     let gw = state.gateway.read().await;
 
+    // Load record to restore trace context before execution.
+    if let Ok(Some(record)) = gw
+        .get_approval_record(&path.namespace, &path.tenant, &path.id)
+        .await
+    {
+        super::trace_context::restore_trace_context(&record.action.trace_context);
+    }
+
     match gw
         .execute_approval(
             &path.namespace,
