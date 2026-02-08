@@ -24,5 +24,8 @@ pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
 pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
 pub use state_machine::{StateMachineConfig, TimeoutConfig, TransitionConfig, TransitionEffects};
-pub use stream::{StreamEvent, StreamEventType, outcome_category, sanitize_outcome};
+pub use stream::{
+    StreamEvent, StreamEventType, outcome_category, reconstruct_outcome, sanitize_outcome,
+    timestamp_from_event_id,
+};
 pub use types::{ActionId, Namespace, ProviderId, TenantId};

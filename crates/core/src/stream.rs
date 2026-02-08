@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::outcome::{ActionOutcome, ProviderResponse};
+use crate::outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
 
 /// A real-time event emitted by the gateway for SSE streaming.
 ///
@@ -11,8 +12,9 @@ use crate::outcome::{ActionOutcome, ProviderResponse};
 /// namespace, tenant, action type, and outcome category.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamEvent {
-    /// Unique event identifier (UUID v4). Used as the SSE `id` field
-    /// to support `Last-Event-ID` reconnection.
+    /// Unique event identifier (`UUIDv7`). Used as the SSE `id` field
+    /// to support `Last-Event-ID` reconnection. The embedded timestamp
+    /// enables efficient range-based catch-up queries on reconnect.
     pub id: String,
     /// When the event was emitted.
     pub timestamp: DateTime<Utc>,
@@ -136,10 +138,154 @@ pub fn outcome_category(outcome: &ActionOutcome) -> &'static str {
     }
 }
 
+/// Extract the embedded timestamp from a `UUIDv7` event ID.
+///
+/// Returns `None` if the string is not a valid UUID or does not contain
+/// a `UUIDv7` timestamp.
+#[must_use]
+pub fn timestamp_from_event_id(id: &str) -> Option<DateTime<Utc>> {
+    let uuid = uuid::Uuid::parse_str(id).ok()?;
+    let ts = uuid.get_timestamp()?;
+    let (secs, nanos) = ts.to_unix();
+    Utc.timestamp_opt(secs.cast_signed(), nanos).single()
+}
+
+/// Reconstruct an [`ActionOutcome`] from an audit record's `outcome` tag
+/// and `outcome_details` JSON.
+///
+/// This is a best-effort reconstruction for SSE replay. Some information
+/// (e.g. full provider response bodies) is intentionally not stored in
+/// audit records, so the reconstructed outcome will have sanitized/empty
+/// values for those fields.
+///
+/// Returns `None` for unrecognized outcome tags (graceful degradation).
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn reconstruct_outcome(
+    outcome_tag: &str,
+    details: &serde_json::Value,
+) -> Option<ActionOutcome> {
+    match outcome_tag {
+        "executed" => {
+            let status_str = details.get("status")?.as_str()?;
+            let status = match status_str {
+                "Success" => ResponseStatus::Success,
+                "Failure" => ResponseStatus::Failure,
+                "Partial" => ResponseStatus::Partial,
+                _ => return None,
+            };
+            Some(ActionOutcome::Executed(ProviderResponse {
+                status,
+                body: serde_json::Value::Null,
+                headers: HashMap::new(),
+            }))
+        }
+        "suppressed" => {
+            let rule = details.get("rule")?.as_str()?.to_owned();
+            Some(ActionOutcome::Suppressed { rule })
+        }
+        "failed" => {
+            let code = details.get("code")?.as_str()?.to_owned();
+            let message = details.get("message")?.as_str()?.to_owned();
+            let retryable = details.get("retryable")?.as_bool()?;
+            let attempts = u32::try_from(details.get("attempts")?.as_u64()?).ok()?;
+            Some(ActionOutcome::Failed(ActionError {
+                code,
+                message,
+                retryable,
+                attempts,
+            }))
+        }
+        "rerouted" => {
+            let original_provider = details.get("original_provider")?.as_str()?.to_owned();
+            let new_provider = details.get("new_provider")?.as_str()?.to_owned();
+            Some(ActionOutcome::Rerouted {
+                original_provider,
+                new_provider,
+                response: ProviderResponse {
+                    status: ResponseStatus::Success,
+                    body: serde_json::Value::Null,
+                    headers: HashMap::new(),
+                },
+            })
+        }
+        "throttled" => {
+            let secs = details.get("retry_after_secs")?.as_u64()?;
+            Some(ActionOutcome::Throttled {
+                retry_after: Duration::from_secs(secs),
+            })
+        }
+        "deduplicated" => Some(ActionOutcome::Deduplicated),
+        "grouped" => {
+            let group_id = details.get("group_id")?.as_str()?.to_owned();
+            let group_size = usize::try_from(details.get("group_size")?.as_u64()?).ok()?;
+            let notify_at_str = details.get("notify_at")?.as_str()?;
+            let notify_at = notify_at_str.parse::<DateTime<Utc>>().ok()?;
+            Some(ActionOutcome::Grouped {
+                group_id,
+                group_size,
+                notify_at,
+            })
+        }
+        "state_changed" => {
+            let fingerprint = details.get("fingerprint")?.as_str()?.to_owned();
+            let previous_state = details.get("previous_state")?.as_str()?.to_owned();
+            let new_state = details.get("new_state")?.as_str()?.to_owned();
+            let notify = details.get("notify")?.as_bool()?;
+            Some(ActionOutcome::StateChanged {
+                fingerprint,
+                previous_state,
+                new_state,
+                notify,
+            })
+        }
+        "pending_approval" => {
+            let approval_id = details.get("approval_id")?.as_str()?.to_owned();
+            let expires_at_str = details.get("expires_at")?.as_str()?;
+            let expires_at = expires_at_str.parse::<DateTime<Utc>>().ok()?;
+            let notification_sent = details.get("notification_sent")?.as_bool()?;
+            Some(ActionOutcome::PendingApproval {
+                approval_id,
+                expires_at,
+                approve_url: "[redacted]".into(),
+                reject_url: "[redacted]".into(),
+                notification_sent,
+            })
+        }
+        "chain_started" => {
+            let chain_id = details.get("chain_id")?.as_str()?.to_owned();
+            let chain_name = details.get("chain_name")?.as_str()?.to_owned();
+            let total_steps = usize::try_from(details.get("total_steps")?.as_u64()?).ok()?;
+            let first_step = details.get("first_step")?.as_str()?.to_owned();
+            Some(ActionOutcome::ChainStarted {
+                chain_id,
+                chain_name,
+                total_steps,
+                first_step,
+            })
+        }
+        "circuit_open" => {
+            let provider = details.get("provider")?.as_str()?.to_owned();
+            let fallback_chain = details
+                .get("fallback_chain")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(ActionOutcome::CircuitOpen {
+                provider,
+                fallback_chain,
+            })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::outcome::{ActionError, ProviderResponse, ResponseStatus};
 
@@ -736,5 +882,252 @@ mod tests {
             }
             other => panic!("expected Suppressed, got {other:?}"),
         }
+    }
+
+    // -- timestamp_from_event_id tests ----------------------------------------
+
+    #[test]
+    fn timestamp_from_event_id_roundtrip() {
+        let id = uuid::Uuid::now_v7().to_string();
+        let ts = timestamp_from_event_id(&id);
+        assert!(ts.is_some(), "should extract timestamp from UUIDv7");
+        let ts = ts.unwrap();
+        let now = Utc::now();
+        // The extracted timestamp should be within 1 second of now.
+        assert!(
+            (now - ts).num_seconds().abs() < 2,
+            "timestamp should be close to now: got {ts}, now is {now}"
+        );
+    }
+
+    #[test]
+    fn timestamp_from_event_id_invalid_uuid() {
+        assert!(timestamp_from_event_id("not-a-uuid").is_none());
+    }
+
+    #[test]
+    fn timestamp_from_event_id_v4_returns_none() {
+        let v4 = uuid::Uuid::new_v4().to_string();
+        assert!(
+            timestamp_from_event_id(&v4).is_none(),
+            "UUIDv4 has no timestamp"
+        );
+    }
+
+    // -- reconstruct_outcome exhaustive tests ---------------------------------
+
+    #[test]
+    fn reconstruct_executed() {
+        let details = serde_json::json!({"status": "Success"});
+        let outcome = reconstruct_outcome("executed", &details).unwrap();
+        match outcome {
+            ActionOutcome::Executed(resp) => {
+                assert_eq!(resp.status, ResponseStatus::Success);
+                assert_eq!(resp.body, serde_json::Value::Null);
+            }
+            other => panic!("expected Executed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_executed_failure_status() {
+        let details = serde_json::json!({"status": "Failure"});
+        let outcome = reconstruct_outcome("executed", &details).unwrap();
+        match outcome {
+            ActionOutcome::Executed(resp) => assert_eq!(resp.status, ResponseStatus::Failure),
+            other => panic!("expected Executed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_suppressed() {
+        let details = serde_json::json!({"rule": "block-spam"});
+        let outcome = reconstruct_outcome("suppressed", &details).unwrap();
+        match outcome {
+            ActionOutcome::Suppressed { rule } => assert_eq!(rule, "block-spam"),
+            other => panic!("expected Suppressed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_failed() {
+        let details = serde_json::json!({
+            "code": "TIMEOUT",
+            "message": "timed out",
+            "retryable": true,
+            "attempts": 3
+        });
+        let outcome = reconstruct_outcome("failed", &details).unwrap();
+        match outcome {
+            ActionOutcome::Failed(err) => {
+                assert_eq!(err.code, "TIMEOUT");
+                assert_eq!(err.message, "timed out");
+                assert!(err.retryable);
+                assert_eq!(err.attempts, 3);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_rerouted() {
+        let details = serde_json::json!({
+            "original_provider": "email",
+            "new_provider": "sms"
+        });
+        let outcome = reconstruct_outcome("rerouted", &details).unwrap();
+        match outcome {
+            ActionOutcome::Rerouted {
+                original_provider,
+                new_provider,
+                ..
+            } => {
+                assert_eq!(original_provider, "email");
+                assert_eq!(new_provider, "sms");
+            }
+            other => panic!("expected Rerouted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_throttled() {
+        let details = serde_json::json!({"retry_after_secs": 60});
+        let outcome = reconstruct_outcome("throttled", &details).unwrap();
+        match outcome {
+            ActionOutcome::Throttled { retry_after } => {
+                assert_eq!(retry_after, Duration::from_secs(60));
+            }
+            other => panic!("expected Throttled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_deduplicated() {
+        let details = serde_json::json!({});
+        let outcome = reconstruct_outcome("deduplicated", &details).unwrap();
+        assert!(matches!(outcome, ActionOutcome::Deduplicated));
+    }
+
+    #[test]
+    fn reconstruct_grouped() {
+        let notify_at = Utc::now();
+        let details = serde_json::json!({
+            "group_id": "grp-1",
+            "group_size": 5,
+            "notify_at": notify_at.to_rfc3339()
+        });
+        let outcome = reconstruct_outcome("grouped", &details).unwrap();
+        match outcome {
+            ActionOutcome::Grouped {
+                group_id,
+                group_size,
+                ..
+            } => {
+                assert_eq!(group_id, "grp-1");
+                assert_eq!(group_size, 5);
+            }
+            other => panic!("expected Grouped, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_state_changed() {
+        let details = serde_json::json!({
+            "fingerprint": "fp-1",
+            "previous_state": "open",
+            "new_state": "closed",
+            "notify": true
+        });
+        let outcome = reconstruct_outcome("state_changed", &details).unwrap();
+        match outcome {
+            ActionOutcome::StateChanged {
+                fingerprint,
+                previous_state,
+                new_state,
+                notify,
+            } => {
+                assert_eq!(fingerprint, "fp-1");
+                assert_eq!(previous_state, "open");
+                assert_eq!(new_state, "closed");
+                assert!(notify);
+            }
+            other => panic!("expected StateChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_pending_approval() {
+        let expires_at = Utc::now();
+        let details = serde_json::json!({
+            "approval_id": "appr-1",
+            "expires_at": expires_at.to_rfc3339(),
+            "notification_sent": true
+        });
+        let outcome = reconstruct_outcome("pending_approval", &details).unwrap();
+        match outcome {
+            ActionOutcome::PendingApproval {
+                approval_id,
+                approve_url,
+                reject_url,
+                notification_sent,
+                ..
+            } => {
+                assert_eq!(approval_id, "appr-1");
+                assert_eq!(approve_url, "[redacted]");
+                assert_eq!(reject_url, "[redacted]");
+                assert!(notification_sent);
+            }
+            other => panic!("expected PendingApproval, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_chain_started() {
+        let details = serde_json::json!({
+            "chain_id": "c-1",
+            "chain_name": "my-chain",
+            "total_steps": 3,
+            "first_step": "step-1"
+        });
+        let outcome = reconstruct_outcome("chain_started", &details).unwrap();
+        match outcome {
+            ActionOutcome::ChainStarted {
+                chain_id,
+                chain_name,
+                total_steps,
+                first_step,
+            } => {
+                assert_eq!(chain_id, "c-1");
+                assert_eq!(chain_name, "my-chain");
+                assert_eq!(total_steps, 3);
+                assert_eq!(first_step, "step-1");
+            }
+            other => panic!("expected ChainStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_circuit_open() {
+        let details = serde_json::json!({
+            "provider": "email",
+            "fallback_chain": ["sms", "webhook"]
+        });
+        let outcome = reconstruct_outcome("circuit_open", &details).unwrap();
+        match outcome {
+            ActionOutcome::CircuitOpen {
+                provider,
+                fallback_chain,
+            } => {
+                assert_eq!(provider, "email");
+                assert_eq!(fallback_chain, vec!["sms", "webhook"]);
+            }
+            other => panic!("expected CircuitOpen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_unknown_tag_returns_none() {
+        let details = serde_json::json!({});
+        assert!(reconstruct_outcome("unknown_variant", &details).is_none());
     }
 }

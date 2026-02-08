@@ -569,7 +569,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Emit SSE stream event for the group flush.
                 let gw = flush_gateway.read().await;
                 let _ = gw.stream_tx().send(StreamEvent {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: uuid::Uuid::now_v7().to_string(),
                     timestamp: chrono::Utc::now(),
                     event_type: StreamEventType::GroupFlushed {
                         group_id: group.group_id.clone(),
@@ -630,7 +630,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Emit SSE stream event for the timeout.
                 let gw = timeout_gateway.read().await;
                 let _ = gw.stream_tx().send(StreamEvent {
-                    id: uuid::Uuid::new_v4().to_string(),
+                    id: uuid::Uuid::now_v7().to_string(),
                     timestamp: chrono::Utc::now(),
                     event_type: StreamEventType::Timeout {
                         fingerprint: event.fingerprint.clone(),
@@ -751,7 +751,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Emit SSE stream event for the chain advance.
                     let gw = gw.read().await;
                     let _ = gw.stream_tx().send(StreamEvent {
-                        id: uuid::Uuid::new_v4().to_string(),
+                        id: uuid::Uuid::now_v7().to_string(),
                         timestamp: chrono::Utc::now(),
                         event_type: StreamEventType::ChainAdvanced {
                             chain_id: event.chain_id.clone(),
