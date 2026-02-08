@@ -481,6 +481,14 @@ impl GatewayBuilder {
             Arc::clone(&lock),
         )?;
 
+        // Pre-compute step-name → index maps for each chain config so we
+        // don't rebuild them on every step completion during chain advancement.
+        let chain_step_indices: HashMap<String, HashMap<String, usize>> = self
+            .chains
+            .iter()
+            .map(|(name, config)| (name.clone(), config.step_index_map()))
+            .collect();
+
         // Create the broadcast channel for SSE event streaming.
         let (stream_tx, _) = tokio::sync::broadcast::channel(self.stream_buffer_size);
 
@@ -506,6 +514,7 @@ impl GatewayBuilder {
             llm_policies: self.llm_policies,
             llm_fail_open: self.llm_fail_open,
             chains: self.chains,
+            chain_step_indices,
             completed_chain_ttl: self.completed_chain_ttl,
             embedding: self.embedding,
             default_timezone,

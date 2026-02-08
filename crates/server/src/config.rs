@@ -762,6 +762,26 @@ pub struct ChainStepConfigToml {
     pub on_failure: Option<String>,
     /// Optional delay in seconds before executing this step.
     pub delay_seconds: Option<u64>,
+    /// Conditional branch conditions evaluated after this step completes.
+    #[serde(default)]
+    pub branches: Vec<BranchConditionToml>,
+    /// Default next step name when no branch condition matches.
+    #[serde(default)]
+    pub default_next: Option<String>,
+}
+
+/// A branch condition in a chain step, loaded from TOML.
+#[derive(Debug, Deserialize)]
+pub struct BranchConditionToml {
+    /// The field to evaluate (e.g., `"success"`, `"body.status"`).
+    pub field: String,
+    /// Comparison operator: `"eq"`, `"neq"`, `"contains"`, or `"exists"`.
+    pub operator: String,
+    /// Value to compare against (ignored for `"exists"`).
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+    /// Name of the target step to jump to when this condition matches.
+    pub target: String,
 }
 
 /// Configuration for `OpenTelemetry` distributed tracing.

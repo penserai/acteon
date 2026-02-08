@@ -7,8 +7,8 @@ use tokio::sync::RwLock;
 use tracing::info;
 
 use acteon_core::{
-    Action, ChainConfig, ChainFailurePolicy, ChainNotificationTarget, ChainStepConfig,
-    StepFailurePolicy, StreamEvent, StreamEventType,
+    Action, BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy,
+    ChainNotificationTarget, ChainStepConfig, StepFailurePolicy, StreamEvent, StreamEventType,
 };
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
@@ -341,6 +341,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(delay) = step_toml.delay_seconds {
                 step = step.with_delay(delay);
+            }
+            for branch_toml in &step_toml.branches {
+                let operator = match branch_toml.operator.as_str() {
+                    "neq" => BranchOperator::Neq,
+                    "contains" => BranchOperator::Contains,
+                    "exists" => BranchOperator::Exists,
+                    _ => BranchOperator::Eq,
+                };
+                step = step.with_branch(BranchCondition::new(
+                    &branch_toml.field,
+                    operator,
+                    branch_toml.value.clone(),
+                    &branch_toml.target,
+                ));
+            }
+            if let Some(ref default_next) = step_toml.default_next {
+                step = step.with_default_next(default_next);
             }
             chain_config = chain_config.with_step(step);
         }

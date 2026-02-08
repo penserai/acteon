@@ -14,8 +14,8 @@ pub mod types;
 pub use action::{Action, ActionMetadata};
 pub use caller::Caller;
 pub use chain::{
-    ChainConfig, ChainFailurePolicy, ChainNotificationTarget, ChainState, ChainStatus,
-    ChainStepConfig, StepFailurePolicy, StepResult,
+    BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,
+    ChainState, ChainStatus, ChainStepConfig, StepFailurePolicy, StepResult,
 };
 pub use context::ActionContext;
 pub use error::ActeonError;

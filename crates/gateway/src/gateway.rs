@@ -156,6 +156,10 @@ pub struct Gateway {
     pub(crate) llm_policies: HashMap<String, String>,
     pub(crate) llm_fail_open: bool,
     pub(crate) chains: HashMap<String, ChainConfig>,
+    /// Pre-computed step-name-to-index maps for each chain config, built once at
+    /// gateway construction time to avoid repeated `HashMap` allocations during
+    /// chain advancement.
+    pub(crate) chain_step_indices: HashMap<String, HashMap<String, usize>>,
     pub(crate) completed_chain_ttl: Option<Duration>,
     pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
     pub(crate) default_timezone: Option<chrono_tz::Tz>,
@@ -1414,6 +1418,18 @@ impl Gateway {
             .timeout_seconds
             .map(|secs| now + chrono::Duration::seconds(secs as i64));
 
+        // Validate chain configuration if it uses branching.
+        if chain_config.has_branches() {
+            let validation_errors = chain_config.validate();
+            if !validation_errors.is_empty() {
+                return Err(GatewayError::ChainError(format!(
+                    "invalid chain configuration '{}': {}",
+                    chain_name,
+                    validation_errors.join("; ")
+                )));
+            }
+        }
+
         let chain_state = ChainState {
             chain_id: chain_id.clone(),
             chain_name: chain_name.to_owned(),
@@ -1429,6 +1445,7 @@ impl Gateway {
             tenant: action.tenant.to_string(),
             cancel_reason: None,
             cancelled_by: None,
+            execution_path: vec![first_step.clone()],
         };
 
         // Persist chain state.
@@ -1550,6 +1567,13 @@ impl Gateway {
             ))
         })?;
 
+        // Use the pre-computed step index map (built once at gateway construction).
+        let empty_index_map = HashMap::new();
+        let step_index_map = self
+            .chain_step_indices
+            .get(&chain_state.chain_name)
+            .unwrap_or(&empty_index_map);
+
         let step_idx = chain_state.current_step;
         let step_config = &chain_config.steps[step_idx];
 
@@ -1561,6 +1585,7 @@ impl Gateway {
             &chain_config.steps,
             chain_id,
             step_idx,
+            &chain_state.execution_path,
         );
 
         // Build and execute the synthetic action.
@@ -1573,11 +1598,13 @@ impl Gateway {
         );
 
         // Idempotency: ensure this step is not executed twice.
+        // Use step name in the dedup key to handle branching chains where
+        // step indices may not be sequential.
         let step_dedup_key = StateKey::new(
             namespace,
             tenant,
             KeyKind::Dedup,
-            format!("chain-step:{chain_id}:{step_idx}"),
+            format!("chain-step:{chain_id}:{}", step_config.name),
         );
         let dedup_ttl = chain_state.expires_at.map_or(
             Duration::from_secs(86400), // 24h default
@@ -1595,7 +1622,11 @@ impl Gateway {
             // Step was previously dispatched. Reload chain state to check progress.
             let already_advanced = if let Some(json) = self.state.get(&chain_key).await? {
                 serde_json::from_str::<ChainState>(&json)
-                    .map(|fresh| fresh.current_step > step_idx)
+                    .map(|fresh| {
+                        // For branching chains, check if the step result is already
+                        // recorded. For linear chains, the index check is sufficient.
+                        fresh.step_results[step_idx].is_some() || fresh.current_step != step_idx
+                    })
                     .unwrap_or(false)
             } else {
                 false
@@ -1663,15 +1694,43 @@ impl Gateway {
 
         match &outcome {
             ActionOutcome::Executed(resp) => {
-                chain_state.step_results[step_idx] = Some(StepResult {
+                let step_result = StepResult {
                     step_name: step_config.name.clone(),
                     success: true,
                     response_body: Some(resp.body.clone()),
                     error: None,
                     completed_at: now,
-                });
+                };
+                chain_state.step_results[step_idx] = Some(step_result.clone());
 
-                if step_idx + 1 >= chain_state.total_steps {
+                // Determine next step using branch evaluation.
+                let next_step_idx =
+                    Self::resolve_next_step(chain_config, step_idx, &step_result, step_index_map);
+
+                if let Some(next_idx) = next_step_idx {
+                    // Advance to the next step (may be non-sequential for branching).
+                    chain_state.current_step = next_idx;
+                    chain_state.updated_at = now;
+                    chain_state
+                        .execution_path
+                        .push(chain_config.steps[next_idx].name.clone());
+                    self.persist_chain_state(&chain_key, &chain_state, None)
+                        .await?;
+                    let ready_at = chain_config.steps[next_idx]
+                        .delay_seconds
+                        .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                    self.state.index_chain_ready(&pending_key, ready_at).await?;
+                    // step success, more steps
+                    self.emit_chain_step_audit(
+                        &chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_completed",
+                        &step_result,
+                        step_duration,
+                        Some(&step_payload),
+                    );
+                } else {
                     // Chain completed successfully.
                     chain_state.status = ChainStatus::Completed;
                     chain_state.updated_at = now;
@@ -1680,42 +1739,18 @@ impl Gateway {
                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                         .await?;
                     self.metrics.increment_chains_completed();
-                    // #3: step success, chain completed
-                    if let Some(ref sr) = chain_state.step_results[step_idx] {
-                        self.emit_chain_step_audit(
-                            &chain_state,
-                            step_config,
-                            step_idx,
-                            "chain_step_completed",
-                            sr,
-                            step_duration,
-                            Some(&step_payload),
-                        );
-                    }
+                    // step success, chain completed
+                    self.emit_chain_step_audit(
+                        &chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_completed",
+                        &step_result,
+                        step_duration,
+                        Some(&step_payload),
+                    );
                     self.emit_chain_terminal_audit(&chain_state, "chain_completed");
                     info!(chain_id = %chain_id, "chain completed successfully");
-                } else {
-                    // Advance to the next step.
-                    chain_state.current_step = step_idx + 1;
-                    chain_state.updated_at = now;
-                    self.persist_chain_state(&chain_key, &chain_state, None)
-                        .await?;
-                    let ready_at = chain_config.steps[step_idx + 1]
-                        .delay_seconds
-                        .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
-                    self.state.index_chain_ready(&pending_key, ready_at).await?;
-                    // #4: step success, more steps
-                    if let Some(ref sr) = chain_state.step_results[step_idx] {
-                        self.emit_chain_step_audit(
-                            &chain_state,
-                            step_config,
-                            step_idx,
-                            "chain_step_completed",
-                            sr,
-                            step_duration,
-                            Some(&step_payload),
-                        );
-                    }
                 }
             }
             ActionOutcome::Failed(err) => {
@@ -1765,7 +1800,41 @@ impl Gateway {
                         );
                     }
                     acteon_core::chain::StepFailurePolicy::Skip => {
-                        if step_idx + 1 >= chain_state.total_steps {
+                        // For skip, also evaluate branch conditions (a failed
+                        // step may branch to a recovery step).
+                        let skip_result = chain_state.step_results[step_idx]
+                            .as_ref()
+                            .expect("step result was just set");
+                        let next_step_idx = Self::resolve_next_step(
+                            chain_config,
+                            step_idx,
+                            skip_result,
+                            step_index_map,
+                        );
+
+                        if let Some(next_idx) = next_step_idx {
+                            chain_state.current_step = next_idx;
+                            chain_state.updated_at = now;
+                            chain_state
+                                .execution_path
+                                .push(chain_config.steps[next_idx].name.clone());
+                            self.persist_chain_state(&chain_key, &chain_state, None)
+                                .await?;
+                            let ready_at = chain_config.steps[next_idx]
+                                .delay_seconds
+                                .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                            self.state.index_chain_ready(&pending_key, ready_at).await?;
+                            // step failed, Skip, more steps
+                            self.emit_chain_step_audit(
+                                &chain_state,
+                                step_config,
+                                step_idx,
+                                "chain_step_skipped",
+                                skip_result,
+                                step_duration,
+                                Some(&step_payload),
+                            );
+                        } else {
                             chain_state.status = ChainStatus::Completed;
                             chain_state.updated_at = now;
                             self.persist_chain_state(
@@ -1777,40 +1846,17 @@ impl Gateway {
                             self.cleanup_pending_chain(namespace, tenant, chain_id)
                                 .await?;
                             self.metrics.increment_chains_completed();
-                            // #6: step failed, Skip, chain completed
-                            if let Some(ref sr) = chain_state.step_results[step_idx] {
-                                self.emit_chain_step_audit(
-                                    &chain_state,
-                                    step_config,
-                                    step_idx,
-                                    "chain_step_skipped",
-                                    sr,
-                                    step_duration,
-                                    Some(&step_payload),
-                                );
-                            }
+                            // step failed, Skip, chain completed
+                            self.emit_chain_step_audit(
+                                &chain_state,
+                                step_config,
+                                step_idx,
+                                "chain_step_skipped",
+                                skip_result,
+                                step_duration,
+                                Some(&step_payload),
+                            );
                             self.emit_chain_terminal_audit(&chain_state, "chain_completed");
-                        } else {
-                            chain_state.current_step = step_idx + 1;
-                            chain_state.updated_at = now;
-                            self.persist_chain_state(&chain_key, &chain_state, None)
-                                .await?;
-                            let ready_at = chain_config.steps[step_idx + 1]
-                                .delay_seconds
-                                .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
-                            self.state.index_chain_ready(&pending_key, ready_at).await?;
-                            // #7: step failed, Skip, more steps
-                            if let Some(ref sr) = chain_state.step_results[step_idx] {
-                                self.emit_chain_step_audit(
-                                    &chain_state,
-                                    step_config,
-                                    step_idx,
-                                    "chain_step_skipped",
-                                    sr,
-                                    step_duration,
-                                    Some(&step_payload),
-                                );
-                            }
                         }
                     }
                     acteon_core::chain::StepFailurePolicy::Dlq => {
@@ -1886,6 +1932,51 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// Determine the next step index after a step completes, considering branch
+    /// conditions on the completed step.
+    ///
+    /// Returns `Some(index)` for the next step to execute, or `None` if the
+    /// chain should complete (no more steps).
+    fn resolve_next_step(
+        chain_config: &ChainConfig,
+        step_idx: usize,
+        step_result: &StepResult,
+        step_index_map: &HashMap<String, usize>,
+    ) -> Option<usize> {
+        let step_config = &chain_config.steps[step_idx];
+
+        // If the step has branches, evaluate them.
+        if step_config.has_branches() {
+            // Evaluate branch conditions in order; first match wins.
+            for branch in &step_config.branches {
+                if branch.evaluate(step_result) {
+                    return step_index_map.get(&branch.target).copied();
+                }
+            }
+
+            // No branch matched — use default_next if set.
+            if let Some(ref default_next) = step_config.default_next {
+                return step_index_map.get(default_next).copied();
+            }
+
+            // Branches were defined but none matched and no default_next —
+            // fall through to sequential advancement.
+            debug!(
+                step = step_config.name,
+                "branch conditions defined but none matched and no default_next; \
+                 falling through to sequential advancement"
+            );
+        }
+
+        // Fall through to sequential advancement.
+        let next = step_idx + 1;
+        if next < chain_config.steps.len() {
+            Some(next)
+        } else {
+            None
+        }
     }
 
     /// Persist chain state to the state store.
@@ -2023,7 +2114,7 @@ impl Gateway {
                 ChainStatus::TimedOut => "timed_out",
             };
 
-            let outcome_details = serde_json::json!({
+            let mut outcome_details = serde_json::json!({
                 "chain_name": chain_state.chain_name,
                 "total_steps": chain_state.total_steps,
                 "completed_steps": chain_state.step_results.iter().filter(|r| r.is_some()).count(),
@@ -2033,6 +2124,9 @@ impl Gateway {
                 "cancelled_by": chain_state.cancelled_by,
                 "step_results": step_results_json,
             });
+            if !chain_state.execution_path.is_empty() {
+                outcome_details["execution_path"] = serde_json::json!(chain_state.execution_path);
+            }
 
             #[allow(clippy::cast_possible_wrap)]
             let expires_at = self
@@ -5284,5 +5378,367 @@ mod tests {
             }
         }
         assert!(saw_lagged, "slow subscriber should experience lagged error");
+    }
+
+    // -- resolve_next_step tests -----------------------------------------------
+
+    mod resolve_next_step_tests {
+        use std::collections::HashMap;
+
+        use acteon_core::chain::{
+            BranchCondition, BranchOperator, ChainConfig, ChainStepConfig, StepResult,
+        };
+        use chrono::Utc;
+
+        use crate::gateway::Gateway;
+
+        fn make_step_result(success: bool, body: Option<serde_json::Value>) -> StepResult {
+            StepResult {
+                step_name: "test".into(),
+                success,
+                response_body: body,
+                error: None,
+                completed_at: Utc::now(),
+            }
+        }
+
+        /// Helper to build the step index map from a config (mirrors the cached
+        /// map that `Gateway::build()` pre-computes).
+        fn index_map(config: &ChainConfig) -> HashMap<String, usize> {
+            config.step_index_map()
+        }
+
+        #[test]
+        fn linear_chain_returns_next_sequential_index() {
+            let config = ChainConfig::new("linear")
+                .with_step(ChainStepConfig::new("a", "p", "t", serde_json::json!({})))
+                .with_step(ChainStepConfig::new("b", "p", "t", serde_json::json!({})))
+                .with_step(ChainStepConfig::new("c", "p", "t", serde_json::json!({})));
+            let result = make_step_result(true, None);
+            let map = index_map(&config);
+
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result, &map),
+                Some(1)
+            );
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 1, &result, &map),
+                Some(2)
+            );
+        }
+
+        #[test]
+        fn branch_condition_matches_returns_target_index() {
+            let config = ChainConfig::new("branching")
+                .with_step(
+                    ChainStepConfig::new("check", "p", "t", serde_json::json!({})).with_branch(
+                        BranchCondition::new(
+                            "success",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!(true)),
+                            "handle_success",
+                        ),
+                    ),
+                )
+                .with_step(ChainStepConfig::new(
+                    "handle_failure",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "handle_success",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ));
+
+            let result = make_step_result(true, None);
+            let map = index_map(&config);
+            // Branch matches success==true, so target is "handle_success" at index 2.
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result, &map),
+                Some(2)
+            );
+        }
+
+        #[test]
+        fn multiple_branches_first_match_wins() {
+            let config = ChainConfig::new("multi-branch")
+                .with_step(
+                    ChainStepConfig::new("check", "p", "t", serde_json::json!({}))
+                        .with_branch(BranchCondition::new(
+                            "body.status",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!("critical")),
+                            "escalate",
+                        ))
+                        .with_branch(BranchCondition::new(
+                            "body.status",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!("warning")),
+                            "warn",
+                        ))
+                        .with_branch(BranchCondition::new(
+                            "body.status",
+                            BranchOperator::Exists,
+                            None,
+                            "log",
+                        )),
+                )
+                .with_step(ChainStepConfig::new(
+                    "escalate",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "warn",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new("log", "p", "t", serde_json::json!({})));
+
+            let map = index_map(&config);
+            // status is "warning" — first branch (critical) does NOT match,
+            // second branch (warning) matches, so target is "warn" at index 2.
+            let result = make_step_result(true, Some(serde_json::json!({"status": "warning"})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result, &map),
+                Some(2)
+            );
+
+            // status is "info" — no exact match, but "exists" matches, so "log" at index 3.
+            let result_info = make_step_result(true, Some(serde_json::json!({"status": "info"})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_info, &map),
+                Some(3)
+            );
+        }
+
+        #[test]
+        fn no_branch_matches_uses_default_next() {
+            let config = ChainConfig::new("default-next")
+                .with_step(
+                    ChainStepConfig::new("check", "p", "t", serde_json::json!({}))
+                        .with_branch(BranchCondition::new(
+                            "body.status",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!("critical")),
+                            "escalate",
+                        ))
+                        .with_default_next("fallback"),
+                )
+                .with_step(ChainStepConfig::new(
+                    "escalate",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "fallback",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ));
+
+            let map = index_map(&config);
+            // status is "ok" — branch does not match, so default_next = "fallback" at index 2.
+            let result = make_step_result(true, Some(serde_json::json!({"status": "ok"})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result, &map),
+                Some(2)
+            );
+        }
+
+        #[test]
+        fn no_branch_matches_no_default_next_falls_through_to_sequential() {
+            let config = ChainConfig::new("no-default")
+                .with_step(
+                    ChainStepConfig::new("check", "p", "t", serde_json::json!({})).with_branch(
+                        BranchCondition::new(
+                            "body.status",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!("critical")),
+                            "escalate",
+                        ),
+                    ),
+                )
+                .with_step(ChainStepConfig::new(
+                    "next_sequential",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "escalate",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ));
+
+            let map = index_map(&config);
+            // No branch matches and no default_next — falls through to sequential (index 1).
+            let result = make_step_result(true, Some(serde_json::json!({"status": "ok"})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result, &map),
+                Some(1)
+            );
+        }
+
+        #[test]
+        fn final_step_no_branches_returns_none() {
+            let config = ChainConfig::new("linear")
+                .with_step(ChainStepConfig::new("a", "p", "t", serde_json::json!({})))
+                .with_step(ChainStepConfig::new("b", "p", "t", serde_json::json!({})));
+
+            let result = make_step_result(true, None);
+            let map = index_map(&config);
+            // At the last step (index 1), sequential next would be 2 which is out of bounds.
+            assert_eq!(Gateway::resolve_next_step(&config, 1, &result, &map), None);
+        }
+
+        #[test]
+        fn final_step_with_branch_to_earlier_step_returns_target() {
+            let config = ChainConfig::new("branch-back")
+                .with_step(ChainStepConfig::new(
+                    "start",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(
+                    ChainStepConfig::new("end", "p", "t", serde_json::json!({})).with_branch(
+                        BranchCondition::new(
+                            "success",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!(true)),
+                            "start",
+                        ),
+                    ),
+                );
+
+            let result = make_step_result(true, None);
+            let map = index_map(&config);
+            // At the last step, branch matches → jumps back to "start" at index 0.
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 1, &result, &map),
+                Some(0)
+            );
+        }
+
+        #[test]
+        fn branch_with_success_true_evaluates_correctly() {
+            let config = ChainConfig::new("success-branch")
+                .with_step(
+                    ChainStepConfig::new("check", "p", "t", serde_json::json!({}))
+                        .with_branch(BranchCondition::new(
+                            "success",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!(true)),
+                            "ok_path",
+                        ))
+                        .with_branch(BranchCondition::new(
+                            "success",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!(false)),
+                            "err_path",
+                        )),
+                )
+                .with_step(ChainStepConfig::new(
+                    "ok_path",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "err_path",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ));
+
+            let map = index_map(&config);
+            let success_result = make_step_result(true, None);
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &success_result, &map),
+                Some(1),
+                "success=true should route to ok_path"
+            );
+
+            let failure_result = make_step_result(false, None);
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &failure_result, &map),
+                Some(2),
+                "success=false should route to err_path"
+            );
+        }
+
+        #[test]
+        fn branch_with_body_field_condition_evaluates_correctly() {
+            let config = ChainConfig::new("body-branch")
+                .with_step(
+                    ChainStepConfig::new("api_call", "p", "t", serde_json::json!({}))
+                        .with_branch(BranchCondition::new(
+                            "body.result.code",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!(200)),
+                            "process",
+                        ))
+                        .with_branch(BranchCondition::new(
+                            "body.result.code",
+                            BranchOperator::Eq,
+                            Some(serde_json::json!(404)),
+                            "not_found",
+                        ))
+                        .with_default_next("error_handler"),
+                )
+                .with_step(ChainStepConfig::new(
+                    "process",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "not_found",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "error_handler",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ));
+
+            let map = index_map(&config);
+            let result_200 = make_step_result(
+                true,
+                Some(serde_json::json!({"result": {"code": 200, "data": "ok"}})),
+            );
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_200, &map),
+                Some(1),
+                "code 200 should route to process"
+            );
+
+            let result_404 =
+                make_step_result(true, Some(serde_json::json!({"result": {"code": 404}})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_404, &map),
+                Some(2),
+                "code 404 should route to not_found"
+            );
+
+            let result_500 =
+                make_step_result(true, Some(serde_json::json!({"result": {"code": 500}})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_500, &map),
+                Some(3),
+                "code 500 should fall through to default_next error_handler"
+            );
+        }
     }
 }
