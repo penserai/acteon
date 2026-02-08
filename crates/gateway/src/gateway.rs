@@ -366,7 +366,7 @@ impl Gateway {
         //    headers, and HMAC-signed approval URLs before broadcasting.
         if !dry_run {
             let stream_event = StreamEvent {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: uuid::Uuid::now_v7().to_string(),
                 timestamp: Utc::now(),
                 event_type: StreamEventType::ActionDispatched {
                     outcome: sanitize_outcome(&outcome),
