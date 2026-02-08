@@ -11,6 +11,9 @@ use super::approvals::{
 use super::chains::{
     ChainCancelRequest, ChainDetailResponse, ChainStepStatus, ChainSummary, ListChainsResponse,
 };
+use super::circuit_breakers::{
+    CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
+};
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
 use super::embeddings::{SimilarityRequest, SimilarityResponse};
 use super::events::{
@@ -41,7 +44,8 @@ use super::schemas::{
         (name = "Groups", description = "Event group management for batched notifications"),
         (name = "Approvals", description = "Human-in-the-loop approval workflow"),
         (name = "Chains", description = "Task chain orchestration"),
-        (name = "Embeddings", description = "Embedding similarity testing")
+        (name = "Embeddings", description = "Embedding similarity testing"),
+        (name = "Circuit Breakers", description = "Circuit breaker admin operations")
     ),
     paths(
         super::health::health,
@@ -71,6 +75,9 @@ use super::schemas::{
         super::chains::get_chain,
         super::chains::cancel_chain,
         super::embeddings::similarity,
+        super::circuit_breakers::list_circuit_breakers,
+        super::circuit_breakers::trip_circuit_breaker,
+        super::circuit_breakers::reset_circuit_breaker,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -87,6 +94,7 @@ use super::schemas::{
         ChainSummary, ListChainsResponse, ChainDetailResponse, ChainStepStatus, ChainCancelRequest,
         SimilarityRequest, SimilarityResponse,
         EmbeddingMetricsResponse,
+        CircuitBreakerStatus, ListCircuitBreakersResponse, CircuitBreakerActionResponse,
     ))
 )]
 pub struct ApiDoc;

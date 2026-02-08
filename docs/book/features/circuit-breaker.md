@@ -339,6 +339,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ```
     It demonstrates basic circuit opening, fallback routing, full recovery lifecycle, independent per-provider circuits, and multi-level fallback chains.
 
+## Admin API
+
+Operators can manually trip and reset circuit breakers via the HTTP admin API without restarting the gateway. This is useful during incidents when you need to immediately isolate a failing provider or restore traffic after a manual fix.
+
+All admin endpoints require authentication with the **admin** or **operator** role (`CircuitBreakerManage` permission).
+
+### List Circuit Breakers
+
+```
+GET /admin/circuit-breakers
+```
+
+Returns all registered circuit breakers with their **distributed** state (read from the shared state store, not a local cache) and configuration.
+
+```json
+{
+  "circuit_breakers": [
+    {
+      "provider": "email",
+      "state": "closed",
+      "failure_threshold": 5,
+      "success_threshold": 2,
+      "recovery_timeout_seconds": 60,
+      "fallback_provider": "webhook"
+    },
+    {
+      "provider": "webhook",
+      "state": "open",
+      "failure_threshold": 5,
+      "success_threshold": 2,
+      "recovery_timeout_seconds": 60
+    }
+  ]
+}
+```
+
+### Trip (Force Open)
+
+```
+POST /admin/circuit-breakers/{provider}/trip
+```
+
+Force-opens the circuit for a provider, immediately rejecting all requests (or rerouting to its fallback). The `last_failure_time` is set to now, so the normal `recovery_timeout` applies from this point forward.
+
+```bash
+curl -X POST http://localhost:8080/admin/circuit-breakers/email/trip \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "provider": "email",
+  "state": "open",
+  "message": "circuit breaker tripped"
+}
+```
+
+### Reset (Force Close)
+
+```
+POST /admin/circuit-breakers/{provider}/reset
+```
+
+Force-closes the circuit, restoring normal request flow. All failure counters are cleared.
+
+```bash
+curl -X POST http://localhost:8080/admin/circuit-breakers/email/reset \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "provider": "email",
+  "state": "closed",
+  "message": "circuit breaker reset"
+}
+```
+
+### Rust API
+
+The `trip()` and `reset()` methods are also available programmatically:
+
+```rust
+if let Some(registry) = gateway.circuit_breakers() {
+    if let Some(cb) = registry.get("email") {
+        cb.trip().await;   // Force open
+        cb.reset().await;  // Force close
+    }
+}
+```
+
 ## Design Notes
 
 - Only **retryable errors** (connection failures, timeouts) count toward the failure threshold. Non-retryable errors like authentication failures or validation errors do not trip the circuit.
