@@ -99,7 +99,7 @@ nom = "7"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -160,6 +160,7 @@ json-patch = "3"
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # OpenAPI / Swagger
 utoipa = { version = "5", features = ["chrono"] }

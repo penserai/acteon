@@ -58,6 +58,11 @@ Track event lifecycle through configurable states with automatic timeouts.
 Automatic provider health tracking — stop requests to failing providers, reroute to fallbacks, and recover gracefully.
 </div>
 
+<div class="card" markdown>
+### [Event Streaming](event-streaming.md)
+Real-time SSE event stream for dashboards and monitoring — subscribe to action outcomes as they happen.
+</div>
+
 </div>
 
 ## Advanced Features
