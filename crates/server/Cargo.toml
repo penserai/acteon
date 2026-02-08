@@ -38,7 +38,7 @@ acteon-state-dynamodb = { workspace = true, optional = true }
 acteon-state-clickhouse = { workspace = true, optional = true }
 acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
-acteon-provider = { workspace = true }
+acteon-provider = { workspace = true, features = ["webhook"] }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }

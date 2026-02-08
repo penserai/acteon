@@ -44,6 +44,41 @@ pub struct ActeonConfig {
     /// OpenTelemetry distributed tracing configuration.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Provider definitions.
+    ///
+    /// Each entry registers a named provider that actions can be routed to.
+    /// Supported types: `"webhook"` (HTTP POST) and `"log"` (logs and returns
+    /// success).
+    #[serde(default)]
+    pub providers: Vec<ProviderConfig>,
+}
+
+/// Configuration for a single provider instance.
+///
+/// # Example
+///
+/// ```toml
+/// [[providers]]
+/// name = "email"
+/// type = "webhook"
+/// url = "http://localhost:9999/webhook"
+///
+/// [[providers]]
+/// name = "slack"
+/// type = "log"
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct ProviderConfig {
+    /// Unique name for this provider.
+    pub name: String,
+    /// Provider type: `"webhook"` or `"log"`.
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    /// Target URL (required for `"webhook"` type).
+    pub url: Option<String>,
+    /// Additional HTTP headers (used by `"webhook"` type).
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 /// Configuration for the state store backend.
@@ -923,5 +958,47 @@ mod tests {
         let config: ActeonConfig = toml::from_str("").unwrap();
         assert!(!config.telemetry.enabled);
         assert_eq!(config.telemetry.endpoint, "http://localhost:4317");
+    }
+
+    #[test]
+    fn providers_default_empty() {
+        let config: ActeonConfig = toml::from_str("").unwrap();
+        assert!(config.providers.is_empty());
+    }
+
+    #[test]
+    fn providers_parsed_from_toml() {
+        let toml = r#"
+            [[providers]]
+            name = "email"
+            type = "webhook"
+            url = "http://localhost:9999/webhook"
+
+            [providers.headers]
+            Authorization = "Bearer token"
+
+            [[providers]]
+            name = "slack"
+            type = "log"
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.providers.len(), 2);
+
+        assert_eq!(config.providers[0].name, "email");
+        assert_eq!(config.providers[0].provider_type, "webhook");
+        assert_eq!(
+            config.providers[0].url.as_deref(),
+            Some("http://localhost:9999/webhook")
+        );
+        assert_eq!(
+            config.providers[0].headers.get("Authorization").unwrap(),
+            "Bearer token"
+        );
+
+        assert_eq!(config.providers[1].name, "slack");
+        assert_eq!(config.providers[1].provider_type, "log");
+        assert!(config.providers[1].url.is_none());
+        assert!(config.providers[1].headers.is_empty());
     }
 }

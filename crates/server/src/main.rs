@@ -401,6 +401,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Register providers from config.
+    for provider_cfg in &config.providers {
+        let provider: std::sync::Arc<dyn acteon_provider::DynProvider> =
+            match provider_cfg.provider_type.as_str() {
+                "webhook" => {
+                    let url = provider_cfg.url.as_deref().ok_or_else(|| {
+                        format!(
+                            "provider '{}': webhook type requires a 'url' field",
+                            provider_cfg.name
+                        )
+                    })?;
+                    let mut wp =
+                        acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url);
+                    if !provider_cfg.headers.is_empty() {
+                        wp = wp.with_headers(provider_cfg.headers.clone());
+                    }
+                    std::sync::Arc::new(wp)
+                }
+                "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
+                other => {
+                    return Err(format!(
+                        "provider '{}': unknown type '{other}' (expected 'webhook' or 'log')",
+                        provider_cfg.name
+                    )
+                    .into());
+                }
+            };
+        builder = builder.provider(provider);
+    }
+    if !config.providers.is_empty() {
+        info!(
+            count = config.providers.len(),
+            "providers registered from config"
+        );
+    }
+
     let mut gateway = builder.build()?;
 
     if config.executor.dlq_enabled {

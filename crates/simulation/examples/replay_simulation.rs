@@ -4,7 +4,10 @@
 //! and replays selected actions to demonstrate the replay feature.
 //!
 //! Prerequisites:
-//!   # Start the server with audit enabled (e.g. with PostgreSQL)
+//!   # Start the server with the simulation config (log provider + audit)
+//!   cargo run -p acteon-server -- -c examples/simulation.toml
+//!
+//!   # Or with PostgreSQL for persistent audit
 //!   docker compose --profile postgres up -d
 //!   cargo run -p acteon-server -- -c examples/postgres.toml
 //!
