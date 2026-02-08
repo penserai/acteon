@@ -19,9 +19,11 @@ public class ActionOutcome {
     private String verdict;
     private String matchedRule;
     private String wouldBeProvider;
+    private String actionId;
+    private String scheduledFor;
 
     public enum OutcomeType {
-        EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN
+        EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN, SCHEDULED
     }
 
     // Getters and setters
@@ -55,6 +57,12 @@ public class ActionOutcome {
     public String getWouldBeProvider() { return wouldBeProvider; }
     public void setWouldBeProvider(String wouldBeProvider) { this.wouldBeProvider = wouldBeProvider; }
 
+    public String getActionId() { return actionId; }
+    public void setActionId(String actionId) { this.actionId = actionId; }
+
+    public String getScheduledFor() { return scheduledFor; }
+    public void setScheduledFor(String scheduledFor) { this.scheduledFor = scheduledFor; }
+
     public boolean isExecuted() { return type == OutcomeType.EXECUTED; }
     public boolean isDeduplicated() { return type == OutcomeType.DEDUPLICATED; }
     public boolean isSuppressed() { return type == OutcomeType.SUPPRESSED; }
@@ -62,6 +70,7 @@ public class ActionOutcome {
     public boolean isThrottled() { return type == OutcomeType.THROTTLED; }
     public boolean isFailed() { return type == OutcomeType.FAILED; }
     public boolean isDryRun() { return type == OutcomeType.DRY_RUN; }
+    public boolean isScheduled() { return type == OutcomeType.SCHEDULED; }
 
     /**
      * Parse an ActionOutcome from a raw JSON string.
@@ -133,6 +142,11 @@ public class ActionOutcome {
             outcome.verdict = (String) dryRun.get("verdict");
             outcome.matchedRule = (String) dryRun.get("matched_rule");
             outcome.wouldBeProvider = (String) dryRun.get("would_be_provider");
+        } else if (data.containsKey("Scheduled")) {
+            outcome.type = OutcomeType.SCHEDULED;
+            Map<String, Object> scheduled = (Map<String, Object>) data.get("Scheduled");
+            outcome.actionId = (String) scheduled.get("action_id");
+            outcome.scheduledFor = (String) scheduled.get("scheduled_for");
         } else {
             outcome.type = OutcomeType.FAILED;
             outcome.error = new ActionError("UNKNOWN", "Unknown outcome", false, 0);

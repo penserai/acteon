@@ -296,6 +296,14 @@ action:
   chain_name: "pipeline-name"         # Required (references config)
 ```
 
+### Schedule
+
+```yaml
+action:
+  type: schedule
+  delay_seconds: 3600                   # Required (1–604800)
+```
+
 ### LLM Guardrail
 
 ```yaml
