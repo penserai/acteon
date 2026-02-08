@@ -1276,10 +1276,11 @@ impl Gateway {
     /// Grace period added to the TTL of stored scheduled action data.
     ///
     /// The data TTL is `delay_seconds + GRACE_SECONDS` so that the background
-    /// processor has time to pick it up even if slightly delayed. If the data
+    /// processor has time to pick it up even if the processor is down for an
+    /// extended period. Set to 24 hours to survive longer outages. If the data
     /// expires before dispatch, the action is silently dropped (preferable to
     /// permanent orphaned state).
-    const SCHEDULE_GRACE_SECONDS: u64 = 300;
+    const SCHEDULE_GRACE_SECONDS: u64 = 86_400;
 
     /// Handle the schedule verdict: store the action for delayed execution.
     ///

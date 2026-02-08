@@ -601,8 +601,12 @@ impl BackgroundProcessor {
                 continue;
             };
 
-            // Delete the scheduled action data and pending key.
-            self.state.delete(&sched_key).await?;
+            // Clean up the pending/index keys so the background processor
+            // won't re-poll this action. The action data key is intentionally
+            // kept alive until the consumer confirms successful dispatch
+            // (at-least-once semantics). If the server crashes between here
+            // and consumer cleanup, the claim key expires (60s TTL) and a
+            // subsequent poll will re-deliver the action.
             let pending_key =
                 StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
             self.state.delete(&pending_key).await?;
@@ -979,11 +983,19 @@ mod tests {
         assert_eq!(event.tenant, tenant);
         assert_eq!(event.action.action_type, "send_email");
 
-        // Verify cleanup: scheduled action data should be deleted.
+        // With at-least-once delivery, action data is preserved until the
+        // consumer deletes it after successful dispatch. The background
+        // processor only removes the pending index and timeout entry.
         let data = state.get(&sched_key).await.unwrap();
         assert!(
-            data.is_none(),
-            "scheduled action data should be cleaned up after dispatch"
+            data.is_some(),
+            "scheduled action data should be retained for consumer cleanup (at-least-once)"
+        );
+        // Pending index key should be cleaned up by the processor.
+        let pending_data = state.get(&pending_key).await.unwrap();
+        assert!(
+            pending_data.is_none(),
+            "pending index should be cleaned up after dispatch"
         );
 
         // Shutdown.

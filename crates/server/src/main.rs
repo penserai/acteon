@@ -815,7 +815,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Spawn consumer for scheduled action events.
         // Dispatches the action through the gateway and emits an SSE event.
+        // The action data key is deleted only after successful dispatch
+        // (at-least-once delivery semantics).
         let scheduled_gateway = Arc::clone(&gateway);
+        let scheduled_store = Arc::clone(&store);
         tokio::spawn(async move {
             while let Some(event) = scheduled_action_rx.recv().await {
                 info!(
@@ -856,6 +859,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ?outcome,
                             "scheduled action dispatched"
                         );
+                        // Delete action data only after successful dispatch
+                        // (at-least-once delivery). On crash before this point,
+                        // the claim key expires and the action is re-delivered.
+                        let sched_key = acteon_state::StateKey::new(
+                            event.namespace.as_str(),
+                            event.tenant.as_str(),
+                            acteon_state::KeyKind::ScheduledAction,
+                            &event.action_id,
+                        );
+                        if let Err(e) = scheduled_store.delete(&sched_key).await {
+                            tracing::warn!(
+                                action_id = %event.action_id,
+                                error = %e,
+                                "failed to clean up scheduled action data after dispatch"
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::error!(
