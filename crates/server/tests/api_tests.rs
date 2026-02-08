@@ -83,6 +83,7 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
         rate_limiter: None,
         embedding: None,
         embedding_metrics: None,
+        connection_registry: None,
     }
 }
 
@@ -807,6 +808,7 @@ fn build_approval_state_with_providers(
         rate_limiter: None,
         embedding: None,
         embedding_metrics: None,
+        connection_registry: None,
     }
 }
 

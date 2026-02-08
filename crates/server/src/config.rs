@@ -146,6 +146,11 @@ pub struct ServerConfig {
     /// during verification to support key rotation.
     /// Takes precedence over `approval_secret` when set.
     pub approval_keys: Option<Vec<ApprovalKeyConfig>>,
+    /// Maximum concurrent SSE connections per tenant (default: 10).
+    ///
+    /// Limits resource exhaustion from long-lived SSE connections. Each
+    /// tenant is tracked independently.
+    pub max_sse_connections_per_tenant: Option<usize>,
 }
 
 impl Default for ServerConfig {
@@ -157,6 +162,7 @@ impl Default for ServerConfig {
             external_url: None,
             approval_secret: None,
             approval_keys: None,
+            max_sse_connections_per_tenant: None,
         }
     }
 }

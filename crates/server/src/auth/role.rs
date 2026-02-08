@@ -28,7 +28,7 @@ impl Role {
             Permission::Dispatch | Permission::RulesManage | Permission::CircuitBreakerManage => {
                 matches!(self, Self::Admin | Self::Operator)
             }
-            Permission::AuditRead | Permission::RulesRead => true,
+            Permission::AuditRead | Permission::RulesRead | Permission::StreamSubscribe => true,
         }
     }
 }
@@ -51,4 +51,5 @@ pub enum Permission {
     RulesManage,
     RulesRead,
     CircuitBreakerManage,
+    StreamSubscribe,
 }

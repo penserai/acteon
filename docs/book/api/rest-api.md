@@ -392,6 +392,67 @@ Compute cosine similarity between a text and a topic using the configured embedd
 
 ---
 
+## Event Streaming
+
+### `GET /v1/stream`
+
+Subscribe to real-time action outcomes via Server-Sent Events (SSE).
+
+**Required permission:** `StreamSubscribe` (admin, operator, or viewer role).
+
+**Query Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Filter by namespace |
+| `action_type` | string | Filter by action type |
+| `outcome` | string | Filter by outcome category (`executed`, `suppressed`, `failed`, `throttled`, `rerouted`, `deduplicated`) |
+| `event_type` | string | Filter by event type (`action_dispatched`, `group_flushed`, `timeout`, `chain_advanced`, `approval_required`) |
+
+**SSE Event Format:**
+
+```
+event: action_dispatched
+id: 550e8400-e29b-41d4-a716-446655440000
+data: {"id":"550e8400-...","timestamp":"2026-02-07T14:30:00Z","type":"action_dispatched","outcome":{...},"provider":"email","namespace":"alerts","tenant":"acme","action_type":"send_email","action_id":"661f9511-..."}
+```
+
+**SSE Event Types:**
+
+| `event:` tag | Description |
+|-------------|-------------|
+| `action_dispatched` | Action processed through the dispatch pipeline |
+| `group_flushed` | Batch of grouped events flushed |
+| `timeout` | State machine timeout fired |
+| `chain_advanced` | Task chain step advanced |
+| `approval_required` | Action requires human approval |
+| `lagged` | Client fell behind, events were skipped |
+
+**Security:**
+- Events are tenant-isolated (scoped callers only see their tenants)
+- `ProviderResponse` bodies and headers are sanitized (replaced with `null`/empty)
+- Approval URLs are redacted to `[redacted]`
+
+**Error Responses:**
+
+| Status | Description |
+|--------|-------------|
+| `401` | Unauthorized |
+| `403` | Insufficient permissions (requires `StreamSubscribe`) |
+| `429` | Too many concurrent SSE connections for this tenant |
+| `503` | SSE streaming is not enabled |
+
+**Example:**
+
+```bash
+curl -N -H "Authorization: Bearer <token>" \
+  "http://localhost:8080/v1/stream?namespace=alerts&outcome=failed"
+```
+
+See [Event Streaming](../features/event-streaming.md) for full documentation.
+
+---
+
 ## Circuit Breaker Admin
 
 These endpoints require the **admin** or **operator** role.
@@ -522,5 +583,6 @@ Revoke the current JWT token.
 | `GET` | `/admin/circuit-breakers` | List circuit breakers |
 | `POST` | `/admin/circuit-breakers/{provider}/trip` | Force-open circuit breaker |
 | `POST` | `/admin/circuit-breakers/{provider}/reset` | Force-close circuit breaker |
+| `GET` | `/v1/stream` | SSE event stream |
 | `POST` | `/v1/auth/login` | Login |
 | `POST` | `/v1/auth/logout` | Logout |
