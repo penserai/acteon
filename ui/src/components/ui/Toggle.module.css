@@ -1,0 +1,31 @@
+@reference "../../index.css";
+
+
+.toggle {
+  @apply relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-150;
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-2;
+}
+
+.toggleUnchecked {
+  background: var(--border-input);
+}
+
+.toggleChecked {
+  @apply bg-primary-400;
+}
+
+.toggleDisabled {
+  @apply opacity-50 cursor-not-allowed;
+}
+
+.thumb {
+  @apply inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform duration-150;
+}
+
+.thumbUnchecked {
+  @apply translate-x-[3px];
+}
+
+.thumbChecked {
+  @apply translate-x-[18px];
+}

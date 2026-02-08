@@ -1,0 +1,72 @@
+@reference "../../index.css";
+
+
+.container {
+  @apply fixed top-4 right-4 z-[500] flex flex-col gap-2 w-96;
+}
+
+.toast {
+  @apply border border-l-4 rounded-lg shadow-lg p-4 flex gap-3;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.success {
+  @apply border-l-success-500;
+}
+
+.error {
+  @apply border-l-error-500;
+}
+
+.warning {
+  @apply border-l-warning-500;
+}
+
+.info {
+  @apply border-l-info-500;
+}
+
+.icon {
+  @apply shrink-0 mt-0.5;
+}
+
+.iconSuccess {
+  @apply h-5 w-5 text-success-500;
+}
+
+.iconError {
+  @apply h-5 w-5 text-error-500;
+}
+
+.iconWarning {
+  @apply h-5 w-5 text-warning-500;
+}
+
+.iconInfo {
+  @apply h-5 w-5 text-info-500;
+}
+
+.content {
+  @apply flex-1 min-w-0;
+}
+
+.title {
+  @apply text-sm font-medium;
+  color: var(--text-primary);
+}
+
+.description {
+  @apply text-xs text-gray-500 mt-0.5;
+}
+
+.closeButton {
+  @apply shrink-0 text-gray-400;
+  &:hover {
+    color: var(--hover-text);
+  }
+}
+
+.closeIcon {
+  @apply h-4 w-4;
+}

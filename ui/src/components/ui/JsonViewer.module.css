@@ -1,0 +1,78 @@
+@reference "../../index.css";
+
+
+.wrapper {
+  @apply relative;
+}
+
+/* Note: group/group-hover requires inline class, not @apply */
+.copyButton {
+  @apply absolute top-2 right-2 p-1.5 rounded-md text-gray-500 opacity-0 transition-opacity;
+  background: var(--bg-hover);
+  &:hover {
+    color: var(--text-secondary);
+  }
+}
+
+.copyIcon {
+  @apply h-3.5 w-3.5;
+}
+
+.null {
+  @apply text-gray-400 font-mono text-sm;
+}
+
+.boolean {
+  @apply text-info-500 font-mono text-sm;
+}
+
+.number {
+  @apply text-warning-500 font-mono text-sm;
+}
+
+.string {
+  @apply text-success-500 font-mono text-sm;
+}
+
+.emptyArray {
+  @apply font-mono text-sm text-gray-500;
+}
+
+.toggleButton {
+  @apply inline-flex items-center text-gray-500;
+  &:hover {
+    color: var(--text-secondary);
+  }
+}
+
+.chevron {
+  @apply h-3 w-3;
+}
+
+.bracketMono {
+  @apply font-mono text-sm;
+}
+
+.item {
+  @apply font-mono text-sm;
+}
+
+.comma {
+  @apply text-gray-400;
+}
+
+.emptyObject {
+  @apply font-mono text-sm text-gray-500;
+}
+
+.key {
+  @apply text-primary-300;
+}
+
+.colon {
+  @apply text-gray-400;
+}
+
+.fallback {
+  @apply font-mono text-sm;
+}

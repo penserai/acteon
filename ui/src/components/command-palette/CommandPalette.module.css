@@ -1,0 +1,65 @@
+@reference "../../index.css";
+
+
+.overlay {
+  @apply fixed inset-0 z-[600] flex items-start justify-center pt-[20vh];
+}
+
+.backdrop {
+  @apply absolute inset-0 bg-black/50 backdrop-blur-sm;
+}
+
+.dialog {
+  @apply relative w-full max-w-xl rounded-xl shadow-lg border overflow-hidden;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.inputWrapper {
+  @apply flex items-center gap-3 px-4 py-3 border-b;
+  border-color: var(--border-default);
+}
+
+.searchIcon {
+  @apply h-4 w-4 text-gray-400;
+}
+
+.input {
+  @apply flex-1 text-sm bg-transparent outline-none placeholder:text-gray-400;
+  color: var(--text-default);
+}
+
+.list {
+  @apply max-h-80 overflow-y-auto p-2;
+}
+
+.empty {
+  @apply py-6 text-center text-sm text-gray-500;
+}
+
+.group {
+  @apply mb-2;
+}
+
+.item {
+  @apply flex items-center gap-3 px-3 py-2 text-sm rounded-md cursor-pointer;
+  color: var(--text-secondary);
+  &[data-selected="true"] {
+    @apply bg-primary-50 text-primary-500;
+  }
+}
+.dark .item[data-selected="true"] {
+  background: rgb(66 84 219 / 0.1);
+}
+
+.itemIcon {
+  @apply h-4 w-4;
+}
+
+.itemLabel {
+  @apply flex-1;
+}
+
+.shortcut {
+  @apply text-xs text-gray-400 font-mono;
+}

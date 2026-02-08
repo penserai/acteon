@@ -16,6 +16,7 @@ use acteon_provider::{DynProvider, ProviderError};
 use acteon_rules::ir::expr::{BinaryOp, Expr};
 use acteon_rules::ir::rule::{Rule, RuleAction};
 use acteon_server::api::AppState;
+use acteon_server::config::ConfigSnapshot;
 use acteon_state::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 
@@ -84,6 +85,7 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        config: ConfigSnapshot::default(),
     }
 }
 
@@ -809,6 +811,7 @@ fn build_approval_state_with_providers(
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        config: ConfigSnapshot::default(),
     }
 }
 

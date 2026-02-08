@@ -11,6 +11,14 @@
 name = "email"
 type = "log"
 
+[[providers]]
+name = "slack"
+type = "log"
+
+[[providers]]
+name = "pagerduty"
+type = "log"
+
 [rules]
 directory = "examples/rules"
 
@@ -18,3 +26,9 @@ directory = "examples/rules"
 enabled = true
 backend = "memory"
 store_payload = true
+
+[circuit_breaker]
+enabled = true
+
+[background]
+enabled = true

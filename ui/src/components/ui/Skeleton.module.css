@@ -1,0 +1,37 @@
+@reference "../../index.css";
+
+
+.skeleton {
+  @apply rounded animate-pulse;
+  background: var(--bg-hover);
+}
+
+.tableWrapper {
+  @apply space-y-2;
+}
+
+.tableRow {
+  @apply flex gap-3;
+}
+
+.tableCell {
+  @apply h-8 flex-1;
+}
+
+.statCard {
+  @apply border rounded-lg p-4 space-y-2;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.statTitle {
+  @apply h-4 w-24;
+}
+
+.statValue {
+  @apply h-8 w-20;
+}
+
+.statFull {
+  @apply h-3 w-full;
+}

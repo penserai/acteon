@@ -1,0 +1,86 @@
+@reference "../index.css";
+
+.container {
+  @apply max-w-2xl;
+}
+
+.formCard {
+  @apply border rounded-lg p-6 space-y-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.formGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.textareaLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full h-40 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.errorText {
+  @apply text-xs text-error-500 mt-1;
+}
+
+.checkboxLabel {
+  @apply flex items-center gap-2 text-sm;
+}
+
+.checkbox {
+  @apply rounded border-gray-300 text-primary-400 focus:ring-primary-400;
+}
+
+.submitContainer {
+  @apply pt-2;
+}
+
+.resultCard {
+  @apply mt-6 border rounded-lg p-6;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.resultTitle {
+  @apply text-lg font-semibold mb-3;
+}
+
+.resultDetails {
+  @apply space-y-2 text-sm;
+}
+
+.resultRow {
+  @apply flex justify-between;
+}
+
+.resultLabel {
+  @apply text-gray-500;
+}
+
+.resultActionId {
+  @apply font-mono text-xs;
+}
+
+.resultDetailsSection {
+  @apply mt-3;
+}
+
+.resultDetailsLabel {
+  @apply text-sm text-gray-500;
+}
+
+.jsonViewerCard {
+  @apply mt-1 rounded-lg p-3;
+  background: var(--bg-surface-secondary);
+}
+
+.viewAuditContainer {
+  @apply mt-4;
+}

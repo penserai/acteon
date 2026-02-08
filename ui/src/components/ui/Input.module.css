@@ -1,0 +1,51 @@
+@reference "../../index.css";
+
+
+.wrapper {
+  @apply space-y-1;
+}
+
+.label {
+  @apply block text-sm font-medium;
+  color: var(--text-secondary);
+}
+
+.inputWrapper {
+  @apply relative;
+}
+
+.icon {
+  @apply absolute left-3 top-1/2 -translate-y-1/2 text-gray-400;
+}
+
+.input {
+  @apply w-full rounded-md border px-3 py-1.5 text-sm;
+  @apply placeholder:text-gray-400;
+  @apply transition-colors duration-150;
+  @apply focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  color: var(--text-default);
+  &:disabled {
+    @apply opacity-60;
+    background: var(--bg-surface-secondary);
+  }
+}
+
+.inputDefault {
+  border-color: var(--border-input);
+  &:hover {
+    border-color: var(--text-tertiary);
+  }
+}
+
+.inputError {
+  @apply border-error-500;
+}
+
+.inputWithIcon {
+  @apply pl-9;
+}
+
+.error {
+  @apply text-xs text-error-500;
+}

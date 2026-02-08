@@ -1,0 +1,226 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Neutral Scale */
+  --color-gray-0: #FFFFFF;
+  --color-gray-50: #F5F5F8;
+  --color-gray-100: #EBEBF0;
+  --color-gray-200: #D6D6E1;
+  --color-gray-300: #B4B4C7;
+  --color-gray-400: #8B8BA3;
+  --color-gray-500: #64647A;
+  --color-gray-600: #46464F;
+  --color-gray-700: #2E2E36;
+  --color-gray-800: #1E1E23;
+  --color-gray-900: #131316;
+  --color-gray-950: #0A0A0B;
+
+  /* Primary Brand */
+  --color-primary-50: #EEF0FF;
+  --color-primary-100: #D9DEFF;
+  --color-primary-200: #B3BEFF;
+  --color-primary-300: #8090FF;
+  --color-primary-400: #5C6FFF;
+  --color-primary-500: #4254DB;
+
+  /* Success */
+  --color-success-50: #ECFDF5;
+  --color-success-100: #D1FAE5;
+  --color-success-300: #6EE7B7;
+  --color-success-500: #10B981;
+  --color-success-700: #047857;
+
+  /* Error */
+  --color-error-50: #FEF2F2;
+  --color-error-100: #FEE2E2;
+  --color-error-300: #FCA5A5;
+  --color-error-500: #EF4444;
+  --color-error-700: #B91C1C;
+
+  /* Warning */
+  --color-warning-50: #FFFBEB;
+  --color-warning-100: #FEF3C7;
+  --color-warning-300: #FCD34D;
+  --color-warning-500: #F59E0B;
+  --color-warning-700: #B45309;
+
+  /* Info */
+  --color-info-50: #EFF6FF;
+  --color-info-100: #DBEAFE;
+  --color-info-300: #93C5FD;
+  --color-info-500: #3B82F6;
+  --color-info-700: #1D4ED8;
+
+  /* Pending */
+  --color-pending-50: #F5F3FF;
+  --color-pending-100: #EDE9FE;
+  --color-pending-300: #C4B5FD;
+  --color-pending-500: #8B5CF6;
+  --color-pending-700: #6D28D9;
+
+  /* Fonts */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  /* Font sizes */
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.375rem;
+  --text-md: 0.9375rem;
+  --text-md--line-height: 1.5rem;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.625rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.375rem;
+
+  /* Border Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.03);
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* ─── Semantic Design Tokens ─── */
+:root {
+  /* Backgrounds */
+  --bg-page: var(--color-gray-50);
+  --bg-surface: var(--color-gray-0);
+  --bg-surface-secondary: var(--color-gray-50);
+  --bg-hover: var(--color-gray-100);
+  --bg-active: var(--color-gray-100);
+  --bg-overlay: rgba(0, 0, 0, 0.5);
+  --bg-code: var(--color-gray-50);
+
+  /* Text */
+  --text-primary: var(--color-gray-950);
+  --text-heading: var(--color-gray-950);
+  --text-default: var(--color-gray-900);
+  --text-secondary: var(--color-gray-700);
+  --text-tertiary: var(--color-gray-600);
+  --text-muted: var(--color-gray-500);
+  --text-faint: var(--color-gray-400);
+  --text-inverted: var(--color-gray-50);
+  --text-separator: var(--color-gray-300);
+
+  /* Borders */
+  --border-default: var(--color-gray-200);
+  --border-strong: var(--color-gray-300);
+  --border-input: var(--color-gray-300);
+  --border-divider: var(--color-gray-200);
+
+  /* Interactive */
+  --hover-text: var(--color-gray-600);
+  --hover-bg: var(--color-gray-100);
+
+  /* Shadows */
+  --shadow-surface: var(--shadow-sm);
+  --shadow-elevated: var(--shadow-lg);
+
+  /* Progress/Meter */
+  --bg-meter-track: var(--color-gray-200);
+}
+
+.dark {
+  /* Backgrounds */
+  --bg-page: var(--color-gray-900);
+  --bg-surface: var(--color-gray-950);
+  --bg-surface-secondary: var(--color-gray-800);
+  --bg-hover: var(--color-gray-800);
+  --bg-active: var(--color-gray-800);
+  --bg-code: rgba(30, 30, 35, 0.5);
+
+  /* Text */
+  --text-primary: var(--color-gray-50);
+  --text-heading: var(--color-gray-50);
+  --text-default: var(--color-gray-100);
+  --text-secondary: var(--color-gray-300);
+  --text-tertiary: var(--color-gray-400);
+  --text-inverted: var(--color-gray-950);
+  --text-separator: var(--color-gray-600);
+
+  /* Borders */
+  --border-default: var(--color-gray-800);
+  --border-strong: var(--color-gray-600);
+  --border-input: var(--color-gray-600);
+  --border-divider: var(--color-gray-800);
+
+  /* Interactive */
+  --hover-text: var(--color-gray-300);
+  --hover-bg: var(--color-gray-800);
+
+  /* Shadows */
+  --shadow-surface: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-elevated: 0 10px 15px -3px rgba(0,0,0,0.4), 0 4px 6px -2px rgba(0,0,0,0.2);
+
+  /* Progress/Meter */
+  --bg-meter-track: var(--color-gray-700);
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  background: var(--bg-page);
+  color: var(--text-primary);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-gray-0), 0 0 0 4px var(--color-primary-400);
+}
+
+.dark .focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-gray-900), 0 0 0 4px var(--color-primary-300);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-gray-300);
+  border-radius: 3px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--color-gray-600);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -146,6 +146,11 @@ nav:
     - Polyglot Clients: api/polyglot-clients.md
     - YAML Rule Reference: api/rule-reference.md
     - Authentication: api/authentication.md
+  - Admin UI:
+    - admin-ui/index.md
+    - Dashboard: admin-ui/dashboard.md
+    - Operations: admin-ui/operations.md
+    - Settings: admin-ui/settings.md
   - Examples:
     - examples/index.md
     - Basic Usage: examples/basic-usage.md

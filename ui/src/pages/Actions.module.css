@@ -1,0 +1,59 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+.searchInput {
+  @apply w-48;
+}
+
+.tabContainer {
+  @apply mb-4;
+}
+
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between py-1 border-b;
+  border-color: var(--border-default);
+}
+
+.detailLabel {
+  @apply text-gray-500;
+}
+
+.detailValue {
+  @apply font-mono text-xs;
+}
+
+.jsonViewerCard {
+  @apply rounded-lg p-3;
+  background: var(--bg-surface-secondary);
+}
+
+.detailsSection {
+  @apply space-y-4;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+}
+
+.actionContainer {
+  @apply mt-6;
+}
+
+.actionId {
+  @apply font-mono text-xs;
+}
+
+.durationCell {
+  @apply tabular-nums text-xs;
+}
+
+.timestampCell {
+  @apply text-xs text-gray-500;
+}

@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth;
 pub mod chains;
 pub mod circuit_breakers;
+pub mod config;
 pub mod dispatch;
 pub mod dlq;
 pub mod embeddings;
@@ -36,6 +37,7 @@ use self::stream::ConnectionRegistry;
 
 use crate::auth::AuthProvider;
 use crate::auth::middleware::AuthLayer;
+use crate::config::ConfigSnapshot;
 use crate::ratelimit::RateLimiter;
 use crate::ratelimit::middleware::RateLimitLayer;
 
@@ -58,6 +60,8 @@ pub struct AppState {
     pub embedding_metrics: Option<Arc<EmbeddingMetrics>>,
     /// Per-tenant SSE connection limit registry.
     pub connection_registry: Option<Arc<ConnectionRegistry>>,
+    /// Sanitized configuration snapshot (secrets masked).
+    pub config: ConfigSnapshot,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -130,6 +134,8 @@ pub fn router(state: AppState) -> Router {
             "/admin/circuit-breakers/{provider}/reset",
             post(circuit_breakers::reset_circuit_breaker),
         )
+        // Admin config
+        .route("/admin/config", get(config::get_config))
         // SSE event streaming
         .route("/v1/stream", get(stream::stream))
         // Logout (requires auth)

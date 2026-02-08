@@ -1,0 +1,23 @@
+@reference "../index.css";
+
+.statsCard {
+  @apply border rounded-lg p-4 mb-6 flex items-center gap-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.statsLabel {
+  @apply text-sm text-gray-500;
+}
+
+.statsLabelSpaced {
+  @apply text-sm text-gray-500 ml-4;
+}
+
+.statsCount {
+  @apply text-lg font-bold tabular-nums;
+}
+
+.infoText {
+  @apply text-sm text-gray-500;
+}

@@ -1,0 +1,53 @@
+@reference "../../index.css";
+
+
+.button {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md font-medium transition-all duration-150;
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-400 focus-visible:ring-offset-2;
+  @apply disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none;
+}
+
+.primary {
+  @apply bg-primary-400 text-white hover:bg-primary-500 active:scale-[0.98];
+}
+
+.secondary {
+  @apply active:scale-[0.98];
+  background: var(--bg-hover);
+  color: var(--text-default);
+  &:hover {
+    background: var(--border-default);
+  }
+}
+
+.ghost {
+  @apply bg-transparent active:scale-[0.98];
+  color: var(--text-tertiary);
+  &:hover {
+    background: var(--hover-bg);
+  }
+}
+
+.danger {
+  @apply bg-error-500 text-white hover:bg-error-700 active:scale-[0.98];
+}
+
+.success {
+  @apply bg-success-500 text-white hover:bg-success-700 active:scale-[0.98];
+}
+
+.sm {
+  @apply px-2.5 py-1 text-xs h-7;
+}
+
+.md {
+  @apply px-3 py-1.5 text-sm h-[34px];
+}
+
+.lg {
+  @apply px-4 py-2 text-base h-10;
+}
+
+.loader {
+  @apply h-4 w-4 animate-spin;
+}

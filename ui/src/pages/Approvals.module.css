@@ -1,0 +1,56 @@
+@reference "../index.css";
+
+.filterContainer {
+  @apply flex gap-3 mb-4;
+}
+
+.loadingContainer {
+  @apply space-y-4;
+}
+
+.approvalsList {
+  @apply space-y-4;
+}
+
+.approvalCard {
+  @apply border rounded-lg p-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.cardHeader {
+  @apply flex items-start justify-between mb-3;
+}
+
+.timestamp {
+  @apply text-xs text-gray-500;
+}
+
+.detailsContainer {
+  @apply space-y-1 text-sm mb-3;
+}
+
+.detailLabel {
+  @apply text-gray-500;
+}
+
+.metadataRow {
+  @apply flex gap-4 text-xs text-gray-500 mb-3;
+}
+
+.toggleButton {
+  @apply flex items-center gap-1 text-sm text-gray-500 mb-3;
+
+  &:hover {
+    color: var(--hover-text);
+  }
+}
+
+.payloadContainer {
+  @apply rounded-lg p-3 mb-3;
+  background: var(--bg-surface-secondary);
+}
+
+.actionButtons {
+  @apply flex justify-end gap-2;
+}

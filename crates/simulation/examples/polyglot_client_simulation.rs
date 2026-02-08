@@ -64,6 +64,7 @@ impl TestServer {
             embedding: None,
             embedding_metrics: None,
             connection_registry: None,
+            config: acteon_server::config::ConfigSnapshot::default(),
         };
 
         // Build router

@@ -1,0 +1,62 @@
+@reference "../index.css";
+
+.filterContainer {
+  @apply flex gap-3 mb-4;
+}
+
+.groupKey {
+  @apply font-mono text-xs;
+}
+
+.labelsContainer {
+  @apply flex gap-1 flex-wrap;
+}
+
+.eventCount {
+  @apply tabular-nums;
+}
+
+.timestamp {
+  @apply text-xs text-gray-500;
+}
+
+.drawerContent {
+  @apply space-y-4;
+}
+
+.detailsGrid {
+  @apply space-y-2 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between;
+}
+
+.detailLabel {
+  @apply text-gray-500;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+}
+
+.labelsGrid {
+  @apply flex gap-1 flex-wrap;
+}
+
+.eventsSection {
+  @apply space-y-2;
+}
+
+.eventCard {
+  @apply rounded-lg p-2;
+  background: var(--bg-surface-secondary);
+}
+
+.eventCardHeader {
+  @apply flex justify-between text-xs mb-1;
+}
+
+.eventId {
+  @apply font-mono;
+}
