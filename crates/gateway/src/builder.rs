@@ -50,6 +50,7 @@ pub struct GatewayBuilder {
     default_timezone: Option<String>,
     circuit_breaker_default: Option<CircuitBreakerConfig>,
     circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
+    stream_buffer_size: usize,
 }
 
 impl GatewayBuilder {
@@ -82,6 +83,7 @@ impl GatewayBuilder {
             default_timezone: None,
             circuit_breaker_default: None,
             circuit_breaker_overrides: HashMap::new(),
+            stream_buffer_size: 1024,
         }
     }
 
@@ -328,6 +330,16 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the buffer size for the SSE broadcast channel (default: 1024).
+    ///
+    /// This controls how many events the broadcast channel can hold before
+    /// slow subscribers start missing events (receiving a lagged error).
+    #[must_use]
+    pub fn stream_buffer_size(mut self, size: usize) -> Self {
+        self.stream_buffer_size = size;
+        self
+    }
+
     /// Build and validate the circuit breaker registry if a default config is provided.
     fn build_circuit_breaker_registry(
         default: Option<CircuitBreakerConfig>,
@@ -469,6 +481,9 @@ impl GatewayBuilder {
             Arc::clone(&lock),
         )?;
 
+        // Create the broadcast channel for SSE event streaming.
+        let (stream_tx, _) = tokio::sync::broadcast::channel(self.stream_buffer_size);
+
         Ok(Gateway {
             state,
             lock,
@@ -495,6 +510,7 @@ impl GatewayBuilder {
             embedding: self.embedding,
             default_timezone,
             circuit_breakers,
+            stream_tx,
         })
     }
 }

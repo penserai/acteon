@@ -8,7 +8,7 @@ use tracing::info;
 
 use acteon_core::{
     Action, ChainConfig, ChainFailurePolicy, ChainNotificationTarget, ChainStepConfig,
-    StepFailurePolicy,
+    StepFailurePolicy, StreamEvent, StreamEventType,
 };
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
@@ -566,6 +566,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .cloned()
                     .unwrap_or_else(|| "webhook".to_string());
 
+                // Emit SSE stream event for the group flush.
+                let gw = flush_gateway.read().await;
+                let _ = gw.stream_tx().send(StreamEvent {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    event_type: StreamEventType::GroupFlushed {
+                        group_id: group.group_id.clone(),
+                        event_count: group.size(),
+                    },
+                    namespace: namespace.clone(),
+                    tenant: tenant.clone(),
+                    action_type: None,
+                    action_id: None,
+                });
+                drop(gw);
+
                 let action = Action::new(
                     namespace.as_str(),
                     tenant.as_str(),
@@ -610,6 +626,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     fired_at = %event.fired_at,
                     "timeout fired - dispatching notification"
                 );
+
+                // Emit SSE stream event for the timeout.
+                let gw = timeout_gateway.read().await;
+                let _ = gw.stream_tx().send(StreamEvent {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    event_type: StreamEventType::Timeout {
+                        fingerprint: event.fingerprint.clone(),
+                        state_machine: event.state_machine.clone(),
+                        previous_state: event.previous_state.clone(),
+                        new_state: event.new_state.clone(),
+                    },
+                    namespace: timeout_namespace.clone(),
+                    tenant: timeout_tenant.clone(),
+                    action_type: None,
+                    action_id: None,
+                });
+                drop(gw);
 
                 // Build a timeout notification action.
                 let timeout_payload = serde_json::json!({
@@ -714,7 +748,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "advancing chain"
                     );
 
+                    // Emit SSE stream event for the chain advance.
                     let gw = gw.read().await;
+                    let _ = gw.stream_tx().send(StreamEvent {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        timestamp: chrono::Utc::now(),
+                        event_type: StreamEventType::ChainAdvanced {
+                            chain_id: event.chain_id.clone(),
+                        },
+                        namespace: event.namespace.clone(),
+                        tenant: event.tenant.clone(),
+                        action_type: None,
+                        action_id: None,
+                    });
+
                     if let Err(e) = gw
                         .advance_chain(&event.namespace, &event.tenant, &event.chain_id)
                         .await
@@ -735,6 +782,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Create the per-tenant SSE connection limit registry.
+    let connection_registry = Arc::new(acteon_server::api::stream::ConnectionRegistry::new(
+        config.server.max_sse_connections_per_tenant.unwrap_or(10),
+    ));
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,
@@ -744,6 +796,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
+        connection_registry: Some(connection_registry),
     };
     let app = acteon_server::api::router(state);
 

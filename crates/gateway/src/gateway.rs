@@ -12,7 +12,8 @@ use acteon_audit::AuditRecord;
 use acteon_audit::store::AuditStore;
 use acteon_core::{
     Action, ActionOutcome, Caller, ChainConfig, ChainState, ChainStatus, ChainStepConfig,
-    StateMachineConfig, StepResult, compute_fingerprint,
+    StateMachineConfig, StepResult, StreamEvent, StreamEventType, compute_fingerprint,
+    sanitize_outcome,
 };
 use acteon_executor::{ActionExecutor, DeadLetterEntry, DeadLetterSink};
 use acteon_provider::ProviderRegistry;
@@ -159,6 +160,8 @@ pub struct Gateway {
     pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
     pub(crate) default_timezone: Option<chrono_tz::Tz>,
     pub(crate) circuit_breakers: Option<crate::circuit_breaker::CircuitBreakerRegistry>,
+    /// Broadcast channel for real-time SSE event streaming.
+    pub(crate) stream_tx: tokio::sync::broadcast::Sender<StreamEvent>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -358,7 +361,26 @@ impl Gateway {
             });
         }
 
-        // 6. Release the lock explicitly.
+        // 6. Emit SSE stream event (fire-and-forget; no-op if no subscribers).
+        //    The outcome is sanitized to strip provider response bodies,
+        //    headers, and HMAC-signed approval URLs before broadcasting.
+        if !dry_run {
+            let stream_event = StreamEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                timestamp: Utc::now(),
+                event_type: StreamEventType::ActionDispatched {
+                    outcome: sanitize_outcome(&outcome),
+                    provider: action.provider.to_string(),
+                },
+                namespace: action.namespace.to_string(),
+                tenant: action.tenant.to_string(),
+                action_type: Some(action.action_type.clone()),
+                action_id: Some(action.id.to_string()),
+            };
+            let _ = self.stream_tx.send(stream_event);
+        }
+
+        // 7. Release the lock explicitly.
         if let Some(guard) = guard {
             guard
                 .release()
@@ -2470,6 +2492,14 @@ impl Gateway {
     pub fn state_store(&self) -> &Arc<dyn StateStore> {
         &self.state
     }
+
+    /// Get a clone of the broadcast sender for SSE event streaming.
+    ///
+    /// Callers can use `subscribe()` on the returned sender to create
+    /// new receivers, or hold the sender to emit additional events.
+    pub fn stream_tx(&self) -> &tokio::sync::broadcast::Sender<StreamEvent> {
+        &self.stream_tx
+    }
 }
 
 // -- Audit helpers -----------------------------------------------------------
@@ -4573,5 +4603,249 @@ mod tests {
             }
             other => panic!("expected Rerouted to region-backup, got {other:?}"),
         }
+    }
+
+    // -- Stream broadcast tests -----------------------------------------------
+
+    use acteon_core::stream::StreamEventType;
+
+    #[tokio::test]
+    async fn dispatch_emits_stream_event_on_allow() {
+        let gw = build_gateway(vec![]);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("broadcast should not be closed");
+
+        assert_eq!(event.namespace, "notifications");
+        assert_eq!(event.tenant, "tenant-1");
+        assert_eq!(event.action_type.as_deref(), Some("send_email"));
+        assert!(event.action_id.is_some());
+        match event.event_type {
+            StreamEventType::ActionDispatched { outcome, provider } => {
+                assert_eq!(provider, "email");
+                assert!(matches!(outcome, ActionOutcome::Executed(_)));
+            }
+            other => panic!("expected ActionDispatched, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_emits_stream_event_on_suppress() {
+        let rules = vec![Rule::new(
+            "block-all",
+            Expr::Bool(true),
+            RuleAction::Suppress,
+        )];
+        let gw = build_gateway(rules);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("broadcast should not be closed");
+
+        match event.event_type {
+            StreamEventType::ActionDispatched { outcome, .. } => {
+                assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
+            }
+            other => panic!("expected ActionDispatched, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_emits_stream_event_on_reroute() {
+        let rules = vec![Rule::new(
+            "reroute-sms",
+            Expr::Bool(true),
+            RuleAction::Reroute {
+                target_provider: "sms-fallback".into(),
+            },
+        )];
+        let gw = build_gateway(rules);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Rerouted { .. }));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("broadcast should not be closed");
+
+        match event.event_type {
+            StreamEventType::ActionDispatched { outcome, .. } => {
+                assert!(matches!(outcome, ActionOutcome::Rerouted { .. }));
+            }
+            other => panic!("expected ActionDispatched, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_emits_stream_event_on_throttle() {
+        let rules = vec![Rule::new(
+            "rate-limit",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: 100,
+                window_seconds: 60,
+            },
+        )];
+        let gw = build_gateway(rules);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Throttled { .. }));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("broadcast should not be closed");
+
+        match event.event_type {
+            StreamEventType::ActionDispatched { outcome, .. } => {
+                assert!(matches!(outcome, ActionOutcome::Throttled { .. }));
+            }
+            other => panic!("expected ActionDispatched, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dry_run_does_not_emit_stream_event() {
+        let gw = build_gateway(vec![]);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::DryRun { .. }));
+
+        // No event should be emitted for dry-run.
+        let result = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(result.is_err(), "dry-run should not emit a stream event");
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers_receive_same_event() {
+        let gw = build_gateway(vec![]);
+        let mut rx1 = gw.stream_tx().subscribe();
+        let mut rx2 = gw.stream_tx().subscribe();
+        let mut rx3 = gw.stream_tx().subscribe();
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+
+        for (i, rx) in [&mut rx1, &mut rx2, &mut rx3].iter_mut().enumerate() {
+            let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("subscriber {i} should receive within timeout"))
+                .unwrap_or_else(|_| panic!("subscriber {i} should not see closed channel"));
+            assert_eq!(event.namespace, "notifications");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_subscriber_does_not_block_dispatch() {
+        let gw = build_gateway(vec![]);
+        // No subscribers at all -- dispatch should still succeed.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+    }
+
+    #[tokio::test]
+    async fn stream_event_id_is_unique_per_dispatch() {
+        let gw = build_gateway(vec![]);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+        let _ = gw.dispatch(test_action(), None).await.unwrap();
+
+        let event1 = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let event2 = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(
+            event1.id, event2.id,
+            "each stream event should have a unique id"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_event_carries_correct_action_metadata() {
+        let gw = build_gateway(vec![]);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let action = Action::new(
+            "payments",
+            "tenant-42",
+            "email",
+            "process_payment",
+            serde_json::json!({"amount": 100}),
+        );
+        let action_id = action.id.to_string();
+
+        let _ = gw.dispatch(action, None).await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.namespace, "payments");
+        assert_eq!(event.tenant, "tenant-42");
+        assert_eq!(event.action_type.as_deref(), Some("process_payment"));
+        assert_eq!(event.action_id.as_deref(), Some(action_id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn broadcast_lagged_subscriber_gets_error() {
+        // Build a gateway with a very small buffer.
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(MockProvider::new("email")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .stream_buffer_size(2)
+            .build()
+            .expect("gateway should build");
+
+        let mut rx = gw.stream_tx().subscribe();
+
+        // Dispatch more events than the buffer can hold.
+        for _ in 0..5 {
+            let _ = gw.dispatch(test_action(), None).await.unwrap();
+        }
+
+        // The slow subscriber should see a Lagged error.
+        let mut saw_lagged = false;
+        for _ in 0..5 {
+            match rx.try_recv() {
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    saw_lagged = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+            }
+        }
+        assert!(saw_lagged, "slow subscriber should experience lagged error");
     }
 }

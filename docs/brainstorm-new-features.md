@@ -41,11 +41,18 @@ and Kafka handles distribution.
 
 ## 2. Real-Time & Streaming
 
-### WebSocket/SSE Event Stream
+### WebSocket/SSE Event Stream — IMPLEMENTED
 Currently the API is request/response only. A real-time stream endpoint
 (`GET /v1/stream`) would let dashboards and monitoring tools subscribe to
 action outcomes as they happen, without polling. Filter by namespace,
 tenant, action_type, or outcome.
+
+**Implemented**: SSE endpoint at `GET /v1/stream` with server-side filtering
+by namespace, tenant, action_type, outcome, and event_type. Includes tenant
+isolation, per-tenant connection limits, outcome sanitization (PII/secrets
+stripped), backpressure handling (lagged events), and 15s keep-alive. Rust
+client SDK supports `ActeonClient::stream()` with `StreamFilter` builder.
+See [Event Streaming](book/features/event-streaming.md) for full docs.
 
 ### Action Status Subscriptions
 Subscribe to updates on a specific action ID, chain, or group. Particularly
@@ -312,5 +319,5 @@ Ranked by impact-to-effort ratio:
 | 6 | Field-Level Audit Redaction | Low | Medium | **DONE** |
 | 7 | Cron-Based Rule Activation | Low | Medium | **DONE** |
 | 8 | Action Replay | Medium | Medium | **DONE** |
-| 9 | WebSocket/SSE Stream | Medium | Medium | Pending |
+| 9 | WebSocket/SSE Stream | Medium | Medium | **DONE** |
 | 10 | Conditional Chain Branching | Medium | Medium | Pending |
