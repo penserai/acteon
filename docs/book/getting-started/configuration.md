@@ -23,6 +23,7 @@ CLI flags override values in the config file.
 host = "127.0.0.1"                  # Bind address
 port = 8080                          # Bind port
 # shutdown_timeout_seconds = 30      # Graceful shutdown drain time
+# max_sse_connections_per_tenant = 10  # Max concurrent SSE connections per tenant
 
 # ─── State Backend ────────────────────────────────────────
 [state]
@@ -161,6 +162,7 @@ recovery_timeout_seconds = 60        # Seconds before probing
 | `host` | string | `"127.0.0.1"` | Bind address |
 | `port` | u16 | `8080` | Bind port |
 | `shutdown_timeout_seconds` | u64 | `30` | Max time to drain pending tasks on shutdown |
+| `max_sse_connections_per_tenant` | usize | `10` | Max concurrent SSE stream connections per tenant |
 
 ### `[state]`
 

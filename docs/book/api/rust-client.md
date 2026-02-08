@@ -161,6 +161,34 @@ let group = client.get_group("group-key").await?;
 client.flush_group("group-key").await?;
 ```
 
+### Event Streaming
+
+```rust
+use acteon_client::{StreamFilter, StreamItem};
+use futures::StreamExt;
+
+let filter = StreamFilter::new()
+    .namespace("alerts")
+    .action_type("send_email")
+    .outcome("executed");
+
+let mut stream = client.stream(&filter).await?;
+
+while let Some(item) = stream.next().await {
+    match item? {
+        StreamItem::Event(event) => {
+            println!("{}: {} in {}", event.id, event.namespace, event.tenant);
+        }
+        StreamItem::Lagged { skipped } => {
+            eprintln!("Warning: missed {skipped} events");
+        }
+        StreamItem::KeepAlive => {} // Connection still alive
+    }
+}
+```
+
+See [Event Streaming](../features/event-streaming.md) for full documentation.
+
 ## Error Handling
 
 ```rust
@@ -212,3 +240,4 @@ match client.dispatch(&action).await {
 | `list_groups()` | List event groups |
 | `get_group(key)` | Get group details |
 | `flush_group(key)` | Force flush group |
+| `stream(filter)` | Subscribe to SSE event stream |
