@@ -13,10 +13,13 @@ pub mod openapi;
 pub mod replay;
 pub mod rules;
 pub mod schemas;
+pub mod stream;
+pub mod trace_context;
 
 use std::sync::Arc;
 
 use axum::Router;
+use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
@@ -28,6 +31,8 @@ use acteon_audit::store::AuditStore;
 use acteon_embedding::EmbeddingMetrics;
 use acteon_gateway::Gateway;
 use acteon_rules::EmbeddingEvalSupport;
+
+use self::stream::ConnectionRegistry;
 
 use crate::auth::AuthProvider;
 use crate::auth::middleware::AuthLayer;
@@ -51,6 +56,8 @@ pub struct AppState {
     pub embedding: Option<Arc<dyn EmbeddingEvalSupport>>,
     /// Optional embedding metrics handle (None when embedding is disabled).
     pub embedding_metrics: Option<Arc<EmbeddingMetrics>>,
+    /// Per-tenant SSE connection limit registry.
+    pub connection_registry: Option<Arc<ConnectionRegistry>>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -123,6 +130,8 @@ pub fn router(state: AppState) -> Router {
             "/admin/circuit-breakers/{provider}/reset",
             post(circuit_breakers::reset_circuit_breaker),
         )
+        // SSE event streaming
+        .route("/v1/stream", get(stream::stream))
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
         // Rate limiting runs after auth (so CallerIdentity is available)
@@ -135,6 +144,9 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
         // Swagger UI
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
+        // W3C Trace Context propagation (extracts traceparent/tracestate from
+        // incoming requests so OTel can link server spans to the caller's trace).
+        .layer(middleware::from_fn(trace_context::propagate_trace_context))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
 }

@@ -88,7 +88,7 @@ impl ActionExecutor {
     /// Returns [`ActionOutcome::Executed`] on success or
     /// [`ActionOutcome::Failed`] after all retries are exhausted or on a
     /// non-retryable error.
-    #[instrument(skip(self, action, provider), fields(action.id = %action.id, attempt))]
+    #[instrument(skip(self, action, provider), fields(action.id = %action.id, attempt, otel.status_code))]
     pub async fn execute(&self, action: &Action, provider: &dyn DynProvider) -> ActionOutcome {
         // Acquire a concurrency permit. This is cancel-safe: if the caller
         // drops the future while waiting, the permit is never acquired.
@@ -144,6 +144,7 @@ impl ActionExecutor {
                         if is_retryable {
                             self.push_to_dlq(action, &err.to_string(), attempts).await;
                         }
+                        tracing::Span::current().record("otel.status_code", "ERROR");
                         return ActionOutcome::Failed(ActionError {
                             code: error_code(&err),
                             message: err.to_string(),
@@ -173,6 +174,7 @@ impl ActionExecutor {
                             "execution timed out, no retries left"
                         );
                         self.push_to_dlq(action, &err.to_string(), attempts).await;
+                        tracing::Span::current().record("otel.status_code", "ERROR");
                         return ActionOutcome::Failed(ActionError {
                             code: error_code(&err),
                             message: err.to_string(),
@@ -189,6 +191,7 @@ impl ActionExecutor {
         let err = last_error.expect("at least one error must have occurred");
         let attempts = self.config.max_retries + 1;
         self.push_to_dlq(action, &err.to_string(), attempts).await;
+        tracing::Span::current().record("otel.status_code", "ERROR");
         ActionOutcome::Failed(ActionError {
             code: error_code(&err),
             message: err.to_string(),

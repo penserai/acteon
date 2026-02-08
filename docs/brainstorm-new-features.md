@@ -41,11 +41,18 @@ and Kafka handles distribution.
 
 ## 2. Real-Time & Streaming
 
-### WebSocket/SSE Event Stream
+### WebSocket/SSE Event Stream — IMPLEMENTED
 Currently the API is request/response only. A real-time stream endpoint
 (`GET /v1/stream`) would let dashboards and monitoring tools subscribe to
 action outcomes as they happen, without polling. Filter by namespace,
 tenant, action_type, or outcome.
+
+**Implemented**: SSE endpoint at `GET /v1/stream` with server-side filtering
+by namespace, tenant, action_type, outcome, and event_type. Includes tenant
+isolation, per-tenant connection limits, outcome sanitization (PII/secrets
+stripped), backpressure handling (lagged events), and 15s keep-alive. Rust
+client SDK supports `ActeonClient::stream()` with `StreamFilter` builder.
+See [Event Streaming](book/features/event-streaming.md) for full docs.
 
 ### Action Status Subscriptions
 Subscribe to updates on a specific action ID, chain, or group. Particularly
@@ -142,12 +149,24 @@ parent chains).
 
 ## 6. Observability & Operations
 
-### OpenTelemetry Distributed Tracing
+### OpenTelemetry Distributed Tracing — IMPLEMENTED
 Add W3C Trace Context propagation through the full pipeline: HTTP ingress ->
 rule evaluation -> state operations -> provider execution -> audit write.
 Lets users see Acteon actions in their existing tracing infrastructure
 (Jaeger, Tempo, Zipkin). The design document already identifies this as a
 planned feature.
+
+**Implemented**: OTLP export (gRPC and HTTP) via `[telemetry]` config section
+with configurable sampling, service name, and resource attributes. W3C Trace
+Context propagation extracts `traceparent`/`tracestate` headers from incoming
+requests, linking server-side spans to caller traces. The gateway pipeline is
+fully instrumented with `#[instrument]` spans: `gateway.dispatch`,
+`gateway.execute_action`, `gateway.llm_guardrail`, `gateway.handle_dedup`,
+`gateway.handle_reroute`, `gateway.handle_state_machine`,
+`gateway.handle_request_approval`, `gateway.handle_group`,
+`gateway.handle_chain`, and `gateway.advance_chain`. Batch span processor
+with graceful shutdown flush ensures no data loss during deployments.
+See [Distributed Tracing](book/features/distributed-tracing.md) for full docs.
 
 ### Grafana Dashboard Templates
 Ship pre-built Grafana dashboard JSON that visualizes the Prometheus metrics
@@ -308,9 +327,9 @@ Ranked by impact-to-effort ratio:
 | 2 | Dry-Run Mode | Low | High | **DONE** |
 | 3 | Circuit Breaker | Medium | High | Pending |
 | 4 | Delayed/Scheduled Actions | Medium | High | Pending |
-| 5 | OpenTelemetry Tracing | Medium | High | Pending |
+| 5 | OpenTelemetry Tracing | Medium | High | **DONE** |
 | 6 | Field-Level Audit Redaction | Low | Medium | **DONE** |
 | 7 | Cron-Based Rule Activation | Low | Medium | **DONE** |
 | 8 | Action Replay | Medium | Medium | **DONE** |
-| 9 | WebSocket/SSE Stream | Medium | Medium | Pending |
+| 9 | WebSocket/SSE Stream | Medium | Medium | **DONE** |
 | 10 | Conditional Chain Branching | Medium | Medium | Pending |

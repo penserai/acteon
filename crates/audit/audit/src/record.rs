@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 /// A single audit record capturing the full lifecycle of a dispatched action.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct AuditRecord {
-    /// Unique identifier for this audit record (UUID v4).
+    /// Unique identifier for this audit record (UUID v7).
     pub id: String,
 
     // -- Action fields (denormalized) --

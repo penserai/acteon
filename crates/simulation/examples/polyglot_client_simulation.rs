@@ -63,6 +63,7 @@ impl TestServer {
             rate_limiter: None,
             embedding: None,
             embedding_metrics: None,
+            connection_registry: None,
         };
 
         // Build router

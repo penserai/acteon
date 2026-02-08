@@ -39,6 +39,12 @@ pub struct EventGroup {
 
     /// When this group was last updated.
     pub updated_at: DateTime<Utc>,
+
+    /// Captured trace context from the first event in the group.
+    /// Used to link the batched notification back to the original trigger.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(value_type = HashMap<String, String>))]
+    pub trace_context: HashMap<String, String>,
 }
 
 impl EventGroup {
@@ -59,6 +65,7 @@ impl EventGroup {
             state: GroupState::Pending,
             created_at: now,
             updated_at: now,
+            trace_context: HashMap::new(),
         }
     }
 

@@ -78,6 +78,13 @@ pub struct Action {
 
     /// Timestamp when the action was created.
     pub created_at: DateTime<Utc>,
+
+    /// W3C Trace Context headers (`traceparent`, `tracestate`) captured at
+    /// dispatch time. Carries the distributed trace identity across async
+    /// boundaries such as chains, grouped notifications, and DLQ replays.
+    #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(value_type = HashMap<String, String>))]
+    pub trace_context: HashMap<String, String>,
 }
 
 impl Action {
@@ -105,6 +112,7 @@ impl Action {
             starts_at: None,
             ends_at: None,
             created_at: Utc::now(),
+            trace_context: HashMap::new(),
         }
     }
 
@@ -147,6 +155,13 @@ impl Action {
     #[must_use]
     pub fn with_ends_at(mut self, ends_at: DateTime<Utc>) -> Self {
         self.ends_at = Some(ends_at);
+        self
+    }
+
+    /// Set the W3C Trace Context for distributed trace propagation.
+    #[must_use]
+    pub fn with_trace_context(mut self, ctx: HashMap<String, String>) -> Self {
+        self.trace_context = ctx;
         self
     }
 }

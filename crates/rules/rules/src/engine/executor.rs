@@ -62,7 +62,7 @@ impl RuleEngine {
     /// Returns the verdict from the first matching rule, or `Allow` if no
     /// rule matches. If a rule has a `timezone` field, its `time.*` fields
     /// are evaluated in that timezone instead of the context default.
-    #[instrument(skip_all, fields(rules_count = self.rules.len()))]
+    #[instrument(skip_all, fields(rules_count = self.rules.len(), rule.matched))]
     pub async fn evaluate(&self, ctx: &EvalContext<'_>) -> Result<RuleVerdict, RuleError> {
         for rule in &self.rules {
             if !rule.enabled {
@@ -102,6 +102,7 @@ impl RuleEngine {
 
             if result.is_truthy() {
                 debug!(rule = %rule.name, "rule matched");
+                tracing::Span::current().record("rule.matched", &rule.name);
                 return Ok(action_to_verdict(&rule.name, &rule.action));
             }
         }

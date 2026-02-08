@@ -8,6 +8,7 @@ pub mod group;
 pub mod key;
 pub mod outcome;
 pub mod state_machine;
+pub mod stream;
 pub mod types;
 
 pub use action::{Action, ActionMetadata};
@@ -23,4 +24,8 @@ pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
 pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
 pub use state_machine::{StateMachineConfig, TimeoutConfig, TransitionConfig, TransitionEffects};
+pub use stream::{
+    StreamEvent, StreamEventType, outcome_category, reconstruct_outcome, sanitize_outcome,
+    timestamp_from_event_id,
+};
 pub use types::{ActionId, Namespace, ProviderId, TenantId};

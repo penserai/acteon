@@ -5,3 +5,4 @@ pub mod config;
 pub mod error;
 pub mod ratelimit;
 pub mod state_factory;
+pub mod telemetry;

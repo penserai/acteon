@@ -70,7 +70,8 @@ impl PagerDutyProvider {
 
         debug!(event_action = %event.event_action, "sending event to PagerDuty");
 
-        let response = self.client.post(&url).json(event).send().await?;
+        let request = acteon_provider::inject_trace_context(self.client.post(&url).json(event));
+        let response = request.send().await?;
 
         let status = response.status();
 

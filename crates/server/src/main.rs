@@ -8,7 +8,7 @@ use tracing::info;
 
 use acteon_core::{
     Action, ChainConfig, ChainFailurePolicy, ChainNotificationTarget, ChainStepConfig,
-    StepFailurePolicy,
+    StepFailurePolicy, StreamEvent, StreamEventType,
 };
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
@@ -53,18 +53,16 @@ enum Commands {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing subscriber from RUST_LOG or default to info.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
 
-    // Handle subcommands.
+    // Handle subcommands (need basic tracing before config is loaded).
     if let Some(Commands::Encrypt) = cli.command {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
         return run_encrypt();
     }
 
@@ -73,12 +71,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let contents = std::fs::read_to_string(&cli.config)?;
         toml::from_str(&contents)?
     } else {
+        toml::from_str("")?
+    };
+
+    // Initialize tracing subscriber (with optional OpenTelemetry layer).
+    // Must happen after config is loaded so we know whether OTel is enabled,
+    // but before any tracing calls.
+    let telemetry_guard = acteon_server::telemetry::init(&config.telemetry);
+
+    if !Path::new(&cli.config).exists() {
         info!(
             path = %cli.config,
             "config file not found, using defaults"
         );
-        toml::from_str("")?
-    };
+    }
 
     // Build the executor config from TOML values.
     let mut exec_config = ExecutorConfig::default();
@@ -530,6 +536,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::spawn(async move {
             while let Some(event) = flush_rx.recv().await {
                 let group = &event.group;
+
+                // Restore trace context from the first event in the group.
+                acteon_server::api::trace_context::restore_trace_context(&group.trace_context);
+
                 info!(
                     group_id = %group.group_id,
                     event_count = group.size(),
@@ -565,6 +575,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .get("provider")
                     .cloned()
                     .unwrap_or_else(|| "webhook".to_string());
+
+                // Emit SSE stream event for the group flush.
+                let gw = flush_gateway.read().await;
+                let _ = gw.stream_tx().send(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    event_type: StreamEventType::GroupFlushed {
+                        group_id: group.group_id.clone(),
+                        event_count: group.size(),
+                    },
+                    namespace: namespace.clone(),
+                    tenant: tenant.clone(),
+                    action_type: None,
+                    action_id: None,
+                });
+                drop(gw);
 
                 let action = Action::new(
                     namespace.as_str(),
@@ -602,6 +628,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let timeout_tenant = config.background.tenant.clone();
         tokio::spawn(async move {
             while let Some(event) = timeout_rx.recv().await {
+                // Restore trace context from the original event that set the timeout.
+                acteon_server::api::trace_context::restore_trace_context(&event.trace_context);
+
                 info!(
                     fingerprint = %event.fingerprint,
                     state_machine = %event.state_machine,
@@ -610,6 +639,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     fired_at = %event.fired_at,
                     "timeout fired - dispatching notification"
                 );
+
+                // Emit SSE stream event for the timeout.
+                let gw = timeout_gateway.read().await;
+                let _ = gw.stream_tx().send(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    event_type: StreamEventType::Timeout {
+                        fingerprint: event.fingerprint.clone(),
+                        state_machine: event.state_machine.clone(),
+                        previous_state: event.previous_state.clone(),
+                        new_state: event.new_state.clone(),
+                    },
+                    namespace: timeout_namespace.clone(),
+                    tenant: timeout_tenant.clone(),
+                    action_type: None,
+                    action_id: None,
+                });
+                drop(gw);
 
                 // Build a timeout notification action.
                 let timeout_payload = serde_json::json!({
@@ -707,6 +754,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let gw = Arc::clone(&chain_gateway);
                 tokio::spawn(async move {
                     let _permit = permit;
+
+                    // Load chain state to restore trace context before advancing.
+                    let trace_context = {
+                        let gw = gw.read().await;
+                        gw.get_chain_status(&event.namespace, &event.tenant, &event.chain_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|s| s.origin_action.trace_context)
+                    };
+
+                    if let Some(ctx) = trace_context {
+                        acteon_server::api::trace_context::restore_trace_context(&ctx);
+                    }
+
                     info!(
                         chain_id = %event.chain_id,
                         namespace = %event.namespace,
@@ -714,7 +776,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "advancing chain"
                     );
 
+                    // Emit SSE stream event for the chain advance.
                     let gw = gw.read().await;
+                    let _ = gw.stream_tx().send(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: chrono::Utc::now(),
+                        event_type: StreamEventType::ChainAdvanced {
+                            chain_id: event.chain_id.clone(),
+                        },
+                        namespace: event.namespace.clone(),
+                        tenant: event.tenant.clone(),
+                        action_type: None,
+                        action_id: None,
+                    });
+
                     if let Err(e) = gw
                         .advance_chain(&event.namespace, &event.tenant, &event.chain_id)
                         .await
@@ -735,6 +810,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Create the per-tenant SSE connection limit registry.
+    let connection_registry = Arc::new(acteon_server::api::stream::ConnectionRegistry::new(
+        config.server.max_sse_connections_per_tenant.unwrap_or(10),
+    ));
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,
@@ -744,6 +824,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_ref()
             .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
+        connection_registry: Some(connection_registry),
     };
     let app = acteon_server::api::router(state);
 
@@ -776,6 +857,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "shutdown timeout exceeded, some audit tasks may be lost"
         );
     }
+
+    // Flush pending OpenTelemetry spans before exit.
+    telemetry_guard.shutdown();
 
     info!("acteon-server shut down");
     Ok(())
