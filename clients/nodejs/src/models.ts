@@ -103,7 +103,8 @@ export type ActionOutcome =
     }
   | { type: "throttled"; retryAfterSecs: number }
   | { type: "failed"; error: ActionError }
-  | { type: "dry_run"; verdict: string; matchedRule?: string; wouldBeProvider: string };
+  | { type: "dry_run"; verdict: string; matchedRule?: string; wouldBeProvider: string }
+  | { type: "scheduled"; actionId: string; scheduledFor: string };
 
 /**
  * Error details when an action fails.
@@ -193,6 +194,15 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
       verdict: (dryRun.verdict as string) ?? "",
       matchedRule: dryRun.matched_rule as string | undefined,
       wouldBeProvider: (dryRun.would_be_provider as string) ?? "",
+    };
+  }
+
+  if ("Scheduled" in obj) {
+    const scheduled = obj.Scheduled as Record<string, unknown>;
+    return {
+      type: "scheduled",
+      actionId: (scheduled.action_id as string) ?? "",
+      scheduledFor: (scheduled.scheduled_for as string) ?? "",
     };
   }
 

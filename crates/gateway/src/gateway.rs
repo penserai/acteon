@@ -352,6 +352,10 @@ impl Gateway {
                 .await?
             }
             RuleVerdict::Chain { rule: _, chain } => self.handle_chain(&action, chain).await?,
+            RuleVerdict::Schedule {
+                rule: _,
+                delay_seconds,
+            } => self.handle_schedule(&action, *delay_seconds).await?,
         };
 
         // 5. Emit audit record (tracked async task for graceful shutdown).
@@ -1259,6 +1263,127 @@ impl Gateway {
             group_id,
             group_size,
             notify_at,
+        })
+    }
+
+    /// Maximum allowed delay for scheduled actions (7 days).
+    ///
+    /// Prevents unbounded state store growth from actions scheduled far into the
+    /// future. Rules should use reasonable delays; anything longer than a week is
+    /// likely a misconfiguration.
+    const MAX_SCHEDULE_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
+
+    /// Grace period added to the TTL of stored scheduled action data.
+    ///
+    /// The data TTL is `delay_seconds + GRACE_SECONDS` so that the background
+    /// processor has time to pick it up even if the processor is down for an
+    /// extended period. Set to 24 hours to survive longer outages. If the data
+    /// expires before dispatch, the action is silently dropped (preferable to
+    /// permanent orphaned state).
+    const SCHEDULE_GRACE_SECONDS: u64 = 86_400;
+
+    /// Handle the schedule verdict: store the action for delayed execution.
+    ///
+    /// The action is persisted in the state store with a `ScheduledAction` key
+    /// and indexed in the `PendingScheduled` index for efficient polling by the
+    /// background processor. A TTL is set on the stored data so that orphaned
+    /// entries are automatically cleaned up.
+    #[instrument(
+        name = "gateway.handle_schedule",
+        skip(self, action),
+        fields(delay_seconds)
+    )]
+    async fn handle_schedule(
+        &self,
+        action: &Action,
+        delay_seconds: u64,
+    ) -> Result<ActionOutcome, GatewayError> {
+        // Validate delay bounds.
+        if delay_seconds == 0 {
+            return Err(GatewayError::Configuration(
+                "scheduled delay must be at least 1 second".to_string(),
+            ));
+        }
+        if delay_seconds > Self::MAX_SCHEDULE_DELAY_SECONDS {
+            return Err(GatewayError::Configuration(format!(
+                "scheduled delay {delay_seconds}s exceeds maximum of {}s (7 days)",
+                Self::MAX_SCHEDULE_DELAY_SECONDS
+            )));
+        }
+
+        // Reject re-scheduling of already-scheduled actions to prevent infinite loops.
+        if action
+            .payload
+            .get("_scheduled_dispatch")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            warn!(
+                action_id = %action.id,
+                "rejecting re-schedule of already-scheduled action"
+            );
+            return Err(GatewayError::Configuration(
+                "cannot re-schedule an already-scheduled action".to_string(),
+            ));
+        }
+
+        let now = Utc::now();
+        #[allow(clippy::cast_possible_wrap)]
+        let scheduled_for = now + chrono::Duration::seconds(delay_seconds as i64);
+        let action_id = uuid::Uuid::new_v4().to_string();
+
+        // TTL = delay + grace period so orphaned entries self-clean.
+        let ttl = Some(Duration::from_secs(
+            delay_seconds + Self::SCHEDULE_GRACE_SECONDS,
+        ));
+
+        // Persist the scheduled action data.
+        let sched_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::ScheduledAction,
+            &action_id,
+        );
+        let sched_data = serde_json::json!({
+            "action_id": &action_id,
+            "action": action,
+            "scheduled_for": scheduled_for.to_rfc3339(),
+            "created_at": now.to_rfc3339(),
+        });
+        self.state
+            .set(&sched_key, &sched_data.to_string(), ttl)
+            .await?;
+
+        // Add to pending scheduled index using the timeout index mechanism.
+        let pending_key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::PendingScheduled,
+            &action_id,
+        );
+        self.state
+            .set(
+                &pending_key,
+                &scheduled_for.timestamp_millis().to_string(),
+                ttl,
+            )
+            .await?;
+        self.state
+            .index_timeout(&pending_key, scheduled_for.timestamp_millis())
+            .await?;
+
+        self.metrics.increment_scheduled();
+
+        info!(
+            action_id = %action_id,
+            scheduled_for = %scheduled_for,
+            delay_seconds = delay_seconds,
+            "action scheduled for delayed execution"
+        );
+
+        Ok(ActionOutcome::Scheduled {
+            action_id,
+            scheduled_for,
         })
     }
 
@@ -2561,6 +2686,7 @@ fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
         RuleVerdict::Group { .. } => "group",
         RuleVerdict::RequestApproval { .. } => "request_approval",
         RuleVerdict::Chain { .. } => "chain",
+        RuleVerdict::Schedule { .. } => "schedule",
     }
 }
 
@@ -2576,7 +2702,8 @@ fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
         | RuleVerdict::StateMachine { rule, .. }
         | RuleVerdict::Group { rule, .. }
         | RuleVerdict::RequestApproval { rule, .. }
-        | RuleVerdict::Chain { rule, .. } => Some(rule.clone()),
+        | RuleVerdict::Chain { rule, .. }
+        | RuleVerdict::Schedule { rule, .. } => Some(rule.clone()),
     }
 }
 
@@ -2595,6 +2722,7 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::ChainStarted { .. } => "chain_started",
         ActionOutcome::DryRun { .. } => "dry_run",
         ActionOutcome::CircuitOpen { .. } => "circuit_open",
+        ActionOutcome::Scheduled { .. } => "scheduled",
     }
 }
 
@@ -2725,6 +2853,13 @@ fn build_audit_record(
         } => serde_json::json!({
             "provider": provider,
             "fallback_chain": fallback_chain,
+        }),
+        ActionOutcome::Scheduled {
+            action_id,
+            scheduled_for,
+        } => serde_json::json!({
+            "action_id": action_id,
+            "scheduled_for": scheduled_for.to_rfc3339(),
         }),
     };
 
@@ -4760,6 +4895,264 @@ mod tests {
             }
             other => panic!("expected ActionDispatched, got {other:?}"),
         }
+    }
+
+    // -- Scheduled action tests ------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_schedule_returns_scheduled_outcome() {
+        let rules = vec![Rule::new(
+            "delay-send",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 60 },
+        )];
+        let gw = build_gateway(rules);
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::Scheduled {
+                ref action_id,
+                scheduled_for,
+            } => {
+                assert!(!action_id.is_empty(), "action_id should not be empty");
+                // scheduled_for should be roughly 60 seconds in the future
+                let now = chrono::Utc::now();
+                let diff = (scheduled_for - now).num_seconds();
+                assert!(
+                    (55..=65).contains(&diff),
+                    "scheduled_for should be ~60s in the future, got {diff}s"
+                );
+            }
+            other => panic!("expected Scheduled, got {other:?}"),
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.dispatched, 1);
+        assert_eq!(snap.scheduled, 1);
+        assert_eq!(snap.executed, 0);
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_stores_state() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock: Arc<dyn DistributedLock> = Arc::new(MemoryDistributedLock::new());
+
+        let rules = vec![Rule::new(
+            "delay-send",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 120 },
+        )];
+
+        let gw = GatewayBuilder::new()
+            .state(Arc::clone(&store))
+            .lock(lock)
+            .rules(rules)
+            .provider(Arc::new(MockProvider::new("email")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        let action = test_action();
+        let outcome = gw.dispatch(action.clone(), None).await.unwrap();
+
+        let action_id = match &outcome {
+            ActionOutcome::Scheduled { action_id, .. } => action_id.clone(),
+            other => panic!("expected Scheduled, got {other:?}"),
+        };
+
+        // Verify the scheduled action data was stored
+        let sched_key = acteon_state::StateKey::new(
+            "notifications",
+            "tenant-1",
+            acteon_state::KeyKind::ScheduledAction,
+            &action_id,
+        );
+        let data = store.get(&sched_key).await.unwrap();
+        assert!(
+            data.is_some(),
+            "scheduled action data should exist in state store"
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&data.unwrap()).unwrap();
+        assert_eq!(parsed["action_id"].as_str().unwrap(), action_id);
+        assert!(parsed["action"].is_object());
+        assert!(parsed["scheduled_for"].is_string());
+        assert!(parsed["created_at"].is_string());
+
+        // Verify the pending scheduled index was stored
+        let pending_key = acteon_state::StateKey::new(
+            "notifications",
+            "tenant-1",
+            acteon_state::KeyKind::PendingScheduled,
+            &action_id,
+        );
+        let pending_data = store.get(&pending_key).await.unwrap();
+        assert!(
+            pending_data.is_some(),
+            "pending scheduled index should exist"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_zero_delay_errors() {
+        let rules = vec![Rule::new(
+            "bad-delay",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 0 },
+        )];
+        let gw = build_gateway(rules);
+        let result = gw.dispatch(test_action(), None).await;
+        assert!(result.is_err(), "zero delay should produce an error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("at least 1 second"),
+            "error should mention minimum delay: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_exceeds_max_delay_errors() {
+        // 8 days > 7 days max
+        let rules = vec![Rule::new(
+            "too-long",
+            Expr::Bool(true),
+            RuleAction::Schedule {
+                delay_seconds: 8 * 24 * 60 * 60,
+            },
+        )];
+        let gw = build_gateway(rules);
+        let result = gw.dispatch(test_action(), None).await;
+        assert!(
+            result.is_err(),
+            "exceeding max delay should produce an error"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("exceeds maximum"),
+            "error should mention maximum: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_max_boundary_succeeds() {
+        // Exactly 7 days should succeed
+        let rules = vec![Rule::new(
+            "max-delay",
+            Expr::Bool(true),
+            RuleAction::Schedule {
+                delay_seconds: 7 * 24 * 60 * 60,
+            },
+        )];
+        let gw = build_gateway(rules);
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Scheduled { .. }),
+            "exactly 7 days should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_prevents_reschedule() {
+        let rules = vec![Rule::new(
+            "delay",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 60 },
+        )];
+        let gw = build_gateway(rules);
+
+        // Simulate an action that was already dispatched by the scheduler
+        let mut action = test_action();
+        let payload = action.payload.as_object_mut().unwrap();
+        payload.insert(
+            "_scheduled_dispatch".to_string(),
+            serde_json::Value::Bool(true),
+        );
+
+        let result = gw.dispatch(action, None).await;
+        assert!(
+            result.is_err(),
+            "re-scheduling an already-scheduled action should fail"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("re-schedule"),
+            "error should mention re-schedule: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_emits_stream_event() {
+        let rules = vec![Rule::new(
+            "delay-send",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 30 },
+        )];
+        let gw = build_gateway(rules);
+        let mut rx = gw.stream_tx().subscribe();
+
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Scheduled { .. }));
+
+        let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("should receive within timeout")
+            .expect("broadcast should not be closed");
+
+        match event.event_type {
+            acteon_core::StreamEventType::ActionDispatched { outcome, .. } => {
+                assert!(matches!(outcome, ActionOutcome::Scheduled { .. }));
+            }
+            other => panic!("expected ActionDispatched, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_unique_action_ids() {
+        let rules = vec![Rule::new(
+            "delay",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 60 },
+        )];
+        let gw = build_gateway(rules);
+
+        let mut ids = Vec::new();
+        for _ in 0..10 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            if let ActionOutcome::Scheduled { action_id, .. } = outcome {
+                ids.push(action_id);
+            }
+        }
+        // All IDs should be unique
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(
+            unique.len(),
+            10,
+            "all scheduled action IDs should be unique"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_schedule_metrics_increment() {
+        let rules = vec![Rule::new(
+            "delay",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 10 },
+        )];
+        let gw = build_gateway(rules);
+
+        for _ in 0..5 {
+            let _ = gw.dispatch(test_action(), None).await.unwrap();
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.dispatched, 5);
+        assert_eq!(snap.scheduled, 5);
+        assert_eq!(snap.executed, 0);
+        assert_eq!(snap.suppressed, 0);
     }
 
     #[tokio::test]

@@ -42,6 +42,24 @@ cleanup_interval_seconds = 3600
 # Whether to store the full action payload in audit records
 store_payload = true
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Providers
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Webhook provider (HTTP POST to a URL)
+# [[providers]]
+# name = "email"
+# type = "webhook"
+# url = "http://localhost:9999/webhook"
+#
+# [providers.headers]
+# Authorization = "Bearer token123"
+
+# Log provider (logs action and returns success, no external deps)
+# [[providers]]
+# name = "slack"
+# type = "log"
+
 [rules]
 # Path to directory containing YAML rule files
 # directory = "./rules"

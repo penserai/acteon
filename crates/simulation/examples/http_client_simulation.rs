@@ -4,10 +4,10 @@
 //! providing realistic integration testing.
 //!
 //! Prerequisites:
-//!   # Start the server with rules
-//!   cargo run -p acteon-server -- -c examples/redis.toml
+//!   # Start the server with the simulation config (log provider + rules)
+//!   cargo run -p acteon-server -- -c examples/simulation.toml
 //!
-//!   # Or with PostgreSQL for audit
+//!   # Or with a backend-specific config for audit persistence
 //!   docker compose --profile postgres up -d
 //!   cargo run -p acteon-server -- -c examples/postgres.toml
 //!

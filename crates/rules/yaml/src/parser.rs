@@ -225,6 +225,11 @@ pub enum YamlAction {
         /// Name of the chain configuration to use.
         chain: String,
     },
+    /// Schedule the action for delayed execution.
+    Schedule {
+        /// Delay in seconds before the action is dispatched.
+        delay_seconds: u64,
+    },
 }
 
 #[cfg(test)]
@@ -591,6 +596,67 @@ rules:
             }
             other => panic!("expected RequestApproval, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_schedule_action() {
+        let yaml = r#"
+rules:
+  - name: delay-send
+    condition:
+      field: action.action_type
+      eq: send_email
+    action:
+      type: schedule
+      delay_seconds: 300
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        match &file.rules[0].action {
+            YamlAction::Schedule { delay_seconds } => {
+                assert_eq!(*delay_seconds, 300);
+            }
+            other => panic!("expected Schedule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_schedule_action_large_delay() {
+        let yaml = r#"
+rules:
+  - name: delay-large
+    condition:
+      field: action.action_type
+      eq: batch
+    action:
+      type: schedule
+      delay_seconds: 604800
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        match &file.rules[0].action {
+            YamlAction::Schedule { delay_seconds } => {
+                assert_eq!(*delay_seconds, 604_800);
+            }
+            other => panic!("expected Schedule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_schedule_action_missing_delay_fails() {
+        let yaml = r#"
+rules:
+  - name: bad-schedule
+    condition:
+      field: x
+      eq: 1
+    action:
+      type: schedule
+"#;
+        let result: Result<YamlRuleFile, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "schedule without delay_seconds should fail"
+        );
     }
 
     #[test]

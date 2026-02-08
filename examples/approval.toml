@@ -1,0 +1,27 @@
+# Acteon config for approval_simulation.
+#
+# Start the server:
+#   cargo run -p acteon-server -- -c examples/approval.toml
+#
+# Then run the simulation:
+#   cargo run -p acteon-simulation --example approval_simulation
+
+[[providers]]
+name = "payments"
+type = "log"
+
+[[providers]]
+name = "slack"
+type = "log"
+
+[server]
+# Hex-encoded HMAC secret for signing approval URLs.
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+[rules]
+directory = "examples/rules"
+
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true

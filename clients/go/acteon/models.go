@@ -70,6 +70,8 @@ type ActionOutcome struct {
 	Verdict          string            // For DryRun
 	MatchedRule      *string           // For DryRun
 	WouldBeProvider  string            // For DryRun
+	ActionID         string            // For Scheduled
+	ScheduledFor     string            // For Scheduled
 }
 
 // OutcomeType represents the type of action outcome.
@@ -83,6 +85,7 @@ const (
 	OutcomeThrottled    OutcomeType = "throttled"
 	OutcomeFailed       OutcomeType = "failed"
 	OutcomeDryRun       OutcomeType = "dry_run"
+	OutcomeScheduled    OutcomeType = "scheduled"
 )
 
 // ActionError represents error details when an action fails.
@@ -191,6 +194,20 @@ func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	if scheduled, ok := raw["Scheduled"]; ok {
+		o.Type = OutcomeScheduled
+		var s struct {
+			ActionID     string `json:"action_id"`
+			ScheduledFor string `json:"scheduled_for"`
+		}
+		if err := json.Unmarshal(scheduled, &s); err != nil {
+			return err
+		}
+		o.ActionID = s.ActionID
+		o.ScheduledFor = s.ScheduledFor
+		return nil
+	}
+
 	o.Type = OutcomeFailed
 	o.Error = &ActionError{Code: "UNKNOWN", Message: "Unknown outcome"}
 	return nil
@@ -216,6 +233,9 @@ func (o *ActionOutcome) IsFailed() bool { return o.Type == OutcomeFailed }
 
 // IsDryRun returns true if the outcome is DryRun.
 func (o *ActionOutcome) IsDryRun() bool { return o.Type == OutcomeDryRun }
+
+// IsScheduled returns true if the outcome is Scheduled.
+func (o *ActionOutcome) IsScheduled() bool { return o.Type == OutcomeScheduled }
 
 // ErrorResponse represents an error response from the API.
 type ErrorResponse struct {

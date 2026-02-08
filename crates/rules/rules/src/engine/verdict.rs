@@ -85,6 +85,13 @@ pub enum RuleVerdict {
         /// Name of the chain configuration to use.
         chain: String,
     },
+    /// Schedule the action for delayed execution.
+    Schedule {
+        /// Name of the rule that triggered scheduling.
+        rule: String,
+        /// Delay in seconds before the action is dispatched.
+        delay_seconds: u64,
+    },
 }
 
 impl RuleVerdict {
@@ -102,7 +109,8 @@ impl RuleVerdict {
             | Self::StateMachine { rule, .. }
             | Self::Group { rule, .. }
             | Self::RequestApproval { rule, .. }
-            | Self::Chain { rule, .. } => Some(rule),
+            | Self::Chain { rule, .. }
+            | Self::Schedule { rule, .. } => Some(rule),
         }
     }
 }
@@ -172,6 +180,10 @@ pub(crate) fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVer
         RuleAction::Chain { chain } => RuleVerdict::Chain {
             rule: rule_name.to_owned(),
             chain: chain.clone(),
+        },
+        RuleAction::Schedule { delay_seconds } => RuleVerdict::Schedule {
+            rule: rule_name.to_owned(),
+            delay_seconds: *delay_seconds,
         },
     }
 }

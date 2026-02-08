@@ -179,5 +179,9 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
             provider,
             fallback_chain,
         } => format!("CircuitOpen (provider: {provider}, fallback_chain: {fallback_chain:?})"),
+        ActionOutcome::Scheduled {
+            action_id,
+            scheduled_for,
+        } => format!("Scheduled (id: {action_id}, for: {scheduled_for})"),
     }
 }

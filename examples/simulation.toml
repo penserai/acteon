@@ -1,0 +1,20 @@
+# Acteon config for http_client_simulation and replay_simulation.
+#
+# Start the server:
+#   cargo run -p acteon-server -- -c examples/simulation.toml
+#
+# Then run the simulations:
+#   cargo run -p acteon-simulation --example http_client_simulation
+#   cargo run -p acteon-simulation --example replay_simulation
+
+[[providers]]
+name = "email"
+type = "log"
+
+[rules]
+directory = "examples/rules"
+
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true

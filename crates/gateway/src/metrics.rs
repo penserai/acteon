@@ -42,6 +42,8 @@ pub struct GatewayMetrics {
     pub circuit_transitions: AtomicU64,
     /// Actions rerouted to a fallback provider due to an open circuit.
     pub circuit_fallbacks: AtomicU64,
+    /// Actions scheduled for delayed execution.
+    pub scheduled: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -135,6 +137,11 @@ impl GatewayMetrics {
         self.circuit_fallbacks.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the scheduled counter.
+    pub fn increment_scheduled(&self) {
+        self.scheduled.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -156,6 +163,7 @@ impl GatewayMetrics {
             circuit_open: self.circuit_open.load(Ordering::Relaxed),
             circuit_transitions: self.circuit_transitions.load(Ordering::Relaxed),
             circuit_fallbacks: self.circuit_fallbacks.load(Ordering::Relaxed),
+            scheduled: self.scheduled.load(Ordering::Relaxed),
         }
     }
 }
@@ -199,6 +207,8 @@ pub struct MetricsSnapshot {
     pub circuit_transitions: u64,
     /// Actions rerouted to a fallback due to an open circuit.
     pub circuit_fallbacks: u64,
+    /// Actions scheduled for delayed execution.
+    pub scheduled: u64,
 }
 
 #[cfg(test)]
@@ -227,6 +237,7 @@ mod tests {
         assert_eq!(snap.circuit_open, 0);
         assert_eq!(snap.circuit_transitions, 0);
         assert_eq!(snap.circuit_fallbacks, 0);
+        assert_eq!(snap.scheduled, 0);
     }
 
     #[test]
@@ -251,6 +262,7 @@ mod tests {
         m.increment_circuit_open();
         m.increment_circuit_transitions();
         m.increment_circuit_fallbacks();
+        m.increment_scheduled();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -271,5 +283,6 @@ mod tests {
         assert_eq!(snap.circuit_open, 1);
         assert_eq!(snap.circuit_transitions, 1);
         assert_eq!(snap.circuit_fallbacks, 1);
+        assert_eq!(snap.scheduled, 1);
     }
 }

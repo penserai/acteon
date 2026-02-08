@@ -1,5 +1,6 @@
 pub mod error;
 pub mod health;
+pub mod log;
 pub mod provider;
 pub mod registry;
 
@@ -7,6 +8,7 @@ pub mod registry;
 pub mod webhook;
 
 pub use error::ProviderError;
+pub use log::LogProvider;
 pub use provider::{DynProvider, Provider};
 pub use registry::ProviderRegistry;
 

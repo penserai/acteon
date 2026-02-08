@@ -31,6 +31,11 @@ Dynamically redirect actions to different providers based on priority, load, or 
 Transform action payloads before execution — redaction, enrichment, normalization.
 </div>
 
+<div class="card" markdown>
+### [Scheduled Actions](scheduled-actions.md)
+Delay action execution by a configurable duration — send reminders later, retry at off-peak times, or schedule escalations.
+</div>
+
 </div>
 
 ## Event Lifecycle

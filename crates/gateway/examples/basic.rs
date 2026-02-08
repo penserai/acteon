@@ -134,5 +134,6 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::ChainStarted { .. } => "ChainStarted",
         ActionOutcome::DryRun { .. } => "DryRun",
         ActionOutcome::CircuitOpen { .. } => "CircuitOpen",
+        ActionOutcome::Scheduled { .. } => "Scheduled",
     }
 }

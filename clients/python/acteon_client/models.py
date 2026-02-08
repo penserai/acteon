@@ -63,7 +63,8 @@ class ActionOutcome:
 
     Attributes:
         outcome_type: One of "executed", "deduplicated", "suppressed",
-                      "rerouted", "throttled", "failed", "dry_run".
+                      "rerouted", "throttled", "failed", "dry_run",
+                      "scheduled".
         response: Provider response (for executed/rerouted).
         rule: Rule name (for suppressed).
         original_provider: Original provider (for rerouted).
@@ -72,6 +73,8 @@ class ActionOutcome:
         error: Error details (for failed).
         verdict_details: Dry-run details including verdict, matched_rule,
                          and would_be_provider (for dry_run).
+        action_id: Scheduled action identifier (for scheduled).
+        scheduled_for: RFC 3339 timestamp for scheduled execution (for scheduled).
     """
     outcome_type: str
     response: Optional[ProviderResponse] = None
@@ -81,6 +84,8 @@ class ActionOutcome:
     retry_after_secs: Optional[float] = None
     error: Optional[dict[str, Any]] = None
     verdict_details: Optional[dict[str, Any]] = None
+    action_id: Optional[str] = None
+    scheduled_for: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionOutcome":
@@ -128,6 +133,13 @@ class ActionOutcome:
                     "would_be_provider": dry_run.get("would_be_provider"),
                 },
             )
+        elif "Scheduled" in data:
+            scheduled = data["Scheduled"]
+            return cls(
+                outcome_type="scheduled",
+                action_id=scheduled.get("action_id"),
+                scheduled_for=scheduled.get("scheduled_for"),
+            )
         else:
             return cls(outcome_type="unknown")
 
@@ -151,6 +163,9 @@ class ActionOutcome:
 
     def is_dry_run(self) -> bool:
         return self.outcome_type == "dry_run"
+
+    def is_scheduled(self) -> bool:
+        return self.outcome_type == "scheduled"
 
 
 @dataclass
