@@ -124,11 +124,23 @@ are exhausted.
 
 ## 5. Enhanced Workflow Capabilities
 
-### Conditional Chain Branching
+### Conditional Chain Branching — IMPLEMENTED
 Current chains are linear (step 1 -> step 2 -> step 3). Add conditional
 branches: "if step 2 returns status X, go to step 3a; otherwise step 3b."
 This turns chains into lightweight DAG workflows without requiring a full
 workflow engine.
+
+**Implemented**: Each chain step can define `branches` — an ordered list of
+`BranchCondition` with `field`, `operator` (eq/neq/contains/exists), `value`,
+and `target` (step name). Conditions are evaluated in order after step
+completion; first match wins. A `default_next` fallback is used when no
+condition matches, with sequential advancement as the final fallback.
+`ChainState.execution_path` tracks the actual branch path taken. Cycle
+detection validates configs at dispatch time. Supports branching on
+`success`, `body.*`, and nested JSON paths. Fully backward-compatible — linear
+chains work identically. Server config (TOML) and API responses include
+branching fields. See `crates/simulation/examples/branch_chain_simulation.rs`
+for demos.
 
 ### Parallel Chain Steps
 Execute multiple steps concurrently within a chain, then join on all/any
@@ -332,4 +344,4 @@ Ranked by impact-to-effort ratio:
 | 7 | Cron-Based Rule Activation | Low | Medium | **DONE** |
 | 8 | Action Replay | Medium | Medium | **DONE** |
 | 9 | WebSocket/SSE Stream | Medium | Medium | **DONE** |
-| 10 | Conditional Chain Branching | Medium | Medium | Pending |
+| 10 | Conditional Chain Branching | Medium | Medium | **DONE** |

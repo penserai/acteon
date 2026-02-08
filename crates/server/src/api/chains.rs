@@ -117,6 +117,10 @@ pub struct ChainDetailResponse {
     /// Who cancelled the chain (if cancelled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cancelled_by: Option<String>,
+    /// The ordered list of step names that were executed (the branch path taken).
+    /// Empty for chains that haven't started or for legacy chains without path tracking.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub execution_path: Vec<String>,
 }
 
 fn parse_status_filter(s: &str) -> Option<ChainStatus> {
@@ -261,6 +265,7 @@ pub async fn get_chain(
                 expires_at: chain_state.expires_at,
                 cancel_reason: chain_state.cancel_reason,
                 cancelled_by: chain_state.cancelled_by,
+                execution_path: chain_state.execution_path,
             };
             (StatusCode::OK, Json(detail)).into_response()
         }
@@ -325,6 +330,7 @@ pub async fn cancel_chain(
                 expires_at: chain_state.expires_at,
                 cancel_reason: chain_state.cancel_reason,
                 cancelled_by: chain_state.cancelled_by,
+                execution_path: chain_state.execution_path,
             };
             (StatusCode::OK, Json(detail)).into_response()
         }

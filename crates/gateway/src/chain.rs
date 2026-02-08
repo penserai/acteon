@@ -13,6 +13,10 @@ use acteon_core::chain::{ChainStepConfig, StepResult};
 /// If the entire string value is a single `{{expr}}`, the original JSON type
 /// from the referenced value is preserved. Otherwise, patterns are replaced
 /// inline as strings. Missing paths resolve to `null`.
+///
+/// The `execution_path` parameter tracks the ordered list of step names that
+/// have been executed so far. For `{{prev.*}}` in branching chains, this is
+/// used to find the actual previous step rather than relying on array index.
 pub fn resolve_template(
     template: &serde_json::Value,
     origin: &Action,
@@ -20,17 +24,32 @@ pub fn resolve_template(
     steps_config: &[ChainStepConfig],
     chain_id: &str,
     step_index: usize,
+    execution_path: &[String],
 ) -> serde_json::Value {
     match template {
-        serde_json::Value::String(s) => {
-            resolve_string(s, origin, step_results, steps_config, chain_id, step_index)
-        }
+        serde_json::Value::String(s) => resolve_string(
+            s,
+            origin,
+            step_results,
+            steps_config,
+            chain_id,
+            step_index,
+            execution_path,
+        ),
         serde_json::Value::Object(map) => {
             let mut result = serde_json::Map::new();
             for (k, v) in map {
                 result.insert(
                     k.clone(),
-                    resolve_template(v, origin, step_results, steps_config, chain_id, step_index),
+                    resolve_template(
+                        v,
+                        origin,
+                        step_results,
+                        steps_config,
+                        chain_id,
+                        step_index,
+                        execution_path,
+                    ),
                 );
             }
             serde_json::Value::Object(result)
@@ -38,7 +57,15 @@ pub fn resolve_template(
         serde_json::Value::Array(arr) => serde_json::Value::Array(
             arr.iter()
                 .map(|v| {
-                    resolve_template(v, origin, step_results, steps_config, chain_id, step_index)
+                    resolve_template(
+                        v,
+                        origin,
+                        step_results,
+                        steps_config,
+                        chain_id,
+                        step_index,
+                        execution_path,
+                    )
                 })
                 .collect(),
         ),
@@ -55,6 +82,7 @@ fn resolve_string(
     steps_config: &[ChainStepConfig],
     chain_id: &str,
     step_index: usize,
+    execution_path: &[String],
 ) -> serde_json::Value {
     let trimmed = s.trim();
 
@@ -68,6 +96,7 @@ fn resolve_string(
             steps_config,
             chain_id,
             step_index,
+            execution_path,
         );
     }
 
@@ -86,6 +115,7 @@ fn resolve_string(
             steps_config,
             chain_id,
             step_index,
+            execution_path,
         );
         let replacement = json_to_inline_string(&value);
         result.replace_range(start..full_end, &replacement);
@@ -117,12 +147,19 @@ fn resolve_expr(
     steps_config: &[ChainStepConfig],
     chain_id: &str,
     step_index: usize,
+    execution_path: &[String],
 ) -> serde_json::Value {
     let parts: Vec<&str> = expr.split('.').collect();
 
     match parts.first().copied() {
         Some("origin") => resolve_origin(&parts[1..], origin),
-        Some("prev") => resolve_prev(&parts[1..], step_results, step_index),
+        Some("prev") => resolve_prev(
+            &parts[1..],
+            step_results,
+            steps_config,
+            step_index,
+            execution_path,
+        ),
         Some("steps") => resolve_named_step(&parts[1..], step_results, steps_config),
         Some("chain_id") => serde_json::Value::String(chain_id.to_owned()),
         Some("step_index") => serde_json::json!(step_index),
@@ -157,15 +194,33 @@ fn resolve_origin(path: &[&str], origin: &Action) -> serde_json::Value {
 }
 
 /// Resolve `prev.body.*` paths — the previous step's response body.
+///
+/// For branching chains, `prev` refers to the step that was most recently
+/// executed before the current step in the execution path, rather than the
+/// step at index-1 in the config array.
 fn resolve_prev(
     path: &[&str],
     step_results: &[Option<StepResult>],
+    steps_config: &[ChainStepConfig],
     step_index: usize,
+    execution_path: &[String],
 ) -> serde_json::Value {
-    if step_index == 0 {
-        return serde_json::Value::Null;
-    }
-    let prev_result = step_results.get(step_index - 1).and_then(|r| r.as_ref());
+    // Find the previous step: use execution_path if available, otherwise
+    // fall back to index-1 for backward compatibility.
+    let prev_result = if execution_path.len() >= 2 {
+        // The execution_path includes the *current* step as the last entry,
+        // so the previous step is at len()-2.
+        let prev_name = &execution_path[execution_path.len() - 2];
+        steps_config
+            .iter()
+            .position(|s| &s.name == prev_name)
+            .and_then(|idx| step_results.get(idx))
+            .and_then(|r| r.as_ref())
+    } else if step_index > 0 {
+        step_results.get(step_index - 1).and_then(|r| r.as_ref())
+    } else {
+        None
+    };
 
     match path.first().copied() {
         Some("body") => {
@@ -288,7 +343,7 @@ mod tests {
         let origin = test_origin();
         let steps = test_steps_config();
         let template = serde_json::json!({"q": "{{origin.payload.query}}"});
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result, serde_json::json!({"q": "rust async"}));
     }
 
@@ -301,7 +356,7 @@ mod tests {
             "t": "{{origin.tenant}}",
             "at": "{{origin.action_type}}"
         });
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result["ns"], "ns");
         assert_eq!(result["t"], "tenant");
         assert_eq!(result["at"], "web_search");
@@ -316,7 +371,15 @@ mod tests {
             serde_json::json!({"results": "some data"}),
         )];
         let template = serde_json::json!({"text": "{{prev.body.results}}"});
-        let result = resolve_template(&template, &origin, &results, &steps, "c1", 1);
+        let result = resolve_template(
+            &template,
+            &origin,
+            &results,
+            &steps,
+            "c1",
+            1,
+            &["search".into(), "summarize".into()],
+        );
         assert_eq!(result, serde_json::json!({"text": "some data"}));
     }
 
@@ -325,7 +388,7 @@ mod tests {
         let origin = test_origin();
         let steps = test_steps_config();
         let template = serde_json::json!({"text": "{{prev.body}}"});
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result["text"], serde_json::Value::Null);
     }
 
@@ -338,7 +401,15 @@ mod tests {
             step_result("summarize", serde_json::json!({"summary": "brief"})),
         ];
         let template = serde_json::json!({"s": "{{steps.search.body.results}}"});
-        let result = resolve_template(&template, &origin, &results, &steps, "c1", 2);
+        let result = resolve_template(
+            &template,
+            &origin,
+            &results,
+            &steps,
+            "c1",
+            2,
+            &["search".into(), "summarize".into(), "email".into()],
+        );
         assert_eq!(result, serde_json::json!({"s": "search data"}));
     }
 
@@ -350,7 +421,7 @@ mod tests {
             "id": "{{chain_id}}",
             "idx": "{{step_index}}"
         });
-        let result = resolve_template(&template, &origin, &[], &steps, "chain-42", 2);
+        let result = resolve_template(&template, &origin, &[], &steps, "chain-42", 2, &[]);
         assert_eq!(result["id"], "chain-42");
         // step_index is a single {{expr}} so it preserves the JSON integer type.
         assert_eq!(result["idx"], serde_json::json!(2));
@@ -362,7 +433,7 @@ mod tests {
         let steps = test_steps_config();
         // When the entire value is a single {{expr}} pointing to a number, preserve the type.
         let template = serde_json::json!({"limit": "{{origin.payload.limit}}"});
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result["limit"], serde_json::json!(10));
     }
 
@@ -371,7 +442,7 @@ mod tests {
         let origin = test_origin();
         let steps = test_steps_config();
         let template = serde_json::json!({"x": "{{origin.payload.nonexistent}}"});
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result["x"], serde_json::Value::Null);
     }
 
@@ -380,7 +451,7 @@ mod tests {
         let origin = test_origin();
         let steps = test_steps_config();
         let template = serde_json::json!({"deep": "{{origin.payload.nested.key}}"});
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result["deep"], "deep_value");
     }
 
@@ -391,7 +462,7 @@ mod tests {
         let template = serde_json::json!({
             "msg": "Search for {{origin.payload.query}} in {{origin.namespace}}"
         });
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result["msg"], "Search for rust async in ns");
     }
 
@@ -400,7 +471,7 @@ mod tests {
         let origin = test_origin();
         let steps = test_steps_config();
         let template = serde_json::json!(["{{origin.payload.query}}", "literal"]);
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result[0], "rust async");
         assert_eq!(result[1], "literal");
     }
@@ -410,7 +481,97 @@ mod tests {
         let origin = test_origin();
         let steps = test_steps_config();
         let template = serde_json::json!(42);
-        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0);
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &[]);
         assert_eq!(result, serde_json::json!(42));
+    }
+
+    // -- resolve_prev with branching execution_path tests ----------------------
+
+    #[test]
+    fn resolve_prev_in_branching_chain_uses_execution_path() {
+        // Steps: check (0), escalate (1), log (2), notify (3)
+        // Execution path was: check -> log -> notify
+        // At step "notify" (index 3), prev should be "log" (index 2), not "escalate" (index 2-by-sequence).
+        let steps = vec![
+            ChainStepConfig::new("check", "p", "t", serde_json::json!({})),
+            ChainStepConfig::new("escalate", "p", "t", serde_json::json!({})),
+            ChainStepConfig::new("log", "p", "t", serde_json::json!({})),
+            ChainStepConfig::new("notify", "p", "t", serde_json::json!({})),
+        ];
+        let results = vec![
+            step_result("check", serde_json::json!({"status": "ok"})),
+            None, // escalate was skipped
+            step_result("log", serde_json::json!({"logged": true, "id": "abc123"})),
+            None, // notify is about to execute
+        ];
+        let origin = test_origin();
+        let execution_path: Vec<String> = vec!["check".into(), "log".into(), "notify".into()];
+
+        let template = serde_json::json!({"prev_id": "{{prev.body.id}}"});
+        let result = resolve_template(
+            &template,
+            &origin,
+            &results,
+            &steps,
+            "c1",
+            3, // current step index for "notify"
+            &execution_path,
+        );
+        // prev should resolve to "log" (the actual previous step in execution path)
+        assert_eq!(result["prev_id"], "abc123");
+    }
+
+    #[test]
+    fn resolve_prev_with_empty_execution_path_falls_back_to_index_minus_one() {
+        let origin = test_origin();
+        let steps = test_steps_config();
+        let results = vec![step_result(
+            "search",
+            serde_json::json!({"results": "data"}),
+        )];
+        let template = serde_json::json!({"text": "{{prev.body.results}}"});
+        // Empty execution_path — should fall back to step_index - 1 (i.e., index 0).
+        let result = resolve_template(&template, &origin, &results, &steps, "c1", 1, &[]);
+        assert_eq!(result["text"], "data");
+    }
+
+    #[test]
+    fn resolve_prev_at_step_zero_with_execution_path_returns_null() {
+        let origin = test_origin();
+        let steps = test_steps_config();
+        let execution_path: Vec<String> = vec!["search".into()];
+        let template = serde_json::json!({"text": "{{prev.body}}"});
+        // At step 0, execution_path has only one entry, so len() < 2 and step_index == 0.
+        let result = resolve_template(&template, &origin, &[], &steps, "c1", 0, &execution_path);
+        assert_eq!(result["text"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn resolve_prev_body_whole_object_in_branching_chain() {
+        let steps = vec![
+            ChainStepConfig::new("a", "p", "t", serde_json::json!({})),
+            ChainStepConfig::new("b", "p", "t", serde_json::json!({})),
+            ChainStepConfig::new("c", "p", "t", serde_json::json!({})),
+        ];
+        let results = vec![
+            step_result("a", serde_json::json!({"x": 1})),
+            step_result("b", serde_json::json!({"y": 2})),
+            None,
+        ];
+        let origin = test_origin();
+        // Execution path: a -> c (skipped b)
+        let execution_path: Vec<String> = vec!["a".into(), "c".into()];
+        let template = serde_json::json!({"prev": "{{prev.body}}"});
+        let result = resolve_template(
+            &template,
+            &origin,
+            &results,
+            &steps,
+            "c1",
+            2,
+            &execution_path,
+        );
+        // prev should be "a" (index 0), not "b" (index 1)
+        assert_eq!(result["prev"], serde_json::json!({"x": 1}));
     }
 }
