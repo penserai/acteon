@@ -215,6 +215,7 @@ impl Gateway {
         self.metrics.increment_dispatched();
         let start = std::time::Instant::now();
         let dispatched_at = Utc::now();
+        let event_id = uuid::Uuid::now_v7().to_string();
 
         // 1. Build a lock name scoped to this specific action.
         let lock_name = format!(
@@ -344,6 +345,7 @@ impl Gateway {
         // 5. Emit audit record (tracked async task for graceful shutdown).
         if let Some(ref audit) = self.audit {
             let record = build_audit_record(
+                event_id.clone(),
                 &action,
                 &verdict,
                 &outcome,
@@ -366,8 +368,8 @@ impl Gateway {
         //    headers, and HMAC-signed approval URLs before broadcasting.
         if !dry_run {
             let stream_event = StreamEvent {
-                id: uuid::Uuid::now_v7().to_string(),
-                timestamp: Utc::now(),
+                id: event_id,
+                timestamp: dispatched_at,
                 event_type: StreamEventType::ActionDispatched {
                     outcome: sanitize_outcome(&outcome),
                     provider: action.provider.to_string(),
@@ -1811,7 +1813,7 @@ impl Gateway {
             };
 
             let record = AuditRecord {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: uuid::Uuid::now_v7().to_string(),
                 action_id: chain_state.origin_action.id.to_string(),
                 chain_id: Some(chain_state.chain_id.clone()),
                 namespace: chain_state.namespace.clone(),
@@ -1901,7 +1903,7 @@ impl Gateway {
             let duration_ms = duration_ms.max(0) as u64;
 
             let record = AuditRecord {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: uuid::Uuid::now_v7().to_string(),
                 action_id: chain_state.origin_action.id.to_string(),
                 chain_id: Some(chain_state.chain_id.clone()),
                 namespace: chain_state.namespace.clone(),
@@ -2583,6 +2585,7 @@ fn enrich_audit_metadata(action: &Action) -> serde_json::Value {
 /// Build an `AuditRecord` from the dispatch context.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn build_audit_record(
+    id: String,
     action: &Action,
     verdict: &RuleVerdict,
     outcome: &ActionOutcome,
@@ -2691,7 +2694,7 @@ fn build_audit_record(
     };
 
     AuditRecord {
-        id: uuid::Uuid::new_v4().to_string(),
+        id,
         action_id: action.id.to_string(),
         chain_id,
         namespace: action.namespace.to_string(),

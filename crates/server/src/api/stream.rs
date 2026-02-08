@@ -28,7 +28,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::stream::Stream;
 use serde::Deserialize;
 use tokio::sync::broadcast;
@@ -199,14 +199,14 @@ pub async fn stream(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    let (replay_events, live_cutoff) = if let Some(ref id) = last_event_id {
+    let (replay_events, last_replayed_id) = if let Some(ref id) = last_event_id {
         replay_from_audit(state.audit.as_deref(), id, allowed_tenants.as_ref(), &query).await
     } else {
         (Vec::new(), None)
     };
 
     // 6. Build the filtered SSE stream (replay + live).
-    let event_stream = make_event_stream(rx, allowed_tenants, query, guard, live_cutoff);
+    let event_stream = make_event_stream(rx, allowed_tenants, query, guard, last_replayed_id);
 
     // Prepend replay events before the live stream.
     let replay_stream = futures::stream::iter(replay_events);
@@ -228,7 +228,7 @@ async fn replay_from_audit(
     last_event_id: &str,
     allowed_tenants: Option<&Vec<String>>,
     query: &StreamQuery,
-) -> (Vec<Result<Event, Infallible>>, Option<DateTime<Utc>>) {
+) -> (Vec<Result<Event, Infallible>>, Option<String>) {
     let Some(audit) = audit else {
         debug!("no audit store configured, skipping SSE replay");
         return (Vec::new(), None);
@@ -280,9 +280,14 @@ async fn replay_from_audit(
     records.reverse();
 
     let mut replay_events = Vec::new();
-    let mut cutoff = from;
+    let mut last_id = Some(last_event_id.to_string());
 
     for record in &records {
+        // Skip the event that the client already has.
+        if record.id == last_event_id {
+            continue;
+        }
+
         // Tenant isolation.
         if let Some(tenants) = allowed_tenants
             && !tenants.iter().any(|t| t == &record.tenant)
@@ -309,10 +314,8 @@ async fn replay_from_audit(
             action_id: Some(record.action_id.clone()),
         };
 
-        // Track the latest replayed event timestamp for dedup cutoff.
-        if stream_event.timestamp > cutoff {
-            cutoff = stream_event.timestamp;
-        }
+        // Track the latest replayed event ID for dedup cutoff.
+        last_id = Some(stream_event.id.clone());
 
         let event_id = stream_event.id.clone();
         let type_tag = stream_event_type_tag(&stream_event.event_type);
@@ -323,11 +326,11 @@ async fn replay_from_audit(
 
     debug!(
         replayed = replay_events.len(),
-        cutoff = %cutoff,
+        last_id = ?last_id,
         "SSE replay complete"
     );
 
-    (replay_events, Some(cutoff))
+    (replay_events, last_id)
 }
 
 /// Build a filtered SSE event stream from the broadcast receiver.
@@ -342,7 +345,7 @@ fn make_event_stream(
     allowed_tenants: Option<Vec<String>>,
     query: StreamQuery,
     conn_guard: ConnectionGuard,
-    live_cutoff: Option<DateTime<Utc>>,
+    last_replayed_id: Option<String>,
 ) -> impl Stream<Item = Result<Event, Infallible>> {
     let broadcast_stream = BroadcastStream::new(rx);
 
@@ -353,8 +356,9 @@ fn make_event_stream(
         match result {
             Ok(event) => {
                 // Dedup: skip events already covered by replay.
-                if let Some(cutoff) = live_cutoff
-                    && event.timestamp <= cutoff
+                // Since event IDs are UUIDv7, they are lexicographically sortable by time.
+                if let Some(ref last_id) = last_replayed_id
+                    && &event.id <= last_id
                 {
                     return None;
                 }
@@ -434,7 +438,7 @@ mod tests {
     use acteon_audit::AuditRecord;
     use acteon_audit_memory::MemoryAuditStore;
     use acteon_core::{ActionOutcome, ProviderResponse};
-    use chrono::Utc;
+    use chrono::{DateTime, Utc};
 
     #[tokio::test]
     async fn connection_registry_acquire_and_release() {
@@ -876,7 +880,7 @@ mod tests {
         let last_id = uuid::Uuid::now_v7().to_string();
         // We need a UUIDv7 with an older timestamp. Let's use the store and
         // query with a timestamp we know is before the record.
-        let (events, cutoff) = replay_from_audit(
+        let (_events, cutoff) = replay_from_audit(
             Some(&store as &dyn AuditStore),
             &last_id,
             None,
@@ -941,16 +945,17 @@ mod tests {
 
     #[tokio::test]
     async fn cutoff_dedup_skips_old_live_events() {
-        let cutoff_time = Utc::now();
         let (tx, rx) = broadcast::channel(128);
         let guard = ConnectionGuard {
             counter: Arc::new(AtomicUsize::new(1)),
         };
 
-        // Create an event with timestamp at the cutoff (should be skipped).
+        let last_id = uuid::Uuid::now_v7().to_string();
+
+        // Create an event with ID equal to the cutoff (should be skipped).
         let old_event = StreamEvent {
-            id: uuid::Uuid::now_v7().to_string(),
-            timestamp: cutoff_time,
+            id: last_id.clone(),
+            timestamp: Utc::now(),
             event_type: StreamEventType::ActionDispatched {
                 outcome: ActionOutcome::Deduplicated,
                 provider: "email".into(),
@@ -961,10 +966,16 @@ mod tests {
             action_id: Some("a".into()),
         };
 
-        // Create an event with timestamp after the cutoff (should pass through).
+        // Create an event with ID greater than the cutoff (should pass through).
+        // Since we want a greater ID, we just generate a new v7 which should be greater.
+        let mut new_id = uuid::Uuid::now_v7().to_string();
+        while new_id <= last_id {
+            new_id = uuid::Uuid::now_v7().to_string();
+        }
+
         let new_event = StreamEvent {
-            id: uuid::Uuid::now_v7().to_string(),
-            timestamp: cutoff_time + chrono::Duration::seconds(1),
+            id: new_id,
+            timestamp: Utc::now(),
             event_type: StreamEventType::ActionDispatched {
                 outcome: ActionOutcome::Deduplicated,
                 provider: "email".into(),
@@ -975,7 +986,7 @@ mod tests {
             action_id: Some("a".into()),
         };
 
-        let s = make_event_stream(rx, None, StreamQuery::default(), guard, Some(cutoff_time));
+        let s = make_event_stream(rx, None, StreamQuery::default(), guard, Some(last_id));
         let mut s = Box::pin(s);
 
         let _ = tx.send(old_event);
@@ -987,6 +998,55 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 1, "only the event after cutoff should pass through");
+    }
+
+    #[tokio::test]
+    async fn replay_skips_last_event_id() {
+        let store = MemoryAuditStore::new();
+        let now = Utc::now();
+
+        // Create two records.
+        let id1 = uuid::Uuid::now_v7().to_string();
+        let record1 = mk_audit_record(
+            &id1,
+            "ns",
+            "t1",
+            "a",
+            "executed",
+            serde_json::json!({"status": "Success"}),
+            now - chrono::Duration::seconds(1),
+        );
+
+        let id2 = uuid::Uuid::now_v7().to_string();
+        let record2 = mk_audit_record(
+            &id2,
+            "ns",
+            "t1",
+            "a",
+            "executed",
+            serde_json::json!({"status": "Success"}),
+            now,
+        );
+
+        store.record(record1).await.unwrap();
+        store.record(record2).await.unwrap();
+
+        // Reconnect with ID of the first record.
+        let (events, last_id) = replay_from_audit(
+            Some(&store as &dyn AuditStore),
+            &id1,
+            None,
+            &StreamQuery::default(),
+        )
+        .await;
+
+        // Should only return the second record (skipping the first).
+        assert_eq!(events.len(), 1, "should have replayed exactly 1 event");
+        assert_eq!(
+            last_id,
+            Some(id2),
+            "last_id should be the ID of the second record"
+        );
     }
 
     #[tokio::test]
