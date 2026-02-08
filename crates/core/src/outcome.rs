@@ -89,6 +89,13 @@ pub enum ActionOutcome {
         #[serde(default)]
         fallback_chain: Vec<String>,
     },
+    /// Action was scheduled for delayed execution.
+    Scheduled {
+        /// Unique identifier for the scheduled action.
+        action_id: String,
+        /// When the action is scheduled to be dispatched.
+        scheduled_for: DateTime<Utc>,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -300,6 +307,30 @@ mod tests {
                 assert!(fallback_chain.is_empty());
             }
             _ => panic!("expected CircuitOpen"),
+        }
+    }
+
+    #[test]
+    fn outcome_scheduled() {
+        let scheduled_for = chrono::Utc::now() + chrono::Duration::seconds(300);
+        let outcome = ActionOutcome::Scheduled {
+            action_id: "sched-abc-123".into(),
+            scheduled_for,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("sched-abc-123"));
+        assert!(json.contains("scheduled_for"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::Scheduled {
+                action_id,
+                scheduled_for: sf,
+            } => {
+                assert_eq!(action_id, "sched-abc-123");
+                // Millisecond precision roundtrip
+                assert_eq!(sf.timestamp_millis(), scheduled_for.timestamp_millis());
+            }
+            other => panic!("expected Scheduled, got {other:?}"),
         }
     }
 

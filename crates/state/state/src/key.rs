@@ -30,6 +30,10 @@ pub enum KeyKind {
     Chain,
     /// Index of pending chain steps awaiting advancement.
     PendingChains,
+    /// Scheduled action data awaiting delayed dispatch.
+    ScheduledAction,
+    /// Index of pending scheduled actions by dispatch time.
+    PendingScheduled,
     Custom(String),
 }
 
@@ -53,6 +57,8 @@ impl KeyKind {
             Self::PendingApprovals => "pending_approvals",
             Self::Chain => "chain",
             Self::PendingChains => "pending_chains",
+            Self::ScheduledAction => "scheduled_action",
+            Self::PendingScheduled => "pending_scheduled",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -138,6 +144,8 @@ mod tests {
         assert_eq!(KeyKind::PendingApprovals.as_str(), "pending_approvals");
         assert_eq!(KeyKind::Chain.as_str(), "chain");
         assert_eq!(KeyKind::PendingChains.as_str(), "pending_chains");
+        assert_eq!(KeyKind::ScheduledAction.as_str(), "scheduled_action");
+        assert_eq!(KeyKind::PendingScheduled.as_str(), "pending_scheduled");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

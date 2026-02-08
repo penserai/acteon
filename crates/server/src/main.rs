@@ -496,6 +496,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             enable_approval_retry: config.background.enable_approval_retry,
             enable_chain_advancement: !config.chains.definitions.is_empty(),
             chain_check_interval: Duration::from_secs(5),
+            enable_scheduled_actions: config.background.enable_scheduled_actions,
+            scheduled_check_interval: Duration::from_secs(
+                config.background.scheduled_check_interval_seconds,
+            ),
             namespace: config.background.namespace.clone(),
             tenant: config.background.tenant.clone(),
         };
@@ -505,6 +509,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (timeout_tx, mut timeout_rx) = tokio::sync::mpsc::channel(100);
         let (approval_retry_tx, mut approval_retry_rx) = tokio::sync::mpsc::channel(100);
         let (chain_advance_tx, mut chain_advance_rx) = tokio::sync::mpsc::channel(100);
+        let (scheduled_action_tx, mut scheduled_action_rx) = tokio::sync::mpsc::channel(100);
 
         let mut bg_builder = BackgroundProcessorBuilder::new()
             .config(bg_config)
@@ -519,6 +524,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !config.chains.definitions.is_empty() {
             bg_builder = bg_builder.chain_advance_channel(chain_advance_tx);
+        }
+
+        if config.background.enable_scheduled_actions {
+            bg_builder = bg_builder.scheduled_action_channel(scheduled_action_tx);
         }
 
         let (mut processor, shutdown_tx) = bg_builder
@@ -801,6 +810,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         );
                     }
                 });
+            }
+        });
+
+        // Spawn consumer for scheduled action events.
+        // Dispatches the action through the gateway and emits an SSE event.
+        let scheduled_gateway = Arc::clone(&gateway);
+        tokio::spawn(async move {
+            while let Some(event) = scheduled_action_rx.recv().await {
+                info!(
+                    action_id = %event.action_id,
+                    namespace = %event.namespace,
+                    tenant = %event.tenant,
+                    "dispatching scheduled action"
+                );
+
+                // Emit SSE stream event for the scheduled action.
+                let gw = scheduled_gateway.read().await;
+                let _ = gw.stream_tx().send(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    event_type: StreamEventType::ScheduledActionDue {
+                        action_id: event.action_id.clone(),
+                    },
+                    namespace: event.namespace.clone(),
+                    tenant: event.tenant.clone(),
+                    action_type: Some(event.action.action_type.clone()),
+                    action_id: Some(event.action_id.clone()),
+                });
+
+                // Mark the action payload so that handle_schedule rejects re-scheduling.
+                // This prevents infinite loops when a Schedule rule matches
+                // the same action on re-dispatch.
+                let mut action = event.action;
+                if let Some(obj) = action.payload.as_object_mut() {
+                    obj.insert(
+                        "_scheduled_dispatch".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+                match gw.dispatch(action, None).await {
+                    Ok(outcome) => {
+                        info!(
+                            action_id = %event.action_id,
+                            ?outcome,
+                            "scheduled action dispatched"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            action_id = %event.action_id,
+                            error = %e,
+                            "failed to dispatch scheduled action"
+                        );
+                    }
+                }
             }
         });
 

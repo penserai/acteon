@@ -76,6 +76,11 @@ pub enum RuleAction {
         /// Name of the chain configuration to use.
         chain: String,
     },
+    /// Schedule the action for delayed execution.
+    Schedule {
+        /// Delay in seconds before the action is dispatched.
+        delay_seconds: u64,
+    },
 }
 
 /// Where a rule was loaded from.
@@ -279,6 +284,7 @@ mod tests {
             RuleAction::Chain {
                 chain: "search-summarize-email".into(),
             },
+            RuleAction::Schedule { delay_seconds: 300 },
         ];
 
         for action in &actions {

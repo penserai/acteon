@@ -58,6 +58,11 @@ impl RuleAction {
         matches!(self, Self::Chain { .. })
     }
 
+    /// Returns `true` if this action schedules the operation for delayed execution.
+    pub fn is_schedule(&self) -> bool {
+        matches!(self, Self::Schedule { .. })
+    }
+
     /// Returns a human-readable label for the action kind.
     pub fn kind_label(&self) -> &'static str {
         match self {
@@ -73,6 +78,7 @@ impl RuleAction {
             Self::Group { .. } => "group",
             Self::RequestApproval { .. } => "request_approval",
             Self::Chain { .. } => "chain",
+            Self::Schedule { .. } => "schedule",
         }
     }
 }
@@ -202,5 +208,30 @@ mod tests {
         };
         assert!(group.is_group());
         assert!(!group.is_state_machine());
+    }
+
+    #[test]
+    fn schedule_predicates() {
+        let schedule = RuleAction::Schedule { delay_seconds: 300 };
+        assert!(schedule.is_schedule());
+        assert!(!schedule.is_allow());
+        assert!(!schedule.is_deny());
+        assert!(!schedule.is_chain());
+        assert_eq!(schedule.kind_label(), "schedule");
+    }
+
+    #[test]
+    fn schedule_kind_label() {
+        assert_eq!(
+            RuleAction::Schedule { delay_seconds: 1 }.kind_label(),
+            "schedule"
+        );
+        assert_eq!(
+            RuleAction::Schedule {
+                delay_seconds: 604_800
+            }
+            .kind_label(),
+            "schedule"
+        );
     }
 }

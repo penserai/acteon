@@ -366,6 +366,7 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
         StreamEventType::Timeout { .. } => "timeout",
         StreamEventType::ChainAdvanced { .. } => "chain_step",
         StreamEventType::ApprovalRequired { .. } => "approval",
+        StreamEventType::ScheduledActionDue { .. } => "scheduled",
     }
 }
 

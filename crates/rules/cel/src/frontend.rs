@@ -87,6 +87,11 @@ enum CelAction {
         /// Name of the chain configuration to use.
         chain: String,
     },
+    /// Schedule the action for delayed execution.
+    Schedule {
+        /// Delay in seconds before the action is dispatched.
+        delay_seconds: u64,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +185,9 @@ fn compile_action(action: &CelAction) -> RuleAction {
         },
         CelAction::Chain { chain } => RuleAction::Chain {
             chain: chain.clone(),
+        },
+        CelAction::Schedule { delay_seconds } => RuleAction::Schedule {
+            delay_seconds: *delay_seconds,
         },
     }
 }
@@ -328,9 +336,14 @@ rules:
       type: modify
       changes:
         key: value
+  - name: r8
+    condition: "true"
+    action:
+      type: schedule
+      delay_seconds: 300
 "#;
         let rules = fe.parse(content).unwrap();
-        assert_eq!(rules.len(), 7);
+        assert_eq!(rules.len(), 8);
         assert!(rules[0].action.is_allow());
         assert!(rules[1].action.is_deny());
         assert!(rules[2].action.is_suppress());
@@ -338,6 +351,65 @@ rules:
         assert!(rules[4].action.is_reroute());
         assert!(rules[5].action.is_throttle());
         assert!(rules[6].action.is_modify());
+        assert!(rules[7].action.is_schedule());
+    }
+
+    #[test]
+    fn parse_schedule_action_with_cel_condition() {
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: delay-low-priority
+    priority: 5
+    description: "Schedule low-priority emails for later"
+    condition: 'action.payload.priority < 3'
+    action:
+      type: schedule
+      delay_seconds: 600
+"#;
+        let rules = fe.parse(content).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "delay-low-priority");
+        assert_eq!(rules[0].priority, 5);
+        assert!(rules[0].action.is_schedule());
+        match &rules[0].action {
+            RuleAction::Schedule { delay_seconds } => {
+                assert_eq!(*delay_seconds, 600);
+            }
+            other => panic!("expected Schedule, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn e2e_schedule_verdict_from_cel() {
+        let fe = CelFrontend;
+        let content = r#"
+rules:
+  - name: delay-send
+    condition: 'action.action_type == "send_email"'
+    action:
+      type: schedule
+      delay_seconds: 120
+"#;
+        let rules = fe.parse(content).unwrap();
+        let engine = RuleEngine::new(rules);
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = EvalContext::new(&action, &store, &env);
+
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        match verdict {
+            RuleVerdict::Schedule {
+                rule,
+                delay_seconds,
+            } => {
+                assert_eq!(rule, "delay-send");
+                assert_eq!(delay_seconds, 120);
+            }
+            other => panic!("expected Schedule verdict, got {other:?}"),
+        }
     }
 
     #[test]

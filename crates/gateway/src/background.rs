@@ -39,6 +39,10 @@ pub struct BackgroundConfig {
     pub enable_chain_advancement: bool,
     /// How often to check for pending chains (default: 5 seconds).
     pub chain_check_interval: Duration,
+    /// Whether scheduled action processing is enabled (default: false).
+    pub enable_scheduled_actions: bool,
+    /// How often to check for due scheduled actions (default: 5 seconds).
+    pub scheduled_check_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -56,6 +60,8 @@ impl Default for BackgroundConfig {
             enable_approval_retry: true,
             enable_chain_advancement: true,
             chain_check_interval: Duration::from_secs(5),
+            enable_scheduled_actions: false,
+            scheduled_check_interval: Duration::from_secs(5),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -99,6 +105,24 @@ pub struct ChainAdvanceEvent {
     pub chain_id: String,
 }
 
+/// Event emitted when a scheduled action is due for dispatch.
+///
+// TODO(scheduled-actions): The consumer of this event must be careful not to
+// re-dispatch the action through the full rule pipeline, as the same Schedule
+// rule could fire again creating an infinite loop. Either bypass rules entirely
+// or mark the action to prevent re-scheduling.
+#[derive(Debug, Clone)]
+pub struct ScheduledActionDueEvent {
+    /// Namespace of the scheduled action.
+    pub namespace: String,
+    /// Tenant of the scheduled action.
+    pub tenant: String,
+    /// The scheduled action ID.
+    pub action_id: String,
+    /// The serialized action to dispatch.
+    pub action: acteon_core::Action,
+}
+
 /// Event emitted when a pending approval needs notification retry.
 #[derive(Debug, Clone)]
 pub struct ApprovalRetryEvent {
@@ -129,6 +153,8 @@ pub struct BackgroundProcessor {
     approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
     /// Channel to send chain advance events.
     chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
+    /// Channel to send scheduled action due events.
+    scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
 }
 
 impl BackgroundProcessor {
@@ -150,6 +176,7 @@ impl BackgroundProcessor {
             timeout_tx: None,
             approval_retry_tx: None,
             chain_advance_tx: None,
+            scheduled_action_tx: None,
         }
     }
 
@@ -181,6 +208,16 @@ impl BackgroundProcessor {
         self
     }
 
+    /// Set a channel to receive scheduled action due events.
+    #[must_use]
+    pub fn with_scheduled_action_channel(
+        mut self,
+        tx: mpsc::Sender<ScheduledActionDueEvent>,
+    ) -> Self {
+        self.scheduled_action_tx = Some(tx);
+        self
+    }
+
     /// Run the background processor until shutdown is signaled.
     pub async fn run(&mut self) {
         info!("background processor starting");
@@ -189,6 +226,7 @@ impl BackgroundProcessor {
         let mut timeout_interval = interval(self.config.timeout_check_interval);
         let mut cleanup_interval = interval(self.config.cleanup_interval);
         let mut chain_interval = interval(self.config.chain_check_interval);
+        let mut scheduled_interval = interval(self.config.scheduled_check_interval);
 
         loop {
             tokio::select! {
@@ -209,6 +247,11 @@ impl BackgroundProcessor {
                 _ = chain_interval.tick(), if self.config.enable_chain_advancement => {
                     if let Err(e) = self.advance_pending_chains().await {
                         error!(error = %e, "error advancing chains");
+                    }
+                }
+                _ = scheduled_interval.tick(), if self.config.enable_scheduled_actions => {
+                    if let Err(e) = self.process_scheduled_actions().await {
+                        error!(error = %e, "error processing scheduled actions");
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -465,6 +508,134 @@ impl BackgroundProcessor {
         }
     }
 
+    /// Process scheduled actions that are due for dispatch.
+    ///
+    /// Uses the timeout index for efficient O(log N + M) lookups of expired
+    /// `PendingScheduled` keys, loads the corresponding `ScheduledAction` data,
+    /// and emits dispatch events.
+    ///
+    /// Uses an atomic claim key (`check_and_set`) to prevent double-dispatch
+    /// when multiple server instances poll concurrently.
+    async fn process_scheduled_actions(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(ref tx) = self.scheduled_action_tx else {
+            return Ok(());
+        };
+
+        let now_ms = Utc::now().timestamp_millis();
+
+        // Use the timeout index for efficient O(log N + M) queries instead of
+        // scanning all PendingScheduled keys (which would be O(N)).
+        let expired_keys = self.state.get_expired_timeouts(now_ms).await?;
+
+        // Filter to only PendingScheduled keys (the timeout index is shared
+        // with EventTimeout keys).
+        let due_keys: Vec<String> = expired_keys
+            .into_iter()
+            .filter(|k| k.contains(":pending_scheduled:"))
+            .collect();
+
+        if due_keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut dispatched = 0u32;
+
+        for key in due_keys {
+            // Parse namespace:tenant:pending_scheduled:action_id
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                warn!(key = %key, "invalid pending scheduled key format");
+                continue;
+            }
+            let namespace = parts[0];
+            let tenant = parts[1];
+            let action_id = parts[3];
+
+            // Atomically claim this scheduled action to prevent double-dispatch.
+            // If another instance already claimed it, `check_and_set` returns false.
+            let claim_key = StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::ScheduledAction,
+                format!("{action_id}:claim"),
+            );
+            let claimed = self
+                .state
+                .check_and_set(
+                    &claim_key,
+                    "claimed",
+                    Some(std::time::Duration::from_secs(60)),
+                )
+                .await?;
+            if !claimed {
+                debug!(action_id = %action_id, "scheduled action already claimed by another instance");
+                continue;
+            }
+
+            // Load the scheduled action data.
+            let sched_key = StateKey::new(namespace, tenant, KeyKind::ScheduledAction, action_id);
+            let Some(data_str) = self.state.get(&sched_key).await? else {
+                // Already processed, clean up pending key.
+                let pending_key =
+                    StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
+                self.state.delete(&pending_key).await?;
+                self.state.remove_timeout_index(&pending_key).await?;
+                continue;
+            };
+
+            let Ok(data) = serde_json::from_str::<serde_json::Value>(&data_str) else {
+                warn!(action_id = %action_id, "failed to parse scheduled action data");
+                continue;
+            };
+
+            let Some(action_val) = data.get("action") else {
+                warn!(action_id = %action_id, "scheduled action missing action field");
+                continue;
+            };
+
+            let Ok(action) = serde_json::from_value::<acteon_core::Action>(action_val.clone())
+            else {
+                warn!(action_id = %action_id, "failed to deserialize scheduled action");
+                continue;
+            };
+
+            // Delete the scheduled action data and pending key.
+            self.state.delete(&sched_key).await?;
+            let pending_key =
+                StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
+            self.state.delete(&pending_key).await?;
+            self.state.remove_timeout_index(&pending_key).await?;
+
+            info!(
+                action_id = %action_id,
+                namespace = %namespace,
+                tenant = %tenant,
+                "dispatching scheduled action"
+            );
+
+            let event = ScheduledActionDueEvent {
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_id: action_id.to_string(),
+                action,
+            };
+
+            if tx.send(event).await.is_err() {
+                warn!("scheduled action event channel closed");
+                return Ok(());
+            }
+            dispatched += 1;
+        }
+
+        if dispatched > 0 {
+            debug!(count = dispatched, "dispatched due scheduled actions");
+        }
+
+        Ok(())
+    }
+
     /// Scan for pending chains and emit advance events.
     ///
     /// Uses the chain-ready index for efficient O(log N + M) lookups instead
@@ -517,6 +688,7 @@ pub struct BackgroundProcessorBuilder {
     timeout_tx: Option<mpsc::Sender<TimeoutEvent>>,
     approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
     chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
+    scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -532,6 +704,7 @@ impl BackgroundProcessorBuilder {
             timeout_tx: None,
             approval_retry_tx: None,
             chain_advance_tx: None,
+            scheduled_action_tx: None,
         }
     }
 
@@ -591,6 +764,13 @@ impl BackgroundProcessorBuilder {
         self
     }
 
+    /// Set the scheduled action event channel.
+    #[must_use]
+    pub fn scheduled_action_channel(mut self, tx: mpsc::Sender<ScheduledActionDueEvent>) -> Self {
+        self.scheduled_action_tx = Some(tx);
+        self
+    }
+
     /// Build the background processor.
     ///
     /// Returns the processor and a shutdown sender.
@@ -624,6 +804,10 @@ impl BackgroundProcessorBuilder {
             processor = processor.with_chain_advance_channel(tx);
         }
 
+        if let Some(tx) = self.scheduled_action_tx {
+            processor = processor.with_scheduled_action_channel(tx);
+        }
+
         Ok((processor, shutdown_tx))
     }
 }
@@ -655,6 +839,8 @@ mod tests {
                 enable_approval_retry: false,
                 enable_chain_advancement: false,
                 chain_check_interval: Duration::from_secs(5),
+                enable_scheduled_actions: false,
+                scheduled_check_interval: Duration::from_secs(5),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -677,6 +863,252 @@ mod tests {
         // Wait for processor to stop
         let result = tokio::time::timeout(Duration::from_secs(1), handle).await;
         assert!(result.is_ok(), "processor should stop within timeout");
+    }
+
+    #[tokio::test]
+    async fn background_processor_scheduled_action_config_defaults() {
+        let config = BackgroundConfig::default();
+        assert!(!config.enable_scheduled_actions);
+        assert_eq!(config.scheduled_check_interval, Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn background_processor_builder_with_scheduled_channel() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state = Arc::new(MemoryStateStore::new());
+        let (sched_tx, _sched_rx) = mpsc::channel(10);
+
+        let result = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_scheduled_actions: true,
+                scheduled_check_interval: Duration::from_millis(100),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(state)
+            .scheduled_action_channel(sched_tx)
+            .build();
+
+        assert!(
+            result.is_ok(),
+            "builder with scheduled channel should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_processor_dispatches_due_scheduled_action() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Manually store a scheduled action that is already due.
+        let action_id = "sched-due-001";
+        let action = acteon_core::Action::new(
+            namespace,
+            tenant,
+            "email",
+            "send_email",
+            serde_json::json!({"to": "user@test.com"}),
+        );
+        let now = Utc::now();
+        let past_due = now - chrono::Duration::seconds(10);
+
+        // Store the scheduled action data.
+        let sched_key = StateKey::new(namespace, tenant, KeyKind::ScheduledAction, action_id);
+        let sched_data = serde_json::json!({
+            "action_id": action_id,
+            "action": action,
+            "scheduled_for": past_due.to_rfc3339(),
+            "created_at": (past_due - chrono::Duration::seconds(60)).to_rfc3339(),
+        });
+        state
+            .set(&sched_key, &sched_data.to_string(), None)
+            .await
+            .unwrap();
+
+        // Store in the pending index with a past-due timestamp.
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        // Build processor with scheduled action channel.
+        let (sched_tx, mut sched_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                group_flush_interval: Duration::from_secs(100),
+                timeout_check_interval: Duration::from_secs(100),
+                cleanup_interval: Duration::from_secs(100),
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                chain_check_interval: Duration::from_secs(100),
+                enable_scheduled_actions: true,
+                scheduled_check_interval: Duration::from_millis(50),
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .scheduled_action_channel(sched_tx)
+            .build()
+            .unwrap();
+
+        // Start processor.
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Wait for the scheduled action event.
+        let event = tokio::time::timeout(Duration::from_secs(2), sched_rx.recv())
+            .await
+            .expect("should receive scheduled action event within timeout");
+        assert!(event.is_some(), "event should not be None");
+
+        let event = event.unwrap();
+        assert_eq!(event.action_id, action_id);
+        assert_eq!(event.namespace, namespace);
+        assert_eq!(event.tenant, tenant);
+        assert_eq!(event.action.action_type, "send_email");
+
+        // Verify cleanup: scheduled action data should be deleted.
+        let data = state.get(&sched_key).await.unwrap();
+        assert!(
+            data.is_none(),
+            "scheduled action data should be cleaned up after dispatch"
+        );
+
+        // Shutdown.
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
+    async fn background_processor_skips_not_yet_due_action() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Store a scheduled action that is NOT yet due (1 hour in the future).
+        let action_id = "sched-future-001";
+        let action = acteon_core::Action::new(
+            namespace,
+            tenant,
+            "email",
+            "send_email",
+            serde_json::json!({"to": "user@test.com"}),
+        );
+        let future_time = Utc::now() + chrono::Duration::hours(1);
+
+        let sched_key = StateKey::new(namespace, tenant, KeyKind::ScheduledAction, action_id);
+        let sched_data = serde_json::json!({
+            "action_id": action_id,
+            "action": action,
+            "scheduled_for": future_time.to_rfc3339(),
+            "created_at": Utc::now().to_rfc3339(),
+        });
+        state
+            .set(&sched_key, &sched_data.to_string(), None)
+            .await
+            .unwrap();
+
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
+        state
+            .set(
+                &pending_key,
+                &future_time.timestamp_millis().to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, future_time.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (sched_tx, mut sched_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                group_flush_interval: Duration::from_secs(100),
+                timeout_check_interval: Duration::from_secs(100),
+                cleanup_interval: Duration::from_secs(100),
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                chain_check_interval: Duration::from_secs(100),
+                enable_scheduled_actions: true,
+                scheduled_check_interval: Duration::from_millis(50),
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .scheduled_action_channel(sched_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Wait a bit and verify no event was received (action is not yet due).
+        let result = tokio::time::timeout(Duration::from_millis(300), sched_rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "should NOT receive event for future-scheduled action"
+        );
+
+        // Data should still exist in state store.
+        let data = state.get(&sched_key).await.unwrap();
+        assert!(data.is_some(), "future-scheduled action data should remain");
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
+    async fn background_processor_no_channel_skips_scheduled() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state = Arc::new(MemoryStateStore::new());
+
+        // Enable scheduled actions but do NOT set a channel.
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                chain_check_interval: Duration::from_secs(100),
+                enable_scheduled_actions: true,
+                scheduled_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(state)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Should not panic or error even without a channel.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = shutdown_tx.send(()).await;
+        let result = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        assert!(result.is_ok(), "processor should stop cleanly");
     }
 
     #[tokio::test]
@@ -709,6 +1141,8 @@ mod tests {
                 enable_approval_retry: false,
                 enable_chain_advancement: false,
                 chain_check_interval: Duration::from_secs(5),
+                enable_scheduled_actions: false,
+                scheduled_check_interval: Duration::from_secs(5),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })

@@ -72,6 +72,11 @@ pub enum StreamEventType {
         /// The approval request ID.
         approval_id: String,
     },
+    /// A scheduled action has reached its dispatch time.
+    ScheduledActionDue {
+        /// The scheduled action ID.
+        action_id: String,
+    },
 }
 
 /// Sanitize an [`ActionOutcome`] for safe inclusion in SSE stream events.
@@ -135,6 +140,7 @@ pub fn outcome_category(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::ChainStarted { .. } => "chain_started",
         ActionOutcome::DryRun { .. } => "dry_run",
         ActionOutcome::CircuitOpen { .. } => "circuit_open",
+        ActionOutcome::Scheduled { .. } => "scheduled",
     }
 }
 
@@ -278,6 +284,15 @@ pub fn reconstruct_outcome(
             Some(ActionOutcome::CircuitOpen {
                 provider,
                 fallback_chain,
+            })
+        }
+        "scheduled" => {
+            let action_id = details.get("action_id")?.as_str()?.to_owned();
+            let scheduled_for_str = details.get("scheduled_for")?.as_str()?;
+            let scheduled_for = scheduled_for_str.parse::<DateTime<Utc>>().ok()?;
+            Some(ActionOutcome::Scheduled {
+                action_id,
+                scheduled_for,
             })
         }
         _ => None,
@@ -1122,6 +1137,83 @@ mod tests {
                 assert_eq!(fallback_chain, vec!["sms", "webhook"]);
             }
             other => panic!("expected CircuitOpen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_category_scheduled() {
+        let scheduled_for = Utc::now() + chrono::Duration::seconds(60);
+        assert_eq!(
+            outcome_category(&ActionOutcome::Scheduled {
+                action_id: "s1".into(),
+                scheduled_for,
+            }),
+            "scheduled"
+        );
+    }
+
+    #[test]
+    fn reconstruct_scheduled() {
+        let scheduled_for = Utc::now() + chrono::Duration::seconds(300);
+        let details = serde_json::json!({
+            "action_id": "sched-xyz",
+            "scheduled_for": scheduled_for.to_rfc3339(),
+        });
+        let outcome = reconstruct_outcome("scheduled", &details).unwrap();
+        match outcome {
+            ActionOutcome::Scheduled {
+                action_id,
+                scheduled_for: sf,
+            } => {
+                assert_eq!(action_id, "sched-xyz");
+                assert_eq!(sf.timestamp_millis(), scheduled_for.timestamp_millis());
+            }
+            other => panic!("expected Scheduled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_scheduled_missing_fields_returns_none() {
+        let details = serde_json::json!({"action_id": "s1"});
+        assert!(
+            reconstruct_outcome("scheduled", &details).is_none(),
+            "missing scheduled_for should return None"
+        );
+
+        let details = serde_json::json!({"scheduled_for": "2026-01-01T00:00:00Z"});
+        assert!(
+            reconstruct_outcome("scheduled", &details).is_none(),
+            "missing action_id should return None"
+        );
+    }
+
+    #[test]
+    fn scheduled_action_due_stream_event_serializes() {
+        let event = make_event(StreamEventType::ScheduledActionDue {
+            action_id: "sched-123".into(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("scheduled_action_due"));
+        assert!(json.contains("sched-123"));
+
+        // Verify the type tag is correct in the JSON
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"].as_str().unwrap(), "scheduled_action_due");
+    }
+
+    #[test]
+    fn scheduled_action_due_event_type_roundtrip() {
+        // Test the enum variant directly (without flatten conflict)
+        let event_type = StreamEventType::ScheduledActionDue {
+            action_id: "sched-456".into(),
+        };
+        let json = serde_json::to_string(&event_type).unwrap();
+        let back: StreamEventType = serde_json::from_str(&json).unwrap();
+        match back {
+            StreamEventType::ScheduledActionDue { action_id } => {
+                assert_eq!(action_id, "sched-456");
+            }
+            other => panic!("expected ScheduledActionDue, got {other:?}"),
         }
     }
 

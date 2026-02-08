@@ -1336,6 +1336,42 @@ mod tests {
         assert_eq!(verdict.rule_name(), Some("chain-rule"));
     }
 
+    #[test]
+    fn rule_verdict_schedule() {
+        let verdict = RuleVerdict::Schedule {
+            rule: "delay-rule".into(),
+            delay_seconds: 300,
+        };
+        assert_eq!(verdict.rule_name(), Some("delay-rule"));
+    }
+
+    #[tokio::test]
+    async fn engine_schedule_verdict() {
+        let rule = Rule::new(
+            "delay-send",
+            Expr::Bool(true),
+            RuleAction::Schedule { delay_seconds: 600 },
+        );
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = test_context(&action, &store, &env);
+
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        match verdict {
+            RuleVerdict::Schedule {
+                rule,
+                delay_seconds,
+            } => {
+                assert_eq!(rule, "delay-send");
+                assert_eq!(delay_seconds, 600);
+            }
+            other => panic!("expected Schedule, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn engine_chain_verdict() {
         let rule = Rule::new(

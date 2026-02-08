@@ -332,6 +332,12 @@ pub struct BackgroundProcessingConfig {
     /// Whether to retry failed approval notifications.
     #[serde(default = "default_enable_approval_retry")]
     pub enable_approval_retry: bool,
+    /// Whether to process scheduled actions.
+    #[serde(default)]
+    pub enable_scheduled_actions: bool,
+    /// How often to check for due scheduled actions (seconds).
+    #[serde(default = "default_scheduled_check_interval")]
+    pub scheduled_check_interval_seconds: u64,
     /// Namespace to scan for timeouts (required for timeout processing).
     #[serde(default)]
     pub namespace: String,
@@ -350,6 +356,8 @@ impl Default for BackgroundProcessingConfig {
             enable_group_flush: default_enable_group_flush(),
             enable_timeout_processing: default_enable_timeout_processing(),
             enable_approval_retry: default_enable_approval_retry(),
+            enable_scheduled_actions: false,
+            scheduled_check_interval_seconds: default_scheduled_check_interval(),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -382,6 +390,10 @@ fn default_enable_timeout_processing() -> bool {
 
 fn default_enable_approval_retry() -> bool {
     true
+}
+
+fn default_scheduled_check_interval() -> u64 {
+    5
 }
 
 /// Configuration for the optional LLM guardrail.

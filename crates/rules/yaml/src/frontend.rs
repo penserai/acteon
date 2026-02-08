@@ -315,6 +315,9 @@ fn compile_action(action: &YamlAction) -> RuleAction {
         YamlAction::Chain { chain } => RuleAction::Chain {
             chain: chain.clone(),
         },
+        YamlAction::Schedule { delay_seconds } => RuleAction::Schedule {
+            delay_seconds: *delay_seconds,
+        },
     }
 }
 
@@ -616,6 +619,13 @@ rules:
       type: request_approval
       notify_provider: email
       timeout_seconds: 3600
+  - name: r11
+    condition:
+      field: x
+      eq: 1
+    action:
+      type: schedule
+      delay_seconds: 60
 "#;
         let rules = fe.parse(yaml).unwrap();
         assert!(rules[0].action.is_allow());
@@ -628,6 +638,65 @@ rules:
         assert!(rules[7].action.is_state_machine());
         assert!(rules[8].action.is_group());
         assert!(rules[9].action.is_request_approval());
+        assert!(rules[10].action.is_schedule());
+    }
+
+    #[test]
+    fn compile_schedule_action() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: delay-send
+    condition:
+      field: action.action_type
+      eq: "send_email"
+    action:
+      type: schedule
+      delay_seconds: 600
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "delay-send");
+        assert!(rules[0].action.is_schedule());
+        match &rules[0].action {
+            RuleAction::Schedule { delay_seconds } => {
+                assert_eq!(*delay_seconds, 600);
+            }
+            other => panic!("expected Schedule, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_rule_evaluates_to_schedule_verdict() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: delay-notification
+    condition:
+      field: action.action_type
+      eq: "send_email"
+    action:
+      type: schedule
+      delay_seconds: 120
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        let engine = RuleEngine::new(rules);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let ctx = EvalContext::new(&action, &store, &env);
+
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        match verdict {
+            RuleVerdict::Schedule {
+                rule,
+                delay_seconds,
+            } => {
+                assert_eq!(rule, "delay-notification");
+                assert_eq!(delay_seconds, 120);
+            }
+            other => panic!("expected Schedule verdict, got {other:?}"),
+        }
     }
 
     #[test]
