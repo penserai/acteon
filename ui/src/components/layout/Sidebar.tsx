@@ -5,7 +5,7 @@ import { useUiStore } from '../../stores/ui'
 import {
   LayoutDashboard, Send, BookOpen, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
-  PanelLeftClose, PanelLeftOpen, X,
+  PanelLeftClose, PanelLeftOpen, X, ExternalLink,
 } from 'lucide-react'
 import logoPng from '../../assets/logo.png'
 import styles from './Sidebar.module.css'
@@ -23,6 +23,12 @@ const mainItems = [
   { to: '/dlq', icon: AlertTriangle, label: 'Dead-Letter Queue' },
   { to: '/stream', icon: Rss, label: 'Stream' },
   { to: '/embeddings', icon: Brain, label: 'Embeddings' },
+  {
+    to: 'https://penserai.github.io/acteon',
+    icon: ExternalLink,
+    label: 'Documentation',
+    external: true,
+  },
 ]
 
 const settingsItems = [
@@ -140,30 +146,47 @@ export function Sidebar() {
   )
 }
 
-function SidebarSection({ items, collapsed }: { items: typeof mainItems; collapsed: boolean }) {
+function SidebarSection({ items, collapsed }: { items: (typeof mainItems[0] & { external?: boolean })[]; collapsed: boolean }) {
   return (
     <ul className={styles.sectionList}>
       {items.map((item) => (
         <li key={item.to}>
-          <NavLink
-            to={item.to}
-            end={item.to === '/'}
-            className={({ isActive }) =>
-              cn(
+          {item.external ? (
+            <a
+              href={item.to}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={cn(
                 styles.navLink,
                 collapsed ? styles.navLinkCollapsed : styles.navLinkExpanded,
-                isActive ? styles.navLinkActive : styles.navLinkInactive,
-              )
-            }
-            title={collapsed ? item.label : undefined}
-          >
-            {({ isActive }) => (
-              <>
-                <item.icon className={cn(styles.navIcon, isActive && styles.navIconActive)} />
-                {!collapsed && <span className={styles.navLabel}>{item.label}</span>}
-              </>
-            )}
-          </NavLink>
+                styles.navLinkInactive,
+              )}
+              title={collapsed ? item.label : undefined}
+            >
+              <item.icon className={styles.navIcon} />
+              {!collapsed && <span className={styles.navLabel}>{item.label}</span>}
+            </a>
+          ) : (
+            <NavLink
+              to={item.to}
+              end={item.to === '/'}
+              className={({ isActive }) =>
+                cn(
+                  styles.navLink,
+                  collapsed ? styles.navLinkCollapsed : styles.navLinkExpanded,
+                  isActive ? styles.navLinkActive : styles.navLinkInactive,
+                )
+              }
+              title={collapsed ? item.label : undefined}
+            >
+              {({ isActive }) => (
+                <>
+                  <item.icon className={cn(styles.navIcon, isActive && styles.navIconActive)} />
+                  {!collapsed && <span className={styles.navLabel}>{item.label}</span>}
+                </>
+              )}
+            </NavLink>
+          )}
         </li>
       ))}
     </ul>

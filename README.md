@@ -47,6 +47,7 @@ The name draws from the Greek myth of Actaeon, a hunter transformed by Artemis i
 
 ### Developer Experience
 
+- **Admin UI** — Polished web interface for monitoring and configuration
 - **OpenAPI/Swagger** — Auto-generated API documentation with interactive UI
 - **Polyglot Clients** — Official SDKs for Rust, Python, Node.js/TypeScript, Go, and Java
 - **Simulation Framework** — Test harness with mock providers, failure injection, and multi-node scenarios
@@ -120,6 +121,7 @@ cargo run -p acteon-server
 
 The server starts on `http://127.0.0.1:8080` with the in-memory state backend and no rules loaded. You can then:
 
+- Open the **Admin UI** at [http://127.0.0.1:8080/](http://127.0.0.1:8080/)
 - Open **Swagger UI** at [http://127.0.0.1:8080/swagger-ui/](http://127.0.0.1:8080/swagger-ui/)
 - Fetch the **OpenAPI spec** at [http://127.0.0.1:8080/api-doc/openapi.json](http://127.0.0.1:8080/api-doc/openapi.json)
 - Hit the **health endpoint**: `curl http://127.0.0.1:8080/health`
@@ -154,6 +156,10 @@ Create an `acteon.toml` file (all sections are optional -- defaults are shown):
 host = "127.0.0.1"
 port = 8080
 # shutdown_timeout_seconds = 30  # Max time to wait for pending tasks during shutdown
+
+[ui]
+# enabled = true
+# dist_path = "ui/dist"
 
 [state]
 backend = "memory"   # "memory", "redis", "postgres", "dynamodb", or "clickhouse"

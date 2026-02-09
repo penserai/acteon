@@ -947,6 +947,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
         connection_registry: Some(connection_registry),
         config: config_snapshot,
+        ui_path: Some(config.ui.dist_path.clone()),
+        ui_enabled: config.ui.enabled,
     };
     let app = acteon_server::api::router(state);
 

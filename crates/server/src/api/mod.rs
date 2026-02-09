@@ -24,6 +24,7 @@ use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -62,6 +63,10 @@ pub struct AppState {
     pub connection_registry: Option<Arc<ConnectionRegistry>>,
     /// Sanitized configuration snapshot (secrets masked).
     pub config: ConfigSnapshot,
+    /// Path to the Admin UI static files.
+    pub ui_path: Option<String>,
+    /// Whether the Admin UI is enabled.
+    pub ui_enabled: bool,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -144,12 +149,33 @@ pub fn router(state: AppState) -> Router {
         .layer(RateLimitLayer::new(state.rate_limiter.clone()))
         .layer(AuthLayer::new(state.auth.clone()));
 
-    Router::new()
+    let mut router = Router::new()
         .merge(public)
         .merge(protected)
+        // Swagger UI must be merged BEFORE the UI fallback, otherwise the fallback
+        // will swallow /swagger-ui requests.
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()));
+
+    // Serve Admin UI static files if enabled and path is provided.
+    if state.ui_enabled {
+        if let Some(ref path_str) = state.ui_path {
+            let path = std::path::PathBuf::from(path_str);
+            if path.exists() {
+                let index_path = path.join("index.html");
+                router = router.fallback_service(ServeDir::new(path).fallback(
+                    tower_http::services::ServeFile::new(index_path),
+                ));
+            } else {
+                tracing::warn!(
+                    path = %path.display(),
+                    "Admin UI directory not found, UI will not be served"
+                );
+            }
+        }
+    }
+
+    router
         .with_state(state)
-        // Swagger UI
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()))
         // W3C Trace Context propagation (extracts traceparent/tracestate from
         // incoming requests so OTel can link server spans to the caller's trace).
         .layer(middleware::from_fn(trace_context::propagate_trace_context))

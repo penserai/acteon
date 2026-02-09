@@ -56,6 +56,15 @@ pub struct MetricsResponse {
     /// Task chains cancelled.
     #[schema(example = 0)]
     pub chains_cancelled: u64,
+    /// Actions pending human approval.
+    #[schema(example = 0)]
+    pub pending_approval: u64,
+    /// Actions rejected because the provider circuit breaker was open.
+    #[schema(example = 0)]
+    pub circuit_open: u64,
+    /// Actions scheduled for delayed execution.
+    #[schema(example = 0)]
+    pub scheduled: u64,
     /// Embedding cache metrics (present when embedding provider is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingMetricsResponse>,

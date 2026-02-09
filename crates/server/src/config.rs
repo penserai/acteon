@@ -17,6 +17,9 @@ pub struct ActeonConfig {
     /// HTTP server bind configuration.
     #[serde(default)]
     pub server: ServerConfig,
+    /// Admin UI configuration.
+    #[serde(default)]
+    pub ui: UiConfig,
     /// Audit trail configuration.
     #[serde(default)]
     pub audit: AuditConfig,
@@ -215,6 +218,35 @@ fn default_host() -> String {
 
 fn default_port() -> u16 {
     8080
+}
+
+/// Admin UI configuration.
+#[derive(Debug, Deserialize)]
+pub struct UiConfig {
+    /// Whether to serve the Admin UI.
+    #[serde(default = "default_ui_enabled")]
+    pub enabled: bool,
+    /// Path to the directory containing the built Admin UI static files.
+    /// Defaults to `"ui/dist"`.
+    #[serde(default = "default_ui_dist")]
+    pub dist_path: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_ui_enabled(),
+            dist_path: default_ui_dist(),
+        }
+    }
+}
+
+fn default_ui_enabled() -> bool {
+    true
+}
+
+fn default_ui_dist() -> String {
+    "ui/dist".to_owned()
 }
 
 /// Configuration for the audit trail system.
@@ -861,6 +893,8 @@ fn truncate(s: &str, max: usize) -> String {
 pub struct ConfigSnapshot {
     /// Server bind and networking settings.
     pub server: ServerSnapshot,
+    /// Admin UI configuration.
+    pub ui: UiSnapshot,
     /// State backend configuration.
     pub state: StateSnapshot,
     /// Executor settings.
@@ -893,6 +927,7 @@ impl From<&ActeonConfig> for ConfigSnapshot {
     fn from(cfg: &ActeonConfig) -> Self {
         Self {
             server: ServerSnapshot::from(&cfg.server),
+            ui: UiSnapshot::from(&cfg.ui),
             state: StateSnapshot::from(&cfg.state),
             executor: ExecutorSnapshot::from(&cfg.executor),
             rules: RulesSnapshot::from(&cfg.rules),
@@ -933,6 +968,24 @@ impl From<&ServerConfig> for ServerSnapshot {
             shutdown_timeout_seconds: cfg.shutdown_timeout_seconds,
             external_url: cfg.external_url.clone(),
             max_sse_connections_per_tenant: cfg.max_sse_connections_per_tenant,
+        }
+    }
+}
+
+/// Sanitized Admin UI configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct UiSnapshot {
+    /// Whether the UI is enabled.
+    pub enabled: bool,
+    /// Path to the UI static files.
+    pub dist_path: String,
+}
+
+impl From<&UiConfig> for UiSnapshot {
+    fn from(cfg: &UiConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            dist_path: cfg.dist_path.clone(),
         }
     }
 }
@@ -1570,6 +1623,10 @@ mod tests {
             snapshot.llm_guardrail.policy,
             "You are a safety checker for actions."
         );
+
+        // UI: enabled and dist_path present
+        assert!(snapshot.ui.enabled);
+        assert_eq!(snapshot.ui.dist_path, "ui/dist");
 
         // Embedding: api_key masked as boolean
         assert!(snapshot.embedding.has_api_key);

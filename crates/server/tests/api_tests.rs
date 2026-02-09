@@ -86,6 +86,8 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
         embedding_metrics: None,
         connection_registry: None,
         config: ConfigSnapshot::default(),
+        ui_path: None,
+        ui_enabled: false,
     }
 }
 
@@ -812,6 +814,8 @@ fn build_approval_state_with_providers(
         embedding_metrics: None,
         connection_registry: None,
         config: ConfigSnapshot::default(),
+        ui_path: None,
+        ui_enabled: false,
     }
 }
 

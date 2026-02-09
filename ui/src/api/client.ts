@@ -27,7 +27,8 @@ export async function apiFetch<T>(
 }
 
 export function apiGet<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
-  const url = new URL(path, window.location.origin)
+  const base = BASE_URL || window.location.origin
+  const url = new URL(path, base)
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== '') url.searchParams.set(k, String(v))

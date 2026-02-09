@@ -14,6 +14,9 @@ cargo clippy --workspace --no-deps -- -D warnings
 # Run all tests
 cargo test --workspace
 
+# Frontend checks
+cd ui && npm run lint && npm run build && cd ..
+
 # Build to catch any remaining issues
 cargo build --workspace
 ```
@@ -21,8 +24,8 @@ cargo build --workspace
 ## Quick Validation
 
 ```bash
-# One-liner to run all checks
-cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace
+# One-liner to run all checks (Rust + Frontend)
+cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace && (cd ui && npm run lint && npm run build)
 ```
 
 ## Running Examples
@@ -53,6 +56,7 @@ cargo run -p acteon-simulation --example postgres_simulation --features postgres
 - `acteon-state-*` - State backend implementations
 - `acteon-audit-*` - Audit backend implementations
 - `acteon-rules-*` - Rule parsing frontends
+- `ui/` - Admin UI (React + Vite + Tailwind v4)
 
 ## Feature Implementation Steps
 
@@ -62,13 +66,14 @@ When implementing a new feature (provider, capability, etc.), follow this layere
 2. **Crate implementation** – Create or modify the relevant crate under `crates/` (provider, gateway logic, etc.)
 3. **Register in workspace** – Add new crate to `Cargo.toml` workspace members and `[workspace.dependencies]`
 4. **Server integration** – Wire into `acteon-server` (routes, handlers, query params, OpenAPI annotations)
-5. **Gateway integration** – Update `acteon-gateway` dispatch pipeline if needed
-6. **Rust client** – Add helper methods to `acteon-client` (`crates/client/src/`)
-7. **Polyglot client SDKs** – Update Python, Node.js, Go, and Java clients in `clients/`
-8. **Tests** – Add unit tests in the crate, SDK tests, and simulation framework tests
-9. **Documentation** – Update `docs/book/` pages (concepts, API reference, examples)
-10. **Simulation example** – Add a simulation example in `crates/simulation/examples/`
-11. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace`
+5. **UI updates** – Update the React frontend in `ui/` to reflect new capabilities
+6. **Gateway integration** – Update `acteon-gateway` dispatch pipeline if needed
+7. **Rust client** – Add helper methods to `acteon-client` (`crates/client/src/`)
+8. **Polyglot client SDKs** – Update Python, Node.js, Go, and Java clients in `clients/`
+9. **Tests** – Add unit tests in the crate, SDK tests, and simulation framework tests
+10. **Documentation** – Update `docs/book/` pages (concepts, API reference, examples)
+11. **Simulation example** – Add a simulation example in `crates/simulation/examples/`
+12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace && (cd ui && npm run lint && npm run build)`
 
 ## Common Clippy Fixes
 
