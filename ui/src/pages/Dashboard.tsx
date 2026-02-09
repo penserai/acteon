@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import { useMetrics } from '../api/hooks/useHealth'
@@ -19,22 +19,28 @@ export function Dashboard() {
   const { data: metrics, isLoading, refetch } = useMetrics()
   const { data: circuits } = useCircuitBreakers()
   const [events, setEvents] = useState<StreamEvent[]>([])
+  const [history, setHistory] = useState<Record<string, unknown>[]>([])
   const historyRef = useRef<Record<string, unknown>[]>([])
 
-  // Accumulate time series
-  if (metrics) {
-    const now = new Date()
-    const point = {
-      time: shortTime(now),
-      executed: metrics.executed,
-      failed: metrics.failed,
-      suppressed: metrics.suppressed,
-      deduplicated: metrics.deduplicated,
+  // Accumulate time series in effect
+  useEffect(() => {
+    if (metrics) {
+      const now = new Date()
+      const point = {
+        time: shortTime(now),
+        executed: metrics.executed,
+        failed: metrics.failed,
+        suppressed: metrics.suppressed,
+        deduplicated: metrics.deduplicated,
+      }
+      const prev = historyRef.current
+      if (prev.length === 0 || prev[prev.length - 1].time !== point.time) {
+        const next = [...prev.slice(-59), point]
+        historyRef.current = next
+        setHistory(next)
+      }
     }
-    if (historyRef.current.length === 0 || historyRef.current[historyRef.current.length - 1].time !== point.time) {
-      historyRef.current = [...historyRef.current.slice(-59), point]
-    }
-  }
+  }, [metrics])
 
   const handleEvent = useCallback((event: StreamEvent) => {
     setEvents((prev) => [event, ...prev].slice(0, 20))
@@ -78,7 +84,7 @@ export function Dashboard() {
           <div className={styles.chartCard}>
             <h2 className={styles.sectionTitle}>Actions Over Time</h2>
             <TimeSeriesChart
-              data={historyRef.current}
+              data={history}
               series={[
                 { key: 'executed', color: '#10B981', label: 'Executed' },
                 { key: 'failed', color: '#EF4444', label: 'Failed' },

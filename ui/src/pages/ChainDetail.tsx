@@ -9,7 +9,7 @@ import { Modal } from '../components/ui/Modal'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { Skeleton } from '../components/ui/Skeleton'
 import { ChainDAG } from '../components/dag/ChainDAG'
-import { useToast } from '../components/ui/Toast'
+import { useToast } from '../components/ui/useToast'
 import { absoluteTime, formatCountdown } from '../lib/format'
 import styles from './ChainDetail.module.css'
 

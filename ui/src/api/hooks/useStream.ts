@@ -14,7 +14,11 @@ export function useStream({ namespace, tenant, action_type, event_type, onEvent,
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected')
   const sourceRef = useRef<EventSource | null>(null)
   const onEventRef = useRef(onEvent)
-  onEventRef.current = onEvent
+  useEffect(() => {
+    onEventRef.current = onEvent
+  }, [onEvent])
+
+  const connectRef = useRef<() => void>(() => {})
 
   const connect = useCallback(() => {
     if (!enabled) return
@@ -45,15 +49,24 @@ export function useStream({ namespace, tenant, action_type, event_type, onEvent,
       setStatus('disconnected')
       source.close()
       // Auto-reconnect after 3s
-      setTimeout(() => connect(), 3000)
+      reconnectRef.current = setTimeout(() => connectRef.current(), 3000)
     }
   }, [namespace, tenant, action_type, event_type, enabled])
 
   useEffect(() => {
-    connect()
+    connectRef.current = connect
+  }, [connect])
+
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    // Defer to avoid setState-in-effect warning
+    const timer = setTimeout(() => connect(), 0)
     return () => {
+      clearTimeout(timer)
       sourceRef.current?.close()
       sourceRef.current = null
+      if (reconnectRef.current) clearTimeout(reconnectRef.current)
     }
   }, [connect])
 

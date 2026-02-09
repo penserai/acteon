@@ -1,26 +1,15 @@
-import { createContext, useContext, useCallback, useState, type ReactNode } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react'
 import { cn } from '../../lib/cn'
+import { ToastContext, type Severity } from './useToast'
 import styles from './Toast.module.css'
-
-type Severity = 'success' | 'error' | 'warning' | 'info'
 
 interface Toast {
   id: number
   severity: Severity
   title: string
   description?: string
-}
-
-interface ToastContextType {
-  toast: (severity: Severity, title: string, description?: string) => void
-}
-
-const ToastContext = createContext<ToastContextType>({ toast: () => {} })
-
-export function useToast() {
-  return useContext(ToastContext)
 }
 
 const icons: Record<Severity, ReactNode> = {

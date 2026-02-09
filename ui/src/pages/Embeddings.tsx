@@ -4,7 +4,7 @@ import { apiPost } from '../api/client'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Input } from '../components/ui/Input'
 import { Button } from '../components/ui/Button'
-import { useToast } from '../components/ui/Toast'
+import { useToast } from '../components/ui/useToast'
 import type { SimilarityResponse } from '../types'
 import styles from './Embeddings.module.css'
 

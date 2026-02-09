@@ -11,7 +11,7 @@ import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Drawer } from '../components/ui/Drawer'
 import { JsonViewer } from '../components/ui/JsonViewer'
-import { useToast } from '../components/ui/Toast'
+import { useToast } from '../components/ui/useToast'
 import type { RuleSummary } from '../types'
 import styles from './Rules.module.css'
 
