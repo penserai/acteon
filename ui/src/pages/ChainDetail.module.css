@@ -1,0 +1,76 @@
+@reference "../index.css";
+
+.skeletonContainer {
+  @apply space-y-4;
+}
+
+.skeletonTitle {
+  @apply h-8 w-64;
+}
+
+.skeletonContent {
+  @apply h-[400px] w-full;
+}
+
+.headerActions {
+  @apply flex items-center gap-3;
+}
+
+.executionPath {
+  @apply flex items-center gap-2 mb-4;
+}
+
+.executionPathLabel {
+  @apply text-sm text-gray-500;
+}
+
+.executionPathSteps {
+  @apply flex items-center gap-1;
+}
+
+.executionPathArrow {
+  color: var(--text-separator);
+}
+
+.expiresMessage {
+  @apply text-sm text-gray-500 mb-4;
+}
+
+.stepDetailCard {
+  @apply mt-4 border rounded-lg p-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.stepHeader {
+  @apply flex items-center gap-3 mb-3;
+}
+
+.stepTitle {
+  @apply text-sm font-semibold;
+}
+
+.stepMetadata {
+  @apply grid grid-cols-2 gap-2 text-sm mb-3;
+}
+
+.stepError {
+  @apply col-span-2 text-error-500;
+}
+
+.stepErrorLabel {
+  @apply text-gray-500;
+}
+
+.responseSection {
+  @apply mt-1 rounded-lg p-3;
+  background: var(--bg-surface-secondary);
+}
+
+.responseLabel {
+  @apply text-sm text-gray-500;
+}
+
+.modalContent {
+  @apply mt-2 text-gray-500;
+}

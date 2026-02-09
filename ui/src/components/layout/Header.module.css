@@ -1,0 +1,61 @@
+@reference "../../index.css";
+
+
+.header {
+  @apply h-14 border-b flex items-center justify-between px-4 md:px-6 sticky top-0 z-[200];
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.leftSection {
+  @apply flex items-center gap-3;
+}
+
+.menuButton {
+  @apply md:hidden p-1.5 rounded-md text-gray-400 transition-colors;
+  &:hover {
+    color: var(--hover-text);
+    background: var(--hover-bg);
+  }
+}
+
+.breadcrumbNav {
+  @apply flex items-center gap-1.5 text-sm;
+}
+
+.breadcrumbItem {
+  @apply flex items-center gap-1.5;
+}
+
+.breadcrumbSeparator {
+  color: var(--text-separator);
+}
+
+.breadcrumbCurrent {
+  @apply font-medium;
+  color: var(--text-default);
+}
+
+.breadcrumbLink {
+  @apply text-gray-500;
+}
+
+.rightSection {
+  @apply flex items-center gap-2;
+}
+
+.themeButton {
+  @apply p-2 rounded-md text-gray-400 transition-colors;
+  &:hover {
+    color: var(--hover-text);
+    background: var(--hover-bg);
+  }
+}
+
+.commandButton {
+  @apply flex items-center gap-1.5 px-2.5 py-1 text-xs text-gray-400 border rounded-md transition-colors;
+  border-color: var(--border-default);
+  &:hover {
+    background: var(--hover-bg);
+  }
+}

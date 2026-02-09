@@ -1,0 +1,8 @@
+@reference "../../index.css";
+
+
+.container {
+  @apply h-[400px] border rounded-lg overflow-hidden;
+  background: var(--bg-surface-secondary);
+  border-color: var(--border-default);
+}

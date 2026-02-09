@@ -1,0 +1,58 @@
+@reference "../../index.css";
+
+
+.handle {
+  @apply !bg-gray-300 !w-2 !h-2;
+}
+
+.node {
+  @apply px-4 py-3 rounded-lg border-2 min-w-[140px] text-center transition-all;
+  @apply shadow-sm hover:shadow-md cursor-pointer;
+}
+
+.nodeCompleted {
+  @apply border-success-500 bg-success-50;
+}
+.dark .nodeCompleted {
+  background: rgb(16 185 129 / 0.1);
+}
+
+.nodeFailed {
+  @apply border-error-500 bg-error-50;
+}
+.dark .nodeFailed {
+  background: rgb(239 68 68 / 0.1);
+}
+
+.nodePending {
+  @apply border-gray-300;
+  background: var(--bg-surface);
+}
+.dark .nodePending {
+  border-color: var(--color-gray-600);
+}
+
+.nodeSkipped {
+  @apply border-gray-300 border-dashed;
+  background: var(--bg-surface);
+}
+.dark .nodeSkipped {
+  border-color: var(--color-gray-600);
+}
+
+.nodeActive {
+  @apply ring-4 ring-primary-400/30 animate-pulse;
+}
+
+.content {
+  @apply flex items-center justify-center gap-2;
+}
+
+.label {
+  @apply text-sm font-medium;
+  color: var(--text-default);
+}
+
+.error {
+  @apply text-xs text-error-500 mt-1 truncate max-w-[120px];
+}

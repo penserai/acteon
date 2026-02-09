@@ -1,0 +1,6 @@
+@reference "../../index.css";
+
+
+.emptyState {
+  @apply flex items-center justify-center h-64 text-sm text-gray-500;
+}

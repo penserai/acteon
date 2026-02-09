@@ -1,0 +1,124 @@
+@reference "../../index.css";
+
+
+.desktopNav {
+  @apply hidden md:flex shrink-0 border-r;
+  @apply flex-col h-screen sticky top-0 transition-all duration-200;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.desktopNavCollapsed {
+  @apply w-16;
+}
+
+.desktopNavExpanded {
+  @apply w-60;
+}
+
+.header {
+  @apply flex items-center justify-between px-4 h-14 border-b;
+  border-color: var(--border-default);
+}
+
+.logoWrap {
+  @apply flex items-center gap-2.5 min-w-0;
+}
+
+.logoImg {
+  @apply h-7 w-7 shrink-0;
+}
+
+.logo {
+  @apply text-lg font-bold tracking-tight;
+  color: var(--text-primary);
+}
+
+.toggleButton {
+  @apply p-1.5 rounded-md text-gray-400 transition-colors;
+  &:hover {
+    color: var(--hover-text);
+    background: var(--hover-bg);
+  }
+}
+
+.toggleButtonDesktop {
+  @apply hidden md:block;
+}
+
+.toggleButtonMobile {
+  @apply md:hidden;
+}
+
+.scrollContainer {
+  @apply flex-1 overflow-y-auto py-2;
+}
+
+.settingsHeader {
+  @apply px-4 py-2 mt-2;
+}
+
+.settingsLabel {
+  @apply text-[10px] font-semibold text-gray-400 uppercase tracking-wider;
+}
+
+.settingsDivider {
+  @apply border-t mx-3 my-2;
+  border-color: var(--border-default);
+}
+
+.mobileOverlay {
+  @apply md:hidden fixed inset-0 z-[300];
+}
+
+.backdrop {
+  @apply absolute inset-0 bg-black/50;
+}
+
+.mobileNav {
+  @apply absolute left-0 top-0 h-full w-60 border-r flex flex-col shadow-lg;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.sectionList {
+  @apply space-y-0.5 px-2;
+}
+
+.navLink {
+  @apply flex items-center gap-3 rounded-md transition-colors duration-150;
+}
+
+.navLinkCollapsed {
+  @apply justify-center px-2 py-2;
+}
+
+.navLinkExpanded {
+  @apply px-3 py-2;
+}
+
+.navLinkActive {
+  @apply bg-primary-50 text-primary-500 font-medium border-l-[3px] border-primary-400;
+}
+.dark .navLinkActive {
+  background: rgb(66 84 219 / 0.1);
+}
+
+.navLinkInactive {
+  color: var(--text-tertiary);
+  &:hover {
+    background: var(--hover-bg);
+  }
+}
+
+.navIcon {
+  @apply h-4 w-4 shrink-0;
+}
+
+.navIconActive {
+  @apply text-primary-400;
+}
+
+.navLabel {
+  @apply text-sm truncate;
+}

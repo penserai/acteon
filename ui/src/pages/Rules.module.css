@@ -1,0 +1,50 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex gap-3 mb-4;
+}
+
+.searchContainer {
+  @apply flex-1 max-w-xs;
+}
+
+.detailContent {
+  @apply space-y-4;
+}
+
+.metadataGrid {
+  @apply grid grid-cols-2 gap-3 text-sm;
+}
+
+.descriptionSection {
+  @apply text-sm mt-1;
+}
+
+.descriptionLabel {
+  @apply text-sm text-gray-500;
+}
+
+.actionDetailsSection {
+  @apply mt-2 rounded-lg p-3;
+  background: var(--bg-surface-secondary);
+}
+
+.actionDetailsLabel {
+  @apply text-sm text-gray-500;
+}
+
+.priorityCell {
+  @apply tabular-nums;
+}
+
+.ruleNameCell {
+  @apply font-mono text-sm;
+}
+
+.descriptionCell {
+  @apply text-gray-500 truncate max-w-[200px] block;
+}
+
+.sourceCell {
+  @apply text-xs text-gray-500;
+}

@@ -1,0 +1,28 @@
+@reference "../../index.css";
+
+
+.container {
+  @apply flex flex-col items-center justify-center py-16 text-center;
+}
+
+.icon {
+  @apply mb-4;
+  color: var(--text-separator);
+}
+
+.iconDefault {
+  @apply h-12 w-12;
+}
+
+.title {
+  @apply text-lg font-semibold mb-1;
+  color: var(--text-secondary);
+}
+
+.description {
+  @apply text-sm text-gray-500 max-w-md;
+}
+
+.action {
+  @apply mt-4;
+}

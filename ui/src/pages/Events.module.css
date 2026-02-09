@@ -1,0 +1,46 @@
+@reference "../index.css";
+
+.filterContainer {
+  @apply flex gap-3 mb-4;
+}
+
+.fingerprint {
+  @apply font-mono text-xs;
+}
+
+.timestamp {
+  @apply text-xs text-gray-500;
+}
+
+.drawerContent {
+  @apply space-y-4;
+}
+
+.detailsGrid {
+  @apply space-y-2 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between;
+}
+
+.detailLabel {
+  @apply text-gray-500;
+}
+
+.detailValue {
+  @apply font-mono text-xs;
+}
+
+.transitionSection {
+  @apply pt-4 border-t;
+  border-color: var(--border-default);
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+}
+
+.transitionControls {
+  @apply flex gap-2;
+}

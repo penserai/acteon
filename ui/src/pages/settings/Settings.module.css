@@ -1,0 +1,126 @@
+@reference "../../index.css";
+
+.container {
+  @apply space-y-6;
+}
+
+.card {
+  @apply border rounded-lg p-5;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.cardTitle {
+  @apply text-sm font-semibold mb-4;
+  color: var(--text-secondary);
+}
+
+.grid {
+  @apply space-y-3;
+}
+
+.row {
+  @apply flex items-center justify-between py-1;
+}
+
+.label {
+  @apply text-sm;
+  color: var(--text-muted);
+}
+
+.value {
+  @apply text-sm font-mono;
+  color: var(--text-default);
+}
+
+.valueMuted {
+  @apply text-sm italic;
+  color: var(--text-faint);
+}
+
+.enabledBadge {
+  @apply inline-flex items-center;
+}
+
+.description {
+  @apply text-sm mb-6;
+  color: var(--text-muted);
+}
+
+.featureGrid {
+  @apply grid grid-cols-1 md:grid-cols-2 gap-4;
+}
+
+.featureCard {
+  @apply border rounded-lg p-4 flex items-start gap-3;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.featureIcon {
+  @apply mt-0.5;
+}
+
+.featureContent {
+  @apply flex-1;
+}
+
+.featureName {
+  @apply text-sm font-medium;
+  color: var(--text-default);
+}
+
+.featureDetail {
+  @apply text-xs mt-0.5;
+  color: var(--text-muted);
+}
+
+.codeBlock {
+  @apply font-mono text-xs p-3 rounded-md overflow-x-auto;
+  background: var(--bg-code);
+  color: var(--text-default);
+}
+
+.intervalGrid {
+  @apply grid grid-cols-2 md:grid-cols-4 gap-3;
+}
+
+.intervalCard {
+  @apply border rounded-lg p-3 text-center;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.intervalValue {
+  @apply text-lg font-bold tabular-nums;
+  color: var(--text-primary);
+}
+
+.intervalLabel {
+  @apply text-xs mt-1;
+  color: var(--text-muted);
+}
+
+.providerTable {
+  @apply w-full text-sm;
+}
+
+.providerHeader {
+  @apply text-left text-xs font-medium uppercase tracking-wide py-2;
+  color: var(--text-muted);
+}
+
+.providerCell {
+  @apply py-2 font-mono text-xs;
+  color: var(--text-default);
+  border-top: 1px solid;
+  border-color: var(--border-default);
+}
+
+.themeContainer {
+  @apply space-y-4;
+}
+
+.themeButtons {
+  @apply flex gap-3;
+}

@@ -21,7 +21,7 @@ use acteon_server::auth::crypto::{
     ExposeSecret, MasterKey, decrypt_auth_config, decrypt_value, encrypt_value, parse_master_key,
 };
 use acteon_server::auth::watcher::AuthWatcher;
-use acteon_server::config::ActeonConfig;
+use acteon_server::config::{ActeonConfig, ConfigSnapshot};
 use acteon_server::ratelimit::{RateLimitFileConfig, RateLimiter};
 
 /// Acteon gateway HTTP server.
@@ -951,6 +951,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.server.max_sse_connections_per_tenant.unwrap_or(10),
     ));
 
+    let config_snapshot = ConfigSnapshot::from(&config);
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,
@@ -961,6 +963,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
         connection_registry: Some(connection_registry),
+        config: config_snapshot,
+        ui_path: Some(config.ui.dist_path.clone()),
+        ui_enabled: config.ui.enabled,
     };
     let app = acteon_server::api::router(state);
 

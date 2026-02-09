@@ -1,0 +1,30 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex gap-3 mb-4;
+}
+
+.chainIdCell {
+  @apply font-mono text-xs;
+}
+
+.progressContainer {
+  @apply flex items-center gap-2;
+}
+
+.progressBar {
+  @apply w-16 h-2 rounded-full overflow-hidden;
+  background: var(--bg-meter-track);
+}
+
+.progressFill {
+  @apply h-full bg-primary-400 rounded-full transition-all;
+}
+
+.progressText {
+  @apply text-xs tabular-nums text-gray-500;
+}
+
+.timestampCell {
+  @apply text-xs text-gray-500;
+}

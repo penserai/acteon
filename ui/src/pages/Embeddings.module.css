@@ -1,0 +1,29 @@
+@reference "../index.css";
+
+.container {
+  @apply max-w-xl space-y-4;
+}
+
+.formCard {
+  @apply border rounded-lg p-6 space-y-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.resultCard {
+  @apply border rounded-lg p-6;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.resultLabel {
+  @apply text-sm text-gray-500 mb-1;
+}
+
+.resultValue {
+  @apply text-3xl font-bold tabular-nums;
+}
+
+.resultTopic {
+  @apply text-sm text-gray-500 mt-2;
+}

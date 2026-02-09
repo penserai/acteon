@@ -63,15 +63,17 @@ needs to know when something completes.
 
 ## 3. Scheduling & Time-Based Features
 
-### Delayed/Scheduled Actions
+### Delayed/Scheduled Actions — IMPLEMENTED
 Accept actions with a `dispatch_at` timestamp. The gateway holds them in the
 state backend and dispatches at the scheduled time. Covers use cases like
 "send reminder email in 24 hours" or "retry this action at 3am during low
 traffic."
 
-Implementation: A background task polls for due actions (similar to the
-existing group flush mechanism). State backends already support TTLs and
-scan operations.
+**Implemented**: Actions accept a `dispatch_at` timestamp; the gateway persists
+them in the state backend and a background poller dispatches due actions. Includes
+at-most-once delivery guarantees, configurable grace period, and polyglot client
+SDK support. See [Scheduled Actions](book/features/scheduled-actions.md) for full
+docs.
 
 ### Cron-Based Rule Activation — IMPLEMENTED
 Rules that only apply during certain time windows. Examples:
@@ -94,7 +96,7 @@ reports, periodic health checks).
 
 ## 4. Provider Resilience
 
-### Circuit Breaker
+### Circuit Breaker — IMPLEMENTED
 Track provider health and automatically open the circuit when failure rates
 exceed a threshold. Route to fallback providers during outages. This is
 different from rerouting rules (which are static/conditional) -- a circuit
@@ -102,6 +104,15 @@ breaker is dynamic, automatic, and based on real-time health.
 
 States: Closed (normal) -> Open (failing, reject fast) -> Half-Open (probe).
 Configurable per provider: failure threshold, recovery timeout, probe count.
+
+**Implemented**: Distributed circuit breaker backed by the state store with
+three states (Closed, Open, HalfOpen). Configurable per provider: failure
+threshold, recovery timeout, success threshold, and probe timeout. Non-retryable
+errors (validation, auth) are excluded from failure counts. Fallback provider
+support when circuits open. API endpoints for inspecting and managing circuit
+state. Distributed mutation lock prevents race conditions in multi-instance
+deployments. See [Circuit Breaker](book/features/circuit-breaker.md) for full
+docs.
 
 ### Provider Health Dashboard
 Expose per-provider success rates, latency percentiles, and circuit breaker
@@ -337,8 +348,8 @@ Ranked by impact-to-effort ratio:
 |----------|---------|--------|--------|--------|
 | 1 | Generic Webhook Provider | Low | High | **DONE** |
 | 2 | Dry-Run Mode | Low | High | **DONE** |
-| 3 | Circuit Breaker | Medium | High | Pending |
-| 4 | Delayed/Scheduled Actions | Medium | High | Pending |
+| 3 | Circuit Breaker | Medium | High | **DONE** |
+| 4 | Delayed/Scheduled Actions | Medium | High | **DONE** |
 | 5 | OpenTelemetry Tracing | Medium | High | **DONE** |
 | 6 | Field-Level Audit Redaction | Low | Medium | **DONE** |
 | 7 | Cron-Based Rule Activation | Low | Medium | **DONE** |

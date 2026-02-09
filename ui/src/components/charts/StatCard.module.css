@@ -1,0 +1,42 @@
+@reference "../../index.css";
+
+
+.card {
+  @apply border rounded-lg p-4 text-left w-full;
+  @apply transition-all duration-150;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.cardClickable {
+  @apply cursor-pointer;
+  &:hover {
+    @apply shadow-md;
+    border-color: var(--border-strong);
+  }
+}
+
+.label {
+  @apply text-sm text-gray-500 font-medium uppercase tracking-wide;
+}
+
+.value {
+  @apply text-3xl font-bold tabular-nums mt-1;
+  color: var(--text-primary);
+}
+
+.sparkline {
+  @apply mt-2;
+}
+
+.trend {
+  @apply flex items-center gap-1 mt-1 text-xs;
+}
+
+.trendPositive {
+  @apply text-success-500;
+}
+
+.trendNegative {
+  @apply text-error-500;
+}

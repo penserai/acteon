@@ -66,6 +66,20 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: ui/package-lock.json
+      - run: cd ui && npm ci
+      - run: cd ui && npm run lint
+      - run: cd ui && npm run build
+
   doc:
     name: Doc
     runs-on: ubuntu-latest

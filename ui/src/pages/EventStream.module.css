@@ -1,0 +1,79 @@
+@reference "../index.css";
+
+.controlsContainer {
+  @apply flex items-center gap-3 mb-4;
+}
+
+.statusIndicator {
+  @apply flex items-center gap-1.5;
+}
+
+.statusIcon {
+  @apply h-2.5 w-2.5 fill-current;
+}
+
+.statusIconConnected {
+  @apply text-success-500;
+}
+
+.statusIconConnecting {
+  @apply text-warning-500 animate-pulse;
+}
+
+.statusIconDisconnected {
+  @apply text-error-500;
+}
+
+.statusLabel {
+  @apply text-xs text-gray-500 capitalize;
+}
+
+.filterInput {
+  @apply w-32;
+}
+
+.eventsContainer {
+  @apply border rounded-lg overflow-hidden;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.emptyState {
+  @apply py-12 text-center text-sm text-gray-500;
+}
+
+.eventsList {
+  @apply max-h-[600px] overflow-y-auto;
+  border-top-width: 1px;
+  border-color: var(--border-default);
+
+  & > * + * {
+    border-top-width: 1px;
+    border-color: var(--border-default);
+  }
+}
+
+.eventRow {
+  @apply flex items-center gap-3 px-4 py-2 transition-colors;
+
+  &:hover {
+    background: var(--hover-bg);
+  }
+}
+
+.eventTime {
+  @apply font-mono text-xs text-gray-500 shrink-0 w-16;
+}
+
+.eventType {
+  @apply text-sm;
+  color: var(--text-default);
+}
+
+.eventMeta {
+  @apply text-xs text-gray-400 truncate;
+}
+
+.eventId {
+  @apply font-mono text-xs text-gray-400 ml-auto;
+}

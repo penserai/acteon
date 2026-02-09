@@ -37,6 +37,9 @@ fn build_metrics_response(
         chains_completed: snap.chains_completed,
         chains_failed: snap.chains_failed,
         chains_cancelled: snap.chains_cancelled,
+        pending_approval: snap.pending_approval,
+        circuit_open: snap.circuit_open,
+        scheduled: snap.scheduled,
         embedding,
     }
 }

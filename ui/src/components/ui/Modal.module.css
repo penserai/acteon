@@ -1,0 +1,61 @@
+@reference "../../index.css";
+
+
+.container {
+  @apply fixed inset-0 z-[400] flex items-center justify-center;
+}
+
+.overlay {
+  @apply absolute inset-0 bg-black/50 backdrop-blur-sm;
+}
+
+.modal {
+  @apply relative w-full rounded-xl shadow-lg p-6;
+  background: var(--bg-surface);
+}
+
+.sm {
+  @apply max-w-sm;
+}
+
+.md {
+  @apply max-w-md;
+}
+
+.lg {
+  @apply max-w-lg;
+}
+
+.xl {
+  @apply max-w-xl;
+}
+
+.header {
+  @apply flex items-center justify-between mb-4;
+}
+
+.title {
+  @apply text-lg font-semibold;
+  color: var(--text-primary);
+}
+
+.closeButton {
+  @apply p-1 rounded-md text-gray-400 transition-colors;
+  &:hover {
+    color: var(--hover-text);
+    background: var(--hover-bg);
+  }
+}
+
+.content {
+  @apply text-sm;
+  color: var(--text-secondary);
+}
+
+.footer {
+  @apply mt-6 flex justify-end gap-2;
+}
+
+.closeIcon {
+  @apply h-4 w-4;
+}

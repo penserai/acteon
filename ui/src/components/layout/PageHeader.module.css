@@ -1,0 +1,19 @@
+@reference "../../index.css";
+
+
+.wrapper {
+  @apply flex items-start justify-between pb-6;
+}
+
+.title {
+  @apply text-2xl font-bold tracking-tight;
+  color: var(--text-primary);
+}
+
+.subtitle {
+  @apply text-sm text-gray-500 mt-1;
+}
+
+.actions {
+  @apply flex items-center gap-2;
+}

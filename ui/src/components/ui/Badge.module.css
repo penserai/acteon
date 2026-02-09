@@ -1,0 +1,59 @@
+@reference "../../index.css";
+
+
+.badge {
+  @apply inline-flex items-center rounded-sm font-medium whitespace-nowrap;
+}
+
+.success {
+  @apply bg-success-50 text-success-700;
+}
+.dark .success {
+  background: rgb(16 185 129 / 0.1);
+  color: var(--color-success-300);
+}
+
+.error {
+  @apply bg-error-50 text-error-700;
+}
+.dark .error {
+  background: rgb(239 68 68 / 0.1);
+  color: var(--color-error-300);
+}
+
+.warning {
+  @apply bg-warning-50 text-warning-700;
+}
+.dark .warning {
+  background: rgb(245 158 11 / 0.1);
+  color: var(--color-warning-300);
+}
+
+.info {
+  @apply bg-info-50 text-info-700;
+}
+.dark .info {
+  background: rgb(59 130 246 / 0.1);
+  color: var(--color-info-300);
+}
+
+.pending {
+  @apply bg-pending-50 text-pending-700;
+}
+.dark .pending {
+  background: rgb(139 92 246 / 0.1);
+  color: var(--color-pending-300);
+}
+
+.neutral {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.sm {
+  @apply px-1.5 py-0.5 text-xs;
+}
+
+.md {
+  @apply px-2 py-0.5 text-sm;
+}

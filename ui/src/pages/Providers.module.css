@@ -1,0 +1,61 @@
+@reference "../index.css";
+
+.loadingGrid {
+  @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4;
+}
+
+.providersGrid {
+  @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4;
+}
+
+.providerCard {
+  @apply border rounded-lg p-4 text-left transition-all cursor-pointer;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+
+  &:hover {
+    box-shadow: var(--shadow-md);
+    border-color: var(--border-strong);
+  }
+}
+
+.cardHeader {
+  @apply flex items-center justify-between mb-3;
+}
+
+.providerName {
+  @apply text-sm font-semibold;
+  color: var(--text-default);
+}
+
+.cardMetadata {
+  @apply text-xs text-gray-500 space-y-1;
+}
+
+.detailContent {
+  @apply space-y-6;
+}
+
+.sectionTitle {
+  @apply text-sm font-semibold mb-2;
+}
+
+.detailsGrid {
+  @apply space-y-2 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between;
+}
+
+.detailLabel {
+  @apply text-gray-500;
+}
+
+.fallbackValue {
+  @apply font-mono text-xs;
+}
+
+.actionButtons {
+  @apply flex gap-2;
+}
