@@ -157,20 +157,19 @@ pub fn router(state: AppState) -> Router {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()));
 
     // Serve Admin UI static files if enabled and path is provided.
-    if state.ui_enabled {
-        if let Some(ref path_str) = state.ui_path {
-            let path = std::path::PathBuf::from(path_str);
-            if path.exists() {
-                let index_path = path.join("index.html");
-                router = router.fallback_service(ServeDir::new(path).fallback(
-                    tower_http::services::ServeFile::new(index_path),
-                ));
-            } else {
-                tracing::warn!(
-                    path = %path.display(),
-                    "Admin UI directory not found, UI will not be served"
-                );
-            }
+    if state.ui_enabled && state.ui_path.is_some() {
+        let path_str = state.ui_path.as_ref().unwrap();
+        let path = std::path::PathBuf::from(path_str);
+        if path.exists() {
+            let index_path = path.join("index.html");
+            router = router.fallback_service(ServeDir::new(path).fallback(
+                tower_http::services::ServeFile::new(index_path),
+            ));
+        } else {
+            tracing::warn!(
+                path = %path.display(),
+                "Admin UI directory not found, UI will not be served"
+            );
         }
     }
 
