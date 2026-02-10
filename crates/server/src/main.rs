@@ -652,6 +652,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     action_type: None,
                     action_id: None,
                 });
+                let _ = gw.stream_tx().send(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: chrono::Utc::now(),
+                    event_type: StreamEventType::GroupResolved {
+                        group_id: group.group_id.clone(),
+                        group_key: group.group_key.clone(),
+                    },
+                    namespace: namespace.clone(),
+                    tenant: tenant.clone(),
+                    action_type: None,
+                    action_id: None,
+                });
                 drop(gw);
 
                 let action = Action::new(

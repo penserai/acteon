@@ -10,6 +10,21 @@ interface StreamOptions {
   enabled?: boolean
 }
 
+/** SSE event type names emitted by the server. */
+const SSE_EVENT_TYPES = [
+  'action_dispatched',
+  'group_flushed',
+  'timeout',
+  'chain_advanced',
+  'approval_required',
+  'scheduled_action_due',
+  'chain_step_completed',
+  'chain_completed',
+  'group_event_added',
+  'group_resolved',
+  'approval_resolved',
+] as const
+
 export function useStream({ namespace, tenant, action_type, event_type, onEvent, enabled = true }: StreamOptions) {
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('disconnected')
   const sourceRef = useRef<EventSource | null>(null)
@@ -37,14 +52,29 @@ export function useStream({ namespace, tenant, action_type, event_type, onEvent,
     sourceRef.current = source
 
     source.onopen = () => setStatus('connected')
-    source.onmessage = (e) => {
+
+    // The server sends named SSE events (e.g. `event: action_dispatched`).
+    // EventSource.onmessage only fires for unnamed events, so we must
+    // register a listener for each known event type.
+    const handler = (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as StreamEvent
+        // The flattened JSON uses `type` as the discriminator tag, but the
+        // UI's StreamEvent interface expects `event_type`. Inject it from
+        // the SSE event name so the rest of the UI works correctly.
+        if (!data.event_type) {
+          data.event_type = e.type
+        }
         onEventRef.current(data)
       } catch {
         // ignore parse errors
       }
     }
+
+    for (const eventType of SSE_EVENT_TYPES) {
+      source.addEventListener(eventType, handler)
+    }
+
     source.onerror = () => {
       setStatus('disconnected')
       source.close()

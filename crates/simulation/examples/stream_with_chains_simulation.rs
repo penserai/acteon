@@ -367,13 +367,21 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
         StreamEventType::ChainAdvanced { .. } => "chain_step",
         StreamEventType::ApprovalRequired { .. } => "approval",
         StreamEventType::ScheduledActionDue { .. } => "scheduled",
+        StreamEventType::ChainStepCompleted { .. } => "chain_step_done",
+        StreamEventType::ChainCompleted { .. } => "chain_done",
+        StreamEventType::GroupEventAdded { .. } => "group_event",
+        StreamEventType::GroupResolved { .. } => "group_resolved",
+        StreamEventType::ApprovalResolved { .. } => "approval_resolved",
+        StreamEventType::Unknown => "unknown",
     }
 }
 
 /// Extract `chain_id` from a stream event type, if applicable.
 fn extract_chain_id(event_type: &StreamEventType) -> Option<&str> {
     match event_type {
-        StreamEventType::ChainAdvanced { chain_id } => Some(chain_id),
+        StreamEventType::ChainAdvanced { chain_id }
+        | StreamEventType::ChainStepCompleted { chain_id, .. }
+        | StreamEventType::ChainCompleted { chain_id, .. } => Some(chain_id),
         _ => None,
     }
 }

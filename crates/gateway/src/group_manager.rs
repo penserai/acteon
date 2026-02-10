@@ -103,7 +103,7 @@ impl GroupManager {
         group_by: &[String],
         group_wait_seconds: u64,
         state: &dyn StateStore,
-    ) -> Result<(String, usize, DateTime<Utc>), GatewayError> {
+    ) -> Result<(String, String, usize, DateTime<Utc>), GatewayError> {
         // Compute group key from action fields
         let group_key = compute_group_key(action, group_by);
 
@@ -186,7 +186,7 @@ impl GroupManager {
             .set(&pending_key, &notify_at.to_rfc3339(), None)
             .await?;
 
-        Ok((group_id, group_size, notify_at))
+        Ok((group_id, group_key, group_size, notify_at))
     }
 
     /// Get a group by its key.
@@ -365,7 +365,7 @@ mod tests {
         let state = MemoryStateStore::new();
         let action = test_action();
 
-        let (group_id, size, notify_at) = manager
+        let (group_id, _group_key, size, notify_at) = manager
             .add_to_group(&action, &["metadata.cluster".to_string()], 60, &state)
             .await
             .unwrap();
@@ -383,12 +383,12 @@ mod tests {
         let action1 = test_action();
         let action2 = test_action();
 
-        let (group_id1, size1, _) = manager
+        let (group_id1, _, size1, _) = manager
             .add_to_group(&action1, &["metadata.cluster".to_string()], 60, &state)
             .await
             .unwrap();
 
-        let (group_id2, size2, _) = manager
+        let (group_id2, _, size2, _) = manager
             .add_to_group(&action2, &["metadata.cluster".to_string()], 60, &state)
             .await
             .unwrap();

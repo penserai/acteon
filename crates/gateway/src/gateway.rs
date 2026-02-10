@@ -1258,10 +1258,24 @@ impl Gateway {
         _group_interval_seconds: u64,
         _max_group_size: usize,
     ) -> Result<ActionOutcome, GatewayError> {
-        let (group_id, group_size, notify_at) = self
+        let (group_id, group_key, group_size, notify_at) = self
             .group_manager
             .add_to_group(action, group_by, group_wait_seconds, self.state.as_ref())
             .await?;
+
+        self.emit_stream_event(StreamEvent {
+            id: uuid::Uuid::now_v7().to_string(),
+            timestamp: Utc::now(),
+            event_type: StreamEventType::GroupEventAdded {
+                group_id: group_id.clone(),
+                group_key: group_key.clone(),
+                event_count: group_size,
+            },
+            namespace: action.namespace.to_string(),
+            tenant: action.tenant.to_string(),
+            action_type: Some(action.action_type.clone()),
+            action_id: Some(action.id.to_string()),
+        });
 
         Ok(ActionOutcome::Grouped {
             group_id,
@@ -1552,6 +1566,19 @@ impl Gateway {
                 .await?;
             self.metrics.increment_chains_failed();
             self.emit_chain_terminal_audit(&chain_state, "chain_timed_out");
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: Utc::now(),
+                event_type: StreamEventType::ChainCompleted {
+                    chain_id: chain_id.to_string(),
+                    status: "timed_out".to_string(),
+                    execution_path: chain_state.execution_path.clone(),
+                },
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_type: Some(chain_state.chain_name.clone()),
+                action_id: Some(chain_state.origin_action.id.to_string()),
+            });
             guard
                 .release()
                 .await
@@ -1730,6 +1757,21 @@ impl Gateway {
                         step_duration,
                         Some(&step_payload),
                     );
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: Utc::now(),
+                        event_type: StreamEventType::ChainStepCompleted {
+                            chain_id: chain_id.to_string(),
+                            step_name: step_config.name.clone(),
+                            step_index: step_idx,
+                            success: true,
+                            next_step: Some(chain_config.steps[next_idx].name.clone()),
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(step_config.action_type.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
                 } else {
                     // Chain completed successfully.
                     chain_state.status = ChainStatus::Completed;
@@ -1750,6 +1792,34 @@ impl Gateway {
                         Some(&step_payload),
                     );
                     self.emit_chain_terminal_audit(&chain_state, "chain_completed");
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: Utc::now(),
+                        event_type: StreamEventType::ChainStepCompleted {
+                            chain_id: chain_id.to_string(),
+                            step_name: step_config.name.clone(),
+                            step_index: step_idx,
+                            success: true,
+                            next_step: None,
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(step_config.action_type.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: Utc::now(),
+                        event_type: StreamEventType::ChainCompleted {
+                            chain_id: chain_id.to_string(),
+                            status: "completed".to_string(),
+                            execution_path: chain_state.execution_path.clone(),
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(chain_state.chain_name.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
                     info!(chain_id = %chain_id, "chain completed successfully");
                 }
             }
@@ -1793,6 +1863,34 @@ impl Gateway {
                             );
                         }
                         self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: Utc::now(),
+                            event_type: StreamEventType::ChainStepCompleted {
+                                chain_id: chain_id.to_string(),
+                                step_name: step_config.name.clone(),
+                                step_index: step_idx,
+                                success: false,
+                                next_step: None,
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(step_config.action_type.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: Utc::now(),
+                            event_type: StreamEventType::ChainCompleted {
+                                chain_id: chain_id.to_string(),
+                                status: "failed".to_string(),
+                                execution_path: chain_state.execution_path.clone(),
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(chain_state.chain_name.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
                         warn!(
                             chain_id = %chain_id,
                             step = %step_config.name,
@@ -1834,6 +1932,21 @@ impl Gateway {
                                 step_duration,
                                 Some(&step_payload),
                             );
+                            self.emit_stream_event(StreamEvent {
+                                id: uuid::Uuid::now_v7().to_string(),
+                                timestamp: Utc::now(),
+                                event_type: StreamEventType::ChainStepCompleted {
+                                    chain_id: chain_id.to_string(),
+                                    step_name: step_config.name.clone(),
+                                    step_index: step_idx,
+                                    success: false,
+                                    next_step: Some(chain_config.steps[next_idx].name.clone()),
+                                },
+                                namespace: namespace.to_string(),
+                                tenant: tenant.to_string(),
+                                action_type: Some(step_config.action_type.clone()),
+                                action_id: Some(chain_state.origin_action.id.to_string()),
+                            });
                         } else {
                             chain_state.status = ChainStatus::Completed;
                             chain_state.updated_at = now;
@@ -1857,6 +1970,34 @@ impl Gateway {
                                 Some(&step_payload),
                             );
                             self.emit_chain_terminal_audit(&chain_state, "chain_completed");
+                            self.emit_stream_event(StreamEvent {
+                                id: uuid::Uuid::now_v7().to_string(),
+                                timestamp: Utc::now(),
+                                event_type: StreamEventType::ChainStepCompleted {
+                                    chain_id: chain_id.to_string(),
+                                    step_name: step_config.name.clone(),
+                                    step_index: step_idx,
+                                    success: false,
+                                    next_step: None,
+                                },
+                                namespace: namespace.to_string(),
+                                tenant: tenant.to_string(),
+                                action_type: Some(step_config.action_type.clone()),
+                                action_id: Some(chain_state.origin_action.id.to_string()),
+                            });
+                            self.emit_stream_event(StreamEvent {
+                                id: uuid::Uuid::now_v7().to_string(),
+                                timestamp: Utc::now(),
+                                event_type: StreamEventType::ChainCompleted {
+                                    chain_id: chain_id.to_string(),
+                                    status: "completed".to_string(),
+                                    execution_path: chain_state.execution_path.clone(),
+                                },
+                                namespace: namespace.to_string(),
+                                tenant: tenant.to_string(),
+                                action_type: Some(chain_state.chain_name.clone()),
+                                action_id: Some(chain_state.origin_action.id.to_string()),
+                            });
                         }
                     }
                     acteon_core::chain::StepFailurePolicy::Dlq => {
@@ -1888,6 +2029,36 @@ impl Gateway {
                             );
                         }
                         self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                        if let Some(ref sr) = chain_state.step_results[step_idx] {
+                            self.emit_stream_event(StreamEvent {
+                                id: uuid::Uuid::now_v7().to_string(),
+                                timestamp: Utc::now(),
+                                event_type: StreamEventType::ChainStepCompleted {
+                                    chain_id: chain_id.to_string(),
+                                    step_name: sr.step_name.clone(),
+                                    step_index: step_idx,
+                                    success: false,
+                                    next_step: None,
+                                },
+                                namespace: namespace.to_string(),
+                                tenant: tenant.to_string(),
+                                action_type: Some(step_config.action_type.clone()),
+                                action_id: Some(chain_state.origin_action.id.to_string()),
+                            });
+                        }
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: Utc::now(),
+                            event_type: StreamEventType::ChainCompleted {
+                                chain_id: chain_id.to_string(),
+                                status: "failed".to_string(),
+                                execution_path: chain_state.execution_path.clone(),
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(chain_state.chain_name.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
                     }
                 }
             }
@@ -1920,6 +2091,34 @@ impl Gateway {
                     );
                 }
                 self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: Utc::now(),
+                    event_type: StreamEventType::ChainStepCompleted {
+                        chain_id: chain_id.to_string(),
+                        step_name: step_config.name.clone(),
+                        step_index: step_idx,
+                        success: false,
+                        next_step: None,
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(step_config.action_type.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: Utc::now(),
+                    event_type: StreamEventType::ChainCompleted {
+                        chain_id: chain_id.to_string(),
+                        status: "failed".to_string(),
+                        execution_path: chain_state.execution_path.clone(),
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(chain_state.chain_name.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
             }
         }
 
@@ -2275,6 +2474,19 @@ impl Gateway {
             .await?;
         self.metrics.increment_chains_cancelled();
         self.emit_chain_terminal_audit(&chain_state, "chain_cancelled");
+        self.emit_stream_event(StreamEvent {
+            id: uuid::Uuid::now_v7().to_string(),
+            timestamp: Utc::now(),
+            event_type: StreamEventType::ChainCompleted {
+                chain_id: chain_id.to_string(),
+                status: "cancelled".to_string(),
+                execution_path: chain_state.execution_path.clone(),
+            },
+            namespace: namespace.to_string(),
+            tenant: tenant.to_string(),
+            action_type: Some(chain_state.chain_name.clone()),
+            action_id: Some(chain_state.origin_action.id.to_string()),
+        });
 
         guard
             .release()
@@ -2419,6 +2631,19 @@ impl Gateway {
         })?;
         self.state.set(&approval_key, &updated_json, None).await?;
 
+        self.emit_stream_event(StreamEvent {
+            id: uuid::Uuid::now_v7().to_string(),
+            timestamp: Utc::now(),
+            event_type: StreamEventType::ApprovalResolved {
+                approval_id: id.to_string(),
+                decision: "approved".to_string(),
+            },
+            namespace: namespace.to_string(),
+            tenant: tenant.to_string(),
+            action_type: Some(record.action.action_type.clone()),
+            action_id: Some(record.action.id.to_string()),
+        });
+
         // 5. TOCTOU: re-evaluate rules against the stored action
         let action = &record.action;
         let mut eval_ctx = EvalContext::new(action, self.state.as_ref(), &self.environment);
@@ -2524,13 +2749,26 @@ impl Gateway {
         }
 
         // 4. Update status to "rejected"
-        let mut updated = record;
+        let mut updated = record.clone();
         updated.status = "rejected".to_string();
         updated.decided_at = Some(Utc::now());
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
         self.state.set(&approval_key, &updated_json, None).await?;
+
+        self.emit_stream_event(StreamEvent {
+            id: uuid::Uuid::now_v7().to_string(),
+            timestamp: Utc::now(),
+            event_type: StreamEventType::ApprovalResolved {
+                approval_id: id.to_string(),
+                decision: "rejected".to_string(),
+            },
+            namespace: namespace.to_string(),
+            tenant: tenant.to_string(),
+            action_type: Some(record.action.action_type.clone()),
+            action_id: Some(record.action.id.to_string()),
+        });
 
         Ok(())
     }
@@ -2761,6 +2999,13 @@ impl Gateway {
     /// new receivers, or hold the sender to emit additional events.
     pub fn stream_tx(&self) -> &tokio::sync::broadcast::Sender<StreamEvent> {
         &self.stream_tx
+    }
+
+    /// Emit a stream event on the broadcast channel (fire-and-forget).
+    ///
+    /// No-op if there are no subscribers. Does not propagate send errors.
+    fn emit_stream_event(&self, event: StreamEvent) {
+        let _ = self.stream_tx.send(event);
     }
 }
 

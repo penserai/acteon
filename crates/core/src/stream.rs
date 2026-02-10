@@ -77,6 +77,59 @@ pub enum StreamEventType {
         /// The scheduled action ID.
         action_id: String,
     },
+    /// A chain step completed (successfully or via skip).
+    ChainStepCompleted {
+        /// The chain execution ID.
+        chain_id: String,
+        /// Name of the completed step.
+        step_name: String,
+        /// Index of the completed step (0-based).
+        step_index: usize,
+        /// Whether the step succeeded.
+        success: bool,
+        /// Name of the next step to execute, if any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next_step: Option<String>,
+    },
+    /// A chain execution reached a terminal state.
+    ChainCompleted {
+        /// The chain execution ID.
+        chain_id: String,
+        /// Terminal status: `completed`, `failed`, `cancelled`, `timed_out`.
+        status: String,
+        /// The execution path taken through the chain.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        execution_path: Vec<String>,
+    },
+    /// An event was added to a group.
+    GroupEventAdded {
+        /// The group identifier.
+        group_id: String,
+        /// The group key used for aggregation.
+        group_key: String,
+        /// Current number of events in the group after this addition.
+        event_count: usize,
+    },
+    /// An event group was resolved (manually or after flush).
+    GroupResolved {
+        /// The group identifier.
+        group_id: String,
+        /// The group key.
+        group_key: String,
+    },
+    /// An approval request was resolved (approved or rejected).
+    ApprovalResolved {
+        /// The approval ID.
+        approval_id: String,
+        /// The decision: `"approved"` or `"rejected"`.
+        decision: String,
+    },
+    /// Unknown event type (forward compatibility catch-all).
+    ///
+    /// Older clients that encounter a new event type they don't recognize
+    /// will deserialize it as `Unknown` instead of failing.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Sanitize an [`ActionOutcome`] for safe inclusion in SSE stream events.
@@ -784,6 +837,46 @@ mod tests {
                 },
                 "approval_required",
             ),
+            (
+                StreamEventType::ChainStepCompleted {
+                    chain_id: "c".into(),
+                    step_name: "s".into(),
+                    step_index: 0,
+                    success: true,
+                    next_step: None,
+                },
+                "chain_step_completed",
+            ),
+            (
+                StreamEventType::ChainCompleted {
+                    chain_id: "c".into(),
+                    status: "completed".into(),
+                    execution_path: vec![],
+                },
+                "chain_completed",
+            ),
+            (
+                StreamEventType::GroupEventAdded {
+                    group_id: "g".into(),
+                    group_key: "k".into(),
+                    event_count: 1,
+                },
+                "group_event_added",
+            ),
+            (
+                StreamEventType::GroupResolved {
+                    group_id: "g".into(),
+                    group_key: "k".into(),
+                },
+                "group_resolved",
+            ),
+            (
+                StreamEventType::ApprovalResolved {
+                    approval_id: "a".into(),
+                    decision: "approved".into(),
+                },
+                "approval_resolved",
+            ),
         ];
         for (event_type, expected_tag) in cases {
             let event = make_event(event_type);
@@ -1221,5 +1314,438 @@ mod tests {
     fn reconstruct_unknown_tag_returns_none() {
         let details = serde_json::json!({});
         assert!(reconstruct_outcome("unknown_variant", &details).is_none());
+    }
+
+    // -- New subscription event type roundtrip tests --------------------------
+
+    #[test]
+    fn stream_event_chain_step_completed_roundtrip() {
+        let event = make_event(StreamEventType::ChainStepCompleted {
+            chain_id: "chain-99".into(),
+            step_name: "send_email".into(),
+            step_index: 2,
+            success: true,
+            next_step: Some("notify_slack".into()),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("chain_step_completed"));
+        assert!(json.contains("chain-99"));
+        assert!(json.contains("send_email"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::ChainStepCompleted {
+                chain_id,
+                step_name,
+                step_index,
+                success,
+                next_step,
+            } => {
+                assert_eq!(chain_id, "chain-99");
+                assert_eq!(step_name, "send_email");
+                assert_eq!(step_index, 2);
+                assert!(success);
+                assert_eq!(next_step.as_deref(), Some("notify_slack"));
+            }
+            other => panic!("expected ChainStepCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_chain_step_completed_no_next_step() {
+        let event = make_event(StreamEventType::ChainStepCompleted {
+            chain_id: "chain-99".into(),
+            step_name: "final_step".into(),
+            step_index: 4,
+            success: true,
+            next_step: None,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        // next_step should be omitted when None
+        assert!(!json.contains("next_step"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::ChainStepCompleted { next_step, .. } => {
+                assert!(next_step.is_none());
+            }
+            other => panic!("expected ChainStepCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_chain_completed_roundtrip() {
+        let event = make_event(StreamEventType::ChainCompleted {
+            chain_id: "chain-42".into(),
+            status: "completed".into(),
+            execution_path: vec!["step1".into(), "step2".into(), "step3".into()],
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("chain_completed"));
+        assert!(json.contains("chain-42"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::ChainCompleted {
+                chain_id,
+                status,
+                execution_path,
+            } => {
+                assert_eq!(chain_id, "chain-42");
+                assert_eq!(status, "completed");
+                assert_eq!(execution_path, vec!["step1", "step2", "step3"]);
+            }
+            other => panic!("expected ChainCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_chain_completed_empty_execution_path() {
+        let event = make_event(StreamEventType::ChainCompleted {
+            chain_id: "chain-1".into(),
+            status: "failed".into(),
+            execution_path: vec![],
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        // execution_path should be omitted when empty
+        assert!(!json.contains("execution_path"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::ChainCompleted { execution_path, .. } => {
+                assert!(execution_path.is_empty());
+            }
+            other => panic!("expected ChainCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_group_event_added_roundtrip() {
+        let event = make_event(StreamEventType::GroupEventAdded {
+            group_id: "grp-abc".into(),
+            group_key: "key-xyz".into(),
+            event_count: 7,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("group_event_added"));
+        assert!(json.contains("grp-abc"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::GroupEventAdded {
+                group_id,
+                group_key,
+                event_count,
+            } => {
+                assert_eq!(group_id, "grp-abc");
+                assert_eq!(group_key, "key-xyz");
+                assert_eq!(event_count, 7);
+            }
+            other => panic!("expected GroupEventAdded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_group_resolved_roundtrip() {
+        let event = make_event(StreamEventType::GroupResolved {
+            group_id: "grp-abc".into(),
+            group_key: "key-xyz".into(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("group_resolved"));
+        assert!(json.contains("grp-abc"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::GroupResolved {
+                group_id,
+                group_key,
+            } => {
+                assert_eq!(group_id, "grp-abc");
+                assert_eq!(group_key, "key-xyz");
+            }
+            other => panic!("expected GroupResolved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_event_approval_resolved_roundtrip() {
+        let event = make_event(StreamEventType::ApprovalResolved {
+            approval_id: "appr-123".into(),
+            decision: "approved".into(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("approval_resolved"));
+        assert!(json.contains("appr-123"));
+        assert!(json.contains("approved"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::ApprovalResolved {
+                approval_id,
+                decision,
+            } => {
+                assert_eq!(approval_id, "appr-123");
+                assert_eq!(decision, "approved");
+            }
+            other => panic!("expected ApprovalResolved, got {other:?}"),
+        }
+    }
+
+    // -- Subscription event type tag tests ------------------------------------
+
+    #[test]
+    fn new_event_type_tags_are_snake_case() {
+        let cases: Vec<(StreamEventType, &str)> = vec![
+            (
+                StreamEventType::ChainStepCompleted {
+                    chain_id: "c".into(),
+                    step_name: "s".into(),
+                    step_index: 0,
+                    success: true,
+                    next_step: None,
+                },
+                "chain_step_completed",
+            ),
+            (
+                StreamEventType::ChainCompleted {
+                    chain_id: "c".into(),
+                    status: "completed".into(),
+                    execution_path: vec![],
+                },
+                "chain_completed",
+            ),
+            (
+                StreamEventType::GroupEventAdded {
+                    group_id: "g".into(),
+                    group_key: "k".into(),
+                    event_count: 1,
+                },
+                "group_event_added",
+            ),
+            (
+                StreamEventType::GroupResolved {
+                    group_id: "g".into(),
+                    group_key: "k".into(),
+                },
+                "group_resolved",
+            ),
+            (
+                StreamEventType::ApprovalResolved {
+                    approval_id: "a".into(),
+                    decision: "approved".into(),
+                },
+                "approval_resolved",
+            ),
+        ];
+        for (event_type, expected_tag) in cases {
+            let event = make_event(event_type);
+            let json = serde_json::to_string(&event).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                value["type"].as_str().unwrap(),
+                expected_tag,
+                "type tag mismatch for {expected_tag}"
+            );
+        }
+    }
+
+    // -- Backward compatibility: old JSON without new variants ----------------
+
+    #[test]
+    fn old_stream_event_json_still_deserializes() {
+        // Simulate a JSON payload from before the subscription variants existed.
+        let json = r#"{
+            "id": "old-evt",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "type": "action_dispatched",
+            "outcome": "Deduplicated",
+            "provider": "email",
+            "namespace": "ns",
+            "tenant": "t1"
+        }"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.id, "old-evt");
+        assert!(matches!(
+            event.event_type,
+            StreamEventType::ActionDispatched { .. }
+        ));
+        assert!(event.action_type.is_none());
+        assert!(event.action_id.is_none());
+    }
+
+    // -- ApprovalResolved rejection variant ----------------------------------
+
+    #[test]
+    fn approval_resolved_rejected_roundtrip() {
+        let event = make_event(StreamEventType::ApprovalResolved {
+            approval_id: "appr-456".into(),
+            decision: "rejected".into(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("rejected"));
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::ApprovalResolved { decision, .. } => {
+                assert_eq!(decision, "rejected");
+            }
+            other => panic!("expected ApprovalResolved, got {other:?}"),
+        }
+    }
+
+    // -- ChainStepCompleted with failure -------------------------------------
+
+    #[test]
+    fn chain_step_completed_failure_roundtrip() {
+        let event = make_event(StreamEventType::ChainStepCompleted {
+            chain_id: "chain-err".into(),
+            step_name: "failing_step".into(),
+            step_index: 1,
+            success: false,
+            next_step: None,
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        let back: StreamEvent = serde_json::from_str(&json).unwrap();
+        match back.event_type {
+            StreamEventType::ChainStepCompleted {
+                success, next_step, ..
+            } => {
+                assert!(!success);
+                assert!(next_step.is_none());
+            }
+            other => panic!("expected ChainStepCompleted, got {other:?}"),
+        }
+    }
+
+    // -- ChainCompleted with all terminal statuses ---------------------------
+
+    #[test]
+    fn chain_completed_all_terminal_statuses() {
+        let statuses = ["completed", "failed", "cancelled", "timed_out"];
+        for status in &statuses {
+            let event = make_event(StreamEventType::ChainCompleted {
+                chain_id: "c".into(),
+                status: (*status).to_string(),
+                execution_path: vec!["step1".into()],
+            });
+            let json = serde_json::to_string(&event).unwrap();
+            let back: StreamEvent = serde_json::from_str(&json).unwrap();
+            match back.event_type {
+                StreamEventType::ChainCompleted {
+                    status: s,
+                    execution_path,
+                    ..
+                } => {
+                    assert_eq!(s, *status);
+                    assert_eq!(execution_path, vec!["step1"]);
+                }
+                other => panic!("expected ChainCompleted, got {other:?}"),
+            }
+        }
+    }
+
+    // -- New event types are cloneable ---------------------------------------
+
+    #[test]
+    fn new_event_types_are_cloneable() {
+        let event = make_event(StreamEventType::ChainStepCompleted {
+            chain_id: "c".into(),
+            step_name: "s".into(),
+            step_index: 0,
+            success: true,
+            next_step: Some("n".into()),
+        });
+        let cloned = event.clone();
+        assert_eq!(cloned.id, event.id);
+        assert_eq!(cloned.namespace, event.namespace);
+    }
+
+    // -- New event types carry UUIDv7 IDs ------------------------------------
+
+    #[test]
+    fn new_event_types_support_uuidv7_ids() {
+        let id = uuid::Uuid::now_v7().to_string();
+        let event = StreamEvent {
+            id: id.clone(),
+            timestamp: Utc::now(),
+            event_type: StreamEventType::ChainCompleted {
+                chain_id: "c".into(),
+                status: "completed".into(),
+                execution_path: vec![],
+            },
+            namespace: "ns".into(),
+            tenant: "t1".into(),
+            action_type: None,
+            action_id: None,
+        };
+        let ts = timestamp_from_event_id(&event.id);
+        assert!(
+            ts.is_some(),
+            "should extract timestamp from UUIDv7 event ID"
+        );
+    }
+
+    // -- Sanitization: new event types carry no sensitive data ----------------
+
+    #[test]
+    fn new_event_types_have_no_sensitive_fields() {
+        // Verify that the new event types do not contain ActionOutcome fields
+        // that would need sanitization (response bodies, headers, URLs).
+        // This is a structural test: the new variants only carry string IDs
+        // and status enums, not ProviderResponse or approval URLs.
+        let events = vec![
+            StreamEventType::ChainStepCompleted {
+                chain_id: "c".into(),
+                step_name: "s".into(),
+                step_index: 0,
+                success: true,
+                next_step: None,
+            },
+            StreamEventType::ChainCompleted {
+                chain_id: "c".into(),
+                status: "completed".into(),
+                execution_path: vec![],
+            },
+            StreamEventType::GroupEventAdded {
+                group_id: "g".into(),
+                group_key: "k".into(),
+                event_count: 1,
+            },
+            StreamEventType::GroupResolved {
+                group_id: "g".into(),
+                group_key: "k".into(),
+            },
+            StreamEventType::ApprovalResolved {
+                approval_id: "a".into(),
+                decision: "approved".into(),
+            },
+        ];
+
+        for event_type in events {
+            let event = make_event(event_type);
+            let json = serde_json::to_string(&event).unwrap();
+            // None of these events should contain response bodies, headers,
+            // or HMAC-signed URLs that would require sanitization.
+            assert!(
+                !json.contains("Authorization"),
+                "event should not contain auth headers"
+            );
+            assert!(
+                !json.contains("sig="),
+                "event should not contain HMAC signatures"
+            );
+        }
+    }
+
+    // -- Forward compatibility: unknown event type tag deserializes -----------
+
+    #[test]
+    fn unknown_event_type_tag_deserializes_via_serde_other() {
+        // A future server might emit an event type that this client version
+        // doesn't know about. The `#[serde(other)]` on `Unknown` ensures
+        // deserialization succeeds instead of failing.
+        let json = r#"{
+            "id": "evt-future",
+            "timestamp": "2026-02-09T00:00:00Z",
+            "type": "some_future_event_type",
+            "namespace": "ns",
+            "tenant": "t1"
+        }"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.id, "evt-future");
+        assert!(matches!(event.event_type, StreamEventType::Unknown));
     }
 }

@@ -1311,6 +1311,54 @@ impl ActeonClient {
             Err(Error::Http { status, message })
         }
     }
+
+    /// Subscribe to events for a specific entity via the
+    /// `GET /v1/subscribe/{entity_type}/{entity_id}` endpoint.
+    ///
+    /// This is a convenience method that opens an SSE stream pre-filtered
+    /// for the given entity type and ID.
+    pub async fn subscribe_entity(
+        &self,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> Result<EventStream, Error> {
+        let url = format!(
+            "{}/v1/subscribe/{}/{}",
+            self.base_url, entity_type, entity_id
+        );
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            Ok(stream::event_stream_from_response(response))
+        } else {
+            let status = response.status().as_u16();
+            let message = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "unknown error".to_string());
+            Err(Error::Http { status, message })
+        }
+    }
+
+    /// Subscribe to events for a specific chain.
+    pub async fn subscribe_chain(&self, chain_id: &str) -> Result<EventStream, Error> {
+        self.subscribe_entity("chain", chain_id).await
+    }
+
+    /// Subscribe to events for a specific group.
+    pub async fn subscribe_group(&self, group_id: &str) -> Result<EventStream, Error> {
+        self.subscribe_entity("group", group_id).await
+    }
+
+    /// Subscribe to events for a specific action.
+    pub async fn subscribe_action(&self, action_id: &str) -> Result<EventStream, Error> {
+        self.subscribe_entity("action", action_id).await
+    }
 }
 
 // =============================================================================
