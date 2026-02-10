@@ -183,5 +183,10 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
             action_id,
             scheduled_for,
         } => format!("Scheduled (id: {action_id}, for: {scheduled_for})"),
+        ActionOutcome::RecurringCreated {
+            recurring_id,
+            cron_expr,
+            ..
+        } => format!("RecurringCreated (id: {recurring_id}, cron: {cron_expr})"),
     }
 }

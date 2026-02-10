@@ -752,3 +752,221 @@ func (c *Client) FlushGroup(ctx context.Context, groupKey string) (*FlushGroupRe
 	}
 	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
 }
+
+// =============================================================================
+// Recurring Actions
+// =============================================================================
+
+// CreateRecurring creates a recurring action.
+func (c *Client) CreateRecurring(ctx context.Context, recurring *CreateRecurringAction) (*CreateRecurringResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/recurring", recurring)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result CreateRecurringResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create recurring action"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListRecurring lists recurring actions with optional filters.
+func (c *Client) ListRecurring(ctx context.Context, filter *RecurringFilter) (*ListRecurringResponse, error) {
+	path := "/v1/recurring"
+	if filter != nil {
+		params := url.Values{}
+		if filter.Namespace != "" {
+			params.Set("namespace", filter.Namespace)
+		}
+		if filter.Tenant != "" {
+			params.Set("tenant", filter.Tenant)
+		}
+		if filter.Status != "" {
+			params.Set("status", filter.Status)
+		}
+		if filter.Limit > 0 {
+			params.Set("limit", strconv.Itoa(filter.Limit))
+		}
+		if filter.Offset > 0 {
+			params.Set("offset", strconv.Itoa(filter.Offset))
+		}
+		if len(params) > 0 {
+			path += "?" + params.Encode()
+		}
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list recurring actions"}
+	}
+
+	var result ListRecurringResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetRecurring gets details of a specific recurring action.
+func (c *Client) GetRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/recurring/%s?%s", recurringID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get recurring action"}
+	}
+
+	var detail RecurringDetail
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &detail, nil
+}
+
+// UpdateRecurring updates a recurring action.
+func (c *Client) UpdateRecurring(ctx context.Context, recurringID string, update *UpdateRecurringAction) (*RecurringDetail, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/recurring/%s", recurringID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail RecurringDetail
+		if err := json.Unmarshal(body, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update recurring action"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteRecurring deletes a recurring action.
+func (c *Client) DeleteRecurring(ctx context.Context, recurringID, namespace, tenant string) error {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/recurring/%s?%s", recurringID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete recurring action"}
+}
+
+// PauseRecurring pauses a recurring action.
+func (c *Client) PauseRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
+	body := &RecurringLifecycleRequest{Namespace: namespace, Tenant: tenant}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/recurring/%s/pause", recurringID), body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail RecurringDetail
+		if err := json.Unmarshal(respBody, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Recurring action is already paused"}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to pause recurring action"}
+}
+
+// ResumeRecurring resumes a paused recurring action.
+func (c *Client) ResumeRecurring(ctx context.Context, recurringID, namespace, tenant string) (*RecurringDetail, error) {
+	body := &RecurringLifecycleRequest{Namespace: namespace, Tenant: tenant}
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/recurring/%s/resume", recurringID), body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail RecurringDetail
+		if err := json.Unmarshal(respBody, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Recurring action not found: %s", recurringID)}
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Recurring action is already active"}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to resume recurring action"}
+}

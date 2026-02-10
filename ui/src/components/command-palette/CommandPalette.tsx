@@ -4,7 +4,7 @@ import { Command } from 'cmdk'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
   LayoutDashboard, Send, BookOpen, ScrollText, Link2, ShieldCheck, Rss,
-  Sun, Search,
+  Sun, Search, RefreshCw,
 } from 'lucide-react'
 import { useUiStore } from '../../stores/ui'
 import { useThemeStore } from '../../stores/theme'
@@ -17,6 +17,7 @@ const navItems = [
   { label: 'Audit Trail', to: '/audit', icon: ScrollText, shortcut: '4' },
   { label: 'Approvals', to: '/approvals', icon: ShieldCheck, shortcut: '5' },
   { label: 'Event Stream', to: '/stream', icon: Rss },
+  { label: 'Recurring Actions', to: '/recurring', icon: RefreshCw },
   { label: 'Dispatch Action', to: '/dispatch', icon: Send },
 ]
 

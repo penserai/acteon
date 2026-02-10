@@ -44,6 +44,12 @@ pub struct GatewayMetrics {
     pub circuit_fallbacks: AtomicU64,
     /// Actions scheduled for delayed execution.
     pub scheduled: AtomicU64,
+    /// Recurring actions dispatched successfully.
+    pub recurring_dispatched: AtomicU64,
+    /// Recurring action dispatch errors.
+    pub recurring_errors: AtomicU64,
+    /// Recurring actions skipped (disabled, expired, etc.).
+    pub recurring_skipped: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -142,6 +148,21 @@ impl GatewayMetrics {
         self.scheduled.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the recurring dispatched counter.
+    pub fn increment_recurring_dispatched(&self) {
+        self.recurring_dispatched.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the recurring errors counter.
+    pub fn increment_recurring_errors(&self) {
+        self.recurring_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the recurring skipped counter.
+    pub fn increment_recurring_skipped(&self) {
+        self.recurring_skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -164,6 +185,9 @@ impl GatewayMetrics {
             circuit_transitions: self.circuit_transitions.load(Ordering::Relaxed),
             circuit_fallbacks: self.circuit_fallbacks.load(Ordering::Relaxed),
             scheduled: self.scheduled.load(Ordering::Relaxed),
+            recurring_dispatched: self.recurring_dispatched.load(Ordering::Relaxed),
+            recurring_errors: self.recurring_errors.load(Ordering::Relaxed),
+            recurring_skipped: self.recurring_skipped.load(Ordering::Relaxed),
         }
     }
 }
@@ -209,6 +233,12 @@ pub struct MetricsSnapshot {
     pub circuit_fallbacks: u64,
     /// Actions scheduled for delayed execution.
     pub scheduled: u64,
+    /// Recurring actions dispatched successfully.
+    pub recurring_dispatched: u64,
+    /// Recurring action dispatch errors.
+    pub recurring_errors: u64,
+    /// Recurring actions skipped (disabled, expired, etc.).
+    pub recurring_skipped: u64,
 }
 
 #[cfg(test)]
@@ -238,6 +268,9 @@ mod tests {
         assert_eq!(snap.circuit_transitions, 0);
         assert_eq!(snap.circuit_fallbacks, 0);
         assert_eq!(snap.scheduled, 0);
+        assert_eq!(snap.recurring_dispatched, 0);
+        assert_eq!(snap.recurring_errors, 0);
+        assert_eq!(snap.recurring_skipped, 0);
     }
 
     #[test]
@@ -263,6 +296,9 @@ mod tests {
         m.increment_circuit_transitions();
         m.increment_circuit_fallbacks();
         m.increment_scheduled();
+        m.increment_recurring_dispatched();
+        m.increment_recurring_errors();
+        m.increment_recurring_skipped();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -284,5 +320,8 @@ mod tests {
         assert_eq!(snap.circuit_transitions, 1);
         assert_eq!(snap.circuit_fallbacks, 1);
         assert_eq!(snap.scheduled, 1);
+        assert_eq!(snap.recurring_dispatched, 1);
+        assert_eq!(snap.recurring_errors, 1);
+        assert_eq!(snap.recurring_skipped, 1);
     }
 }

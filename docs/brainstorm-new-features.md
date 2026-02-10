@@ -54,10 +54,14 @@ stripped), backpressure handling (lagged events), and 15s keep-alive. Rust
 client SDK supports `ActeonClient::stream()` with `StreamFilter` builder.
 See [Event Streaming](book/features/event-streaming.md) for full docs.
 
-### Action Status Subscriptions
+### Action Status Subscriptions — IMPLEMENTED
 Subscribe to updates on a specific action ID, chain, or group. Particularly
 useful for long-running chains and approval workflows where the caller
 needs to know when something completes.
+
+**Implemented**: SSE-based subscriptions for individual actions, chains, and
+groups with catch-up delivery of missed events, entity validation, and
+stream UI integration.
 
 ---
 
@@ -87,10 +91,20 @@ Rules that only apply during certain time windows. Examples:
 (`time.hour >= 9 && time.hour < 17 && time.weekday_num <= 5`) frontends.
 See [Time-Based Rules](book/features/time-based-rules.md) for full docs.
 
-### Recurring Actions
+### Recurring Actions — IMPLEMENTED
 Define an action that fires on a cron schedule. Turns Acteon into a
 lightweight scheduler for recurring notifications (daily digests, weekly
 reports, periodic health checks).
+
+**Implemented**: API-only recurring action definitions with 5-field cron
+expressions, IANA timezone support (via `croner` + `chrono-tz`), and a
+background processor that dispatches occurrences through the full gateway
+pipeline. At-most-once delivery per occurrence via distributed CAS claims.
+No-backfill policy prevents dispatch storms after outages. Full CRUD API
+(`POST`/`GET`/`PUT`/`DELETE /v1/recurring`), pause/resume lifecycle, and
+Admin UI with list, create, and detail views. Configurable minimum interval
+(default 60s). See [Recurring Actions](book/features/recurring-actions.md)
+for full docs.
 
 ---
 
@@ -356,3 +370,5 @@ Ranked by impact-to-effort ratio:
 | 8 | Action Replay | Medium | Medium | **DONE** |
 | 9 | WebSocket/SSE Stream | Medium | Medium | **DONE** |
 | 10 | Conditional Chain Branching | Medium | Medium | **DONE** |
+| 11 | Action Status Subscriptions | Low | Medium | **DONE** |
+| 12 | Recurring Actions | Medium | Medium | **DONE** |

@@ -273,6 +273,87 @@ export interface SimilarityResponse {
   topic: string
 }
 
+// ---- Recurring Actions ----
+
+/** Summary returned in list responses. */
+export interface RecurringActionSummary {
+  id: string
+  namespace: string
+  tenant: string
+  cron_expr: string
+  timezone: string
+  enabled: boolean
+  provider: string
+  action_type: string
+  next_execution_at: string | null
+  execution_count: number
+  description: string | null
+  created_at: string
+}
+
+/** Full detail returned by GET /v1/recurring/:id. */
+export interface RecurringAction extends RecurringActionSummary {
+  payload: Record<string, unknown>
+  metadata: Record<string, string>
+  dedup_key: string | null
+  last_executed_at: string | null
+  ends_at: string | null
+  max_executions: number | null
+  labels: Record<string, string>
+  updated_at: string
+}
+
+export interface RecurringActionListResponse {
+  recurring_actions: RecurringActionSummary[]
+  count: number
+}
+
+export interface CreateRecurringActionRequest {
+  namespace: string
+  tenant: string
+  cron_expression: string
+  timezone: string
+  provider: string
+  action_type: string
+  payload: Record<string, unknown>
+  metadata?: Record<string, string>
+  dedup_key?: string | null
+  description?: string | null
+  ends_at?: string | null
+  max_executions?: number | null
+  enabled?: boolean
+}
+
+export interface CreateRecurringActionResponse {
+  id: string
+  name: string | null
+  next_execution_at: string | null
+  status: string
+}
+
+export interface UpdateRecurringActionRequest {
+  namespace: string
+  tenant: string
+  name?: string | null
+  cron_expression?: string
+  timezone?: string
+  enabled?: boolean
+  provider?: string
+  action_type?: string
+  payload?: Record<string, unknown>
+  metadata?: Record<string, string>
+  dedup_key?: string | null
+  description?: string | null
+  max_executions?: number | null
+  ends_at?: string | null
+}
+
+export interface PauseResumeResponse {
+  id: string
+  enabled: boolean
+  next_execution_at: string | null
+}
+
 // ---- Config ----
 export interface ConfigResponse {
   server: {

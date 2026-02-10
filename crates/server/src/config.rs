@@ -405,6 +405,15 @@ pub struct BackgroundProcessingConfig {
     /// How often to check for due scheduled actions (seconds).
     #[serde(default = "default_scheduled_check_interval")]
     pub scheduled_check_interval_seconds: u64,
+    /// Whether to process recurring actions.
+    #[serde(default)]
+    pub enable_recurring_actions: bool,
+    /// How often to check for due recurring actions (seconds).
+    #[serde(default = "default_recurring_check_interval")]
+    pub recurring_check_interval_seconds: u64,
+    /// Maximum number of recurring actions per tenant.
+    #[serde(default = "default_max_recurring_actions_per_tenant")]
+    pub max_recurring_actions_per_tenant: usize,
     /// Namespace to scan for timeouts (required for timeout processing).
     #[serde(default)]
     pub namespace: String,
@@ -425,6 +434,9 @@ impl Default for BackgroundProcessingConfig {
             enable_approval_retry: default_enable_approval_retry(),
             enable_scheduled_actions: false,
             scheduled_check_interval_seconds: default_scheduled_check_interval(),
+            enable_recurring_actions: false,
+            recurring_check_interval_seconds: default_recurring_check_interval(),
+            max_recurring_actions_per_tenant: default_max_recurring_actions_per_tenant(),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -461,6 +473,14 @@ fn default_enable_approval_retry() -> bool {
 
 fn default_scheduled_check_interval() -> u64 {
     5
+}
+
+fn default_recurring_check_interval() -> u64 {
+    60
+}
+
+fn default_max_recurring_actions_per_tenant() -> usize {
+    100
 }
 
 /// Configuration for the optional LLM guardrail.
@@ -1294,7 +1314,7 @@ impl From<&CircuitBreakerServerConfig> for CircuitBreakerSnapshot {
 }
 
 /// Sanitized background processing configuration.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct BackgroundSnapshot {
     /// Whether background processing is enabled.
@@ -1315,6 +1335,19 @@ pub struct BackgroundSnapshot {
     pub enable_scheduled_actions: bool,
     /// Scheduled action check interval in seconds.
     pub scheduled_check_interval_seconds: u64,
+    /// Whether recurring actions are enabled.
+    pub enable_recurring_actions: bool,
+    /// Recurring action check interval in seconds.
+    pub recurring_check_interval_seconds: u64,
+    /// Maximum number of recurring actions per tenant.
+    pub max_recurring_actions_per_tenant: usize,
+}
+
+impl Default for BackgroundSnapshot {
+    fn default() -> Self {
+        let cfg = BackgroundProcessingConfig::default();
+        Self::from(&cfg)
+    }
 }
 
 impl From<&BackgroundProcessingConfig> for BackgroundSnapshot {
@@ -1329,6 +1362,9 @@ impl From<&BackgroundProcessingConfig> for BackgroundSnapshot {
             enable_approval_retry: cfg.enable_approval_retry,
             enable_scheduled_actions: cfg.enable_scheduled_actions,
             scheduled_check_interval_seconds: cfg.scheduled_check_interval_seconds,
+            enable_recurring_actions: cfg.enable_recurring_actions,
+            recurring_check_interval_seconds: cfg.recurring_check_interval_seconds,
+            max_recurring_actions_per_tenant: cfg.max_recurring_actions_per_tenant,
         }
     }
 }
@@ -1693,6 +1729,50 @@ mod tests {
         assert!(json.get("server").is_some());
         assert!(json.get("llm_guardrail").is_some());
         assert!(json.get("providers").is_some());
+    }
+
+    #[test]
+    fn background_config_defaults() {
+        let config: ActeonConfig = toml::from_str("").unwrap();
+        assert!(!config.background.enable_recurring_actions);
+        assert_eq!(config.background.recurring_check_interval_seconds, 60);
+        assert!(!config.background.enable_scheduled_actions);
+        assert_eq!(config.background.scheduled_check_interval_seconds, 5);
+    }
+
+    #[test]
+    fn background_config_recurring_enabled() {
+        let toml = r#"
+            [background]
+            enable_recurring_actions = true
+            recurring_check_interval_seconds = 30
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert!(config.background.enable_recurring_actions);
+        assert_eq!(config.background.recurring_check_interval_seconds, 30);
+    }
+
+    #[test]
+    fn background_snapshot_includes_recurring_fields() {
+        let toml = r#"
+            [background]
+            enable_recurring_actions = true
+            recurring_check_interval_seconds = 120
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        let snapshot = ConfigSnapshot::from(&config);
+        assert!(snapshot.background.enable_recurring_actions);
+        assert_eq!(snapshot.background.recurring_check_interval_seconds, 120);
+    }
+
+    #[test]
+    fn background_snapshot_recurring_defaults() {
+        let config: ActeonConfig = toml::from_str("").unwrap();
+        let snapshot = ConfigSnapshot::from(&config);
+        assert!(!snapshot.background.enable_recurring_actions);
+        assert_eq!(snapshot.background.recurring_check_interval_seconds, 60);
     }
 
     #[test]

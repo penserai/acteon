@@ -3062,6 +3062,7 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::DryRun { .. } => "dry_run",
         ActionOutcome::CircuitOpen { .. } => "circuit_open",
         ActionOutcome::Scheduled { .. } => "scheduled",
+        ActionOutcome::RecurringCreated { .. } => "recurring_created",
     }
 }
 
@@ -3199,6 +3200,15 @@ fn build_audit_record(
         } => serde_json::json!({
             "action_id": action_id,
             "scheduled_for": scheduled_for.to_rfc3339(),
+        }),
+        ActionOutcome::RecurringCreated {
+            recurring_id,
+            cron_expr,
+            next_execution_at,
+        } => serde_json::json!({
+            "recurring_id": recurring_id,
+            "cron_expr": cron_expr,
+            "next_execution_at": next_execution_at.map(|t| t.to_rfc3339()),
         }),
     };
 

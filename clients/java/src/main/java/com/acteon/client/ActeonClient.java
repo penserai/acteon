@@ -846,4 +846,229 @@ public class ActeonClient implements AutoCloseable {
             throw new ConnectionException("Request interrupted", e);
         }
     }
+
+    // =========================================================================
+    // Recurring Actions
+    // =========================================================================
+
+    /**
+     * Creates a recurring action.
+     */
+    public CreateRecurringResponse createRecurring(CreateRecurringAction recurring) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(recurring);
+            HttpRequest request = requestBuilder("/v1/recurring")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, CreateRecurringResponse.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists recurring actions with optional filters.
+     */
+    public ListRecurringResponse listRecurring(RecurringFilter filter) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/recurring");
+            List<String> params = new ArrayList<>();
+
+            if (filter != null) {
+                if (filter.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(filter.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (filter.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(filter.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (filter.getStatus() != null) {
+                    params.add("status=" + URLEncoder.encode(filter.getStatus(), StandardCharsets.UTF_8));
+                }
+                if (filter.getLimit() != null) {
+                    params.add("limit=" + filter.getLimit());
+                }
+                if (filter.getOffset() != null) {
+                    params.add("offset=" + filter.getOffset());
+                }
+            }
+
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString())
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListRecurringResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list recurring actions");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets details of a specific recurring action.
+     */
+    public Optional<RecurringDetail> getRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, RecurringDetail.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a recurring action.
+     */
+    public RecurringDetail updateRecurring(String recurringId, UpdateRecurringAction update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RecurringDetail.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a recurring action.
+     */
+    public void deleteRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Pauses a recurring action.
+     */
+    public RecurringDetail pauseRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(Map.of("namespace", namespace, "tenant", tenant));
+            HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8) + "/pause")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RecurringDetail.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else if (response.statusCode() == 409) {
+                throw new HttpException(response.statusCode(), "Recurring action is already paused");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to pause recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Resumes a paused recurring action.
+     */
+    public RecurringDetail resumeRecurring(String recurringId, String namespace, String tenant) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(Map.of("namespace", namespace, "tenant", tenant));
+            HttpRequest request = requestBuilder("/v1/recurring/" + URLEncoder.encode(recurringId, StandardCharsets.UTF_8) + "/resume")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RecurringDetail.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Recurring action not found: " + recurringId);
+            } else if (response.statusCode() == 409) {
+                throw new HttpException(response.statusCode(), "Recurring action is already active");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to resume recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
 }

@@ -7,6 +7,7 @@ pub mod fingerprint;
 pub mod group;
 pub mod key;
 pub mod outcome;
+pub mod recurring;
 pub mod state_machine;
 pub mod stream;
 pub mod types;
@@ -23,6 +24,10 @@ pub use fingerprint::compute_fingerprint;
 pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
 pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
+pub use recurring::{
+    CronValidationError, DEFAULT_MIN_INTERVAL_SECONDS, RecurringAction, RecurringActionTemplate,
+    next_occurrence, validate_cron_expr, validate_min_interval, validate_timezone,
+};
 pub use state_machine::{StateMachineConfig, TimeoutConfig, TransitionConfig, TransitionEffects};
 pub use stream::{
     StreamEvent, StreamEventType, outcome_category, reconstruct_outcome, sanitize_outcome,

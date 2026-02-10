@@ -194,6 +194,7 @@ pub fn outcome_category(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::DryRun { .. } => "dry_run",
         ActionOutcome::CircuitOpen { .. } => "circuit_open",
         ActionOutcome::Scheduled { .. } => "scheduled",
+        ActionOutcome::RecurringCreated { .. } => "recurring_created",
     }
 }
 
@@ -346,6 +347,19 @@ pub fn reconstruct_outcome(
             Some(ActionOutcome::Scheduled {
                 action_id,
                 scheduled_for,
+            })
+        }
+        "recurring_created" => {
+            let recurring_id = details.get("recurring_id")?.as_str()?.to_owned();
+            let cron_expr = details.get("cron_expr")?.as_str()?.to_owned();
+            let next_execution_at = details
+                .get("next_execution_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+            Some(ActionOutcome::RecurringCreated {
+                recurring_id,
+                cron_expr,
+                next_execution_at,
             })
         }
         _ => None,
@@ -1727,6 +1741,105 @@ mod tests {
                 !json.contains("sig="),
                 "event should not contain HMAC signatures"
             );
+        }
+    }
+
+    // -- RecurringCreated outcome category and reconstruction -----------------
+
+    #[test]
+    fn outcome_category_recurring_created() {
+        assert_eq!(
+            outcome_category(&ActionOutcome::RecurringCreated {
+                recurring_id: "rec-1".into(),
+                cron_expr: "0 9 * * *".into(),
+                next_execution_at: Some(Utc::now()),
+            }),
+            "recurring_created"
+        );
+    }
+
+    #[test]
+    fn reconstruct_recurring_created_with_next() {
+        let next_at = Utc::now() + chrono::Duration::hours(1);
+        let details = serde_json::json!({
+            "recurring_id": "rec-abc",
+            "cron_expr": "0 9 * * MON-FRI",
+            "next_execution_at": next_at.to_rfc3339(),
+        });
+        let outcome = reconstruct_outcome("recurring_created", &details).unwrap();
+        match outcome {
+            ActionOutcome::RecurringCreated {
+                recurring_id,
+                cron_expr,
+                next_execution_at,
+            } => {
+                assert_eq!(recurring_id, "rec-abc");
+                assert_eq!(cron_expr, "0 9 * * MON-FRI");
+                assert!(next_execution_at.is_some());
+                assert_eq!(
+                    next_execution_at.unwrap().timestamp_millis(),
+                    next_at.timestamp_millis()
+                );
+            }
+            other => panic!("expected RecurringCreated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_recurring_created_without_next() {
+        let details = serde_json::json!({
+            "recurring_id": "rec-xyz",
+            "cron_expr": "0 0 31 2 *",
+        });
+        let outcome = reconstruct_outcome("recurring_created", &details).unwrap();
+        match outcome {
+            ActionOutcome::RecurringCreated {
+                recurring_id,
+                cron_expr,
+                next_execution_at,
+            } => {
+                assert_eq!(recurring_id, "rec-xyz");
+                assert_eq!(cron_expr, "0 0 31 2 *");
+                assert!(next_execution_at.is_none());
+            }
+            other => panic!("expected RecurringCreated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reconstruct_recurring_created_missing_required_fields() {
+        // Missing recurring_id
+        let details = serde_json::json!({"cron_expr": "0 9 * * *"});
+        assert!(reconstruct_outcome("recurring_created", &details).is_none());
+
+        // Missing cron_expr
+        let details = serde_json::json!({"recurring_id": "rec-1"});
+        assert!(reconstruct_outcome("recurring_created", &details).is_none());
+
+        // Both missing
+        let details = serde_json::json!({});
+        assert!(reconstruct_outcome("recurring_created", &details).is_none());
+    }
+
+    #[test]
+    fn sanitize_passes_through_recurring_created() {
+        let outcome = ActionOutcome::RecurringCreated {
+            recurring_id: "rec-123".into(),
+            cron_expr: "0 9 * * *".into(),
+            next_execution_at: Some(Utc::now()),
+        };
+        let sanitized = sanitize_outcome(&outcome);
+        match sanitized {
+            ActionOutcome::RecurringCreated {
+                recurring_id,
+                cron_expr,
+                next_execution_at,
+            } => {
+                assert_eq!(recurring_id, "rec-123");
+                assert_eq!(cron_expr, "0 9 * * *");
+                assert!(next_execution_at.is_some());
+            }
+            other => panic!("expected RecurringCreated, got {other:?}"),
         }
     }
 

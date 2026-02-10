@@ -679,3 +679,240 @@ class ReplayQuery:
         if self.limit is not None:
             params["limit"] = self.limit
         return params
+
+
+# =============================================================================
+# Recurring Action Types
+# =============================================================================
+
+
+@dataclass
+class CreateRecurringAction:
+    """Request to create a recurring action."""
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+    payload: dict[str, Any]
+    cron_expression: str
+    name: Optional[str] = None
+    metadata: Optional[dict[str, str]] = None
+    timezone: Optional[str] = None
+    end_date: Optional[str] = None
+    max_executions: Optional[int] = None
+    description: Optional[str] = None
+    dedup_key: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "provider": self.provider,
+            "action_type": self.action_type,
+            "payload": self.payload,
+            "cron_expression": self.cron_expression,
+        }
+        if self.name is not None:
+            result["name"] = self.name
+        if self.metadata is not None:
+            result["metadata"] = self.metadata
+        if self.timezone is not None:
+            result["timezone"] = self.timezone
+        if self.end_date is not None:
+            result["end_date"] = self.end_date
+        if self.max_executions is not None:
+            result["max_executions"] = self.max_executions
+        if self.description is not None:
+            result["description"] = self.description
+        if self.dedup_key is not None:
+            result["dedup_key"] = self.dedup_key
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class CreateRecurringResponse:
+    """Response from creating a recurring action."""
+    id: str
+    status: str
+    name: Optional[str] = None
+    next_execution_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CreateRecurringResponse":
+        return cls(
+            id=data["id"],
+            status=data["status"],
+            name=data.get("name"),
+            next_execution_at=data.get("next_execution_at"),
+        )
+
+
+@dataclass
+class RecurringFilter:
+    """Query parameters for listing recurring actions."""
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    status: Optional[str] = None
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+
+    def to_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if self.namespace is not None:
+            params["namespace"] = self.namespace
+        if self.tenant is not None:
+            params["tenant"] = self.tenant
+        if self.status is not None:
+            params["status"] = self.status
+        if self.limit is not None:
+            params["limit"] = self.limit
+        if self.offset is not None:
+            params["offset"] = self.offset
+        return params
+
+
+@dataclass
+class RecurringSummary:
+    """Summary of a recurring action in list responses."""
+    id: str
+    namespace: str
+    tenant: str
+    cron_expr: str
+    timezone: str
+    enabled: bool
+    provider: str
+    action_type: str
+    execution_count: int
+    created_at: str
+    next_execution_at: Optional[str] = None
+    description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RecurringSummary":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            cron_expr=data["cron_expr"],
+            timezone=data["timezone"],
+            enabled=data["enabled"],
+            provider=data["provider"],
+            action_type=data["action_type"],
+            execution_count=data["execution_count"],
+            created_at=data["created_at"],
+            next_execution_at=data.get("next_execution_at"),
+            description=data.get("description"),
+        )
+
+
+@dataclass
+class ListRecurringResponse:
+    """Response from listing recurring actions."""
+    recurring_actions: list[RecurringSummary]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListRecurringResponse":
+        return cls(
+            recurring_actions=[
+                RecurringSummary.from_dict(r) for r in data["recurring_actions"]
+            ],
+            count=data["count"],
+        )
+
+
+@dataclass
+class RecurringDetail:
+    """Detailed information about a recurring action."""
+    id: str
+    namespace: str
+    tenant: str
+    cron_expr: str
+    timezone: str
+    enabled: bool
+    provider: str
+    action_type: str
+    payload: dict[str, Any]
+    metadata: dict[str, str]
+    execution_count: int
+    created_at: str
+    updated_at: str
+    labels: dict[str, str]
+    next_execution_at: Optional[str] = None
+    last_executed_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    description: Optional[str] = None
+    dedup_key: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RecurringDetail":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            cron_expr=data["cron_expr"],
+            timezone=data["timezone"],
+            enabled=data["enabled"],
+            provider=data["provider"],
+            action_type=data["action_type"],
+            payload=data.get("payload", {}),
+            metadata=data.get("metadata", {}),
+            execution_count=data["execution_count"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            labels=data.get("labels", {}),
+            next_execution_at=data.get("next_execution_at"),
+            last_executed_at=data.get("last_executed_at"),
+            ends_at=data.get("ends_at"),
+            description=data.get("description"),
+            dedup_key=data.get("dedup_key"),
+        )
+
+
+@dataclass
+class UpdateRecurringAction:
+    """Request to update a recurring action."""
+    namespace: str
+    tenant: str
+    name: Optional[str] = None
+    payload: Optional[dict[str, Any]] = None
+    metadata: Optional[dict[str, str]] = None
+    cron_expression: Optional[str] = None
+    timezone: Optional[str] = None
+    end_date: Optional[str] = None
+    max_executions: Optional[int] = None
+    description: Optional[str] = None
+    dedup_key: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+        }
+        if self.name is not None:
+            result["name"] = self.name
+        if self.payload is not None:
+            result["payload"] = self.payload
+        if self.metadata is not None:
+            result["metadata"] = self.metadata
+        if self.cron_expression is not None:
+            result["cron_expression"] = self.cron_expression
+        if self.timezone is not None:
+            result["timezone"] = self.timezone
+        if self.end_date is not None:
+            result["end_date"] = self.end_date
+        if self.max_executions is not None:
+            result["max_executions"] = self.max_executions
+        if self.description is not None:
+            result["description"] = self.description
+        if self.dedup_key is not None:
+            result["dedup_key"] = self.dedup_key
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result

@@ -522,3 +522,109 @@ type ReplayQuery struct {
 	To          string
 	Limit       int
 }
+
+// =============================================================================
+// Recurring Action Types
+// =============================================================================
+
+// CreateRecurringAction is the request to create a recurring action.
+type CreateRecurringAction struct {
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Provider       string            `json:"provider"`
+	ActionType     string            `json:"action_type"`
+	Payload        map[string]any    `json:"payload"`
+	CronExpression string            `json:"cron_expression"`
+	Name           string            `json:"name,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	Timezone       string            `json:"timezone,omitempty"`
+	EndDate        string            `json:"end_date,omitempty"`
+	MaxExecutions  *int              `json:"max_executions,omitempty"`
+	Description    string            `json:"description,omitempty"`
+	DedupKey       string            `json:"dedup_key,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+// CreateRecurringResponse is the response from creating a recurring action.
+type CreateRecurringResponse struct {
+	ID              string  `json:"id"`
+	Status          string  `json:"status"`
+	Name            *string `json:"name,omitempty"`
+	NextExecutionAt *string `json:"next_execution_at,omitempty"`
+}
+
+// RecurringFilter contains query parameters for listing recurring actions.
+type RecurringFilter struct {
+	Namespace string
+	Tenant    string
+	Status    string
+	Limit     int
+	Offset    int
+}
+
+// RecurringSummary is a summary of a recurring action in list responses.
+type RecurringSummary struct {
+	ID              string  `json:"id"`
+	Namespace       string  `json:"namespace"`
+	Tenant          string  `json:"tenant"`
+	CronExpr        string  `json:"cron_expr"`
+	Timezone        string  `json:"timezone"`
+	Enabled         bool    `json:"enabled"`
+	Provider        string  `json:"provider"`
+	ActionType      string  `json:"action_type"`
+	ExecutionCount  int     `json:"execution_count"`
+	CreatedAt       string  `json:"created_at"`
+	NextExecutionAt *string `json:"next_execution_at,omitempty"`
+	Description     *string `json:"description,omitempty"`
+}
+
+// ListRecurringResponse is the response from listing recurring actions.
+type ListRecurringResponse struct {
+	RecurringActions []RecurringSummary `json:"recurring_actions"`
+	Count            int               `json:"count"`
+}
+
+// RecurringDetail is detailed information about a recurring action.
+type RecurringDetail struct {
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	CronExpr        string            `json:"cron_expr"`
+	Timezone        string            `json:"timezone"`
+	Enabled         bool              `json:"enabled"`
+	Provider        string            `json:"provider"`
+	ActionType      string            `json:"action_type"`
+	Payload         map[string]any    `json:"payload"`
+	Metadata        map[string]string `json:"metadata"`
+	ExecutionCount  int               `json:"execution_count"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	Labels          map[string]string `json:"labels"`
+	NextExecutionAt *string           `json:"next_execution_at,omitempty"`
+	LastExecutedAt  *string           `json:"last_executed_at,omitempty"`
+	EndsAt          *string           `json:"ends_at,omitempty"`
+	Description     *string           `json:"description,omitempty"`
+	DedupKey        *string           `json:"dedup_key,omitempty"`
+}
+
+// UpdateRecurringAction is the request to update a recurring action.
+type UpdateRecurringAction struct {
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Name           *string           `json:"name,omitempty"`
+	Payload        map[string]any    `json:"payload,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CronExpression *string           `json:"cron_expression,omitempty"`
+	Timezone       *string           `json:"timezone,omitempty"`
+	EndDate        *string           `json:"end_date,omitempty"`
+	MaxExecutions  *int              `json:"max_executions,omitempty"`
+	Description    *string           `json:"description,omitempty"`
+	DedupKey       *string           `json:"dedup_key,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+}
+
+// RecurringLifecycleRequest is the body for pause/resume endpoints.
+type RecurringLifecycleRequest struct {
+	Namespace string `json:"namespace"`
+	Tenant    string `json:"tenant"`
+}

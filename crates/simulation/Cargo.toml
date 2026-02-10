@@ -33,6 +33,7 @@ serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
@@ -122,6 +123,10 @@ name = "subscription_multi_client_simulation"
 
 [[example]]
 name = "subscription_state_machine_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "recurring_actions_simulation"
 # No required-features - uses in-memory backends
 
 [lints]

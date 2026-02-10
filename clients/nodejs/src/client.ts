@@ -25,6 +25,13 @@ import {
   ReplayResult,
   ReplaySummary,
   ReplayQuery,
+  CreateRecurringAction,
+  CreateRecurringResponse,
+  RecurringFilter,
+  RecurringSummary,
+  ListRecurringResponse,
+  RecurringDetail,
+  UpdateRecurringAction,
   actionToRequest,
   auditQueryToParams,
   eventQueryToParams,
@@ -45,6 +52,12 @@ import {
   parseReplayResult,
   parseReplaySummary,
   replayQueryToParams,
+  createRecurringActionToRequest,
+  parseCreateRecurringResponse,
+  recurringFilterToParams,
+  parseListRecurringResponse,
+  parseRecurringDetail,
+  updateRecurringActionToRequest,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -563,6 +576,146 @@ export class ActeonClient {
       return parseApprovalListResponse(data);
     } else {
       throw new HttpError(response.status, "Failed to list approvals");
+    }
+  }
+
+  // =========================================================================
+  // Recurring Actions
+  // =========================================================================
+
+  /**
+   * Create a recurring action.
+   */
+  async createRecurring(recurring: CreateRecurringAction): Promise<CreateRecurringResponse> {
+    const response = await this.request("POST", "/v1/recurring", {
+      body: createRecurringActionToRequest(recurring),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseCreateRecurringResponse(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List recurring actions.
+   */
+  async listRecurring(filter?: RecurringFilter): Promise<ListRecurringResponse> {
+    const params = filter ? recurringFilterToParams(filter) : undefined;
+    const response = await this.request("GET", "/v1/recurring", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListRecurringResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list recurring actions");
+    }
+  }
+
+  /**
+   * Get details of a specific recurring action.
+   */
+  async getRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail | null> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/recurring/${recurringId}`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get recurring action");
+    }
+  }
+
+  /**
+   * Update a recurring action.
+   */
+  async updateRecurring(recurringId: string, update: UpdateRecurringAction): Promise<RecurringDetail> {
+    const response = await this.request("PUT", `/v1/recurring/${recurringId}`, {
+      body: updateRecurringActionToRequest(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a recurring action.
+   */
+  async deleteRecurring(recurringId: string, namespace: string, tenant: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("DELETE", `/v1/recurring/${recurringId}`, { params });
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete recurring action");
+    }
+  }
+
+  /**
+   * Pause a recurring action.
+   */
+  async pauseRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail> {
+    const response = await this.request("POST", `/v1/recurring/${recurringId}/pause`, {
+      body: { namespace, tenant },
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else if (response.status === 409) {
+      throw new HttpError(409, "Recurring action is already paused");
+    } else {
+      throw new HttpError(response.status, "Failed to pause recurring action");
+    }
+  }
+
+  /**
+   * Resume a paused recurring action.
+   */
+  async resumeRecurring(recurringId: string, namespace: string, tenant: string): Promise<RecurringDetail> {
+    const response = await this.request("POST", `/v1/recurring/${recurringId}/resume`, {
+      body: { namespace, tenant },
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRecurringDetail(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Recurring action not found: ${recurringId}`);
+    } else if (response.status === 409) {
+      throw new HttpError(409, "Recurring action is already active");
+    } else {
+      throw new HttpError(response.status, "Failed to resume recurring action");
     }
   }
 }

@@ -710,5 +710,6 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::DryRun { .. } => "DryRun",
         ActionOutcome::CircuitOpen { .. } => "CircuitOpen",
         ActionOutcome::Scheduled { .. } => "Scheduled",
+        ActionOutcome::RecurringCreated { .. } => "RecurringCreated",
     }
 }
