@@ -745,6 +745,7 @@ pub async fn get_recurring(
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
+#[allow(clippy::similar_names)]
 pub async fn update_recurring(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1000,6 +1001,7 @@ pub async fn delete_recurring(
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
+#[allow(clippy::similar_names)]
 pub async fn pause_recurring(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1085,6 +1087,7 @@ pub async fn pause_recurring(
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
+#[allow(clippy::similar_names)]
 pub async fn resume_recurring(
     State(state): State<AppState>,
     Path(id): Path<String>,
