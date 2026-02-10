@@ -274,40 +274,44 @@ export interface SimilarityResponse {
 }
 
 // ---- Recurring Actions ----
-export interface RecurringAction {
+
+/** Summary returned in list responses. */
+export interface RecurringActionSummary {
   id: string
   namespace: string
   tenant: string
   cron_expr: string
   timezone: string
   enabled: boolean
-  action_template: RecurringActionTemplate
-  created_at: string
-  updated_at: string
-  last_executed_at: string | null
-  next_execution_at: string | null
-  ends_at: string | null
-  execution_count: number
-  description: string | null
-  labels: Record<string, string>
-}
-
-export interface RecurringActionTemplate {
   provider: string
   action_type: string
+  next_execution_at: string | null
+  execution_count: number
+  description: string | null
+  created_at: string
+}
+
+/** Full detail returned by GET /v1/recurring/:id. */
+export interface RecurringAction extends RecurringActionSummary {
   payload: Record<string, unknown>
   metadata: Record<string, string>
   dedup_key: string | null
+  last_executed_at: string | null
+  ends_at: string | null
+  max_executions: number | null
+  labels: Record<string, string>
+  updated_at: string
 }
 
 export interface RecurringActionListResponse {
-  recurring_actions: RecurringAction[]
+  recurring_actions: RecurringActionSummary[]
+  count: number
 }
 
 export interface CreateRecurringActionRequest {
   namespace: string
   tenant: string
-  cron_expr: string
+  cron_expression: string
   timezone: string
   provider: string
   action_type: string
@@ -315,21 +319,23 @@ export interface CreateRecurringActionRequest {
   metadata?: Record<string, string>
   dedup_key?: string | null
   description?: string | null
-  labels?: Record<string, string>
   ends_at?: string | null
+  max_executions?: number | null
   enabled?: boolean
 }
 
 export interface CreateRecurringActionResponse {
-  recurring_id: string
-  next_execution: string
-  cron_expr: string
-  timezone: string
-  enabled: boolean
+  id: string
+  name: string | null
+  next_execution_at: string | null
+  status: string
 }
 
 export interface UpdateRecurringActionRequest {
-  cron_expr?: string
+  namespace: string
+  tenant: string
+  name?: string | null
+  cron_expression?: string
   timezone?: string
   enabled?: boolean
   provider?: string
@@ -338,7 +344,7 @@ export interface UpdateRecurringActionRequest {
   metadata?: Record<string, string>
   dedup_key?: string | null
   description?: string | null
-  labels?: Record<string, string>
+  max_executions?: number | null
   ends_at?: string | null
 }
 

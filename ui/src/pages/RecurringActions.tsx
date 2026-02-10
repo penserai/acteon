@@ -23,7 +23,7 @@ import { Tabs } from '../components/ui/Tabs'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
-import type { RecurringAction, CreateRecurringActionRequest } from '../types'
+import type { RecurringAction, RecurringActionSummary, CreateRecurringActionRequest } from '../types'
 import styles from './RecurringActions.module.css'
 
 // ---- Cron description helper ----
@@ -87,7 +87,7 @@ function statusLabel(enabled: boolean, nextExecution: string | null): string {
 
 // ---- Column definition ----
 
-const col = createColumnHelper<RecurringAction>()
+const col = createColumnHelper<RecurringActionSummary>()
 
 // ---- Common timezones ----
 
@@ -124,7 +124,7 @@ export function RecurringActions() {
   const [detailTab, setDetailTab] = useState('overview')
 
   // Delete confirmation
-  const [deleteTarget, setDeleteTarget] = useState<RecurringAction | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<RecurringActionSummary | null>(null)
 
   // Data
   const { data, isLoading } = useRecurringActions({
@@ -144,7 +144,7 @@ export function RecurringActions() {
   const pauseMutation = usePauseRecurring()
   const resumeMutation = useResumeRecurring()
 
-  const handlePauseResume = (action: RecurringAction) => {
+  const handlePauseResume = (action: RecurringActionSummary) => {
     const mutation = action.enabled ? pauseMutation : resumeMutation
     mutation.mutate(
       { id: action.id, namespace: action.namespace, tenant: action.tenant },
@@ -212,18 +212,13 @@ export function RecurringActions() {
           : <span className={styles.timestampCell}>-</span>
       },
     }),
-    col.accessor('last_executed_at', {
-      header: 'Last Executed',
-      cell: (info) => {
-        const val = info.getValue()
-        return val
-          ? <span className={styles.timestampCell} title={val}>{relativeTime(val)}</span>
-          : <span className={styles.timestampCell}>Never</span>
-      },
-    }),
     col.accessor('execution_count', {
       header: 'Executions',
       cell: (info) => <span className={styles.countCell}>{info.getValue().toLocaleString()}</span>,
+    }),
+    col.accessor('provider', {
+      header: 'Provider',
+      cell: (info) => <span className={styles.detailValue}>{info.getValue()}</span>,
     }),
     col.display({
       id: 'actions',
@@ -317,7 +312,7 @@ export function RecurringActions() {
         onSubmit={(req) => {
           createMutation.mutate(req, {
             onSuccess: (res) => {
-              toast('success', 'Recurring action created', `Next execution: ${res.next_execution}`)
+              toast('success', 'Recurring action created', `ID: ${res.id}`)
               setShowCreate(false)
             },
             onError: (e) => toast('error', 'Create failed', (e as Error).message),
@@ -417,15 +412,14 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
     onSubmit({
       namespace: ns,
       tenant,
-      cron_expr: cronExpr,
+      cron_expression: cronExpr,
       timezone,
       provider,
       action_type: actionType,
       payload: parsed,
       description: description || undefined,
       ends_at: endsAt || undefined,
-      enabled: true,
-      labels: maxExec ? { max_executions: maxExec } : undefined,
+      max_executions: maxExec ? parseInt(maxExec, 10) : undefined,
     })
   }
 
@@ -565,11 +559,12 @@ function RecurringDetailView({ action, tab, onTabChange, onPauseResume, onDelete
             'Status': statusLabel(action.enabled, action.next_execution_at),
             'Schedule': `${action.cron_expr} (${describeCron(action.cron_expr)})`,
             'Timezone': action.timezone,
-            'Provider': action.action_template.provider,
-            'Action Type': action.action_template.action_type,
+            'Provider': action.provider,
+            'Action Type': action.action_type,
             'Next Execution': action.next_execution_at ?? '-',
             'Last Executed': action.last_executed_at ? relativeTime(action.last_executed_at) : 'Never',
             'Execution Count': action.execution_count.toLocaleString(),
+            'Max Executions': action.max_executions?.toLocaleString() ?? 'Unlimited',
             'Created': relativeTime(action.created_at),
             'Updated': relativeTime(action.updated_at),
             'End Date': action.ends_at ?? 'None',
@@ -581,7 +576,7 @@ function RecurringDetailView({ action, tab, onTabChange, onPauseResume, onDelete
             </div>
           ))}
 
-          {Object.keys(action.labels).length > 0 && (
+          {action.labels && Object.keys(action.labels).length > 0 && (
             <div>
               <h3 className={styles.sectionTitle}>Labels</h3>
               {Object.entries(action.labels).map(([k, v]) => (
@@ -599,20 +594,20 @@ function RecurringDetailView({ action, tab, onTabChange, onPauseResume, onDelete
         <div>
           <h3 className={styles.sectionTitle}>Payload</h3>
           <div className={styles.jsonViewerCard}>
-            <JsonViewer data={action.action_template.payload} />
+            <JsonViewer data={action.payload} />
           </div>
-          {Object.keys(action.action_template.metadata).length > 0 && (
+          {action.metadata && Object.keys(action.metadata).length > 0 && (
             <div style={{ marginTop: '1rem' }}>
               <h3 className={styles.sectionTitle}>Metadata</h3>
               <div className={styles.jsonViewerCard}>
-                <JsonViewer data={action.action_template.metadata} />
+                <JsonViewer data={action.metadata} />
               </div>
             </div>
           )}
-          {action.action_template.dedup_key && (
+          {action.dedup_key && (
             <div style={{ marginTop: '1rem' }}>
               <h3 className={styles.sectionTitle}>Dedup Key Template</h3>
-              <p className={styles.detailValue}>{action.action_template.dedup_key}</p>
+              <p className={styles.detailValue}>{action.dedup_key}</p>
             </div>
           )}
         </div>

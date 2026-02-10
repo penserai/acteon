@@ -96,6 +96,24 @@ View registered providers and their circuit breaker states. Click a provider car
 
 Browse actions that failed after exhausting all retries. The DLQ page lets you inspect failures and replay them.
 
+## Recurring Actions
+
+![Recurring Actions](assets/recurring-actions.png)
+
+Manage [recurring actions](../features/recurring-actions.md) -- cron-scheduled actions that fire on a recurring basis. The list view shows all recurring actions filtered by namespace and tenant, with their schedule, status, next execution time, and execution count.
+
+### Creating a Recurring Action
+
+![Create Recurring Action](assets/recurring-actions-create.png)
+
+Click **Create** to open the creation dialog. Fill in the namespace, tenant, cron expression (with preset shortcuts), timezone, provider, action type, and JSON payload. Optional settings include a description, end date, and maximum execution limit.
+
+### Viewing Details
+
+![Recurring Action Detail](assets/recurring-actions-detail.png)
+
+Click any row to open the detail drawer. The **Overview** tab shows all fields including schedule, timezone, provider, execution count, and timestamps. The **Action Template** tab displays the JSON payload and metadata. Use the **Pause/Resume** and **Delete** buttons to manage the action lifecycle.
+
 ## Event Stream
 
 ![Event Stream](assets/stream.png)

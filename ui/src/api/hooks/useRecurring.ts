@@ -39,9 +39,9 @@ export function useCreateRecurring() {
 export function useUpdateRecurring() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, namespace, tenant, body }: {
-      id: string; namespace: string; tenant: string; body: UpdateRecurringActionRequest
-    }) => apiPut<RecurringAction>(`/v1/recurring/${id}?namespace=${encodeURIComponent(namespace)}&tenant=${encodeURIComponent(tenant)}`, body),
+    mutationFn: ({ id, body }: {
+      id: string; body: UpdateRecurringActionRequest
+    }) => apiPut<RecurringAction>(`/v1/recurring/${id}`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['recurring'] }),
   })
 }
@@ -59,7 +59,7 @@ export function usePauseRecurring() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, namespace, tenant }: { id: string; namespace: string; tenant: string }) =>
-      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/pause?namespace=${encodeURIComponent(namespace)}&tenant=${encodeURIComponent(tenant)}`),
+      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/pause`, { namespace, tenant }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['recurring'] }),
   })
 }
@@ -68,7 +68,7 @@ export function useResumeRecurring() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, namespace, tenant }: { id: string; namespace: string; tenant: string }) =>
-      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/resume?namespace=${encodeURIComponent(namespace)}&tenant=${encodeURIComponent(tenant)}`),
+      apiPost<PauseResumeResponse>(`/v1/recurring/${id}/resume`, { namespace, tenant }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['recurring'] }),
   })
 }

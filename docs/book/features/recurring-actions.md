@@ -546,20 +546,24 @@ The Admin UI provides a dedicated **Recurring Actions** page for managing recurr
 
 ### List View
 
+![Recurring Actions list view](../admin-ui/assets/recurring-actions.png)
+
 The list view displays all recurring actions with:
 
 - **Name** -- the description or a truncated ID
 - **Schedule** -- the cron expression with a human-readable description (e.g., "Weekdays at 9:00 AM") and timezone if not UTC
 - **Status** -- Active (green), Paused (yellow), or Completed (neutral)
 - **Next Execution** -- relative timestamp of the next scheduled run
-- **Last Executed** -- relative timestamp of the most recent execution, or "Never"
-- **Execution Count** -- total number of successful dispatches
+- **Executions** -- total number of successful dispatches
+- **Provider** -- the target provider name
 
 Filter controls let you narrow results by namespace, tenant, and status (All / Active / Paused).
 
 Each row includes **Pause/Resume** and **Delete** action buttons.
 
 ### Create Dialog
+
+![Create Recurring Action dialog](../admin-ui/assets/recurring-actions-create.png)
 
 Click the **Create** button to open the creation form with:
 
@@ -574,9 +578,11 @@ Click the **Create** button to open the creation form with:
 
 ### Detail Drawer
 
+![Recurring Action detail drawer](../admin-ui/assets/recurring-actions-detail.png)
+
 Click any row to open the detail drawer with two tabs:
 
-- **Overview** -- all fields including ID, namespace, tenant, status, schedule, timezone, provider, action type, next/last execution, execution count, created/updated timestamps, end date, description, and labels
+- **Overview** -- all fields including ID, namespace, tenant, status, schedule, timezone, provider, action type, next/last execution, execution count, max executions, created/updated timestamps, end date, and description
 - **Action Template** -- the JSON payload, metadata, and dedup key template
 
 The drawer includes **Pause/Resume** and **Delete** buttons.
