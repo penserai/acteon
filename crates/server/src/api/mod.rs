@@ -163,8 +163,7 @@ pub fn router(state: AppState) -> Router {
         .merge(SwaggerUi::new("/swagger-ui").url("/api-doc/openapi.json", ApiDoc::openapi()));
 
     // Serve Admin UI static files if enabled and path is provided.
-    if state.ui_enabled && state.ui_path.is_some() {
-        let path_str = state.ui_path.as_ref().unwrap();
+    if let Some(path_str) = state.ui_path.as_ref().filter(|_| state.ui_enabled) {
         let path = std::path::PathBuf::from(path_str);
         if path.exists() {
             let index_path = path.join("index.html");
