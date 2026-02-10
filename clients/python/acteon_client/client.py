@@ -1,6 +1,7 @@
 """HTTP client for the Acteon action gateway."""
 
-from typing import Optional
+from collections.abc import AsyncIterator
+from typing import Iterator, Optional
 import httpx
 
 from .errors import ActeonError, ConnectionError, HttpError, ApiError
@@ -34,6 +35,13 @@ from .models import (
     ListRecurringResponse,
     RecurringDetail,
     UpdateRecurringAction,
+    ChainSummary,
+    ListChainsResponse,
+    ChainDetailResponse,
+    DlqStatsResponse,
+    DlqDrainResponse,
+    SseEvent,
+    _parse_sse_stream,
 )
 
 
@@ -894,6 +902,286 @@ class ActeonClient:
         else:
             raise HttpError(response.status_code, "Failed to resume recurring action")
 
+    # =========================================================================
+    # Chains
+    # =========================================================================
+
+    def list_chains(
+        self, namespace: str, tenant: str, *, status: Optional[str] = None
+    ) -> ListChainsResponse:
+        """List chain executions filtered by namespace, tenant, and optional status.
+
+        Args:
+            namespace: The namespace to filter by.
+            tenant: The tenant to filter by.
+            status: Optional status filter (running, completed, failed, cancelled, timed_out).
+
+        Returns:
+            List of chain execution summaries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {"namespace": namespace, "tenant": tenant}
+        if status is not None:
+            params["status"] = status
+        response = self._request("GET", "/v1/chains", params=params)
+
+        if response.status_code == 200:
+            return ListChainsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list chains")
+
+    def get_chain(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> Optional[ChainDetailResponse]:
+        """Get full details of a chain execution.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The chain detail response, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/{chain_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get chain")
+
+    def cancel_chain(
+        self,
+        chain_id: str,
+        namespace: str,
+        tenant: str,
+        *,
+        reason: Optional[str] = None,
+        cancelled_by: Optional[str] = None,
+    ) -> ChainDetailResponse:
+        """Cancel a running chain execution.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+            reason: Optional reason for cancellation.
+            cancelled_by: Optional identifier of who cancelled the chain.
+
+        Returns:
+            The updated chain detail response.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the chain is not found (404) or already finished (409).
+        """
+        body: dict = {"namespace": namespace, "tenant": tenant}
+        if reason is not None:
+            body["reason"] = reason
+        if cancelled_by is not None:
+            body["cancelled_by"] = cancelled_by
+
+        response = self._request(
+            "POST", f"/v1/chains/{chain_id}/cancel", json=body
+        )
+
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Chain is not running")
+        else:
+            raise HttpError(response.status_code, "Failed to cancel chain")
+
+    # =========================================================================
+    # DLQ (Dead-Letter Queue)
+    # =========================================================================
+
+    def dlq_stats(self) -> DlqStatsResponse:
+        """Get dead-letter queue statistics.
+
+        Returns:
+            DLQ statistics including enabled status and entry count.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/dlq/stats")
+
+        if response.status_code == 200:
+            return DlqStatsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get DLQ stats")
+
+    def dlq_drain(self) -> DlqDrainResponse:
+        """Drain all entries from the dead-letter queue.
+
+        Removes and returns all entries from the DLQ for manual processing
+        or resubmission.
+
+        Returns:
+            The drained entries and count.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the DLQ is not enabled (404) or the server returns an error.
+        """
+        response = self._request("POST", "/v1/dlq/drain")
+
+        if response.status_code == 200:
+            return DlqDrainResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Dead-letter queue is not enabled")
+        else:
+            raise HttpError(response.status_code, "Failed to drain DLQ")
+
+    # =========================================================================
+    # Subscribe (SSE)
+    # =========================================================================
+
+    def subscribe(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_history: bool = True,
+    ) -> Iterator[SseEvent]:
+        """Subscribe to events for a specific entity via SSE.
+
+        Opens a streaming connection to ``GET /v1/subscribe/{entity_type}/{entity_id}``
+        and yields parsed SSE events as they arrive.
+
+        Args:
+            entity_type: One of "chain", "group", or "action".
+            entity_id: The entity identifier to subscribe to.
+            namespace: Namespace for tenant isolation (required for chain/group).
+            tenant: Tenant for tenant isolation (required for chain/group).
+            include_history: Emit catch-up events for current state (default: True).
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {"include_history": str(include_history).lower()}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+
+        url = f"{self.base_url}/v1/subscribe/{entity_type}/{entity_id}"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        # Remove Content-Type for GET streaming requests.
+        headers.pop("Content-Type", None)
+
+        try:
+            with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    response.read()
+                    raise HttpError(response.status_code, "Failed to subscribe")
+                yield from _parse_sse_stream(response.iter_lines())
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
+    # =========================================================================
+    # Stream (SSE)
+    # =========================================================================
+
+    def stream(
+        self,
+        *,
+        namespace: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        event_type: Optional[str] = None,
+        chain_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        last_event_id: Optional[str] = None,
+    ) -> Iterator[SseEvent]:
+        """Subscribe to the real-time event stream via SSE.
+
+        Opens a streaming connection to ``GET /v1/stream`` and yields parsed
+        SSE events as they arrive. All parameters are optional filters.
+
+        Args:
+            namespace: Filter events by namespace.
+            action_type: Filter events by action type.
+            outcome: Filter events by outcome category (e.g., executed, suppressed, failed).
+            event_type: Filter events by stream event type (e.g., action_dispatched).
+            chain_id: Filter events by chain ID.
+            group_id: Filter events by group ID.
+            action_id: Filter events by action ID.
+            last_event_id: Reconnection token; replays missed events from this ID.
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if event_type is not None:
+            params["event_type"] = event_type
+        if chain_id is not None:
+            params["chain_id"] = chain_id
+        if group_id is not None:
+            params["group_id"] = group_id
+        if action_id is not None:
+            params["action_id"] = action_id
+
+        url = f"{self.base_url}/v1/stream"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        # Remove Content-Type for GET streaming requests.
+        headers.pop("Content-Type", None)
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = last_event_id
+
+        try:
+            with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    response.read()
+                    raise HttpError(response.status_code, "Failed to open stream")
+                yield from _parse_sse_stream(response.iter_lines())
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
 
 class AsyncActeonClient:
     """Async HTTP client for the Acteon action gateway.
@@ -1338,3 +1626,257 @@ class AsyncActeonClient:
             raise HttpError(409, "Recurring action is already active")
         else:
             raise HttpError(response.status_code, "Failed to resume recurring action")
+
+    # =========================================================================
+    # Chains
+    # =========================================================================
+
+    async def list_chains(
+        self, namespace: str, tenant: str, *, status: Optional[str] = None
+    ) -> ListChainsResponse:
+        """List chain executions filtered by namespace, tenant, and optional status."""
+        params: dict = {"namespace": namespace, "tenant": tenant}
+        if status is not None:
+            params["status"] = status
+        response = await self._request("GET", "/v1/chains", params=params)
+        if response.status_code == 200:
+            return ListChainsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list chains")
+
+    async def get_chain(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> Optional[ChainDetailResponse]:
+        """Get full details of a chain execution."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/{chain_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get chain")
+
+    async def cancel_chain(
+        self,
+        chain_id: str,
+        namespace: str,
+        tenant: str,
+        *,
+        reason: Optional[str] = None,
+        cancelled_by: Optional[str] = None,
+    ) -> ChainDetailResponse:
+        """Cancel a running chain execution."""
+        body: dict = {"namespace": namespace, "tenant": tenant}
+        if reason is not None:
+            body["reason"] = reason
+        if cancelled_by is not None:
+            body["cancelled_by"] = cancelled_by
+        response = await self._request(
+            "POST", f"/v1/chains/{chain_id}/cancel", json=body
+        )
+        if response.status_code == 200:
+            return ChainDetailResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Chain is not running")
+        else:
+            raise HttpError(response.status_code, "Failed to cancel chain")
+
+    # =========================================================================
+    # DLQ (Dead-Letter Queue)
+    # =========================================================================
+
+    async def dlq_stats(self) -> DlqStatsResponse:
+        """Get dead-letter queue statistics."""
+        response = await self._request("GET", "/v1/dlq/stats")
+        if response.status_code == 200:
+            return DlqStatsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get DLQ stats")
+
+    async def dlq_drain(self) -> DlqDrainResponse:
+        """Drain all entries from the dead-letter queue."""
+        response = await self._request("POST", "/v1/dlq/drain")
+        if response.status_code == 200:
+            return DlqDrainResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, "Dead-letter queue is not enabled")
+        else:
+            raise HttpError(response.status_code, "Failed to drain DLQ")
+
+    # =========================================================================
+    # Subscribe (SSE)
+    # =========================================================================
+
+    async def subscribe(
+        self,
+        entity_type: str,
+        entity_id: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_history: bool = True,
+    ) -> AsyncIterator[SseEvent]:
+        """Subscribe to events for a specific entity via SSE.
+
+        Opens a streaming connection to ``GET /v1/subscribe/{entity_type}/{entity_id}``
+        and yields parsed SSE events as they arrive.
+
+        Args:
+            entity_type: One of "chain", "group", or "action".
+            entity_id: The entity identifier to subscribe to.
+            namespace: Namespace for tenant isolation (required for chain/group).
+            tenant: Tenant for tenant isolation (required for chain/group).
+            include_history: Emit catch-up events for current state (default: True).
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {"include_history": str(include_history).lower()}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+
+        url = f"{self.base_url}/v1/subscribe/{entity_type}/{entity_id}"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        headers.pop("Content-Type", None)
+
+        try:
+            async with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise HttpError(response.status_code, "Failed to subscribe")
+                async for event in _async_parse_sse_stream(response.aiter_lines()):
+                    yield event
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
+    # =========================================================================
+    # Stream (SSE)
+    # =========================================================================
+
+    async def stream(
+        self,
+        *,
+        namespace: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        event_type: Optional[str] = None,
+        chain_id: Optional[str] = None,
+        group_id: Optional[str] = None,
+        action_id: Optional[str] = None,
+        last_event_id: Optional[str] = None,
+    ) -> AsyncIterator[SseEvent]:
+        """Subscribe to the real-time event stream via SSE.
+
+        Opens a streaming connection to ``GET /v1/stream`` and yields parsed
+        SSE events as they arrive. All parameters are optional filters.
+
+        Args:
+            namespace: Filter events by namespace.
+            action_type: Filter events by action type.
+            outcome: Filter events by outcome category.
+            event_type: Filter events by stream event type.
+            chain_id: Filter events by chain ID.
+            group_id: Filter events by group ID.
+            action_id: Filter events by action ID.
+            last_event_id: Reconnection token; replays missed events from this ID.
+
+        Yields:
+            Parsed SseEvent objects.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if event_type is not None:
+            params["event_type"] = event_type
+        if chain_id is not None:
+            params["chain_id"] = chain_id
+        if group_id is not None:
+            params["group_id"] = group_id
+        if action_id is not None:
+            params["action_id"] = action_id
+
+        url = f"{self.base_url}/v1/stream"
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        headers.pop("Content-Type", None)
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = last_event_id
+
+        try:
+            async with self._client.stream(
+                "GET", url, params=params, headers=headers
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise HttpError(response.status_code, "Failed to open stream")
+                async for event in _async_parse_sse_stream(response.aiter_lines()):
+                    yield event
+        except httpx.ConnectError as e:
+            raise ConnectionError(str(e)) from e
+        except httpx.TimeoutException as e:
+            raise ConnectionError(f"Request timed out: {e}") from e
+
+
+async def _async_parse_sse_stream(aiter_lines) -> AsyncIterator[SseEvent]:
+    """Parse a text/event-stream from an async line iterator into SseEvent objects.
+
+    This is the async equivalent of ``_parse_sse_stream``.
+
+    Args:
+        aiter_lines: An async iterator of lines from the SSE stream.
+
+    Yields:
+        Parsed SseEvent objects.
+    """
+    import json as _json
+
+    event_type: Optional[str] = None
+    event_id: Optional[str] = None
+    data_parts: list[str] = []
+
+    async for line in aiter_lines:
+        if line.startswith(":"):
+            continue
+        if line == "":
+            if data_parts:
+                raw_data = "\n".join(data_parts)
+                try:
+                    parsed = _json.loads(raw_data)
+                except (_json.JSONDecodeError, ValueError):
+                    parsed = raw_data
+                yield SseEvent(event=event_type, id=event_id, data=parsed)
+            event_type = None
+            event_id = None
+            data_parts = []
+            continue
+        if line.startswith("event:"):
+            event_type = line[len("event:"):].strip()
+        elif line.startswith("id:"):
+            event_id = line[len("id:"):].strip()
+        elif line.startswith("data:"):
+            data_parts.append(line[len("data:"):].strip())

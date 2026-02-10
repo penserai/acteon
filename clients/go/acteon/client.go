@@ -1,6 +1,7 @@
 package acteon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -969,4 +970,312 @@ func (c *Client) ResumeRecurring(ctx context.Context, recurringID, namespace, te
 		return nil, &HTTPError{Status: resp.StatusCode, Message: "Recurring action is already active"}
 	}
 	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to resume recurring action"}
+}
+
+// =============================================================================
+// Chains
+// =============================================================================
+
+// ListChains lists chain executions filtered by namespace, tenant, and optional status.
+func (c *Client) ListChains(ctx context.Context, namespace, tenant string, status *string) (*ListChainsResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	if status != nil {
+		params.Set("status", *status)
+	}
+	path := "/v1/chains?" + params.Encode()
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list chains"}
+	}
+
+	var result ListChainsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetChain gets the full details of a chain execution by ID.
+func (c *Client) GetChain(ctx context.Context, chainID, namespace, tenant string) (*ChainDetailResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/chains/%s?%s", chainID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain"}
+	}
+
+	var detail ChainDetailResponse
+	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &detail, nil
+}
+
+// CancelChain cancels a running chain execution.
+func (c *Client) CancelChain(ctx context.Context, chainID string, req *CancelChainRequest) (*ChainDetailResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/chains/%s/cancel", chainID), req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var detail ChainDetailResponse
+		if err := json.Unmarshal(body, &detail); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &detail, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Chain is not running"}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to cancel chain"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// =============================================================================
+// Dead Letter Queue (DLQ)
+// =============================================================================
+
+// DlqStats returns dead-letter queue statistics.
+func (c *Client) DlqStats(ctx context.Context) (*DlqStatsResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/dlq/stats", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get DLQ stats"}
+	}
+
+	var stats DlqStatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &stats, nil
+}
+
+// DlqDrain drains all entries from the dead-letter queue.
+func (c *Client) DlqDrain(ctx context.Context) (*DlqDrainResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dlq/drain", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result DlqDrainResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "DLQ is not enabled"}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to drain DLQ"}
+}
+
+// =============================================================================
+// Subscribe (SSE)
+// =============================================================================
+
+// Subscribe opens an SSE stream for a specific entity (chain, group, or action).
+// It returns a channel that receives SseEvent values. The channel is closed when
+// the context is cancelled, the connection drops, or the server closes the stream.
+func (c *Client) Subscribe(ctx context.Context, entityType, entityID string, opts *SubscribeOptions) (<-chan *SseEvent, error) {
+	params := url.Values{}
+	if opts != nil {
+		if opts.Namespace != nil {
+			params.Set("namespace", *opts.Namespace)
+		}
+		if opts.Tenant != nil {
+			params.Set("tenant", *opts.Tenant)
+		}
+		if opts.IncludeHistory != nil {
+			params.Set("include_history", strconv.FormatBool(*opts.IncludeHistory))
+		}
+	}
+
+	path := fmt.Sprintf("/v1/subscribe/%s/%s", entityType, entityID)
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	ch, err := c.openSSE(ctx, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+// =============================================================================
+// Stream (SSE)
+// =============================================================================
+
+// Stream opens the general SSE event stream with optional filters.
+// It returns a channel that receives SseEvent values. The channel is closed when
+// the context is cancelled, the connection drops, or the server closes the stream.
+func (c *Client) Stream(ctx context.Context, opts *StreamOptions) (<-chan *SseEvent, error) {
+	params := url.Values{}
+	var lastEventID *string
+	if opts != nil {
+		if opts.Namespace != nil {
+			params.Set("namespace", *opts.Namespace)
+		}
+		if opts.ActionType != nil {
+			params.Set("action_type", *opts.ActionType)
+		}
+		if opts.Outcome != nil {
+			params.Set("outcome", *opts.Outcome)
+		}
+		if opts.EventType != nil {
+			params.Set("event_type", *opts.EventType)
+		}
+		if opts.ChainID != nil {
+			params.Set("chain_id", *opts.ChainID)
+		}
+		if opts.GroupID != nil {
+			params.Set("group_id", *opts.GroupID)
+		}
+		if opts.ActionID != nil {
+			params.Set("action_id", *opts.ActionID)
+		}
+		lastEventID = opts.LastEventID
+	}
+
+	path := "/v1/stream"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	ch, err := c.openSSE(ctx, path, lastEventID)
+	if err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+// openSSE opens an SSE connection to the given path and returns a channel of events.
+func (c *Client) openSSE(ctx context.Context, path string, lastEventID *string) (<-chan *SseEvent, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	if lastEventID != nil {
+		req.Header.Set("Last-Event-ID", *lastEventID)
+	}
+
+	// Use a separate client without timeout for SSE (long-lived connection).
+	sseClient := &http.Client{
+		// No timeout -- the connection stays open until context cancellation.
+	}
+
+	resp, err := sseClient.Do(req)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, &HTTPError{
+			Status:  resp.StatusCode,
+			Message: fmt.Sprintf("SSE connection failed: %s", string(body)),
+		}
+	}
+
+	ch := make(chan *SseEvent, 64)
+
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+
+		var currentID string
+		var currentEvent string
+		var dataLines []string
+
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if line == "" {
+				// Empty line means end of event.
+				if len(dataLines) > 0 {
+					event := &SseEvent{
+						ID:    currentID,
+						Event: currentEvent,
+						Data:  strings.Join(dataLines, "\n"),
+					}
+					select {
+					case ch <- event:
+					case <-ctx.Done():
+						return
+					}
+				}
+				currentID = ""
+				currentEvent = ""
+				dataLines = nil
+				continue
+			}
+
+			if strings.HasPrefix(line, "id:") {
+				currentID = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
+			} else if strings.HasPrefix(line, "event:") {
+				currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			} else if strings.HasPrefix(line, "data:") {
+				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+			// Lines starting with ":" are comments (e.g., keep-alive pings); ignore them.
+		}
+	}()
+
+	return ch, nil
 }

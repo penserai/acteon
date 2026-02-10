@@ -628,3 +628,115 @@ type RecurringLifecycleRequest struct {
 	Namespace string `json:"namespace"`
 	Tenant    string `json:"tenant"`
 }
+
+// =============================================================================
+// Chain Types
+// =============================================================================
+
+// ChainSummary is a summary of a chain execution for list responses.
+type ChainSummary struct {
+	ChainID     string `json:"chain_id"`
+	ChainName   string `json:"chain_name"`
+	Status      string `json:"status"`
+	CurrentStep int    `json:"current_step"`
+	TotalSteps  int    `json:"total_steps"`
+	StartedAt   string `json:"started_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
+// ListChainsResponse is the response from listing chain executions.
+type ListChainsResponse struct {
+	Chains []ChainSummary `json:"chains"`
+}
+
+// ChainStepStatus is the detailed status of a single chain step.
+type ChainStepStatus struct {
+	Name         string         `json:"name"`
+	Provider     string         `json:"provider"`
+	Status       string         `json:"status"`
+	ResponseBody map[string]any `json:"response_body,omitempty"`
+	Error        *string        `json:"error,omitempty"`
+	CompletedAt  *string        `json:"completed_at,omitempty"`
+}
+
+// ChainDetailResponse is the full detail response for a chain execution.
+type ChainDetailResponse struct {
+	ChainID       string            `json:"chain_id"`
+	ChainName     string            `json:"chain_name"`
+	Status        string            `json:"status"`
+	CurrentStep   int               `json:"current_step"`
+	TotalSteps    int               `json:"total_steps"`
+	Steps         []ChainStepStatus `json:"steps"`
+	StartedAt     string            `json:"started_at"`
+	UpdatedAt     string            `json:"updated_at"`
+	ExpiresAt     *string           `json:"expires_at,omitempty"`
+	CancelReason  *string           `json:"cancel_reason,omitempty"`
+	CancelledBy   *string           `json:"cancelled_by,omitempty"`
+	ExecutionPath []string          `json:"execution_path,omitempty"`
+}
+
+// CancelChainRequest is the request body for cancelling a chain.
+type CancelChainRequest struct {
+	Namespace   string  `json:"namespace"`
+	Tenant      string  `json:"tenant"`
+	Reason      *string `json:"reason,omitempty"`
+	CancelledBy *string `json:"cancelled_by,omitempty"`
+}
+
+// =============================================================================
+// DLQ Types (Dead Letter Queue)
+// =============================================================================
+
+// DlqStatsResponse is the response from the DLQ stats endpoint.
+type DlqStatsResponse struct {
+	Enabled bool `json:"enabled"`
+	Count   int  `json:"count"`
+}
+
+// DlqEntry is a single dead-letter queue entry.
+type DlqEntry struct {
+	ActionID   string `json:"action_id"`
+	Namespace  string `json:"namespace"`
+	Tenant     string `json:"tenant"`
+	Provider   string `json:"provider"`
+	ActionType string `json:"action_type"`
+	Error      string `json:"error"`
+	Attempts   int    `json:"attempts"`
+	Timestamp  uint64 `json:"timestamp"`
+}
+
+// DlqDrainResponse is the response from draining the DLQ.
+type DlqDrainResponse struct {
+	Entries []DlqEntry `json:"entries"`
+	Count   int        `json:"count"`
+}
+
+// =============================================================================
+// SSE Types (Server-Sent Events)
+// =============================================================================
+
+// SubscribeOptions contains optional parameters for the Subscribe method.
+type SubscribeOptions struct {
+	Namespace      *string
+	Tenant         *string
+	IncludeHistory *bool
+}
+
+// StreamOptions contains optional filter parameters for the Stream method.
+type StreamOptions struct {
+	Namespace   *string
+	ActionType  *string
+	Outcome     *string
+	EventType   *string
+	ChainID     *string
+	GroupID     *string
+	ActionID    *string
+	LastEventID *string
+}
+
+// SseEvent represents a single Server-Sent Event.
+type SseEvent struct {
+	ID    string `json:"id,omitempty"`
+	Event string `json:"event,omitempty"`
+	Data  string `json:"data,omitempty"`
+}

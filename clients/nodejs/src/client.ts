@@ -32,6 +32,13 @@ import {
   ListRecurringResponse,
   RecurringDetail,
   UpdateRecurringAction,
+  ListChainsResponse,
+  ChainDetailResponse,
+  DlqStatsResponse,
+  DlqDrainResponse,
+  SseEvent,
+  SubscribeOptions,
+  StreamOptions,
   actionToRequest,
   auditQueryToParams,
   eventQueryToParams,
@@ -58,6 +65,10 @@ import {
   parseListRecurringResponse,
   parseRecurringDetail,
   updateRecurringActionToRequest,
+  parseListChainsResponse,
+  parseChainDetailResponse,
+  parseDlqStatsResponse,
+  parseDlqDrainResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -716,6 +727,299 @@ export class ActeonClient {
       throw new HttpError(409, "Recurring action is already active");
     } else {
       throw new HttpError(response.status, "Failed to resume recurring action");
+    }
+  }
+
+  // =========================================================================
+  // Chains
+  // =========================================================================
+
+  /**
+   * List chain executions filtered by namespace, tenant, and optional status.
+   */
+  async listChains(namespace: string, tenant: string, status?: string): Promise<ListChainsResponse> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    if (status !== undefined) {
+      params.set("status", status);
+    }
+    const response = await this.request("GET", "/v1/chains", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListChainsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list chains");
+    }
+  }
+
+  /**
+   * Get full details of a chain execution including step results.
+   */
+  async getChain(chainId: string, namespace: string, tenant: string): Promise<ChainDetailResponse | null> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/chains/${chainId}`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseChainDetailResponse(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get chain");
+    }
+  }
+
+  /**
+   * Cancel a running chain execution.
+   */
+  async cancelChain(
+    chainId: string,
+    namespace: string,
+    tenant: string,
+    reason?: string,
+    cancelledBy?: string
+  ): Promise<ChainDetailResponse> {
+    const body: Record<string, unknown> = { namespace, tenant };
+    if (reason !== undefined) {
+      body.reason = reason;
+    }
+    if (cancelledBy !== undefined) {
+      body.cancelled_by = cancelledBy;
+    }
+    const response = await this.request("POST", `/v1/chains/${chainId}/cancel`, { body });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseChainDetailResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain not found: ${chainId}`);
+    } else if (response.status === 409) {
+      throw new HttpError(409, "Chain is not running");
+    } else {
+      throw new HttpError(response.status, "Failed to cancel chain");
+    }
+  }
+
+  // =========================================================================
+  // DLQ (Dead-Letter Queue)
+  // =========================================================================
+
+  /**
+   * Get dead-letter queue statistics.
+   */
+  async dlqStats(): Promise<DlqStatsResponse> {
+    const response = await this.request("GET", "/v1/dlq/stats");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDlqStatsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to get DLQ stats");
+    }
+  }
+
+  /**
+   * Drain all entries from the dead-letter queue.
+   * Removes and returns all entries for manual processing or resubmission.
+   */
+  async dlqDrain(): Promise<DlqDrainResponse> {
+    const response = await this.request("POST", "/v1/dlq/drain");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDlqDrainResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, "Dead-letter queue is not enabled");
+    } else {
+      throw new HttpError(response.status, "Failed to drain DLQ");
+    }
+  }
+
+  // =========================================================================
+  // Subscribe (SSE)
+  // =========================================================================
+
+  /**
+   * Subscribe to events for a specific entity via Server-Sent Events.
+   *
+   * Returns an `AsyncGenerator` that yields parsed SSE events.
+   * The generator completes when the connection is closed.
+   *
+   * @param entityType - The entity type: "chain", "group", or "action".
+   * @param entityId - The entity ID to subscribe to.
+   * @param options - Optional namespace, tenant, and includeHistory settings.
+   *
+   * @example
+   * ```typescript
+   * for await (const event of client.subscribe("chain", "chain-42", { namespace: "ns", tenant: "t1" })) {
+   *   console.log(`${event.event}: ${JSON.stringify(event.data)}`);
+   * }
+   * ```
+   */
+  async *subscribe(
+    entityType: string,
+    entityId: string,
+    options?: SubscribeOptions
+  ): AsyncGenerator<SseEvent, void, undefined> {
+    const params = new URLSearchParams();
+    if (options?.namespace !== undefined) {
+      params.set("namespace", options.namespace);
+    }
+    if (options?.tenant !== undefined) {
+      params.set("tenant", options.tenant);
+    }
+    if (options?.includeHistory !== undefined) {
+      params.set("include_history", options.includeHistory.toString());
+    }
+
+    yield* this.connectSse(`/v1/subscribe/${entityType}/${entityId}`, params);
+  }
+
+  // =========================================================================
+  // Stream (SSE)
+  // =========================================================================
+
+  /**
+   * Subscribe to the real-time event stream via Server-Sent Events.
+   *
+   * Returns an `AsyncGenerator` that yields parsed SSE events.
+   * The generator completes when the connection is closed.
+   *
+   * @param options - Optional filters for namespace, actionType, outcome, eventType,
+   *   chainId, groupId, actionId, and lastEventId for reconnection catch-up.
+   *
+   * @example
+   * ```typescript
+   * for await (const event of client.stream({ namespace: "alerts", eventType: "action_dispatched" })) {
+   *   console.log(`${event.event}: ${JSON.stringify(event.data)}`);
+   * }
+   * ```
+   */
+  async *stream(options?: StreamOptions): AsyncGenerator<SseEvent, void, undefined> {
+    const params = new URLSearchParams();
+    if (options?.namespace !== undefined) {
+      params.set("namespace", options.namespace);
+    }
+    if (options?.actionType !== undefined) {
+      params.set("action_type", options.actionType);
+    }
+    if (options?.outcome !== undefined) {
+      params.set("outcome", options.outcome);
+    }
+    if (options?.eventType !== undefined) {
+      params.set("event_type", options.eventType);
+    }
+    if (options?.chainId !== undefined) {
+      params.set("chain_id", options.chainId);
+    }
+    if (options?.groupId !== undefined) {
+      params.set("group_id", options.groupId);
+    }
+    if (options?.actionId !== undefined) {
+      params.set("action_id", options.actionId);
+    }
+
+    const headers: Record<string, string> = {};
+    if (options?.lastEventId !== undefined) {
+      headers["Last-Event-ID"] = options.lastEventId;
+    }
+
+    yield* this.connectSse("/v1/stream", params, headers);
+  }
+
+  // =========================================================================
+  // SSE Helpers (private)
+  // =========================================================================
+
+  /**
+   * Connect to an SSE endpoint and yield parsed events.
+   */
+  private async *connectSse(
+    path: string,
+    params?: URLSearchParams,
+    extraHeaders?: Record<string, string>
+  ): AsyncGenerator<SseEvent, void, undefined> {
+    let url = `${this.baseUrl}${path}`;
+    if (params && params.toString()) {
+      url += `?${params.toString()}`;
+    }
+
+    const headers: Record<string, string> = {
+      Accept: "text/event-stream",
+    };
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    }
+    if (extraHeaders) {
+      Object.assign(headers, extraHeaders);
+    }
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+    });
+
+    if (!response.ok) {
+      throw new HttpError(response.status, `SSE connection failed: ${path}`);
+    }
+
+    if (!response.body) {
+      throw new ConnectionError("Response body is null");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "";
+    let currentId = "";
+    let currentData: string[] = [];
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        // Keep the last incomplete line in the buffer.
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line === "") {
+            // Empty line signals end of an event.
+            if (currentData.length > 0) {
+              const dataStr = currentData.join("\n");
+              let parsedData: unknown;
+              try {
+                parsedData = JSON.parse(dataStr);
+              } catch {
+                parsedData = dataStr;
+              }
+              yield {
+                event: currentEvent || "message",
+                id: currentId,
+                data: parsedData,
+              };
+            }
+            currentEvent = "";
+            currentId = "";
+            currentData = [];
+          } else if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+          } else if (line.startsWith("id:")) {
+            currentId = line.slice(3).trim();
+          } else if (line.startsWith("data:")) {
+            currentData.push(line.slice(5).trim());
+          }
+          // Ignore comments (lines starting with ':') and unknown fields.
+        }
+      }
+    } finally {
+      reader.releaseLock();
     }
   }
 }
