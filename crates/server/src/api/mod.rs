@@ -72,6 +72,7 @@ pub struct AppState {
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
+#[allow(clippy::too_many_lines)]
 pub fn router(state: AppState) -> Router {
     let public = Router::new()
         // Health & metrics (always public)

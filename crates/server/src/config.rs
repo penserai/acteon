@@ -1314,7 +1314,7 @@ impl From<&CircuitBreakerServerConfig> for CircuitBreakerSnapshot {
 }
 
 /// Sanitized background processing configuration.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct BackgroundSnapshot {
     /// Whether background processing is enabled.
@@ -1341,6 +1341,13 @@ pub struct BackgroundSnapshot {
     pub recurring_check_interval_seconds: u64,
     /// Maximum number of recurring actions per tenant.
     pub max_recurring_actions_per_tenant: usize,
+}
+
+impl Default for BackgroundSnapshot {
+    fn default() -> Self {
+        let cfg = BackgroundProcessingConfig::default();
+        Self::from(&cfg)
+    }
 }
 
 impl From<&BackgroundProcessingConfig> for BackgroundSnapshot {
