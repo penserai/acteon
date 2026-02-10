@@ -128,6 +128,15 @@ pub struct StreamQuery {
     pub outcome: Option<String>,
     /// Filter events by stream event type (e.g., `action_dispatched`, `group_flushed`).
     pub event_type: Option<String>,
+    /// Filter events by chain ID (matches `ChainAdvanced`, `ChainStepCompleted`,
+    /// `ChainCompleted` events for this chain).
+    pub chain_id: Option<String>,
+    /// Filter events by group ID (matches `GroupFlushed`, `GroupEventAdded`,
+    /// `GroupResolved` events for this group).
+    pub group_id: Option<String>,
+    /// Filter events by action ID (matches events where
+    /// `StreamEvent.action_id` equals this value).
+    pub action_id: Option<String>,
 }
 
 /// `GET /v1/stream` -- subscribe to real-time action outcomes via SSE.
@@ -340,7 +349,7 @@ async fn replay_from_audit(
 ///
 /// When `live_cutoff` is set, broadcast events with timestamps at or before
 /// the cutoff are skipped to prevent duplicate delivery of replayed events.
-fn make_event_stream(
+pub fn make_event_stream(
     rx: broadcast::Receiver<StreamEvent>,
     allowed_tenants: Option<Vec<String>>,
     query: StreamQuery,
@@ -398,6 +407,21 @@ fn make_event_stream(
                         return None;
                     }
                 }
+                if let Some(ref cid) = query.chain_id
+                    && !event_matches_chain_id(&event.event_type, cid)
+                {
+                    return None;
+                }
+                if let Some(ref gid) = query.group_id
+                    && !event_matches_group_id(&event.event_type, gid)
+                {
+                    return None;
+                }
+                if let Some(ref aid) = query.action_id
+                    && event.action_id.as_deref() != Some(aid.as_str())
+                {
+                    return None;
+                }
 
                 // Serialize and emit.
                 let event_id = event.id.clone();
@@ -421,8 +445,28 @@ fn make_event_stream(
     })
 }
 
+/// Check if a stream event's chain ID matches the given chain ID.
+fn event_matches_chain_id(event_type: &StreamEventType, chain_id: &str) -> bool {
+    match event_type {
+        StreamEventType::ChainAdvanced { chain_id: cid }
+        | StreamEventType::ChainStepCompleted { chain_id: cid, .. }
+        | StreamEventType::ChainCompleted { chain_id: cid, .. } => cid == chain_id,
+        _ => false,
+    }
+}
+
+/// Check if a stream event's group ID matches the given group ID.
+fn event_matches_group_id(event_type: &StreamEventType, group_id: &str) -> bool {
+    match event_type {
+        StreamEventType::GroupFlushed { group_id: gid, .. }
+        | StreamEventType::GroupEventAdded { group_id: gid, .. }
+        | StreamEventType::GroupResolved { group_id: gid, .. } => gid == group_id,
+        _ => false,
+    }
+}
+
 /// Return the SSE event type tag for a [`StreamEventType`].
-fn stream_event_type_tag(event_type: &StreamEventType) -> &'static str {
+pub(crate) fn stream_event_type_tag(event_type: &StreamEventType) -> &'static str {
     match event_type {
         StreamEventType::ActionDispatched { .. } => "action_dispatched",
         StreamEventType::GroupFlushed { .. } => "group_flushed",
@@ -430,6 +474,12 @@ fn stream_event_type_tag(event_type: &StreamEventType) -> &'static str {
         StreamEventType::ChainAdvanced { .. } => "chain_advanced",
         StreamEventType::ApprovalRequired { .. } => "approval_required",
         StreamEventType::ScheduledActionDue { .. } => "scheduled_action_due",
+        StreamEventType::ChainStepCompleted { .. } => "chain_step_completed",
+        StreamEventType::ChainCompleted { .. } => "chain_completed",
+        StreamEventType::GroupEventAdded { .. } => "group_event_added",
+        StreamEventType::GroupResolved { .. } => "group_resolved",
+        StreamEventType::ApprovalResolved { .. } => "approval_resolved",
+        StreamEventType::Unknown => "unknown",
     }
 }
 
@@ -515,6 +565,46 @@ mod tests {
                 approval_id: "a".into(),
             }),
             "approval_required"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::ChainStepCompleted {
+                chain_id: "c".into(),
+                step_name: "s".into(),
+                step_index: 0,
+                success: true,
+                next_step: None,
+            }),
+            "chain_step_completed"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::ChainCompleted {
+                chain_id: "c".into(),
+                status: "completed".into(),
+                execution_path: vec![],
+            }),
+            "chain_completed"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::GroupEventAdded {
+                group_id: "g".into(),
+                group_key: "k".into(),
+                event_count: 1,
+            }),
+            "group_event_added"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::GroupResolved {
+                group_id: "g".into(),
+                group_key: "k".into(),
+            }),
+            "group_resolved"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::ApprovalResolved {
+                approval_id: "a".into(),
+                decision: "approved".into(),
+            }),
+            "approval_resolved"
         );
     }
 
@@ -749,6 +839,7 @@ mod tests {
                     action_type: Some("send_email".into()),
                     outcome: Some("executed".into()),
                     event_type: None,
+                    ..Default::default()
                 }
             )
             .await,
@@ -1071,5 +1162,388 @@ mod tests {
         // With an empty store, we should get no events but a valid cutoff.
         assert!(events.is_empty());
         assert!(cutoff.is_some());
+    }
+
+    // -- New subscription event filter tests ----------------------------------
+
+    #[test]
+    fn event_matches_chain_id_matches_chain_step_completed() {
+        let et = StreamEventType::ChainStepCompleted {
+            chain_id: "chain-42".into(),
+            step_name: "s".into(),
+            step_index: 0,
+            success: true,
+            next_step: None,
+        };
+        assert!(event_matches_chain_id(&et, "chain-42"));
+        assert!(!event_matches_chain_id(&et, "chain-99"));
+    }
+
+    #[test]
+    fn event_matches_chain_id_matches_chain_completed() {
+        let et = StreamEventType::ChainCompleted {
+            chain_id: "chain-42".into(),
+            status: "completed".into(),
+            execution_path: vec![],
+        };
+        assert!(event_matches_chain_id(&et, "chain-42"));
+        assert!(!event_matches_chain_id(&et, "other"));
+    }
+
+    #[test]
+    fn event_matches_chain_id_matches_chain_advanced() {
+        let et = StreamEventType::ChainAdvanced {
+            chain_id: "chain-42".into(),
+        };
+        assert!(event_matches_chain_id(&et, "chain-42"));
+        assert!(!event_matches_chain_id(&et, "chain-0"));
+    }
+
+    #[test]
+    fn event_matches_chain_id_rejects_non_chain_events() {
+        let et = StreamEventType::ActionDispatched {
+            outcome: ActionOutcome::Deduplicated,
+            provider: "email".into(),
+        };
+        assert!(!event_matches_chain_id(&et, "chain-42"));
+
+        let et2 = StreamEventType::GroupFlushed {
+            group_id: "g".into(),
+            event_count: 1,
+        };
+        assert!(!event_matches_chain_id(&et2, "chain-42"));
+    }
+
+    #[test]
+    fn event_matches_group_id_matches_group_event_added() {
+        let et = StreamEventType::GroupEventAdded {
+            group_id: "grp-abc".into(),
+            group_key: "k".into(),
+            event_count: 3,
+        };
+        assert!(event_matches_group_id(&et, "grp-abc"));
+        assert!(!event_matches_group_id(&et, "grp-other"));
+    }
+
+    #[test]
+    fn event_matches_group_id_matches_group_resolved() {
+        let et = StreamEventType::GroupResolved {
+            group_id: "grp-abc".into(),
+            group_key: "k".into(),
+        };
+        assert!(event_matches_group_id(&et, "grp-abc"));
+        assert!(!event_matches_group_id(&et, "grp-other"));
+    }
+
+    #[test]
+    fn event_matches_group_id_matches_group_flushed() {
+        let et = StreamEventType::GroupFlushed {
+            group_id: "grp-abc".into(),
+            event_count: 5,
+        };
+        assert!(event_matches_group_id(&et, "grp-abc"));
+        assert!(!event_matches_group_id(&et, "grp-other"));
+    }
+
+    #[test]
+    fn event_matches_group_id_rejects_non_group_events() {
+        let et = StreamEventType::ActionDispatched {
+            outcome: ActionOutcome::Deduplicated,
+            provider: "p".into(),
+        };
+        assert!(!event_matches_group_id(&et, "grp-abc"));
+
+        let et2 = StreamEventType::ChainAdvanced {
+            chain_id: "c".into(),
+        };
+        assert!(!event_matches_group_id(&et2, "grp-abc"));
+    }
+
+    #[tokio::test]
+    async fn filter_by_chain_id() {
+        let evts = vec![
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::ChainStepCompleted {
+                    chain_id: "chain-42".into(),
+                    step_name: "s1".into(),
+                    step_index: 0,
+                    success: true,
+                    next_step: Some("s2".into()),
+                },
+            ),
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::ChainStepCompleted {
+                    chain_id: "chain-99".into(),
+                    step_name: "s1".into(),
+                    step_index: 0,
+                    success: true,
+                    next_step: None,
+                },
+            ),
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::ChainCompleted {
+                    chain_id: "chain-42".into(),
+                    status: "completed".into(),
+                    execution_path: vec!["s1".into()],
+                },
+            ),
+            mk_dispatched("ns", "t1", "send_email", ActionOutcome::Deduplicated),
+        ];
+        assert_eq!(
+            collect(
+                evts,
+                None,
+                StreamQuery {
+                    chain_id: Some("chain-42".into()),
+                    ..Default::default()
+                }
+            )
+            .await,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_by_group_id() {
+        let evts = vec![
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::GroupEventAdded {
+                    group_id: "grp-abc".into(),
+                    group_key: "k".into(),
+                    event_count: 1,
+                },
+            ),
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::GroupEventAdded {
+                    group_id: "grp-other".into(),
+                    group_key: "k2".into(),
+                    event_count: 1,
+                },
+            ),
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::GroupResolved {
+                    group_id: "grp-abc".into(),
+                    group_key: "k".into(),
+                },
+            ),
+        ];
+        assert_eq!(
+            collect(
+                evts,
+                None,
+                StreamQuery {
+                    group_id: Some("grp-abc".into()),
+                    ..Default::default()
+                }
+            )
+            .await,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_by_action_id() {
+        let make_with_action_id =
+            |ns: &str, tenant: &str, action_id: &str, outcome: ActionOutcome| -> StreamEvent {
+                StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: Utc::now(),
+                    event_type: StreamEventType::ActionDispatched {
+                        outcome,
+                        provider: "email".into(),
+                    },
+                    namespace: ns.into(),
+                    tenant: tenant.into(),
+                    action_type: Some("send_email".into()),
+                    action_id: Some(action_id.into()),
+                }
+            };
+
+        let evts = vec![
+            make_with_action_id("ns", "t1", "act-1", ActionOutcome::Deduplicated),
+            make_with_action_id("ns", "t1", "act-2", ActionOutcome::Deduplicated),
+            make_with_action_id("ns", "t1", "act-1", ActionOutcome::Deduplicated),
+        ];
+        assert_eq!(
+            collect(
+                evts,
+                None,
+                StreamQuery {
+                    action_id: Some("act-1".into()),
+                    ..Default::default()
+                }
+            )
+            .await,
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_by_event_type_chain_step_completed() {
+        let evts = vec![
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::ChainStepCompleted {
+                    chain_id: "c".into(),
+                    step_name: "s".into(),
+                    step_index: 0,
+                    success: true,
+                    next_step: None,
+                },
+            ),
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::ChainCompleted {
+                    chain_id: "c".into(),
+                    status: "completed".into(),
+                    execution_path: vec![],
+                },
+            ),
+            mk_dispatched("ns", "t1", "s", ActionOutcome::Deduplicated),
+        ];
+        assert_eq!(
+            collect(
+                evts,
+                None,
+                StreamQuery {
+                    event_type: Some("chain_step_completed".into()),
+                    ..Default::default()
+                }
+            )
+            .await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_by_event_type_approval_resolved() {
+        let evts = vec![
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::ApprovalResolved {
+                    approval_id: "appr-1".into(),
+                    decision: "approved".into(),
+                },
+            ),
+            mk_bg(
+                "ns",
+                "t1",
+                StreamEventType::ApprovalRequired {
+                    approval_id: "appr-2".into(),
+                },
+            ),
+        ];
+        assert_eq!(
+            collect(
+                evts,
+                None,
+                StreamQuery {
+                    event_type: Some("approval_resolved".into()),
+                    ..Default::default()
+                }
+            )
+            .await,
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn combined_chain_id_and_tenant_filter() {
+        let evts = vec![
+            mk_bg(
+                "ns",
+                "tenant-a",
+                StreamEventType::ChainStepCompleted {
+                    chain_id: "chain-1".into(),
+                    step_name: "s".into(),
+                    step_index: 0,
+                    success: true,
+                    next_step: None,
+                },
+            ),
+            mk_bg(
+                "ns",
+                "tenant-b",
+                StreamEventType::ChainStepCompleted {
+                    chain_id: "chain-1".into(),
+                    step_name: "s".into(),
+                    step_index: 0,
+                    success: true,
+                    next_step: None,
+                },
+            ),
+        ];
+        assert_eq!(
+            collect(
+                evts,
+                Some(vec!["tenant-a".into()]),
+                StreamQuery {
+                    chain_id: Some("chain-1".into()),
+                    ..Default::default()
+                }
+            )
+            .await,
+            1,
+            "chain_id filter + tenant isolation should return only tenant-a events"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_event_type_tag_tests() {
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::ChainStepCompleted {
+                chain_id: "c".into(),
+                step_name: "s".into(),
+                step_index: 0,
+                success: true,
+                next_step: None,
+            }),
+            "chain_step_completed"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::ChainCompleted {
+                chain_id: "c".into(),
+                status: "completed".into(),
+                execution_path: vec![],
+            }),
+            "chain_completed"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::GroupEventAdded {
+                group_id: "g".into(),
+                group_key: "k".into(),
+                event_count: 1,
+            }),
+            "group_event_added"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::GroupResolved {
+                group_id: "g".into(),
+                group_key: "k".into(),
+            }),
+            "group_resolved"
+        );
+        assert_eq!(
+            stream_event_type_tag(&StreamEventType::ApprovalResolved {
+                approval_id: "a".into(),
+                decision: "approved".into(),
+            }),
+            "approval_resolved"
+        );
     }
 }

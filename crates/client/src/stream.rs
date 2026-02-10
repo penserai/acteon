@@ -44,6 +44,15 @@ pub struct StreamFilter {
     /// Filter by stream event type tag.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub event_type: Option<String>,
+    /// Filter by chain ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
+    /// Filter by group ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// Filter by action ID.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
 }
 
 impl StreamFilter {
@@ -78,6 +87,27 @@ impl StreamFilter {
     #[must_use]
     pub fn event_type(mut self, event_type: impl Into<String>) -> Self {
         self.event_type = Some(event_type.into());
+        self
+    }
+
+    /// Filter events by chain ID.
+    #[must_use]
+    pub fn chain_id(mut self, chain_id: impl Into<String>) -> Self {
+        self.chain_id = Some(chain_id.into());
+        self
+    }
+
+    /// Filter events by group ID.
+    #[must_use]
+    pub fn group_id(mut self, group_id: impl Into<String>) -> Self {
+        self.group_id = Some(group_id.into());
+        self
+    }
+
+    /// Filter events by action ID.
+    #[must_use]
+    pub fn action_id(mut self, action_id: impl Into<String>) -> Self {
+        self.action_id = Some(action_id.into());
         self
     }
 }

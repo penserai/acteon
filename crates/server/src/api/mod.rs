@@ -15,6 +15,7 @@ pub mod replay;
 pub mod rules;
 pub mod schemas;
 pub mod stream;
+pub mod subscribe;
 pub mod trace_context;
 
 use std::sync::Arc;
@@ -143,6 +144,11 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/config", get(config::get_config))
         // SSE event streaming
         .route("/v1/stream", get(stream::stream))
+        // Entity-specific SSE subscription
+        .route(
+            "/v1/subscribe/{entity_type}/{entity_id}",
+            get(subscribe::subscribe),
+        )
         // Logout (requires auth)
         .route("/v1/auth/logout", post(auth::logout))
         // Rate limiting runs after auth (so CallerIdentity is available)
@@ -162,9 +168,9 @@ pub fn router(state: AppState) -> Router {
         let path = std::path::PathBuf::from(path_str);
         if path.exists() {
             let index_path = path.join("index.html");
-            router = router.fallback_service(ServeDir::new(path).fallback(
-                tower_http::services::ServeFile::new(index_path),
-            ));
+            router = router.fallback_service(
+                ServeDir::new(path).fallback(tower_http::services::ServeFile::new(index_path)),
+            );
         } else {
             tracing::warn!(
                 path = %path.display(),

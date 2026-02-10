@@ -100,5 +100,29 @@ name = "branch_chain_simulation"
 name = "scheduled_actions_simulation"
 # No required-features - uses in-memory backends
 
+[[example]]
+name = "subscription_chain_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "subscription_branching_chain_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "subscription_group_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "subscription_approval_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "subscription_multi_client_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "subscription_state_machine_simulation"
+# No required-features - uses in-memory backends
+
 [lints]
 workspace = true

@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower::ServiceExt;
 
 use acteon_executor::ExecutorConfig;
@@ -49,13 +49,9 @@ async fn ui_serves_index_html() {
     let app = acteon_server::api::router(state);
 
     // 3. Test root path serves index.html
-    let response = app.clone()
-        .oneshot(
-            Request::builder()
-                .uri("/")
-                .body(Body::empty())
-                .unwrap(),
-        )
+    let response = app
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -66,7 +62,8 @@ async fn ui_serves_index_html() {
     assert!(String::from_utf8_lossy(&body).contains("Acteon UI"));
 
     // 4. Test SPA fallback (unknown path should serve index.html)
-    let response = app.clone()
+    let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/some-random-page")
@@ -98,7 +95,10 @@ async fn ui_serves_index_html() {
         .await
         .unwrap();
     let html = String::from_utf8_lossy(&body);
-    assert!(html.contains("swagger"), "expected Swagger UI HTML, got: {html}");
+    assert!(
+        html.contains("swagger"),
+        "expected Swagger UI HTML, got: {html}"
+    );
 
     // Clean up
     let _ = std::fs::remove_dir_all(&tmpdir);

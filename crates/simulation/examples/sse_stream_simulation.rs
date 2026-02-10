@@ -338,6 +338,12 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
         StreamEventType::ChainAdvanced { .. } => "chain_step",
         StreamEventType::ApprovalRequired { .. } => "approval",
         StreamEventType::ScheduledActionDue { .. } => "scheduled",
+        StreamEventType::ChainStepCompleted { .. } => "chain_step_done",
+        StreamEventType::ChainCompleted { .. } => "chain_done",
+        StreamEventType::GroupEventAdded { .. } => "group_event",
+        StreamEventType::GroupResolved { .. } => "group_resolved",
+        StreamEventType::ApprovalResolved { .. } => "approval_resolved",
+        StreamEventType::Unknown => "unknown",
     }
 }
 
