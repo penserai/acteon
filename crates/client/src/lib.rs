@@ -1687,8 +1687,7 @@ impl ActeonClient {
     ) -> Result<ListChainsResponse, Error> {
         let url = format!("{}/v1/chains", self.base_url);
 
-        let mut query: Vec<(&str, &str)> =
-            vec![("namespace", namespace), ("tenant", tenant)];
+        let mut query: Vec<(&str, &str)> = vec![("namespace", namespace), ("tenant", tenant)];
         if let Some(s) = status {
             query.push(("status", s));
         }
