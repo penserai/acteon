@@ -36,6 +36,11 @@ Transform action payloads before execution — redaction, enrichment, normalizat
 Delay action execution by a configurable duration — send reminders later, retry at off-peak times, or schedule escalations.
 </div>
 
+<div class="card" markdown>
+### [Recurring Actions](recurring-actions.md)
+Cron-scheduled actions that fire on a recurring basis — daily digests, weekly reports, periodic health checks.
+</div>
+
 </div>
 
 ## Event Lifecycle

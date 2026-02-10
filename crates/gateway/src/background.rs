@@ -43,6 +43,10 @@ pub struct BackgroundConfig {
     pub enable_scheduled_actions: bool,
     /// How often to check for due scheduled actions (default: 5 seconds).
     pub scheduled_check_interval: Duration,
+    /// Whether recurring action processing is enabled (default: false).
+    pub enable_recurring_actions: bool,
+    /// How often to check for due recurring actions (default: 60 seconds).
+    pub recurring_check_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -62,6 +66,8 @@ impl Default for BackgroundConfig {
             chain_check_interval: Duration::from_secs(5),
             enable_scheduled_actions: false,
             scheduled_check_interval: Duration::from_secs(5),
+            enable_recurring_actions: false,
+            recurring_check_interval: Duration::from_secs(60),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -123,6 +129,24 @@ pub struct ScheduledActionDueEvent {
     pub action: acteon_core::Action,
 }
 
+/// Event emitted when a recurring action is due for dispatch.
+///
+/// The consumer should construct a concrete [`Action`](acteon_core::Action)
+/// from the recurring action template and dispatch it through the gateway.
+/// After successful dispatch, the consumer updates `last_executed_at`,
+/// increments `execution_count`, and re-indexes the next occurrence.
+#[derive(Debug, Clone)]
+pub struct RecurringActionDueEvent {
+    /// Namespace of the recurring action.
+    pub namespace: String,
+    /// Tenant of the recurring action.
+    pub tenant: String,
+    /// The recurring action ID.
+    pub recurring_id: String,
+    /// The deserialized recurring action definition.
+    pub recurring_action: acteon_core::RecurringAction,
+}
+
 /// Event emitted when a pending approval needs notification retry.
 #[derive(Debug, Clone)]
 pub struct ApprovalRetryEvent {
@@ -155,6 +179,8 @@ pub struct BackgroundProcessor {
     chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
     /// Channel to send scheduled action due events.
     scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
+    /// Channel to send recurring action due events.
+    recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
 }
 
 impl BackgroundProcessor {
@@ -177,6 +203,7 @@ impl BackgroundProcessor {
             approval_retry_tx: None,
             chain_advance_tx: None,
             scheduled_action_tx: None,
+            recurring_action_tx: None,
         }
     }
 
@@ -218,6 +245,16 @@ impl BackgroundProcessor {
         self
     }
 
+    /// Set a channel to receive recurring action due events.
+    #[must_use]
+    pub fn with_recurring_action_channel(
+        mut self,
+        tx: mpsc::Sender<RecurringActionDueEvent>,
+    ) -> Self {
+        self.recurring_action_tx = Some(tx);
+        self
+    }
+
     /// Run the background processor until shutdown is signaled.
     pub async fn run(&mut self) {
         info!("background processor starting");
@@ -227,6 +264,7 @@ impl BackgroundProcessor {
         let mut cleanup_interval = interval(self.config.cleanup_interval);
         let mut chain_interval = interval(self.config.chain_check_interval);
         let mut scheduled_interval = interval(self.config.scheduled_check_interval);
+        let mut recurring_interval = interval(self.config.recurring_check_interval);
 
         loop {
             tokio::select! {
@@ -252,6 +290,11 @@ impl BackgroundProcessor {
                 _ = scheduled_interval.tick(), if self.config.enable_scheduled_actions => {
                     if let Err(e) = self.process_scheduled_actions().await {
                         error!(error = %e, "error processing scheduled actions");
+                    }
+                }
+                _ = recurring_interval.tick(), if self.config.enable_recurring_actions => {
+                    if let Err(e) = self.process_recurring_actions().await {
+                        error!(error = %e, "error processing recurring actions");
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -640,6 +683,154 @@ impl BackgroundProcessor {
         Ok(())
     }
 
+    /// Process recurring actions that are due for dispatch.
+    ///
+    /// Uses the timeout index to efficiently find expired `PendingRecurring`
+    /// keys, loads the corresponding `RecurringAction` data, validates it is
+    /// still active, and emits dispatch events.
+    ///
+    /// Uses an atomic claim key (`check_and_set`) to prevent double-dispatch
+    /// when multiple server instances poll concurrently.
+    ///
+    /// After dispatch, computes the next occurrence and re-indexes the action.
+    /// If the action has expired (`ends_at` in the past) or is disabled, it is
+    /// removed from the pending index without dispatching.
+    #[allow(clippy::too_many_lines)]
+    async fn process_recurring_actions(
+        &self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(ref tx) = self.recurring_action_tx else {
+            return Ok(());
+        };
+
+        let now = Utc::now();
+        let now_ms = now.timestamp_millis();
+
+        let expired_keys = self.state.get_expired_timeouts(now_ms).await?;
+
+        let due_keys: Vec<String> = expired_keys
+            .into_iter()
+            .filter(|k| k.contains(":pending_recurring:"))
+            .collect();
+
+        if due_keys.is_empty() {
+            return Ok(());
+        }
+
+        let mut dispatched = 0u32;
+        let mut skipped = 0u32;
+
+        for key in due_keys {
+            // Parse namespace:tenant:pending_recurring:recurring_id
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                warn!(key = %key, "invalid pending recurring key format");
+                continue;
+            }
+            let namespace = parts[0];
+            let tenant = parts[1];
+            let recurring_id = parts[3];
+
+            // Atomically claim this recurring action to prevent double-dispatch.
+            let claim_key = StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::RecurringAction,
+                format!("{recurring_id}:claim"),
+            );
+            let claimed = self
+                .state
+                .check_and_set(
+                    &claim_key,
+                    "claimed",
+                    Some(std::time::Duration::from_secs(60)),
+                )
+                .await?;
+            if !claimed {
+                debug!(recurring_id = %recurring_id, "recurring action already claimed by another instance");
+                continue;
+            }
+
+            // Load the recurring action data.
+            let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+            let Some(data_str) = self.state.get(&rec_key).await? else {
+                // Already deleted, clean up pending key.
+                let pending_key =
+                    StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+                self.state.delete(&pending_key).await?;
+                self.state.remove_timeout_index(&pending_key).await?;
+                continue;
+            };
+
+            let Ok(recurring) = serde_json::from_str::<acteon_core::RecurringAction>(&data_str)
+            else {
+                warn!(recurring_id = %recurring_id, "failed to deserialize recurring action");
+                continue;
+            };
+
+            // Validate the action is still eligible for dispatch.
+            let should_skip =
+                !recurring.enabled || recurring.ends_at.is_some_and(|ends| ends <= now);
+
+            if should_skip {
+                debug!(
+                    recurring_id = %recurring_id,
+                    enabled = recurring.enabled,
+                    "skipping ineligible recurring action"
+                );
+                // Remove from pending index so it won't be re-polled.
+                let pending_key =
+                    StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+                self.state.delete(&pending_key).await?;
+                self.state.remove_timeout_index(&pending_key).await?;
+                skipped += 1;
+                continue;
+            }
+
+            // Idempotency check: if last_executed_at is very close to now,
+            // skip to avoid double-dispatch (addresses security review R1).
+            if let Some(last) = recurring.last_executed_at {
+                let gap = (now - last).num_seconds();
+                if gap < 5 {
+                    debug!(
+                        recurring_id = %recurring_id,
+                        last_executed_secs_ago = gap,
+                        "skipping recently-executed recurring action"
+                    );
+                    skipped += 1;
+                    continue;
+                }
+            }
+
+            info!(
+                recurring_id = %recurring_id,
+                namespace = %namespace,
+                tenant = %tenant,
+                cron_expr = %recurring.cron_expr,
+                "dispatching recurring action"
+            );
+
+            let event = RecurringActionDueEvent {
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                recurring_id: recurring_id.to_string(),
+                recurring_action: recurring,
+            };
+
+            if tx.send(event).await.is_err() {
+                warn!("recurring action event channel closed");
+                return Ok(());
+            }
+            dispatched += 1;
+        }
+
+        if dispatched > 0 || skipped > 0 {
+            debug!(dispatched, skipped, "processed recurring actions");
+        }
+
+        Ok(())
+    }
+
     /// Scan for pending chains and emit advance events.
     ///
     /// Uses the chain-ready index for efficient O(log N + M) lookups instead
@@ -693,6 +884,7 @@ pub struct BackgroundProcessorBuilder {
     approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
     chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
     scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
+    recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -709,6 +901,7 @@ impl BackgroundProcessorBuilder {
             approval_retry_tx: None,
             chain_advance_tx: None,
             scheduled_action_tx: None,
+            recurring_action_tx: None,
         }
     }
 
@@ -775,6 +968,13 @@ impl BackgroundProcessorBuilder {
         self
     }
 
+    /// Set the recurring action event channel.
+    #[must_use]
+    pub fn recurring_action_channel(mut self, tx: mpsc::Sender<RecurringActionDueEvent>) -> Self {
+        self.recurring_action_tx = Some(tx);
+        self
+    }
+
     /// Build the background processor.
     ///
     /// Returns the processor and a shutdown sender.
@@ -812,6 +1012,10 @@ impl BackgroundProcessorBuilder {
             processor = processor.with_scheduled_action_channel(tx);
         }
 
+        if let Some(tx) = self.recurring_action_tx {
+            processor = processor.with_recurring_action_channel(tx);
+        }
+
         Ok((processor, shutdown_tx))
     }
 }
@@ -845,6 +1049,8 @@ mod tests {
                 chain_check_interval: Duration::from_secs(5),
                 enable_scheduled_actions: false,
                 scheduled_check_interval: Duration::from_secs(5),
+                enable_recurring_actions: false,
+                recurring_check_interval: Duration::from_secs(60),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -957,6 +1163,8 @@ mod tests {
                 chain_check_interval: Duration::from_secs(100),
                 enable_scheduled_actions: true,
                 scheduled_check_interval: Duration::from_millis(50),
+                enable_recurring_actions: false,
+                recurring_check_interval: Duration::from_secs(60),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1061,6 +1269,8 @@ mod tests {
                 chain_check_interval: Duration::from_secs(100),
                 enable_scheduled_actions: true,
                 scheduled_check_interval: Duration::from_millis(50),
+                enable_recurring_actions: false,
+                recurring_check_interval: Duration::from_secs(60),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1155,6 +1365,8 @@ mod tests {
                 chain_check_interval: Duration::from_secs(5),
                 enable_scheduled_actions: false,
                 scheduled_check_interval: Duration::from_secs(5),
+                enable_recurring_actions: false,
+                recurring_check_interval: Duration::from_secs(60),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -1185,5 +1397,548 @@ mod tests {
 
         // Group should be removed after flush
         assert_eq!(group_manager.active_group_count(), 0);
+    }
+
+    // ---- Recurring action background processor tests ----
+
+    /// Helper to build a test `RecurringAction` with sensible defaults.
+    fn make_test_recurring_action(
+        id: &str,
+        namespace: &str,
+        tenant: &str,
+        cron_expr: &str,
+        enabled: bool,
+    ) -> acteon_core::RecurringAction {
+        let now = Utc::now();
+        acteon_core::RecurringAction {
+            id: id.to_string(),
+            namespace: namespace.to_string(),
+            tenant: tenant.to_string(),
+            cron_expr: cron_expr.to_string(),
+            timezone: "UTC".to_string(),
+            enabled,
+            action_template: acteon_core::RecurringActionTemplate {
+                provider: "webhook".to_string(),
+                action_type: "send_digest".to_string(),
+                payload: serde_json::json!({"url": "https://example.com/hook"}),
+                metadata: std::collections::HashMap::new(),
+                dedup_key: None,
+            },
+            created_at: now - chrono::Duration::hours(1),
+            updated_at: now,
+            last_executed_at: None,
+            next_execution_at: None,
+            ends_at: None,
+            execution_count: 0,
+            description: None,
+            labels: std::collections::HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn recurring_action_config_defaults() {
+        let config = BackgroundConfig::default();
+        assert!(!config.enable_recurring_actions);
+        assert_eq!(config.recurring_check_interval, Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn builder_with_recurring_channel() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state = Arc::new(MemoryStateStore::new());
+        let (rec_tx, _rec_rx) = mpsc::channel(10);
+
+        let result = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(100),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(state)
+            .recurring_action_channel(rec_tx)
+            .build();
+
+        assert!(
+            result.is_ok(),
+            "builder with recurring channel should succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatches_due_recurring_action() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Store an enabled recurring action.
+        let recurring_id = "rec-due-001";
+        let recurring =
+            make_test_recurring_action(recurring_id, namespace, tenant, "*/5 * * * *", true);
+
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&recurring).unwrap(), None)
+            .await
+            .unwrap();
+
+        // Index in pending_recurring with a past-due timestamp.
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        // Build processor with recurring action channel.
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Wait for the recurring action event.
+        let event = tokio::time::timeout(Duration::from_secs(2), rec_rx.recv())
+            .await
+            .expect("should receive recurring action event within timeout");
+        assert!(event.is_some(), "event should not be None");
+
+        let event = event.unwrap();
+        assert_eq!(event.recurring_id, recurring_id);
+        assert_eq!(event.namespace, namespace);
+        assert_eq!(event.tenant, tenant);
+        assert_eq!(event.recurring_action.cron_expr, "*/5 * * * *");
+        assert!(event.recurring_action.enabled);
+
+        // The recurring action definition should still exist (not deleted after dispatch).
+        let data = state.get(&rec_key).await.unwrap();
+        assert!(
+            data.is_some(),
+            "recurring action definition should persist after dispatch"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
+    async fn skips_disabled_recurring_action() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Store a disabled recurring action.
+        let recurring_id = "rec-disabled-001";
+        let recurring =
+            make_test_recurring_action(recurring_id, namespace, tenant, "*/5 * * * *", false);
+
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&recurring).unwrap(), None)
+            .await
+            .unwrap();
+
+        // Index in pending_recurring with a past-due timestamp.
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Should NOT receive any event because action is disabled.
+        let result = tokio::time::timeout(Duration::from_millis(300), rec_rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "should NOT receive event for disabled recurring action"
+        );
+
+        // Pending index should be cleaned up.
+        let pending_data = state.get(&pending_key).await.unwrap();
+        assert!(
+            pending_data.is_none(),
+            "pending index should be cleaned up for disabled action"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
+    async fn skips_expired_recurring_action() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Store a recurring action that has already expired (ends_at in the past).
+        let recurring_id = "rec-expired-001";
+        let mut recurring =
+            make_test_recurring_action(recurring_id, namespace, tenant, "*/5 * * * *", true);
+        recurring.ends_at = Some(Utc::now() - chrono::Duration::hours(1));
+
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&recurring).unwrap(), None)
+            .await
+            .unwrap();
+
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Should NOT receive any event because action has expired.
+        let result = tokio::time::timeout(Duration::from_millis(300), rec_rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "should NOT receive event for expired recurring action"
+        );
+
+        // Pending index should be cleaned up.
+        let pending_data = state.get(&pending_key).await.unwrap();
+        assert!(
+            pending_data.is_none(),
+            "pending index should be cleaned up for expired action"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
+    async fn no_channel_skips_recurring_processing() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state = Arc::new(MemoryStateStore::new());
+
+        // Enable recurring actions but do NOT set a channel.
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(state)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Should not panic or error even without a channel.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let _ = shutdown_tx.send(()).await;
+        let result = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        assert!(result.is_ok(), "processor should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn recurring_skips_recently_executed() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Store a recurring action that was executed very recently (1 second ago).
+        let recurring_id = "rec-recent-001";
+        let mut recurring =
+            make_test_recurring_action(recurring_id, namespace, tenant, "*/5 * * * *", true);
+        recurring.last_executed_at = Some(Utc::now() - chrono::Duration::seconds(1));
+
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&recurring).unwrap(), None)
+            .await
+            .unwrap();
+
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Should NOT dispatch because last_executed_at is within 5 seconds.
+        let result = tokio::time::timeout(Duration::from_millis(300), rec_rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "should NOT dispatch recently-executed recurring action"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
+    async fn recurring_deleted_definition_cleans_up_pending() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Do NOT store a RecurringAction definition, only the pending index.
+        // This simulates an orphaned pending entry (definition was deleted).
+        let recurring_id = "rec-orphan-001";
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Should NOT receive any event because the definition doesn't exist.
+        let result = tokio::time::timeout(Duration::from_millis(300), rec_rx.recv()).await;
+        assert!(
+            result.is_err(),
+            "should NOT dispatch when definition is missing"
+        );
+
+        // Pending index should be cleaned up (orphan removal).
+        let pending_data = state.get(&pending_key).await.unwrap();
+        assert!(
+            pending_data.is_none(),
+            "orphaned pending index should be cleaned up"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
+    async fn dispatches_recurring_preserves_template_fields() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        let recurring_id = "rec-template-001";
+        let mut recurring =
+            make_test_recurring_action(recurring_id, namespace, tenant, "0 9 * * MON-FRI", true);
+        recurring.action_template.provider = "email".to_string();
+        recurring.action_template.action_type = "weekly_report".to_string();
+        recurring.action_template.payload =
+            serde_json::json!({"report_type": "weekly", "format": "pdf"});
+        recurring
+            .action_template
+            .metadata
+            .insert("team".to_string(), "engineering".to_string());
+        recurring.description = Some("Weekly engineering report".to_string());
+        recurring
+            .labels
+            .insert("env".to_string(), "production".to_string());
+        recurring.execution_count = 42;
+
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&recurring).unwrap(), None)
+            .await
+            .unwrap();
+
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, mut rec_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        let event = tokio::time::timeout(Duration::from_secs(2), rec_rx.recv())
+            .await
+            .expect("should receive event within timeout");
+        let event = event.unwrap();
+
+        // Verify all template fields are preserved through serialization roundtrip.
+        assert_eq!(event.recurring_action.action_template.provider, "email");
+        assert_eq!(
+            event.recurring_action.action_template.action_type,
+            "weekly_report"
+        );
+        assert_eq!(
+            event.recurring_action.action_template.payload,
+            serde_json::json!({"report_type": "weekly", "format": "pdf"})
+        );
+        assert_eq!(
+            event.recurring_action.action_template.metadata.get("team"),
+            Some(&"engineering".to_string())
+        );
+        assert_eq!(
+            event.recurring_action.description.as_deref(),
+            Some("Weekly engineering report")
+        );
+        assert_eq!(
+            event.recurring_action.labels.get("env"),
+            Some(&"production".to_string())
+        );
+        assert_eq!(event.recurring_action.execution_count, 42);
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
     }
 }

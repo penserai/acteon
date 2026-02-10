@@ -735,3 +735,210 @@ export function replayQueryToParams(query: ReplayQuery): URLSearchParams {
   if (query.limit !== undefined) params.set("limit", query.limit.toString());
   return params;
 }
+
+// =============================================================================
+// Recurring Action Types
+// =============================================================================
+
+/** Request to create a recurring action. */
+export interface CreateRecurringAction {
+  namespace: string;
+  tenant: string;
+  provider: string;
+  actionType: string;
+  payload: Record<string, unknown>;
+  cronExpression: string;
+  name?: string;
+  metadata?: Record<string, string>;
+  timezone?: string;
+  endDate?: string;
+  maxExecutions?: number;
+  description?: string;
+  dedupKey?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateRecurringAction to the API request format. */
+export function createRecurringActionToRequest(action: CreateRecurringAction): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: action.namespace,
+    tenant: action.tenant,
+    provider: action.provider,
+    action_type: action.actionType,
+    payload: action.payload,
+    cron_expression: action.cronExpression,
+  };
+  if (action.name !== undefined) result.name = action.name;
+  if (action.metadata !== undefined) result.metadata = action.metadata;
+  if (action.timezone !== undefined) result.timezone = action.timezone;
+  if (action.endDate !== undefined) result.end_date = action.endDate;
+  if (action.maxExecutions !== undefined) result.max_executions = action.maxExecutions;
+  if (action.description !== undefined) result.description = action.description;
+  if (action.dedupKey !== undefined) result.dedup_key = action.dedupKey;
+  if (action.labels !== undefined) result.labels = action.labels;
+  return result;
+}
+
+/** Response from creating a recurring action. */
+export interface CreateRecurringResponse {
+  id: string;
+  status: string;
+  name?: string;
+  nextExecutionAt?: string;
+}
+
+export function parseCreateRecurringResponse(data: Record<string, unknown>): CreateRecurringResponse {
+  return {
+    id: data.id as string,
+    status: data.status as string,
+    name: data.name as string | undefined,
+    nextExecutionAt: data.next_execution_at as string | undefined,
+  };
+}
+
+/** Query parameters for listing recurring actions. */
+export interface RecurringFilter {
+  namespace?: string;
+  tenant?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function recurringFilterToParams(filter: RecurringFilter): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filter.namespace !== undefined) params.set("namespace", filter.namespace);
+  if (filter.tenant !== undefined) params.set("tenant", filter.tenant);
+  if (filter.status !== undefined) params.set("status", filter.status);
+  if (filter.limit !== undefined) params.set("limit", filter.limit.toString());
+  if (filter.offset !== undefined) params.set("offset", filter.offset.toString());
+  return params;
+}
+
+/** Summary of a recurring action in list responses. */
+export interface RecurringSummary {
+  id: string;
+  namespace: string;
+  tenant: string;
+  cronExpr: string;
+  timezone: string;
+  enabled: boolean;
+  provider: string;
+  actionType: string;
+  executionCount: number;
+  createdAt: string;
+  nextExecutionAt?: string;
+  description?: string;
+}
+
+export function parseRecurringSummary(data: Record<string, unknown>): RecurringSummary {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    cronExpr: data.cron_expr as string,
+    timezone: data.timezone as string,
+    enabled: data.enabled as boolean,
+    provider: data.provider as string,
+    actionType: data.action_type as string,
+    executionCount: data.execution_count as number,
+    createdAt: data.created_at as string,
+    nextExecutionAt: data.next_execution_at as string | undefined,
+    description: data.description as string | undefined,
+  };
+}
+
+/** Response from listing recurring actions. */
+export interface ListRecurringResponse {
+  recurringActions: RecurringSummary[];
+  count: number;
+}
+
+export function parseListRecurringResponse(data: Record<string, unknown>): ListRecurringResponse {
+  const items = data.recurring_actions as Record<string, unknown>[];
+  return {
+    recurringActions: items.map(parseRecurringSummary),
+    count: data.count as number,
+  };
+}
+
+/** Detailed information about a recurring action. */
+export interface RecurringDetail {
+  id: string;
+  namespace: string;
+  tenant: string;
+  cronExpr: string;
+  timezone: string;
+  enabled: boolean;
+  provider: string;
+  actionType: string;
+  payload: Record<string, unknown>;
+  metadata: Record<string, string>;
+  executionCount: number;
+  createdAt: string;
+  updatedAt: string;
+  labels: Record<string, string>;
+  nextExecutionAt?: string;
+  lastExecutedAt?: string;
+  endsAt?: string;
+  description?: string;
+  dedupKey?: string;
+}
+
+export function parseRecurringDetail(data: Record<string, unknown>): RecurringDetail {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    cronExpr: data.cron_expr as string,
+    timezone: data.timezone as string,
+    enabled: data.enabled as boolean,
+    provider: data.provider as string,
+    actionType: data.action_type as string,
+    payload: (data.payload as Record<string, unknown>) ?? {},
+    metadata: (data.metadata as Record<string, string>) ?? {},
+    executionCount: data.execution_count as number,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    labels: (data.labels as Record<string, string>) ?? {},
+    nextExecutionAt: data.next_execution_at as string | undefined,
+    lastExecutedAt: data.last_executed_at as string | undefined,
+    endsAt: data.ends_at as string | undefined,
+    description: data.description as string | undefined,
+    dedupKey: data.dedup_key as string | undefined,
+  };
+}
+
+/** Request to update a recurring action. */
+export interface UpdateRecurringAction {
+  namespace: string;
+  tenant: string;
+  name?: string;
+  payload?: Record<string, unknown>;
+  metadata?: Record<string, string>;
+  cronExpression?: string;
+  timezone?: string;
+  endDate?: string;
+  maxExecutions?: number;
+  description?: string;
+  dedupKey?: string;
+  labels?: Record<string, string>;
+}
+
+export function updateRecurringActionToRequest(action: UpdateRecurringAction): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: action.namespace,
+    tenant: action.tenant,
+  };
+  if (action.name !== undefined) result.name = action.name;
+  if (action.payload !== undefined) result.payload = action.payload;
+  if (action.metadata !== undefined) result.metadata = action.metadata;
+  if (action.cronExpression !== undefined) result.cron_expression = action.cronExpression;
+  if (action.timezone !== undefined) result.timezone = action.timezone;
+  if (action.endDate !== undefined) result.end_date = action.endDate;
+  if (action.maxExecutions !== undefined) result.max_executions = action.maxExecutions;
+  if (action.description !== undefined) result.description = action.description;
+  if (action.dedupKey !== undefined) result.dedup_key = action.dedupKey;
+  if (action.labels !== undefined) result.labels = action.labels;
+  return result;
+}

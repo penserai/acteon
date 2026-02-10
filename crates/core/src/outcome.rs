@@ -96,6 +96,15 @@ pub enum ActionOutcome {
         /// When the action is scheduled to be dispatched.
         scheduled_for: DateTime<Utc>,
     },
+    /// A recurring action was created or updated.
+    RecurringCreated {
+        /// Unique identifier for the recurring action.
+        recurring_id: String,
+        /// Cron expression for the schedule.
+        cron_expr: String,
+        /// Next scheduled execution time.
+        next_execution_at: Option<DateTime<Utc>>,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -331,6 +340,43 @@ mod tests {
                 assert_eq!(sf.timestamp_millis(), scheduled_for.timestamp_millis());
             }
             other => panic!("expected Scheduled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_recurring_created() {
+        let outcome = ActionOutcome::RecurringCreated {
+            recurring_id: "rec-abc-123".into(),
+            cron_expr: "0 9 * * MON-FRI".into(),
+            next_execution_at: Some(chrono::Utc::now()),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("rec-abc-123"));
+        assert!(json.contains("0 9 * * MON-FRI"));
+        assert!(json.contains("next_execution_at"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ActionOutcome::RecurringCreated { .. }));
+    }
+
+    #[test]
+    fn outcome_recurring_created_no_next() {
+        let outcome = ActionOutcome::RecurringCreated {
+            recurring_id: "rec-xyz".into(),
+            cron_expr: "0 0 31 2 *".into(),
+            next_execution_at: None,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::RecurringCreated {
+                recurring_id,
+                next_execution_at,
+                ..
+            } => {
+                assert_eq!(recurring_id, "rec-xyz");
+                assert!(next_execution_at.is_none());
+            }
+            other => panic!("expected RecurringCreated, got {other:?}"),
         }
     }
 

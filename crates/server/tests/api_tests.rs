@@ -1233,3 +1233,635 @@ async fn replay_bulk_actions_works() {
     assert_eq!(summary["skipped"].as_u64().unwrap(), 0);
     assert_eq!(summary["results"].as_array().unwrap().len(), 3);
 }
+
+// -- Recurring action API tests -----------------------------------------------
+
+fn create_recurring_body(cron: &str) -> serde_json::Value {
+    serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "provider": "email",
+        "action_type": "send_digest",
+        "payload": {"to": "team@example.com"},
+        "cron_expression": cron,
+    })
+}
+
+#[tokio::test]
+async fn recurring_create_returns_201() {
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
+
+    let body = create_recurring_body("0 9 * * MON-FRI");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert!(json["id"].is_string());
+    assert!(!json["id"].as_str().unwrap().is_empty());
+    assert_eq!(json["status"], "active");
+    assert!(json["next_execution_at"].is_string());
+}
+
+#[tokio::test]
+async fn recurring_create_invalid_cron_returns_400() {
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
+
+    let body = serde_json::json!({
+        "namespace": "ns",
+        "tenant": "t",
+        "provider": "email",
+        "action_type": "send",
+        "payload": {},
+        "cron_expression": "not-a-cron"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn recurring_create_invalid_timezone_returns_400() {
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
+
+    let body = serde_json::json!({
+        "namespace": "ns",
+        "tenant": "t",
+        "provider": "email",
+        "action_type": "send",
+        "payload": {},
+        "cron_expression": "0 9 * * MON-FRI",
+        "timezone": "Mars/Olympus"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn recurring_create_too_frequent_cron_returns_400() {
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
+
+    // Every 30 seconds (6-field cron with seconds) — violates the 60s minimum interval.
+    let body = serde_json::json!({
+        "namespace": "ns",
+        "tenant": "t",
+        "provider": "email",
+        "action_type": "send",
+        "payload": {},
+        "cron_expression": "*/30 * * * * *"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn recurring_get_not_found_returns_404() {
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/v1/recurring/nonexistent-id?namespace=ns&tenant=t")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn recurring_create_then_get_roundtrip() {
+    let state = build_test_state(vec![]);
+
+    // Create.
+    let app = build_app(state.clone());
+    let body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "provider": "email",
+        "action_type": "send_digest",
+        "payload": {"to": "team@example.com"},
+        "cron_expression": "0 9 * * MON-FRI",
+        "timezone": "US/Eastern",
+        "description": "Morning digest"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = create_json["id"].as_str().unwrap();
+
+    // Get.
+    let app2 = build_app(state.clone());
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri(&format!(
+                    "/v1/recurring/{id}?namespace=notifications&tenant=tenant-1"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let detail: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(detail["id"], id);
+    assert_eq!(detail["cron_expr"], "0 9 * * MON-FRI");
+    assert_eq!(detail["timezone"], "US/Eastern");
+    assert_eq!(detail["enabled"], true);
+    assert_eq!(detail["provider"], "email");
+    assert_eq!(detail["action_type"], "send_digest");
+    assert_eq!(detail["description"], "Morning digest");
+    assert!(detail["next_execution_at"].is_string());
+}
+
+#[tokio::test]
+async fn recurring_list_returns_200() {
+    let state = build_test_state(vec![]);
+
+    // Create two recurring actions.
+    for cron in &["0 9 * * MON-FRI", "0 18 * * *"] {
+        let app = build_app(state.clone());
+        let body = create_recurring_body(cron);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/v1/recurring")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    // List.
+    let app = build_app(state.clone());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/v1/recurring?namespace=notifications&tenant=tenant-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(list["count"].as_u64().unwrap(), 2);
+    assert_eq!(list["recurring_actions"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn recurring_delete_returns_204() {
+    let state = build_test_state(vec![]);
+
+    // Create.
+    let app = build_app(state.clone());
+    let body = create_recurring_body("0 9 * * MON-FRI");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = create_json["id"].as_str().unwrap();
+
+    // Delete.
+    let app2 = build_app(state.clone());
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::DELETE)
+                .uri(&format!(
+                    "/v1/recurring/{id}?namespace=notifications&tenant=tenant-1"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Verify it's gone.
+    let app3 = build_app(state.clone());
+    let response = app3
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri(&format!(
+                    "/v1/recurring/{id}?namespace=notifications&tenant=tenant-1"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn recurring_delete_not_found_returns_404() {
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::DELETE)
+                .uri("/v1/recurring/nonexistent-id?namespace=ns&tenant=t")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn recurring_pause_and_resume_lifecycle() {
+    let state = build_test_state(vec![]);
+
+    // Create.
+    let app = build_app(state.clone());
+    let body = create_recurring_body("0 9 * * MON-FRI");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = create_json["id"].as_str().unwrap();
+
+    // Pause.
+    let app2 = build_app(state.clone());
+    let pause_body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1"
+    });
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(&format!("/v1/recurring/{id}/pause"))
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let paused: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(paused["enabled"], false);
+    assert!(paused["next_execution_at"].is_null());
+
+    // Pause again should return 409 (already paused).
+    let app3 = build_app(state.clone());
+    let response = app3
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(&format!("/v1/recurring/{id}/pause"))
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    // Resume.
+    let app4 = build_app(state.clone());
+    let response = app4
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(&format!("/v1/recurring/{id}/resume"))
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let resumed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(resumed["enabled"], true);
+    assert!(resumed["next_execution_at"].is_string());
+
+    // Resume again should return 409 (already active).
+    let app5 = build_app(state.clone());
+    let response = app5
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(&format!("/v1/recurring/{id}/resume"))
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn recurring_update_changes_cron() {
+    let state = build_test_state(vec![]);
+
+    // Create.
+    let app = build_app(state.clone());
+    let body = create_recurring_body("0 9 * * MON-FRI");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = create_json["id"].as_str().unwrap();
+
+    // Update cron expression.
+    let app2 = build_app(state.clone());
+    let update_body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "cron_expression": "0 18 * * *"
+    });
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::PUT)
+                .uri(&format!("/v1/recurring/{id}"))
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&update_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let updated: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(updated["cron_expr"], "0 18 * * *");
+    assert!(updated["next_execution_at"].is_string());
+}
+
+#[tokio::test]
+async fn recurring_update_invalid_cron_returns_400() {
+    let state = build_test_state(vec![]);
+
+    // Create.
+    let app = build_app(state.clone());
+    let body = create_recurring_body("0 9 * * MON-FRI");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = create_json["id"].as_str().unwrap();
+
+    // Update with invalid cron.
+    let app2 = build_app(state.clone());
+    let update_body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "cron_expression": "invalid-cron"
+    });
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::PUT)
+                .uri(&format!("/v1/recurring/{id}"))
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&update_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn recurring_list_with_status_filter() {
+    let state = build_test_state(vec![]);
+
+    // Create an active recurring action.
+    let app = build_app(state.clone());
+    let body = create_recurring_body("0 9 * * MON-FRI");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/recurring")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let create_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let id = create_json["id"].as_str().unwrap();
+
+    // Pause it.
+    let app2 = build_app(state.clone());
+    let pause_body = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1"
+    });
+    let response = app2
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri(&format!("/v1/recurring/{id}/pause"))
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_string(&pause_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // List with status=active should return 0.
+    let app3 = build_app(state.clone());
+    let response = app3
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/v1/recurring?namespace=notifications&tenant=tenant-1&status=active")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(list["count"].as_u64().unwrap(), 0);
+
+    // List with status=paused should return 1.
+    let app4 = build_app(state.clone());
+    let response = app4
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/v1/recurring?namespace=notifications&tenant=tenant-1&status=paused")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(list["count"].as_u64().unwrap(), 1);
+}

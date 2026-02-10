@@ -20,6 +20,10 @@ use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
 };
 use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
+use super::recurring::{
+    CreateRecurringRequest, CreateRecurringResponse, ListRecurringResponse,
+    RecurringDetailResponse, RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
+};
 use super::replay::{ReplayResult, ReplaySummary};
 use super::schemas::{
     EmbeddingMetricsResponse, ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest,
@@ -45,7 +49,8 @@ use super::schemas::{
         (name = "Approvals", description = "Human-in-the-loop approval workflow"),
         (name = "Chains", description = "Task chain orchestration"),
         (name = "Embeddings", description = "Embedding similarity testing"),
-        (name = "Circuit Breakers", description = "Circuit breaker admin operations")
+        (name = "Circuit Breakers", description = "Circuit breaker admin operations"),
+        (name = "Recurring Actions", description = "Cron-scheduled recurring action management")
     ),
     paths(
         super::health::health,
@@ -78,6 +83,13 @@ use super::schemas::{
         super::circuit_breakers::list_circuit_breakers,
         super::circuit_breakers::trip_circuit_breaker,
         super::circuit_breakers::reset_circuit_breaker,
+        super::recurring::create_recurring,
+        super::recurring::list_recurring,
+        super::recurring::get_recurring,
+        super::recurring::update_recurring,
+        super::recurring::delete_recurring,
+        super::recurring::pause_recurring,
+        super::recurring::resume_recurring,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -95,6 +107,9 @@ use super::schemas::{
         SimilarityRequest, SimilarityResponse,
         EmbeddingMetricsResponse,
         CircuitBreakerStatus, ListCircuitBreakersResponse, CircuitBreakerActionResponse,
+        CreateRecurringRequest, CreateRecurringResponse, ListRecurringResponse,
+        RecurringDetailResponse, RecurringSummary, UpdateRecurringRequest,
+        RecurringLifecycleRequest,
     ))
 )]
 pub struct ApiDoc;

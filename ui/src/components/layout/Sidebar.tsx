@@ -5,7 +5,7 @@ import { useUiStore } from '../../stores/ui'
 import {
   LayoutDashboard, Send, BookOpen, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
-  PanelLeftClose, PanelLeftOpen, X, ExternalLink,
+  PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw,
 } from 'lucide-react'
 import logoPng from '../../assets/logo.png'
 import styles from './Sidebar.module.css'
@@ -23,6 +23,7 @@ const mainItems = [
   { to: '/dlq', icon: AlertTriangle, label: 'Dead-Letter Queue' },
   { to: '/stream', icon: Rss, label: 'Stream' },
   { to: '/embeddings', icon: Brain, label: 'Embeddings' },
+  { to: '/recurring', icon: RefreshCw, label: 'Recurring Actions' },
   {
     to: 'https://penserai.github.io/acteon',
     icon: ExternalLink,

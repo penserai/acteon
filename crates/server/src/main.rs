@@ -553,6 +553,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             scheduled_check_interval: Duration::from_secs(
                 config.background.scheduled_check_interval_seconds,
             ),
+            enable_recurring_actions: config.background.enable_recurring_actions,
+            recurring_check_interval: Duration::from_secs(
+                config.background.recurring_check_interval_seconds,
+            ),
             namespace: config.background.namespace.clone(),
             tenant: config.background.tenant.clone(),
         };
@@ -563,6 +567,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (approval_retry_tx, mut approval_retry_rx) = tokio::sync::mpsc::channel(100);
         let (chain_advance_tx, mut chain_advance_rx) = tokio::sync::mpsc::channel(100);
         let (scheduled_action_tx, mut scheduled_action_rx) = tokio::sync::mpsc::channel(100);
+        let (recurring_action_tx, mut recurring_action_rx) = tokio::sync::mpsc::channel(100);
 
         let mut bg_builder = BackgroundProcessorBuilder::new()
             .config(bg_config)
@@ -581,6 +586,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if config.background.enable_scheduled_actions {
             bg_builder = bg_builder.scheduled_action_channel(scheduled_action_tx);
+        }
+
+        if config.background.enable_recurring_actions {
+            bg_builder = bg_builder.recurring_action_channel(recurring_action_tx);
         }
 
         let (mut processor, shutdown_tx) = bg_builder
@@ -947,6 +956,115 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             error = %e,
                             "failed to dispatch scheduled action"
                         );
+                    }
+                }
+            }
+        });
+
+        // Spawn consumer for recurring action events.
+        // Constructs a concrete Action from the recurring template, dispatches it,
+        // updates execution state, and re-indexes the next occurrence.
+        let recurring_gateway = Arc::clone(&gateway);
+        let recurring_store = Arc::clone(&store);
+        tokio::spawn(async move {
+            while let Some(event) = recurring_action_rx.recv().await {
+                let recurring = &event.recurring_action;
+                info!(
+                    recurring_id = %event.recurring_id,
+                    namespace = %event.namespace,
+                    tenant = %event.tenant,
+                    cron_expr = %recurring.cron_expr,
+                    "processing recurring action"
+                );
+
+                // Construct a concrete Action from the template.
+                let action = acteon_core::Action::new(
+                    event.namespace.as_str(),
+                    event.tenant.as_str(),
+                    recurring.action_template.provider.as_str(),
+                    recurring.action_template.action_type.as_str(),
+                    recurring.action_template.payload.clone(),
+                );
+
+                // Dispatch through the gateway.
+                let gw = recurring_gateway.read().await;
+                let now = chrono::Utc::now();
+
+                match gw.dispatch(action, None).await {
+                    Ok(outcome) => {
+                        info!(
+                            recurring_id = %event.recurring_id,
+                            ?outcome,
+                            "recurring action dispatched"
+                        );
+                        gw.metrics().increment_recurring_dispatched();
+
+                        // Update the recurring action state: increment count,
+                        // set last_executed_at, compute and index next occurrence.
+                        let rec_key = acteon_state::StateKey::new(
+                            event.namespace.as_str(),
+                            event.tenant.as_str(),
+                            acteon_state::KeyKind::RecurringAction,
+                            &event.recurring_id,
+                        );
+                        if let Ok(Some(data_str)) = recurring_store.get(&rec_key).await
+                            && let Ok(mut rec) =
+                                serde_json::from_str::<acteon_core::RecurringAction>(&data_str)
+                        {
+                            rec.last_executed_at = Some(now);
+                            rec.execution_count += 1;
+                            rec.updated_at = now;
+
+                            // Compute next occurrence (no backfill).
+                            let next = acteon_core::validate_cron_expr(&rec.cron_expr)
+                                .ok()
+                                .and_then(|cron| {
+                                    acteon_core::validate_timezone(&rec.timezone).ok().and_then(
+                                        |tz| acteon_core::next_occurrence(&cron, tz, &now),
+                                    )
+                                });
+
+                            // Check if the action should still be active.
+                            let still_active = rec.enabled
+                                && next.is_some()
+                                && rec.ends_at.is_none_or(|ends| next.unwrap() <= ends)
+                                && rec
+                                    .max_executions
+                                    .is_none_or(|max| rec.execution_count < max);
+
+                            rec.next_execution_at = if still_active { next } else { None };
+
+                            if let Ok(json) = serde_json::to_string(&rec) {
+                                let _ = recurring_store.set(&rec_key, &json, None).await;
+                            }
+
+                            // Re-index or remove from pending index.
+                            let pending_key = acteon_state::StateKey::new(
+                                event.namespace.as_str(),
+                                event.tenant.as_str(),
+                                acteon_state::KeyKind::PendingRecurring,
+                                &event.recurring_id,
+                            );
+
+                            if let Some(next_at) = rec.next_execution_at {
+                                let next_ms = next_at.timestamp_millis();
+                                let _ = recurring_store
+                                    .set(&pending_key, &next_ms.to_string(), None)
+                                    .await;
+                                let _ = recurring_store.index_timeout(&pending_key, next_ms).await;
+                            } else {
+                                let _ = recurring_store.delete(&pending_key).await;
+                                let _ = recurring_store.remove_timeout_index(&pending_key).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            recurring_id = %event.recurring_id,
+                            error = %e,
+                            "failed to dispatch recurring action"
+                        );
+                        gw.metrics().increment_recurring_errors();
                     }
                 }
             }

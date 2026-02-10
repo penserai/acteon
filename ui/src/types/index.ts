@@ -273,6 +273,81 @@ export interface SimilarityResponse {
   topic: string
 }
 
+// ---- Recurring Actions ----
+export interface RecurringAction {
+  id: string
+  namespace: string
+  tenant: string
+  cron_expr: string
+  timezone: string
+  enabled: boolean
+  action_template: RecurringActionTemplate
+  created_at: string
+  updated_at: string
+  last_executed_at: string | null
+  next_execution_at: string | null
+  ends_at: string | null
+  execution_count: number
+  description: string | null
+  labels: Record<string, string>
+}
+
+export interface RecurringActionTemplate {
+  provider: string
+  action_type: string
+  payload: Record<string, unknown>
+  metadata: Record<string, string>
+  dedup_key: string | null
+}
+
+export interface RecurringActionListResponse {
+  recurring_actions: RecurringAction[]
+}
+
+export interface CreateRecurringActionRequest {
+  namespace: string
+  tenant: string
+  cron_expr: string
+  timezone: string
+  provider: string
+  action_type: string
+  payload: Record<string, unknown>
+  metadata?: Record<string, string>
+  dedup_key?: string | null
+  description?: string | null
+  labels?: Record<string, string>
+  ends_at?: string | null
+  enabled?: boolean
+}
+
+export interface CreateRecurringActionResponse {
+  recurring_id: string
+  next_execution: string
+  cron_expr: string
+  timezone: string
+  enabled: boolean
+}
+
+export interface UpdateRecurringActionRequest {
+  cron_expr?: string
+  timezone?: string
+  enabled?: boolean
+  provider?: string
+  action_type?: string
+  payload?: Record<string, unknown>
+  metadata?: Record<string, string>
+  dedup_key?: string | null
+  description?: string | null
+  labels?: Record<string, string>
+  ends_at?: string | null
+}
+
+export interface PauseResumeResponse {
+  id: string
+  enabled: boolean
+  next_execution_at: string | null
+}
+
 // ---- Config ----
 export interface ConfigResponse {
   server: {

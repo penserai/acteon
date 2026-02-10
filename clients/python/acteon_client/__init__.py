@@ -27,6 +27,13 @@ from .models import (
     ReplayResult,
     ReplaySummary,
     ReplayQuery,
+    CreateRecurringAction,
+    CreateRecurringResponse,
+    RecurringFilter,
+    RecurringSummary,
+    ListRecurringResponse,
+    RecurringDetail,
+    UpdateRecurringAction,
 )
 
 __version__ = "0.1.0"
@@ -61,4 +68,11 @@ __all__ = [
     "ReplayResult",
     "ReplaySummary",
     "ReplayQuery",
+    "CreateRecurringAction",
+    "CreateRecurringResponse",
+    "RecurringFilter",
+    "RecurringSummary",
+    "ListRecurringResponse",
+    "RecurringDetail",
+    "UpdateRecurringAction",
 ]

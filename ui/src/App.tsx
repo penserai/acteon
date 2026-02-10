@@ -16,6 +16,7 @@ import { DeadLetterQueue } from './pages/DeadLetterQueue'
 import { EventStream } from './pages/EventStream'
 import { Embeddings } from './pages/Embeddings'
 import { ScheduledActions } from './pages/ScheduledActions'
+import { RecurringActions } from './pages/RecurringActions'
 import { Settings } from './pages/Settings'
 
 function App() {
@@ -38,6 +39,7 @@ function App() {
           <Route path="stream" element={<EventStream />} />
           <Route path="embeddings" element={<Embeddings />} />
           <Route path="scheduled" element={<ScheduledActions />} />
+          <Route path="recurring" element={<RecurringActions />} />
           <Route path="settings/*" element={<Settings />} />
         </Route>
       </Routes>

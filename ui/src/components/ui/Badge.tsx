@@ -53,6 +53,10 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   Pending: 'warning',
   Notified: 'info',
   Resolved: 'success',
+  // Recurring action states
+  Active: 'success',
+  Paused: 'warning',
+  Completed: 'neutral',
 }
 
 interface BadgeProps {

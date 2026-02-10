@@ -86,6 +86,8 @@ name = "acteon-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "chrono-tz",
+ "croner",
  "hex",
  "serde",
  "serde_json",
@@ -167,6 +169,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "criterion",
+ "croner",
  "futures",
  "hex",
  "hmac",
@@ -360,6 +363,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.8",
  "chrono",
+ "chrono-tz",
  "criterion",
  "parking_lot",
  "rand",
@@ -1727,6 +1731,15 @@ checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
 dependencies = [
  "cast",
  "itertools 0.10.5",
+]
+
+[[package]]
+name = "croner"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c344b0690c1ad1c7176fe18eb173e0c927008fdaaa256e40dfd43ddd149c0843"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]

@@ -70,6 +70,10 @@ enabled = false                      # Enable authentication
 # tick_interval_ms = 1000           # Background loop tick interval
 # group_flush_timeout_ms = 60000    # Group flush wait time
 # timeout_check_batch_size = 100    # Batch size for timeout checks
+# enable_scheduled_actions = false  # Enable scheduled action processing
+# scheduled_check_interval = 5     # Scheduled action poll interval (seconds)
+# enable_recurring_actions = false  # Enable recurring action processing
+# recurring_check_interval_seconds = 5  # Recurring action poll interval (seconds)
 
 # ─── State Machines ───────────────────────────────────────
 [[state_machines]]

@@ -11,6 +11,7 @@ pub mod events;
 pub mod groups;
 pub mod health;
 pub mod openapi;
+pub mod recurring;
 pub mod replay;
 pub mod rules;
 pub mod schemas;
@@ -123,6 +124,17 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chains", get(chains::list_chains))
         .route("/v1/chains/{chain_id}", get(chains::get_chain))
         .route("/v1/chains/{chain_id}/cancel", post(chains::cancel_chain))
+        // Recurring actions
+        .route("/v1/recurring", post(recurring::create_recurring))
+        .route("/v1/recurring", get(recurring::list_recurring))
+        .route("/v1/recurring/{id}", get(recurring::get_recurring))
+        .route("/v1/recurring/{id}", put(recurring::update_recurring))
+        .route("/v1/recurring/{id}", delete(recurring::delete_recurring))
+        .route("/v1/recurring/{id}/pause", post(recurring::pause_recurring))
+        .route(
+            "/v1/recurring/{id}/resume",
+            post(recurring::resume_recurring),
+        )
         // Embeddings
         .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)

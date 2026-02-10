@@ -34,6 +34,10 @@ pub enum KeyKind {
     ScheduledAction,
     /// Index of pending scheduled actions by dispatch time.
     PendingScheduled,
+    /// Recurring action definition.
+    RecurringAction,
+    /// Index of pending recurring actions by next execution time.
+    PendingRecurring,
     Custom(String),
 }
 
@@ -59,6 +63,8 @@ impl KeyKind {
             Self::PendingChains => "pending_chains",
             Self::ScheduledAction => "scheduled_action",
             Self::PendingScheduled => "pending_scheduled",
+            Self::RecurringAction => "recurring_action",
+            Self::PendingRecurring => "pending_recurring",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -146,6 +152,8 @@ mod tests {
         assert_eq!(KeyKind::PendingChains.as_str(), "pending_chains");
         assert_eq!(KeyKind::ScheduledAction.as_str(), "scheduled_action");
         assert_eq!(KeyKind::PendingScheduled.as_str(), "pending_scheduled");
+        assert_eq!(KeyKind::RecurringAction.as_str(), "recurring_action");
+        assert_eq!(KeyKind::PendingRecurring.as_str(), "pending_recurring");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

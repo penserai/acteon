@@ -1,0 +1,127 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+.cronCell {
+  @apply font-mono text-xs;
+}
+
+.cronDescription {
+  @apply block text-xs text-gray-500 mt-0.5;
+}
+
+.timestampCell {
+  @apply text-xs text-gray-500;
+}
+
+.countCell {
+  @apply tabular-nums text-xs;
+}
+
+.actionsCell {
+  @apply flex items-center gap-1;
+}
+
+/* Create / Edit modal */
+.formGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.formSection {
+  @apply space-y-4;
+}
+
+.cronPresetRow {
+  @apply flex gap-3 items-end;
+}
+
+.cronPresetSelect {
+  @apply w-48;
+}
+
+.cronHint {
+  @apply text-xs mt-1 min-h-5;
+  color: var(--text-muted);
+}
+
+.cronHintError {
+  @apply text-xs mt-1 text-error-500;
+}
+
+.textareaLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full h-32 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.errorText {
+  @apply text-xs text-error-500 mt-1;
+}
+
+.optionalSection {
+  @apply border-t pt-4 mt-2;
+  border-color: var(--border-divider);
+}
+
+.optionalLabel {
+  @apply text-sm font-medium mb-3 block;
+  color: var(--text-secondary);
+}
+
+/* Detail drawer */
+.tabContainer {
+  @apply mb-4;
+}
+
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between py-1 border-b;
+  border-color: var(--border-default);
+}
+
+.detailLabel {
+  @apply text-gray-500;
+}
+
+.detailValue {
+  @apply font-mono text-xs;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.jsonViewerCard {
+  @apply rounded-lg p-3;
+  background: var(--bg-surface-secondary);
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+}
+
+.actionButtons {
+  @apply mt-6 flex gap-2;
+}
+
+/* Delete confirmation */
+.deleteWarning {
+  @apply text-sm mb-4;
+  color: var(--text-secondary);
+}
+
+.deleteName {
+  @apply font-semibold;
+  color: var(--text-primary);
+}

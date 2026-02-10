@@ -27,6 +27,13 @@ from .models import (
     ReplayResult,
     ReplaySummary,
     ReplayQuery,
+    CreateRecurringAction,
+    CreateRecurringResponse,
+    RecurringFilter,
+    RecurringSummary,
+    ListRecurringResponse,
+    RecurringDetail,
+    UpdateRecurringAction,
 )
 
 
@@ -679,6 +686,215 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to list approvals")
 
 
+    # =========================================================================
+    # Recurring Actions
+    # =========================================================================
+
+    def create_recurring(
+        self, recurring: CreateRecurringAction
+    ) -> CreateRecurringResponse:
+        """Create a recurring action.
+
+        Args:
+            recurring: The recurring action definition.
+
+        Returns:
+            The created recurring action response with ID and next execution time.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/recurring", json=recurring.to_dict())
+
+        if response.status_code == 201:
+            return CreateRecurringResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_recurring(
+        self, filter: Optional[RecurringFilter] = None
+    ) -> ListRecurringResponse:
+        """List recurring actions.
+
+        Args:
+            filter: Optional filter parameters.
+
+        Returns:
+            List of recurring action summaries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params = filter.to_params() if filter else {}
+        response = self._request("GET", "/v1/recurring", params=params)
+
+        if response.status_code == 200:
+            return ListRecurringResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list recurring actions")
+
+    def get_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> Optional[RecurringDetail]:
+        """Get details of a specific recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The recurring action details, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request(
+            "GET",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get recurring action")
+
+    def update_recurring(
+        self, recurring_id: str, update: UpdateRecurringAction
+    ) -> RecurringDetail:
+        """Update a recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated recurring action details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the recurring action is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/recurring/{recurring_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the recurring action is not found (404).
+        """
+        response = self._request(
+            "DELETE",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete recurring action")
+
+    def pause_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Pause a recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The updated recurring action details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If not found (404) or already paused (409).
+        """
+        response = self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/pause",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already paused")
+        else:
+            raise HttpError(response.status_code, "Failed to pause recurring action")
+
+    def resume_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Resume a paused recurring action.
+
+        Args:
+            recurring_id: The recurring action ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The updated recurring action details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If not found (404) or already active (409).
+        """
+        response = self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/resume",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already active")
+        else:
+            raise HttpError(response.status_code, "Failed to resume recurring action")
+
+
 class AsyncActeonClient:
     """Async HTTP client for the Acteon action gateway.
 
@@ -1003,3 +1219,122 @@ class AsyncActeonClient:
             return ApprovalListResponse.from_dict(response.json())
         else:
             raise HttpError(response.status_code, "Failed to list approvals")
+
+    # =========================================================================
+    # Recurring Actions
+    # =========================================================================
+
+    async def create_recurring(
+        self, recurring: CreateRecurringAction
+    ) -> CreateRecurringResponse:
+        """Create a recurring action."""
+        response = await self._request(
+            "POST", "/v1/recurring", json=recurring.to_dict()
+        )
+        if response.status_code == 201:
+            return CreateRecurringResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_recurring(
+        self, filter: Optional[RecurringFilter] = None
+    ) -> ListRecurringResponse:
+        """List recurring actions."""
+        params = filter.to_params() if filter else {}
+        response = await self._request("GET", "/v1/recurring", params=params)
+        if response.status_code == 200:
+            return ListRecurringResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list recurring actions")
+
+    async def get_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> Optional[RecurringDetail]:
+        """Get details of a specific recurring action."""
+        response = await self._request(
+            "GET",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get recurring action")
+
+    async def update_recurring(
+        self, recurring_id: str, update: UpdateRecurringAction
+    ) -> RecurringDetail:
+        """Update a recurring action."""
+        response = await self._request(
+            "PUT", f"/v1/recurring/{recurring_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a recurring action."""
+        response = await self._request(
+            "DELETE",
+            f"/v1/recurring/{recurring_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete recurring action")
+
+    async def pause_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Pause a recurring action."""
+        response = await self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/pause",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already paused")
+        else:
+            raise HttpError(response.status_code, "Failed to pause recurring action")
+
+    async def resume_recurring(
+        self, recurring_id: str, namespace: str, tenant: str
+    ) -> RecurringDetail:
+        """Resume a paused recurring action."""
+        response = await self._request(
+            "POST",
+            f"/v1/recurring/{recurring_id}/resume",
+            json={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return RecurringDetail.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Recurring action not found: {recurring_id}")
+        elif response.status_code == 409:
+            raise HttpError(409, "Recurring action is already active")
+        else:
+            raise HttpError(response.status_code, "Failed to resume recurring action")

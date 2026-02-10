@@ -127,6 +127,7 @@ nav:
     - Semantic Routing: features/semantic-routing.md
     - Audit Trail: features/audit-trail.md
     - Circuit Breaker: features/circuit-breaker.md
+    - Recurring Actions: features/recurring-actions.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md

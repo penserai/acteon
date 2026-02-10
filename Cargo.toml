@@ -194,6 +194,9 @@ opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.28", features = ["grpc-tonic", "http-proto"] }
 tracing-opentelemetry = "0.29"
 
+# Cron scheduling
+croner = "2"
+
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }
 
