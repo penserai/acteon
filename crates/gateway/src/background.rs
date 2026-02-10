@@ -1429,6 +1429,7 @@ mod tests {
             last_executed_at: None,
             next_execution_at: None,
             ends_at: None,
+            max_executions: None,
             execution_count: 0,
             description: None,
             labels: std::collections::HashMap::new(),

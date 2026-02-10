@@ -423,6 +423,79 @@ fn build_audit_record(
 }
 
 // ---------------------------------------------------------------------------
+// Response helpers
+// ---------------------------------------------------------------------------
+
+/// Build a JSON error response with the given status code.
+fn error_response(status: StatusCode, message: &str) -> axum::response::Response {
+    (
+        status,
+        Json(serde_json::json!(ErrorResponse {
+            error: message.to_owned(),
+        })),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+/// Parsed and validated cron input ready for use.
+struct ValidatedCronInput {
+    cron: croner::Cron,
+    tz: chrono_tz::Tz,
+    tz_str: String,
+}
+
+/// Validates the per-tenant recurring action limit. Returns an error response
+/// if the limit is reached or if the check itself fails.
+async fn check_tenant_limit(
+    state_store: &dyn acteon_state::StateStore,
+    namespace: &str,
+    tenant: &str,
+    max_actions: usize,
+) -> Result<(), axum::response::Response> {
+    match state_store
+        .scan_keys(namespace, tenant, KeyKind::RecurringAction, None)
+        .await
+    {
+        Ok(keys) if keys.len() >= max_actions => Err(error_response(
+            StatusCode::TOO_MANY_REQUESTS,
+            &format!("recurring action limit reached for tenant ({max_actions})"),
+        )),
+        Err(e) => Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("failed to check recurring action limit: {e}"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Validates cron expression, timezone, and minimum interval. Returns the
+/// parsed cron and timezone on success.
+fn validate_cron_input(
+    cron_expression: &str,
+    timezone: Option<&str>,
+) -> Result<ValidatedCronInput, Box<axum::response::Response>> {
+    let cron = validate_cron_expr(cron_expression)
+        .map_err(|e| Box::new(error_response(StatusCode::BAD_REQUEST, &e.to_string())))?;
+
+    let tz_str = timezone.unwrap_or("UTC");
+    let tz = validate_timezone(tz_str)
+        .map_err(|e| Box::new(error_response(StatusCode::BAD_REQUEST, &e.to_string())))?;
+
+    validate_min_interval(&cron, tz, DEFAULT_MIN_INTERVAL_SECONDS)
+        .map_err(|e| Box::new(error_response(StatusCode::BAD_REQUEST, &e.to_string())))?;
+
+    Ok(ValidatedCronInput {
+        cron,
+        tz,
+        tz_str: tz_str.to_owned(),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -449,81 +522,25 @@ pub async fn create_recurring(
 
     // Enforce per-tenant limit.
     let max_actions = state.config.background.max_recurring_actions_per_tenant;
-    // Note: scan_keys can be expensive if the count is high, but we are limiting it.
-    match state_store
-        .scan_keys(
-            &req.namespace,
-            &req.tenant,
-            KeyKind::RecurringAction,
-            None,
-        )
-        .await
+    if let Err(resp) = check_tenant_limit(
+        state_store.as_ref(),
+        &req.namespace,
+        &req.tenant,
+        max_actions,
+    )
+    .await
     {
-        Ok(keys) if keys.len() >= max_actions => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(serde_json::json!(ErrorResponse {
-                    error: format!("recurring action limit reached for tenant ({max_actions})"),
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!(ErrorResponse {
-                    error: format!("failed to check recurring action limit: {e}"),
-                })),
-            )
-                .into_response();
-        }
-        _ => {}
+        return resp;
     }
 
-    // Validate cron expression.
-    let cron = match validate_cron_expr(&req.cron_expression) {
-        Ok(c) => c,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!(ErrorResponse {
-                    error: e.to_string(),
-                })),
-            )
-                .into_response();
-        }
+    // Validate cron, timezone, and minimum interval.
+    let validated = match validate_cron_input(&req.cron_expression, req.timezone.as_deref()) {
+        Ok(v) => v,
+        Err(resp) => return *resp,
     };
 
-    // Validate timezone.
-    let tz_str = req.timezone.as_deref().unwrap_or("UTC");
-    let tz = match validate_timezone(tz_str) {
-        Ok(t) => t,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!(ErrorResponse {
-                    error: e.to_string(),
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    // Validate minimum interval.
-    if let Err(e) = validate_min_interval(&cron, tz, DEFAULT_MIN_INTERVAL_SECONDS) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!(ErrorResponse {
-                error: e.to_string(),
-            })),
-        )
-            .into_response();
-    }
-
-    // Compute first execution time.
     let now = Utc::now();
-    let first_execution = next_occurrence(&cron, tz, &now);
-
+    let first_execution = next_occurrence(&validated.cron, validated.tz, &now);
     let id = uuid::Uuid::new_v4().to_string();
 
     let recurring = RecurringAction {
@@ -531,7 +548,7 @@ pub async fn create_recurring(
         namespace: req.namespace.clone(),
         tenant: req.tenant.clone(),
         cron_expr: req.cron_expression,
-        timezone: tz_str.to_owned(),
+        timezone: validated.tz_str,
         enabled: true,
         action_template: RecurringActionTemplate {
             provider: req.provider,
@@ -551,22 +568,12 @@ pub async fn create_recurring(
         labels: req.labels,
     };
 
-    // Save the recurring action.
+    // Save and index.
     if let Err(e) = save_recurring(state_store.as_ref(), &recurring).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!(ErrorResponse { error: e })),
-        )
-            .into_response();
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
-
-    // Index in the pending timeout so the background processor picks it up.
     if let Err(e) = index_pending(state_store.as_ref(), &recurring).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!(ErrorResponse { error: e })),
-        )
-            .into_response();
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
 
     // Record audit event.
@@ -925,25 +932,26 @@ pub async fn delete_recurring(
     let state_store = gw.state_store();
 
     // Verify the recurring action exists.
-    let rec = match load_recurring(state_store.as_ref(), &params.namespace, &params.tenant, &id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!(ErrorResponse {
-                    error: format!("recurring action not found: {id}"),
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!(ErrorResponse { error: e })),
-            )
-                .into_response();
-        }
-    };
+    let rec =
+        match load_recurring(state_store.as_ref(), &params.namespace, &params.tenant, &id).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!(ErrorResponse {
+                        error: format!("recurring action not found: {id}"),
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!(ErrorResponse { error: e })),
+                )
+                    .into_response();
+            }
+        };
 
     // Remove from timeout index.
     let _ = remove_pending(state_store.as_ref(), &params.namespace, &params.tenant, &id).await;

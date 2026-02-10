@@ -68,6 +68,7 @@ fn make_recurring(
         last_executed_at: None,
         next_execution_at: next,
         ends_at: None,
+        max_executions: None,
         execution_count: 0,
         description: None,
         labels: HashMap::new(),
