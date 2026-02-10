@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -1063,6 +1064,337 @@ public class ActeonClient implements AutoCloseable {
                 throw new HttpException(response.statusCode(), "Recurring action is already active");
             } else {
                 throw new HttpException(response.statusCode(), "Failed to resume recurring action");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Chains (Task Chain Orchestration)
+    // =========================================================================
+
+    /**
+     * Lists chain executions filtered by namespace, tenant, and optional status.
+     *
+     * @param namespace namespace to filter by
+     * @param tenant    tenant to filter by
+     * @param status    optional status filter ({@code "running"}, {@code "completed"},
+     *                  {@code "failed"}, {@code "cancelled"}, {@code "timed_out"})
+     */
+    public ListChainsResponse listChains(String namespace, String tenant, String status) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            if (status != null) {
+                params.add("status=" + URLEncoder.encode(status, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/chains?" + String.join("&", params);
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListChainsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list chains");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets full details of a chain execution including step results.
+     *
+     * @param chainId   chain execution ID
+     * @param namespace namespace the chain belongs to
+     * @param tenant    tenant the chain belongs to
+     */
+    public Optional<ChainDetailResponse> getChain(String chainId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, ChainDetailResponse.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Cancels a running chain execution.
+     *
+     * @param chainId chain execution ID
+     * @param request cancel request containing namespace, tenant, and optional reason
+     */
+    public ChainDetailResponse cancelChain(String chainId, CancelChainRequest request) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(request);
+            HttpRequest httpReq = requestBuilder("/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8) + "/cancel")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(httpReq, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ChainDetailResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain not found: " + chainId);
+            } else if (response.statusCode() == 409) {
+                throw new HttpException(response.statusCode(), "Chain is not running");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to cancel chain");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Dead-Letter Queue (DLQ)
+    // =========================================================================
+
+    /**
+     * Gets dead-letter queue statistics.
+     */
+    public DlqStatsResponse dlqStats() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/dlq/stats")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DlqStatsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get DLQ stats");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Drains all entries from the dead-letter queue.
+     * Returns the drained entries for manual processing or resubmission.
+     */
+    public DlqDrainResponse dlqDrain() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/dlq/drain")
+                .POST(HttpRequest.BodyPublishers.noBody())
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DlqDrainResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Dead-letter queue is not enabled");
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to drain DLQ");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Subscribe (SSE -- Entity-specific)
+    // =========================================================================
+
+    /**
+     * Subscribes to real-time events for a specific entity via Server-Sent Events.
+     *
+     * <p>Returns an {@link SseEventIterator} that lazily reads SSE events from the
+     * server. The iterator should be closed when no longer needed.</p>
+     *
+     * <p>Example usage:</p>
+     * <pre>{@code
+     * SubscribeOptions opts = new SubscribeOptions("ns", "tenant-1");
+     * try (SseEventIterator events = client.subscribe("chain", "chain-42", opts)) {
+     *     while (events.hasNext()) {
+     *         SseEvent event = events.next();
+     *         System.out.println(event.getEvent() + ": " + event.getData());
+     *     }
+     * }
+     * }</pre>
+     *
+     * @param entityType entity type ({@code "chain"}, {@code "group"}, or {@code "action"})
+     * @param entityId   entity identifier
+     * @param options    subscribe options (namespace, tenant, include_history)
+     */
+    public SseEventIterator subscribe(String entityType, String entityId, SubscribeOptions options) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (options != null) {
+                if (options.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(options.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (options.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(options.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (options.getIncludeHistory() != null) {
+                    params.add("include_history=" + options.getIncludeHistory());
+                }
+            }
+
+            String path = "/v1/subscribe/"
+                + URLEncoder.encode(entityType, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(entityId, StandardCharsets.UTF_8);
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Accept", "text/event-stream");
+
+            if (apiKey != null && !apiKey.isEmpty()) {
+                builder.header("Authorization", "Bearer " + apiKey);
+            }
+
+            HttpRequest request = builder.GET().build();
+
+            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+
+            if (response.statusCode() == 200) {
+                return new SseEventIterator(response.body());
+            } else {
+                // Read the error body and close the stream.
+                try (InputStream body = response.body()) {
+                    String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                    throw new HttpException(response.statusCode(), "Subscribe failed: " + errorBody);
+                }
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
+    // Stream (SSE -- General)
+    // =========================================================================
+
+    /**
+     * Opens a general-purpose SSE stream for real-time action outcomes.
+     *
+     * <p>Returns an {@link SseEventIterator} that lazily reads SSE events from the
+     * server. The iterator should be closed when no longer needed.</p>
+     *
+     * <p>Example usage:</p>
+     * <pre>{@code
+     * StreamOptions opts = new StreamOptions();
+     * opts.setNamespace("alerts");
+     * opts.setOutcome("failed");
+     * try (SseEventIterator events = client.stream(opts)) {
+     *     while (events.hasNext()) {
+     *         SseEvent event = events.next();
+     *         System.out.println(event.getEvent() + ": " + event.getData());
+     *     }
+     * }
+     * }</pre>
+     *
+     * @param options stream filter options (namespace, action_type, outcome, event_type, etc.)
+     */
+    public SseEventIterator stream(StreamOptions options) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            String lastEventId = null;
+
+            if (options != null) {
+                if (options.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(options.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (options.getActionType() != null) {
+                    params.add("action_type=" + URLEncoder.encode(options.getActionType(), StandardCharsets.UTF_8));
+                }
+                if (options.getOutcome() != null) {
+                    params.add("outcome=" + URLEncoder.encode(options.getOutcome(), StandardCharsets.UTF_8));
+                }
+                if (options.getEventType() != null) {
+                    params.add("event_type=" + URLEncoder.encode(options.getEventType(), StandardCharsets.UTF_8));
+                }
+                if (options.getChainId() != null) {
+                    params.add("chain_id=" + URLEncoder.encode(options.getChainId(), StandardCharsets.UTF_8));
+                }
+                if (options.getGroupId() != null) {
+                    params.add("group_id=" + URLEncoder.encode(options.getGroupId(), StandardCharsets.UTF_8));
+                }
+                if (options.getActionId() != null) {
+                    params.add("action_id=" + URLEncoder.encode(options.getActionId(), StandardCharsets.UTF_8));
+                }
+                lastEventId = options.getLastEventId();
+            }
+
+            String path = "/v1/stream";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Accept", "text/event-stream");
+
+            if (apiKey != null && !apiKey.isEmpty()) {
+                builder.header("Authorization", "Bearer " + apiKey);
+            }
+
+            if (lastEventId != null) {
+                builder.header("Last-Event-ID", lastEventId);
+            }
+
+            HttpRequest request = builder.GET().build();
+
+            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+
+            if (response.statusCode() == 200) {
+                return new SseEventIterator(response.body());
+            } else {
+                // Read the error body and close the stream.
+                try (InputStream body = response.body()) {
+                    String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                    throw new HttpException(response.statusCode(), "Stream failed: " + errorBody);
+                }
             }
         } catch (IOException e) {
             throw new ConnectionException(e.getMessage(), e);

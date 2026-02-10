@@ -34,6 +34,14 @@ from .models import (
     ListRecurringResponse,
     RecurringDetail,
     UpdateRecurringAction,
+    ChainSummary,
+    ListChainsResponse,
+    ChainStepStatus,
+    ChainDetailResponse,
+    DlqStatsResponse,
+    DlqEntry,
+    DlqDrainResponse,
+    SseEvent,
 )
 
 __version__ = "0.1.0"
@@ -75,4 +83,12 @@ __all__ = [
     "ListRecurringResponse",
     "RecurringDetail",
     "UpdateRecurringAction",
+    "ChainSummary",
+    "ListChainsResponse",
+    "ChainStepStatus",
+    "ChainDetailResponse",
+    "DlqStatsResponse",
+    "DlqEntry",
+    "DlqDrainResponse",
+    "SseEvent",
 ]

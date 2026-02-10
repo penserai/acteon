@@ -942,3 +942,243 @@ export function updateRecurringActionToRequest(action: UpdateRecurringAction): R
   if (action.labels !== undefined) result.labels = action.labels;
   return result;
 }
+
+// =============================================================================
+// Chain Types
+// =============================================================================
+
+/** Summary of a chain execution for list responses. */
+export interface ChainSummary {
+  /** Unique chain execution ID. */
+  chainId: string;
+  /** Name of the chain configuration. */
+  chainName: string;
+  /** Current status. */
+  status: string;
+  /** Current step index (0-based). */
+  currentStep: number;
+  /** Total number of steps. */
+  totalSteps: number;
+  /** When the chain started. */
+  startedAt: string;
+  /** When the chain was last updated. */
+  updatedAt: string;
+}
+
+/** Parse a ChainSummary from API response. */
+export function parseChainSummary(data: Record<string, unknown>): ChainSummary {
+  return {
+    chainId: data.chain_id as string,
+    chainName: data.chain_name as string,
+    status: data.status as string,
+    currentStep: data.current_step as number,
+    totalSteps: data.total_steps as number,
+    startedAt: data.started_at as string,
+    updatedAt: data.updated_at as string,
+  };
+}
+
+/** Response for listing chain executions. */
+export interface ListChainsResponse {
+  /** List of chain execution summaries. */
+  chains: ChainSummary[];
+}
+
+/** Parse a ListChainsResponse from API response. */
+export function parseListChainsResponse(data: Record<string, unknown>): ListChainsResponse {
+  const chains = data.chains as Record<string, unknown>[];
+  return {
+    chains: chains.map(parseChainSummary),
+  };
+}
+
+/** Detailed status of a single chain step. */
+export interface ChainStepStatus {
+  /** Step name. */
+  name: string;
+  /** Provider used for this step. */
+  provider: string;
+  /** Step status: "pending", "completed", "failed", "skipped". */
+  status: string;
+  /** Response body from the provider (if completed). */
+  responseBody?: unknown;
+  /** Error message (if failed). */
+  error?: string;
+  /** When this step completed. */
+  completedAt?: string;
+}
+
+/** Parse a ChainStepStatus from API response. */
+export function parseChainStepStatus(data: Record<string, unknown>): ChainStepStatus {
+  return {
+    name: data.name as string,
+    provider: data.provider as string,
+    status: data.status as string,
+    responseBody: data.response_body as unknown | undefined,
+    error: data.error as string | undefined,
+    completedAt: data.completed_at as string | undefined,
+  };
+}
+
+/** Full detail response for a chain execution. */
+export interface ChainDetailResponse {
+  /** Unique chain execution ID. */
+  chainId: string;
+  /** Name of the chain configuration. */
+  chainName: string;
+  /** Current status. */
+  status: string;
+  /** Current step index (0-based). */
+  currentStep: number;
+  /** Total number of steps. */
+  totalSteps: number;
+  /** Per-step status details. */
+  steps: ChainStepStatus[];
+  /** When the chain started. */
+  startedAt: string;
+  /** When the chain was last updated. */
+  updatedAt: string;
+  /** When the chain will time out. */
+  expiresAt?: string;
+  /** Reason for cancellation (if cancelled). */
+  cancelReason?: string;
+  /** Who cancelled the chain (if cancelled). */
+  cancelledBy?: string;
+  /** The ordered list of step names that were executed (the branch path taken). */
+  executionPath?: string[];
+}
+
+/** Parse a ChainDetailResponse from API response. */
+export function parseChainDetailResponse(data: Record<string, unknown>): ChainDetailResponse {
+  const steps = (data.steps as Record<string, unknown>[]) ?? [];
+  const executionPath = data.execution_path as string[] | undefined;
+  return {
+    chainId: data.chain_id as string,
+    chainName: data.chain_name as string,
+    status: data.status as string,
+    currentStep: data.current_step as number,
+    totalSteps: data.total_steps as number,
+    steps: steps.map(parseChainStepStatus),
+    startedAt: data.started_at as string,
+    updatedAt: data.updated_at as string,
+    expiresAt: data.expires_at as string | undefined,
+    cancelReason: data.cancel_reason as string | undefined,
+    cancelledBy: data.cancelled_by as string | undefined,
+    executionPath: executionPath && executionPath.length > 0 ? executionPath : undefined,
+  };
+}
+
+// =============================================================================
+// DLQ Types (Dead-Letter Queue)
+// =============================================================================
+
+/** Response for DLQ stats endpoint. */
+export interface DlqStatsResponse {
+  /** Whether the DLQ is enabled. */
+  enabled: boolean;
+  /** Number of entries in the DLQ. */
+  count: number;
+}
+
+/** Parse a DlqStatsResponse from API response. */
+export function parseDlqStatsResponse(data: Record<string, unknown>): DlqStatsResponse {
+  return {
+    enabled: data.enabled as boolean,
+    count: data.count as number,
+  };
+}
+
+/** A single dead-letter queue entry. */
+export interface DlqEntry {
+  /** The failed action's unique identifier. */
+  actionId: string;
+  /** Namespace the action belongs to. */
+  namespace: string;
+  /** Tenant that owns the action. */
+  tenant: string;
+  /** Target provider for the action. */
+  provider: string;
+  /** Action type discriminator. */
+  actionType: string;
+  /** Human-readable description of the final error. */
+  error: string;
+  /** Number of execution attempts made. */
+  attempts: number;
+  /** Unix timestamp (seconds) when the entry was created. */
+  timestamp: number;
+}
+
+/** Parse a DlqEntry from API response. */
+export function parseDlqEntry(data: Record<string, unknown>): DlqEntry {
+  return {
+    actionId: data.action_id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    provider: data.provider as string,
+    actionType: data.action_type as string,
+    error: data.error as string,
+    attempts: data.attempts as number,
+    timestamp: data.timestamp as number,
+  };
+}
+
+/** Response for DLQ drain endpoint. */
+export interface DlqDrainResponse {
+  /** Entries drained from the DLQ. */
+  entries: DlqEntry[];
+  /** Number of entries drained. */
+  count: number;
+}
+
+/** Parse a DlqDrainResponse from API response. */
+export function parseDlqDrainResponse(data: Record<string, unknown>): DlqDrainResponse {
+  const entries = (data.entries as Record<string, unknown>[]) ?? [];
+  return {
+    entries: entries.map(parseDlqEntry),
+    count: data.count as number,
+  };
+}
+
+// =============================================================================
+// SSE Event Types
+// =============================================================================
+
+/** Generic SSE event wrapper. */
+export interface SseEvent {
+  /** The SSE event type (e.g., "action_dispatched", "chain_step_completed"). */
+  event: string;
+  /** The SSE event ID. */
+  id: string;
+  /** The parsed JSON data payload. */
+  data: unknown;
+}
+
+/** Options for the subscribe endpoint. */
+export interface SubscribeOptions {
+  /** Namespace for tenant isolation. */
+  namespace?: string;
+  /** Tenant for tenant isolation. */
+  tenant?: string;
+  /** Emit synthetic catch-up events for the entity's current state (default: true). */
+  includeHistory?: boolean;
+}
+
+/** Options for the stream endpoint. */
+export interface StreamOptions {
+  /** Filter events by namespace. */
+  namespace?: string;
+  /** Filter events by action type. */
+  actionType?: string;
+  /** Filter events by outcome category (e.g., "executed", "suppressed", "failed"). */
+  outcome?: string;
+  /** Filter events by stream event type (e.g., "action_dispatched", "group_flushed"). */
+  eventType?: string;
+  /** Filter events by chain ID. */
+  chainId?: string;
+  /** Filter events by group ID. */
+  groupId?: string;
+  /** Filter events by action ID. */
+  actionId?: string;
+  /** Last event ID for reconnection catch-up. */
+  lastEventId?: string;
+}

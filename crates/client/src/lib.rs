@@ -1658,6 +1658,264 @@ impl ActeonClient {
             })
         }
     }
+
+    // =========================================================================
+    // Chains
+    // =========================================================================
+
+    /// List chains filtered by namespace, tenant, and optional status.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let result = client.list_chains("notifications", "tenant-1", Some("running")).await?;
+    /// for chain in result.chains {
+    ///     println!("{}: {} (step {}/{})", chain.chain_id, chain.chain_name, chain.current_step, chain.total_steps);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn list_chains(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        status: Option<&str>,
+    ) -> Result<ListChainsResponse, Error> {
+        let url = format!("{}/v1/chains", self.base_url);
+
+        let mut query: Vec<(&str, &str)> =
+            vec![("namespace", namespace), ("tenant", tenant)];
+        if let Some(s) = status {
+            query.push(("status", s));
+        }
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .query(&query)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ListChainsResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to list chains: {}", response.status()),
+            })
+        }
+    }
+
+    /// Get the full details of a chain by ID.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let detail = client.get_chain("chain-123", "notifications", "tenant-1").await?;
+    /// println!("{}: {} steps", detail.chain_name, detail.total_steps);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_chain(
+        &self,
+        chain_id: &str,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<ChainDetailResponse, Error> {
+        let url = format!("{}/v1/chains/{}", self.base_url, chain_id);
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .query(&[("namespace", namespace), ("tenant", tenant)])
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ChainDetailResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(Error::Http {
+                status: 404,
+                message: format!("Chain not found: {chain_id}"),
+            })
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to get chain: {}", response.status()),
+            })
+        }
+    }
+
+    /// Cancel a running chain.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let detail = client.cancel_chain(
+    ///     "chain-123",
+    ///     "notifications",
+    ///     "tenant-1",
+    ///     Some("no longer needed"),
+    ///     Some("admin@example.com"),
+    /// ).await?;
+    /// println!("Chain {} cancelled", detail.chain_id);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn cancel_chain(
+        &self,
+        chain_id: &str,
+        namespace: &str,
+        tenant: &str,
+        reason: Option<&str>,
+        cancelled_by: Option<&str>,
+    ) -> Result<ChainDetailResponse, Error> {
+        let url = format!("{}/v1/chains/{}/cancel", self.base_url, chain_id);
+
+        let mut body = serde_json::json!({
+            "namespace": namespace,
+            "tenant": tenant,
+        });
+        if let Some(r) = reason {
+            body["reason"] = serde_json::Value::String(r.to_string());
+        }
+        if let Some(cb) = cancelled_by {
+            body["cancelled_by"] = serde_json::Value::String(cb.to_string());
+        }
+
+        let response = self
+            .add_auth(self.client.post(&url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ChainDetailResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(Error::Http {
+                status: 404,
+                message: format!("Chain not found: {chain_id}"),
+            })
+        } else {
+            let error = response
+                .json::<ErrorResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Err(Error::Api {
+                code: error.code,
+                message: error.message,
+                retryable: error.retryable,
+            })
+        }
+    }
+
+    // =========================================================================
+    // Dead Letter Queue (DLQ)
+    // =========================================================================
+
+    /// Get dead letter queue statistics.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let stats = client.dlq_stats().await?;
+    /// println!("DLQ enabled: {}, count: {}", stats.enabled, stats.count);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn dlq_stats(&self) -> Result<DlqStatsResponse, Error> {
+        let url = format!("{}/v1/dlq/stats", self.base_url);
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<DlqStatsResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to get DLQ stats: {}", response.status()),
+            })
+        }
+    }
+
+    /// Drain all entries from the dead letter queue.
+    ///
+    /// Returns the drained entries along with a count.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let result = client.dlq_drain().await?;
+    /// println!("Drained {} entries", result.count);
+    /// for entry in &result.entries {
+    ///     println!("  {}: {} ({})", entry.action_id, entry.error, entry.attempts);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn dlq_drain(&self) -> Result<DlqDrainResponse, Error> {
+        let url = format!("{}/v1/dlq/drain", self.base_url);
+
+        let response = self
+            .add_auth(self.client.post(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<DlqDrainResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to drain DLQ: {}", response.status()),
+            })
+        }
+    }
 }
 
 // =============================================================================
@@ -2210,6 +2468,132 @@ pub struct UpdateRecurringAction {
     /// Updated labels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<std::collections::HashMap<String, String>>,
+}
+
+// =============================================================================
+// Chain Types
+// =============================================================================
+
+/// Summary of a chain for list responses.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChainSummary {
+    /// Unique chain ID.
+    pub chain_id: String,
+    /// Human-readable chain name.
+    pub chain_name: String,
+    /// Current status (e.g., "running", "completed", "failed", "cancelled").
+    pub status: String,
+    /// Index of the current step being executed.
+    pub current_step: usize,
+    /// Total number of steps in the chain.
+    pub total_steps: usize,
+    /// When the chain was started.
+    pub started_at: String,
+    /// When the chain was last updated.
+    pub updated_at: String,
+}
+
+/// Response from listing chains.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ListChainsResponse {
+    /// List of chain summaries.
+    pub chains: Vec<ChainSummary>,
+}
+
+/// Status of an individual chain step.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChainStepStatus {
+    /// Step name.
+    pub name: String,
+    /// Target provider for this step.
+    pub provider: String,
+    /// Step status (e.g., "pending", "running", "completed", "failed", "skipped").
+    pub status: String,
+    /// Response body from the provider, if completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<serde_json::Value>,
+    /// Error message, if the step failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// When the step completed, if applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
+}
+
+/// Detailed response for a single chain.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChainDetailResponse {
+    /// Unique chain ID.
+    pub chain_id: String,
+    /// Human-readable chain name.
+    pub chain_name: String,
+    /// Current status.
+    pub status: String,
+    /// Index of the current step being executed.
+    pub current_step: usize,
+    /// Total number of steps in the chain.
+    pub total_steps: usize,
+    /// Per-step status details.
+    pub steps: Vec<ChainStepStatus>,
+    /// When the chain was started.
+    pub started_at: String,
+    /// When the chain was last updated.
+    pub updated_at: String,
+    /// When the chain expires, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Reason the chain was cancelled, if applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel_reason: Option<String>,
+    /// Who cancelled the chain, if applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled_by: Option<String>,
+    /// Ordered list of step names that were actually executed (for branching).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_path: Vec<String>,
+}
+
+// =============================================================================
+// DLQ Types (Dead Letter Queue)
+// =============================================================================
+
+/// Dead letter queue statistics.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DlqStatsResponse {
+    /// Whether the DLQ is enabled.
+    pub enabled: bool,
+    /// Number of entries currently in the DLQ.
+    pub count: usize,
+}
+
+/// A single entry in the dead letter queue.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DlqEntry {
+    /// The original action ID.
+    pub action_id: String,
+    /// Namespace of the failed action.
+    pub namespace: String,
+    /// Tenant of the failed action.
+    pub tenant: String,
+    /// Target provider.
+    pub provider: String,
+    /// Action type discriminator.
+    pub action_type: String,
+    /// Error message describing the failure.
+    pub error: String,
+    /// Number of delivery attempts made.
+    pub attempts: u32,
+    /// Unix timestamp (seconds) when the entry was added.
+    pub timestamp: u64,
+}
+
+/// Response from draining the dead letter queue.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DlqDrainResponse {
+    /// The drained entries.
+    pub entries: Vec<DlqEntry>,
+    /// Number of entries drained.
+    pub count: usize,
 }
 
 #[cfg(test)]

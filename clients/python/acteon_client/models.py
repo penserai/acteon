@@ -1,8 +1,9 @@
 """Data models for the Acteon client."""
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 from datetime import datetime
+import json
 import uuid
 
 
@@ -916,3 +917,278 @@ class UpdateRecurringAction:
         if self.labels is not None:
             result["labels"] = self.labels
         return result
+
+
+# =============================================================================
+# Chain Types
+# =============================================================================
+
+
+@dataclass
+class ChainSummary:
+    """Summary of a chain execution.
+
+    Attributes:
+        chain_id: Unique chain execution ID.
+        chain_name: Name of the chain configuration.
+        status: Current status (running, completed, failed, cancelled, timed_out).
+        current_step: Current step index (0-based).
+        total_steps: Total number of steps.
+        started_at: When the chain started.
+        updated_at: When the chain was last updated.
+    """
+    chain_id: str
+    chain_name: str
+    status: str
+    current_step: int
+    total_steps: int
+    started_at: str
+    updated_at: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainSummary":
+        return cls(
+            chain_id=data["chain_id"],
+            chain_name=data["chain_name"],
+            status=data["status"],
+            current_step=data["current_step"],
+            total_steps=data["total_steps"],
+            started_at=data["started_at"],
+            updated_at=data["updated_at"],
+        )
+
+
+@dataclass
+class ListChainsResponse:
+    """Response from listing chain executions."""
+    chains: list[ChainSummary]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListChainsResponse":
+        return cls(
+            chains=[ChainSummary.from_dict(c) for c in data["chains"]],
+        )
+
+
+@dataclass
+class ChainStepStatus:
+    """Detailed status of a single chain step.
+
+    Attributes:
+        name: Step name.
+        provider: Provider used for this step.
+        status: Step status (pending, completed, failed, skipped).
+        response_body: Response body from the provider (if completed).
+        error: Error message (if failed).
+        completed_at: When this step completed.
+    """
+    name: str
+    provider: str
+    status: str
+    response_body: Optional[Any] = None
+    error: Optional[str] = None
+    completed_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainStepStatus":
+        return cls(
+            name=data["name"],
+            provider=data["provider"],
+            status=data["status"],
+            response_body=data.get("response_body"),
+            error=data.get("error"),
+            completed_at=data.get("completed_at"),
+        )
+
+
+@dataclass
+class ChainDetailResponse:
+    """Full detail response for a chain execution.
+
+    Attributes:
+        chain_id: Unique chain execution ID.
+        chain_name: Name of the chain configuration.
+        status: Current status.
+        current_step: Current step index (0-based).
+        total_steps: Total number of steps.
+        steps: Per-step status details.
+        started_at: When the chain started.
+        updated_at: When the chain was last updated.
+        expires_at: When the chain will time out.
+        cancel_reason: Reason for cancellation (if cancelled).
+        cancelled_by: Who cancelled the chain (if cancelled).
+        execution_path: Ordered list of step names that were executed.
+    """
+    chain_id: str
+    chain_name: str
+    status: str
+    current_step: int
+    total_steps: int
+    steps: list[ChainStepStatus]
+    started_at: str
+    updated_at: str
+    expires_at: Optional[str] = None
+    cancel_reason: Optional[str] = None
+    cancelled_by: Optional[str] = None
+    execution_path: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainDetailResponse":
+        return cls(
+            chain_id=data["chain_id"],
+            chain_name=data["chain_name"],
+            status=data["status"],
+            current_step=data["current_step"],
+            total_steps=data["total_steps"],
+            steps=[ChainStepStatus.from_dict(s) for s in data.get("steps", [])],
+            started_at=data["started_at"],
+            updated_at=data["updated_at"],
+            expires_at=data.get("expires_at"),
+            cancel_reason=data.get("cancel_reason"),
+            cancelled_by=data.get("cancelled_by"),
+            execution_path=data.get("execution_path", []),
+        )
+
+
+# =============================================================================
+# DLQ Types (Dead-Letter Queue)
+# =============================================================================
+
+
+@dataclass
+class DlqStatsResponse:
+    """Response from the DLQ stats endpoint.
+
+    Attributes:
+        enabled: Whether the DLQ is enabled.
+        count: Number of entries in the DLQ.
+    """
+    enabled: bool
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DlqStatsResponse":
+        return cls(
+            enabled=data["enabled"],
+            count=data["count"],
+        )
+
+
+@dataclass
+class DlqEntry:
+    """A single dead-letter queue entry.
+
+    Attributes:
+        action_id: The failed action's unique identifier.
+        namespace: Namespace the action belongs to.
+        tenant: Tenant that owns the action.
+        provider: Target provider for the action.
+        action_type: Action type discriminator.
+        error: Human-readable description of the final error.
+        attempts: Number of execution attempts made.
+        timestamp: Unix timestamp (seconds) when the entry was created.
+    """
+    action_id: str
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+    error: str
+    attempts: int
+    timestamp: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DlqEntry":
+        return cls(
+            action_id=data["action_id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            provider=data["provider"],
+            action_type=data["action_type"],
+            error=data["error"],
+            attempts=data["attempts"],
+            timestamp=data["timestamp"],
+        )
+
+
+@dataclass
+class DlqDrainResponse:
+    """Response from the DLQ drain endpoint.
+
+    Attributes:
+        entries: Entries drained from the DLQ.
+        count: Number of entries drained.
+    """
+    entries: list[DlqEntry]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DlqDrainResponse":
+        return cls(
+            entries=[DlqEntry.from_dict(e) for e in data["entries"]],
+            count=data["count"],
+        )
+
+
+# =============================================================================
+# SSE Event Types
+# =============================================================================
+
+
+@dataclass
+class SseEvent:
+    """A parsed Server-Sent Event.
+
+    Attributes:
+        event: The event type (e.g., "action_dispatched", "chain_completed").
+        id: The event ID (if present).
+        data: The parsed JSON data payload.
+    """
+    event: Optional[str] = None
+    id: Optional[str] = None
+    data: Optional[Any] = None
+
+
+def _parse_sse_stream(lines: Iterator[str]) -> Iterator[SseEvent]:
+    """Parse a text/event-stream into SseEvent objects.
+
+    This is a simple line-by-line SSE parser that yields events as they
+    arrive. It handles the ``event:``, ``id:``, and ``data:`` fields.
+    Blank lines delimit events. Comment lines (starting with ``:``) are
+    ignored.
+
+    Args:
+        lines: An iterator of lines from the SSE stream (without trailing newlines).
+
+    Yields:
+        Parsed SseEvent objects.
+    """
+    event_type: Optional[str] = None
+    event_id: Optional[str] = None
+    data_parts: list[str] = []
+
+    for line in lines:
+        if line.startswith(":"):
+            # Comment line, skip.
+            continue
+        if line == "":
+            # Blank line: dispatch event if we have data.
+            if data_parts:
+                raw_data = "\n".join(data_parts)
+                try:
+                    parsed = json.loads(raw_data)
+                except (json.JSONDecodeError, ValueError):
+                    parsed = raw_data
+                yield SseEvent(event=event_type, id=event_id, data=parsed)
+            # Reset for next event.
+            event_type = None
+            event_id = None
+            data_parts = []
+            continue
+        if line.startswith("event:"):
+            event_type = line[len("event:"):].strip()
+        elif line.startswith("id:"):
+            event_id = line[len("id:"):].strip()
+        elif line.startswith("data:"):
+            data_parts.append(line[len("data:"):].strip())
+        # Other fields are ignored per the SSE spec.
