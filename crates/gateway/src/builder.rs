@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
+
 use acteon_audit::store::AuditStore;
 use acteon_core::{ChainConfig, StateMachineConfig};
 use acteon_executor::{DeadLetterQueue, DeadLetterSink, ExecutorConfig};
@@ -363,6 +365,37 @@ impl GatewayBuilder {
         self
     }
 
+    /// Validate quota policies and wrap them in [`CachedPolicy`] for TTL tracking.
+    fn validate_and_wrap_quota_policies(
+        policies: HashMap<String, acteon_core::QuotaPolicy>,
+    ) -> Result<HashMap<String, crate::gateway::CachedPolicy>, GatewayError> {
+        for (key, policy) in &policies {
+            if policy.max_actions == 0 {
+                return Err(GatewayError::Configuration(format!(
+                    "quota policy '{key}' has max_actions = 0"
+                )));
+            }
+            if policy.window.duration_seconds() == 0 {
+                return Err(GatewayError::Configuration(format!(
+                    "quota policy '{key}' has a zero-duration window"
+                )));
+            }
+        }
+        let now = Utc::now();
+        Ok(policies
+            .into_iter()
+            .map(|(k, p)| {
+                (
+                    k,
+                    crate::gateway::CachedPolicy {
+                        policy: p,
+                        cached_at: now,
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// Build and validate the circuit breaker registry if a default config is provided.
     fn build_circuit_breaker_registry(
         default: Option<CircuitBreakerConfig>,
@@ -504,19 +537,7 @@ impl GatewayBuilder {
             Arc::clone(&lock),
         )?;
 
-        // Validate quota policies.
-        for (key, policy) in &self.quota_policies {
-            if policy.max_actions == 0 {
-                return Err(GatewayError::Configuration(format!(
-                    "quota policy '{key}' has max_actions = 0"
-                )));
-            }
-            if policy.window.duration_seconds() == 0 {
-                return Err(GatewayError::Configuration(format!(
-                    "quota policy '{key}' has a zero-duration window"
-                )));
-            }
-        }
+        let quota_policies = Self::validate_and_wrap_quota_policies(self.quota_policies)?;
 
         // Pre-compute step-name → index maps for each chain config so we
         // don't rebuild them on every step completion during chain advancement.
@@ -557,7 +578,7 @@ impl GatewayBuilder {
             default_timezone,
             circuit_breakers,
             stream_tx,
-            quota_policies: parking_lot::RwLock::new(self.quota_policies),
+            quota_policies: parking_lot::RwLock::new(quota_policies),
         })
     }
 }
