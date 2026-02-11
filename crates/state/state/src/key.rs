@@ -38,6 +38,10 @@ pub enum KeyKind {
     RecurringAction,
     /// Index of pending recurring actions by next execution time.
     PendingRecurring,
+    /// Quota policy definition.
+    Quota,
+    /// Quota usage counter for a tenant window.
+    QuotaUsage,
     Custom(String),
 }
 
@@ -65,6 +69,8 @@ impl KeyKind {
             Self::PendingScheduled => "pending_scheduled",
             Self::RecurringAction => "recurring_action",
             Self::PendingRecurring => "pending_recurring",
+            Self::Quota => "quota",
+            Self::QuotaUsage => "quota_usage",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -154,6 +160,8 @@ mod tests {
         assert_eq!(KeyKind::PendingScheduled.as_str(), "pending_scheduled");
         assert_eq!(KeyKind::RecurringAction.as_str(), "recurring_action");
         assert_eq!(KeyKind::PendingRecurring.as_str(), "pending_recurring");
+        assert_eq!(KeyKind::Quota.as_str(), "quota");
+        assert_eq!(KeyKind::QuotaUsage.as_str(), "quota_usage");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

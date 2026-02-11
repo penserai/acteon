@@ -51,6 +51,7 @@ pub struct GatewayBuilder {
     circuit_breaker_default: Option<CircuitBreakerConfig>,
     circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
     stream_buffer_size: usize,
+    quota_policies: HashMap<String, acteon_core::QuotaPolicy>,
 }
 
 impl GatewayBuilder {
@@ -84,6 +85,7 @@ impl GatewayBuilder {
             circuit_breaker_default: None,
             circuit_breaker_overrides: HashMap::new(),
             stream_buffer_size: 1024,
+            quota_policies: HashMap::new(),
         }
     }
 
@@ -340,6 +342,27 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a quota policy for a tenant.
+    ///
+    /// The policy is keyed by `"namespace:tenant"`. Multiple policies for the
+    /// same tenant replace the previous one.
+    #[must_use]
+    pub fn quota_policy(mut self, policy: acteon_core::QuotaPolicy) -> Self {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        self.quota_policies.insert(key, policy);
+        self
+    }
+
+    /// Set all quota policies at once (replaces any previously added).
+    #[must_use]
+    pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
+        self.quota_policies = policies
+            .into_iter()
+            .map(|p| (format!("{}:{}", p.namespace, p.tenant), p))
+            .collect();
+        self
+    }
+
     /// Build and validate the circuit breaker registry if a default config is provided.
     fn build_circuit_breaker_registry(
         default: Option<CircuitBreakerConfig>,
@@ -520,6 +543,7 @@ impl GatewayBuilder {
             default_timezone,
             circuit_breakers,
             stream_tx,
+            quota_policies: parking_lot::RwLock::new(self.quota_policies),
         })
     }
 }

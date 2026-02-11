@@ -458,3 +458,62 @@ export interface ConfigResponse {
   }
   providers: Array<{ name: string; provider_type: string; url: string | null; header_count: number }>
 }
+
+// ---- Quotas ----
+
+export type QuotaWindow = 'hourly' | 'daily' | 'weekly' | 'monthly'
+export type OverageBehavior = 'block' | 'warn' | 'degrade' | 'notify'
+
+export interface QuotaPolicy {
+  id: string
+  namespace: string
+  tenant: string
+  max_actions: number
+  window: QuotaWindow
+  overage_behavior: OverageBehavior
+  enabled: boolean
+  description: string | null
+  labels: Record<string, string>
+  created_at: string
+  updated_at: string
+}
+
+export interface QuotaUsage {
+  tenant: string
+  namespace: string
+  used: number
+  limit: number
+  remaining: number
+  window: QuotaWindow
+  resets_at: string
+  overage_behavior: OverageBehavior
+}
+
+export interface QuotaListResponse {
+  quotas: QuotaPolicy[]
+  count: number
+}
+
+export interface CreateQuotaRequest {
+  namespace: string
+  tenant: string
+  max_actions: number
+  window: QuotaWindow
+  overage_behavior: OverageBehavior
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateQuotaRequest {
+  max_actions?: number
+  window?: QuotaWindow
+  overage_behavior?: OverageBehavior
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateQuotaResponse {
+  id: string
+}

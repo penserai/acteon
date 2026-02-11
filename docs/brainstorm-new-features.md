@@ -273,13 +273,21 @@ Aggregated queries over the audit trail:
 Could expose via `GET /v1/analytics/...` and leverage ClickHouse's
 analytical strengths when that audit backend is in use.
 
-### Tenant Usage Quotas
+### Tenant Usage Quotas -- IMPLEMENTED
 Hard limits on actions per tenant per billing period, with configurable
 overage behavior:
 - Block (HTTP 429)
 - Warn (header + metric)
 - Degrade (reduce to lower-priority provider)
 - Notify (alert tenant admin)
+
+**Implemented**: Per-tenant quota policies with four overage behaviors (Block,
+Warn, Degrade, Notify). Quota check runs in the gateway dispatch pipeline
+after lock acquisition but before rule evaluation. Epoch-aligned rolling
+windows (Hourly/Daily/Weekly/Monthly/Custom) with counters stored in the
+state backend. CRUD API at `/v1/quotas` with usage query endpoint.
+Metrics: `quota_exceeded`, `quota_warned`, `quota_degraded` counters.
+See [Tenant Quotas](book/features/tenant-quotas.md) for full docs.
 
 ### Data Retention Policies
 Automatic cleanup of old audit records and state entries based on
@@ -372,3 +380,4 @@ Ranked by impact-to-effort ratio:
 | 10 | Conditional Chain Branching | Medium | Medium | **DONE** |
 | 11 | Action Status Subscriptions | Low | Medium | **DONE** |
 | 12 | Recurring Actions | Medium | Medium | **DONE** |
+| 13 | Tenant Usage Quotas | Medium | Medium | **DONE** |

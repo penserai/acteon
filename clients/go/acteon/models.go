@@ -630,6 +630,65 @@ type RecurringLifecycleRequest struct {
 }
 
 // =============================================================================
+// Quota Types
+// =============================================================================
+
+// CreateQuotaRequest is the request to create a quota policy.
+type CreateQuotaRequest struct {
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	MaxActions      int64             `json:"max_actions"`
+	Window          string            `json:"window"`
+	OverageBehavior string            `json:"overage_behavior"`
+	Description     string            `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// UpdateQuotaRequest is the request to update a quota policy.
+type UpdateQuotaRequest struct {
+	Namespace       string  `json:"namespace"`
+	Tenant          string  `json:"tenant"`
+	MaxActions      *int64  `json:"max_actions,omitempty"`
+	Window          *string `json:"window,omitempty"`
+	OverageBehavior *string `json:"overage_behavior,omitempty"`
+	Description     *string `json:"description,omitempty"`
+	Enabled         *bool   `json:"enabled,omitempty"`
+}
+
+// QuotaPolicy represents a quota policy.
+type QuotaPolicy struct {
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	MaxActions      int64             `json:"max_actions"`
+	Window          string            `json:"window"`
+	OverageBehavior string            `json:"overage_behavior"`
+	Enabled         bool              `json:"enabled"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// ListQuotasResponse is the response from listing quota policies.
+type ListQuotasResponse struct {
+	Quotas []QuotaPolicy `json:"quotas"`
+	Count  int           `json:"count"`
+}
+
+// QuotaUsage represents current usage statistics for a quota.
+type QuotaUsage struct {
+	Tenant          string `json:"tenant"`
+	Namespace       string `json:"namespace"`
+	Used            int64  `json:"used"`
+	Limit           int64  `json:"limit"`
+	Remaining       int64  `json:"remaining"`
+	Window          string `json:"window"`
+	ResetsAt        string `json:"resets_at"`
+	OverageBehavior string `json:"overage_behavior"`
+}
+
+// =============================================================================
 // Chain Types
 // =============================================================================
 

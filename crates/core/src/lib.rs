@@ -7,6 +7,7 @@ pub mod fingerprint;
 pub mod group;
 pub mod key;
 pub mod outcome;
+pub mod quota;
 pub mod recurring;
 pub mod state_machine;
 pub mod stream;
@@ -24,6 +25,10 @@ pub use fingerprint::compute_fingerprint;
 pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
 pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
+pub use quota::{
+    OverageBehavior, QuotaPolicy, QuotaUsage, QuotaWindow, compute_window_boundaries,
+    quota_counter_key,
+};
 pub use recurring::{
     CronValidationError, DEFAULT_MIN_INTERVAL_SECONDS, RecurringAction, RecurringActionTemplate,
     next_occurrence, validate_cron_expr, validate_min_interval, validate_timezone,

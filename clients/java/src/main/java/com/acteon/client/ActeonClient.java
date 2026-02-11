@@ -1074,6 +1074,187 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Quotas
+    // =========================================================================
+
+    /**
+     * Creates a quota policy.
+     */
+    public QuotaPolicy createQuota(CreateQuotaRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/quotas")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, QuotaPolicy.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists quota policies with optional namespace and tenant filters.
+     */
+    public ListQuotasResponse listQuotas(String namespace, String tenant) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/quotas";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListQuotasResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list quotas");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single quota policy by ID.
+     */
+    public Optional<QuotaPolicy> getQuota(String quotaId) throws ActeonException {
+        try {
+            String path = "/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, QuotaPolicy.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get quota");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a quota policy.
+     */
+    public QuotaPolicy updateQuota(String quotaId, UpdateQuotaRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, QuotaPolicy.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Quota not found: " + quotaId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a quota policy.
+     */
+    public void deleteQuota(String quotaId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8)
+                + "?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Quota not found: " + quotaId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete quota");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets current usage statistics for a quota policy.
+     */
+    public QuotaUsage getQuotaUsage(String quotaId) throws ActeonException {
+        try {
+            String path = "/v1/quotas/" + URLEncoder.encode(quotaId, StandardCharsets.UTF_8) + "/usage";
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, QuotaUsage.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Quota not found: " + quotaId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get quota usage");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Chains (Task Chain Orchestration)
     // =========================================================================
 

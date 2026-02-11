@@ -188,5 +188,11 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
             cron_expr,
             ..
         } => format!("RecurringCreated (id: {recurring_id}, cron: {cron_expr})"),
+        ActionOutcome::QuotaExceeded {
+            tenant,
+            limit,
+            used,
+            ..
+        } => format!("QuotaExceeded (tenant: {tenant}, limit: {limit}, used: {used})"),
     }
 }

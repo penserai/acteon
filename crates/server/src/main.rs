@@ -473,6 +473,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Load quota policies from state store on startup.
+    if config.quotas.enabled {
+        match store.scan_keys_by_kind(acteon_state::KeyKind::Quota).await {
+            Ok(entries) => {
+                let mut count = 0usize;
+                for (_key, value) in entries {
+                    if let Ok(policy) = serde_json::from_str::<acteon_core::QuotaPolicy>(&value) {
+                        gateway.set_quota_policy(policy);
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    info!(count, "loaded quota policies from state store");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load quota policies from state store");
+            }
+        }
+    }
+
     // Pre-warm the embedding topic cache with topics from loaded rules.
     if let Some(ref bridge) = embedding_bridge {
         let topics: Vec<&str> = gateway

@@ -973,6 +973,174 @@ func (c *Client) ResumeRecurring(ctx context.Context, recurringID, namespace, te
 }
 
 // =============================================================================
+// Quotas
+// =============================================================================
+
+// CreateQuota creates a quota policy.
+func (c *Client) CreateQuota(ctx context.Context, req *CreateQuotaRequest) (*QuotaPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/quotas", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result QuotaPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create quota"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListQuotas lists quota policies with optional namespace and tenant filters.
+func (c *Client) ListQuotas(ctx context.Context, namespace, tenant *string) (*ListQuotasResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+
+	path := "/v1/quotas"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list quotas"}
+	}
+
+	var result ListQuotasResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetQuota gets a single quota policy by ID.
+func (c *Client) GetQuota(ctx context.Context, quotaID string) (*QuotaPolicy, error) {
+	path := fmt.Sprintf("/v1/quotas/%s", quotaID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get quota"}
+	}
+
+	var result QuotaPolicy
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateQuota updates a quota policy.
+func (c *Client) UpdateQuota(ctx context.Context, quotaID string, update *UpdateQuotaRequest) (*QuotaPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/quotas/%s", quotaID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result QuotaPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Quota not found: %s", quotaID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update quota"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteQuota deletes a quota policy.
+func (c *Client) DeleteQuota(ctx context.Context, quotaID, namespace, tenant string) error {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/quotas/%s?%s", quotaID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Quota not found: %s", quotaID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete quota"}
+}
+
+// GetQuotaUsage gets current usage statistics for a quota policy.
+func (c *Client) GetQuotaUsage(ctx context.Context, quotaID string) (*QuotaUsage, error) {
+	path := fmt.Sprintf("/v1/quotas/%s/usage", quotaID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Quota not found: %s", quotaID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get quota usage"}
+	}
+
+	var result QuotaUsage
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// =============================================================================
 // Chains
 // =============================================================================
 

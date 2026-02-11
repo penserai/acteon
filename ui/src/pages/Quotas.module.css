@@ -1,0 +1,130 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+.actionsCell {
+  @apply flex items-center gap-1;
+}
+
+/* Progress bar */
+.usageCell {
+  @apply flex items-center gap-2 min-w-32;
+}
+
+.progressBar {
+  @apply flex-1 h-2 rounded-full overflow-hidden;
+  background: var(--bg-surface-secondary);
+}
+
+.progressFill {
+  @apply h-full rounded-full transition-all duration-300;
+}
+
+.progressGreen {
+  @apply bg-emerald-500;
+}
+
+.progressYellow {
+  @apply bg-amber-500;
+}
+
+.progressRed {
+  @apply bg-red-500;
+}
+
+.usageText {
+  @apply text-xs tabular-nums whitespace-nowrap;
+  color: var(--text-muted);
+}
+
+/* Create / Edit modal */
+.formGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.formSection {
+  @apply space-y-4;
+}
+
+.textareaLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full h-24 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+/* Detail drawer */
+.tabContainer {
+  @apply mb-4;
+}
+
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between py-1 border-b;
+  border-color: var(--border-default);
+}
+
+.detailLabel {
+  @apply text-gray-500;
+}
+
+.detailValue {
+  @apply font-mono text-xs;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+}
+
+.actionButtons {
+  @apply mt-6 flex gap-2;
+}
+
+/* Delete confirmation */
+.deleteWarning {
+  @apply text-sm mb-4;
+  color: var(--text-secondary);
+}
+
+.deleteName {
+  @apply font-semibold;
+  color: var(--text-primary);
+}
+
+/* Usage detail in drawer */
+.usageSection {
+  @apply mt-4 p-4 rounded-lg;
+  background: var(--bg-surface-secondary);
+}
+
+.usageSectionTitle {
+  @apply text-sm font-medium mb-3;
+}
+
+.usageBarLarge {
+  @apply h-4 rounded-full overflow-hidden mb-2;
+  background: var(--bg-surface);
+}
+
+.usageBarFill {
+  @apply h-full rounded-full transition-all duration-300;
+}
+
+.usageStats {
+  @apply flex justify-between text-xs;
+  color: var(--text-muted);
+}

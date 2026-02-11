@@ -2,7 +2,8 @@
 
 use acteon_audit::{AuditPage, AuditQuery, AuditRecord};
 use acteon_core::{
-    Action, ActionError, ActionMetadata, ActionOutcome, ProviderResponse, ResponseStatus,
+    Action, ActionError, ActionMetadata, ActionOutcome, OverageBehavior, ProviderResponse,
+    QuotaUsage, QuotaWindow, ResponseStatus,
 };
 
 use super::approvals::{
@@ -20,6 +21,9 @@ use super::events::{
     EventStateResponse, ListEventsResponse, TransitionRequest, TransitionResponse,
 };
 use super::groups::{FlushGroupResponse, GroupDetailResponse, GroupSummary, ListGroupsResponse};
+use super::quotas::{
+    CreateQuotaRequest, ListQuotasResponse, QuotaResponse, QuotaUsageResponse, UpdateQuotaRequest,
+};
 use super::recurring::{
     CreateRecurringRequest, CreateRecurringResponse, ListRecurringResponse,
     RecurringDetailResponse, RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
@@ -50,7 +54,8 @@ use super::schemas::{
         (name = "Chains", description = "Task chain orchestration"),
         (name = "Embeddings", description = "Embedding similarity testing"),
         (name = "Circuit Breakers", description = "Circuit breaker admin operations"),
-        (name = "Recurring Actions", description = "Cron-scheduled recurring action management")
+        (name = "Recurring Actions", description = "Cron-scheduled recurring action management"),
+        (name = "Quotas", description = "Tenant quota policy management")
     ),
     paths(
         super::health::health,
@@ -90,6 +95,12 @@ use super::schemas::{
         super::recurring::delete_recurring,
         super::recurring::pause_recurring,
         super::recurring::resume_recurring,
+        super::quotas::create_quota,
+        super::quotas::list_quotas,
+        super::quotas::get_quota,
+        super::quotas::update_quota,
+        super::quotas::delete_quota,
+        super::quotas::get_quota_usage,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -110,6 +121,9 @@ use super::schemas::{
         CreateRecurringRequest, CreateRecurringResponse, ListRecurringResponse,
         RecurringDetailResponse, RecurringSummary, UpdateRecurringRequest,
         RecurringLifecycleRequest,
+        CreateQuotaRequest, UpdateQuotaRequest, QuotaResponse, QuotaUsageResponse,
+        ListQuotasResponse,
+        QuotaWindow, OverageBehavior, QuotaUsage,
     ))
 )]
 pub struct ApiDoc;

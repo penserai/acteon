@@ -11,6 +11,7 @@ pub mod events;
 pub mod groups;
 pub mod health;
 pub mod openapi;
+pub mod quotas;
 pub mod recurring;
 pub mod replay;
 pub mod rules;
@@ -141,6 +142,18 @@ pub fn router(state: AppState) -> Router {
             "/v1/recurring/{id}/resume",
             post(recurring::resume_recurring),
         )
+        // Quotas
+        .route(
+            "/v1/quotas",
+            get(quotas::list_quotas).post(quotas::create_quota),
+        )
+        .route(
+            "/v1/quotas/{id}",
+            get(quotas::get_quota)
+                .put(quotas::update_quota)
+                .delete(quotas::delete_quota),
+        )
+        .route("/v1/quotas/{id}/usage", get(quotas::get_quota_usage))
         // Embeddings
         .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)

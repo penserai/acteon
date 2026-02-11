@@ -47,6 +47,9 @@ pub struct ActeonConfig {
     /// OpenTelemetry distributed tracing configuration.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Quota policy configuration.
+    #[serde(default)]
+    pub quotas: QuotaConfig,
     /// Provider definitions.
     ///
     /// Each entry registers a named provider that actions can be routed to.
@@ -738,6 +741,34 @@ pub struct CircuitBreakerProviderConfig {
     pub recovery_timeout_seconds: Option<u64>,
     /// Fallback provider to route to when the circuit is open.
     pub fallback_provider: Option<String>,
+}
+
+/// Configuration for tenant quota policies.
+#[derive(Debug, Deserialize)]
+pub struct QuotaConfig {
+    /// Whether quota enforcement is enabled.
+    #[serde(default = "default_quotas_enabled")]
+    pub enabled: bool,
+    /// Default window for new quota policies (e.g., `"daily"`).
+    #[serde(default)]
+    pub default_window: Option<String>,
+    /// Default overage behavior for new quota policies (e.g., `"block"`).
+    #[serde(default)]
+    pub default_overage_behavior: Option<String>,
+}
+
+impl Default for QuotaConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_quotas_enabled(),
+            default_window: None,
+            default_overage_behavior: None,
+        }
+    }
+}
+
+fn default_quotas_enabled() -> bool {
+    true
 }
 
 /// Configuration for task chain definitions.

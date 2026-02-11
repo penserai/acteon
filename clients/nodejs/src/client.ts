@@ -69,6 +69,16 @@ import {
   parseChainDetailResponse,
   parseDlqStatsResponse,
   parseDlqDrainResponse,
+  CreateQuotaRequest,
+  createQuotaRequestToApi,
+  UpdateQuotaRequest,
+  updateQuotaRequestToApi,
+  QuotaPolicy,
+  parseQuotaPolicy,
+  ListQuotasResponse,
+  parseListQuotasResponse,
+  QuotaUsage,
+  parseQuotaUsage,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -727,6 +737,121 @@ export class ActeonClient {
       throw new HttpError(409, "Recurring action is already active");
     } else {
       throw new HttpError(response.status, "Failed to resume recurring action");
+    }
+  }
+
+  // =========================================================================
+  // Quotas
+  // =========================================================================
+
+  /**
+   * Create a quota policy.
+   */
+  async createQuota(req: CreateQuotaRequest): Promise<QuotaPolicy> {
+    const response = await this.request("POST", "/v1/quotas", {
+      body: createQuotaRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaPolicy(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List quota policies.
+   */
+  async listQuotas(namespace?: string, tenant?: string): Promise<ListQuotasResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/quotas", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListQuotasResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list quotas");
+    }
+  }
+
+  /**
+   * Get a single quota policy by ID.
+   */
+  async getQuota(quotaId: string): Promise<QuotaPolicy | null> {
+    const response = await this.request("GET", `/v1/quotas/${quotaId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaPolicy(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get quota");
+    }
+  }
+
+  /**
+   * Update a quota policy.
+   */
+  async updateQuota(quotaId: string, update: UpdateQuotaRequest): Promise<QuotaPolicy> {
+    const response = await this.request("PUT", `/v1/quotas/${quotaId}`, {
+      body: updateQuotaRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaPolicy(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Quota not found: ${quotaId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a quota policy.
+   */
+  async deleteQuota(quotaId: string, namespace: string, tenant: string): Promise<void> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("DELETE", `/v1/quotas/${quotaId}`, { params });
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Quota not found: ${quotaId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete quota");
+    }
+  }
+
+  /**
+   * Get current usage statistics for a quota policy.
+   */
+  async getQuotaUsage(quotaId: string): Promise<QuotaUsage> {
+    const response = await this.request("GET", `/v1/quotas/${quotaId}/usage`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseQuotaUsage(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Quota not found: ${quotaId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get quota usage");
     }
   }
 

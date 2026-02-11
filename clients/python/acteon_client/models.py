@@ -920,6 +920,140 @@ class UpdateRecurringAction:
 
 
 # =============================================================================
+# Quota Types
+# =============================================================================
+
+
+@dataclass
+class CreateQuotaRequest:
+    """Request to create a quota policy."""
+    namespace: str
+    tenant: str
+    max_actions: int
+    window: str
+    overage_behavior: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "max_actions": self.max_actions,
+            "window": self.window,
+            "overage_behavior": self.overage_behavior,
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateQuotaRequest:
+    """Request to update a quota policy."""
+    namespace: str
+    tenant: str
+    max_actions: Optional[int] = None
+    window: Optional[str] = None
+    overage_behavior: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+        }
+        if self.max_actions is not None:
+            result["max_actions"] = self.max_actions
+        if self.window is not None:
+            result["window"] = self.window
+        if self.overage_behavior is not None:
+            result["overage_behavior"] = self.overage_behavior
+        if self.description is not None:
+            result["description"] = self.description
+        if self.enabled is not None:
+            result["enabled"] = self.enabled
+        return result
+
+
+@dataclass
+class QuotaPolicy:
+    """A quota policy."""
+    id: str
+    namespace: str
+    tenant: str
+    max_actions: int
+    window: str
+    overage_behavior: str
+    enabled: bool
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "QuotaPolicy":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            max_actions=data["max_actions"],
+            window=data["window"],
+            overage_behavior=data["overage_behavior"],
+            enabled=data["enabled"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class ListQuotasResponse:
+    """Response from listing quota policies."""
+    quotas: list[QuotaPolicy]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListQuotasResponse":
+        return cls(
+            quotas=[QuotaPolicy.from_dict(q) for q in data["quotas"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class QuotaUsage:
+    """Current usage statistics for a quota."""
+    tenant: str
+    namespace: str
+    used: int
+    limit: int
+    remaining: int
+    window: str
+    resets_at: str
+    overage_behavior: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "QuotaUsage":
+        return cls(
+            tenant=data["tenant"],
+            namespace=data["namespace"],
+            used=data["used"],
+            limit=data["limit"],
+            remaining=data["remaining"],
+            window=data["window"],
+            resets_at=data["resets_at"],
+            overage_behavior=data["overage_behavior"],
+        )
+
+
+# =============================================================================
 # Chain Types
 # =============================================================================
 
