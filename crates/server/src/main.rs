@@ -642,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Build a summary notification action from the grouped events.
                 // Uses the first event's metadata and aggregates the payloads.
                 let payloads: Vec<_> = group.events.iter().map(|e| e.payload.clone()).collect();
-                let summary_payload = serde_json::json!({
+                let mut summary_payload = serde_json::json!({
                     "group_id": group.group_id,
                     "group_key": group.group_key,
                     "event_count": group.size(),
@@ -650,6 +650,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "labels": group.labels,
                     "flushed_at": event.flushed_at.to_rfc3339(),
                 });
+
+                // Mark as a group re-dispatch so quota enforcement is skipped.
+                if let Some(obj) = summary_payload.as_object_mut() {
+                    obj.insert("_group_dispatch".to_string(), serde_json::Value::Bool(true));
+                }
 
                 // Extract namespace/tenant from labels or use defaults.
                 let namespace = group

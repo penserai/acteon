@@ -126,6 +126,13 @@ pub struct ApprovalStatus {
     pub message: Option<String>,
 }
 
+/// Internal wrapper for quota policies cached in memory.
+#[derive(Debug, Clone)]
+pub(crate) struct CachedPolicy {
+    pub(crate) policy: acteon_core::QuotaPolicy,
+    pub(crate) cached_at: chrono::DateTime<Utc>,
+}
+
 /// The central gateway that orchestrates the action dispatch pipeline.
 ///
 /// The dispatch pipeline for each action:
@@ -171,7 +178,7 @@ pub struct Gateway {
     /// Wrapped in a `RwLock` so that [`check_quota`](Self::check_quota) can
     /// lazily cache policies discovered from the state store (hot-reload
     /// visibility across distributed instances).
-    pub(crate) quota_policies: parking_lot::RwLock<HashMap<String, acteon_core::QuotaPolicy>>,
+    pub(crate) quota_policies: parking_lot::RwLock<HashMap<String, CachedPolicy>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -649,13 +656,21 @@ impl Gateway {
 
     /// Return a snapshot of the current in-memory quota policies.
     pub fn quota_policies(&self) -> HashMap<String, acteon_core::QuotaPolicy> {
-        self.quota_policies.read().clone()
+        self.quota_policies
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.policy.clone()))
+            .collect()
     }
 
     /// Add or replace a quota policy. Keyed by `"namespace:tenant"`.
     pub fn set_quota_policy(&self, policy: acteon_core::QuotaPolicy) {
         let key = format!("{}:{}", policy.namespace, policy.tenant);
-        self.quota_policies.write().insert(key, policy);
+        let cached = CachedPolicy {
+            policy,
+            cached_at: Utc::now(),
+        };
+        self.quota_policies.write().insert(key, cached);
     }
 
     /// Remove a quota policy by its lookup key (`"namespace:tenant"`).
@@ -665,7 +680,7 @@ impl Gateway {
         tenant: &str,
     ) -> Option<acteon_core::QuotaPolicy> {
         let key = format!("{namespace}:{tenant}");
-        self.quota_policies.write().remove(&key)
+        self.quota_policies.write().remove(&key).map(|c| c.policy)
     }
 
     /// Check whether the action's tenant has exceeded their quota.
@@ -680,9 +695,9 @@ impl Gateway {
     /// should be blocked or degraded.
     #[instrument(name = "gateway.check_quota", skip_all)]
     async fn check_quota(&self, action: &Action) -> Result<Option<ActionOutcome>, GatewayError> {
-        // Skip quota for internal re-dispatches (scheduled, recurring) to
-        // avoid double-counting against the tenant's limit.  The action was
-        // already counted when it first entered the gateway.
+        // Skip quota for internal re-dispatches (scheduled, recurring, groups)
+        // to avoid double-counting. The action was already counted when it
+        // first entered the gateway.
         if action
             .payload
             .get("_scheduled_dispatch")
@@ -693,32 +708,54 @@ impl Gateway {
                 .get("_recurring_dispatch")
                 .and_then(serde_json::Value::as_bool)
                 == Some(true)
+            || action
+                .payload
+                .get("_group_dispatch")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
         {
             return Ok(None);
         }
 
         let policy_key = format!("{}:{}", action.namespace, action.tenant);
+        let now = Utc::now();
 
-        // Fast path: check in-memory cache.
-        let policy = {
+        // 1. Check in-memory cache with a 60-second TTL to ensure we eventually
+        //    see updates made on other instances.
+        let cached = {
             let map = self.quota_policies.read();
             map.get(&policy_key).cloned()
         };
 
-        // Slow path: if no in-memory policy, check the state store so that
-        // policies created on other instances are still enforced.
-        let policy = if let Some(p) = policy {
-            p
+        const CACHE_TTL_SECS: i64 = 60;
+
+        let policy = if let Some(c) = cached
+            && (now - c.cached_at).num_seconds() < CACHE_TTL_SECS
+        {
+            c.policy
         } else {
-            let found = self
+            // Cold path: fetch from state store. We fail-open if the store
+            // is down to protect system availability.
+            let found = match self
                 .load_quota_from_state_store(&action.namespace, &action.tenant)
-                .await?;
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(error = %e, "quota policy lookup failed (fail-open)");
+                    return Ok(None);
+                }
+            };
+
             match found {
                 Some(p) => {
-                    // Cache for subsequent dispatches.
+                    let cached = CachedPolicy {
+                        policy: p.clone(),
+                        cached_at: now,
+                    };
                     self.quota_policies
                         .write()
-                        .insert(policy_key.clone(), p.clone());
+                        .insert(policy_key.clone(), cached);
                     p
                 }
                 None => return Ok(None),
@@ -729,7 +766,6 @@ impl Gateway {
             return Ok(None);
         }
 
-        let now = Utc::now();
         let counter_id =
             acteon_core::quota_counter_key(&action.namespace, &action.tenant, &policy.window, &now);
         let counter_key = acteon_state::StateKey::new(
@@ -743,10 +779,14 @@ impl Gateway {
             policy.window.duration_seconds(),
         ));
 
-        // Atomically increment and get the new count.  This avoids the
-        // read-then-write race that would let concurrent actions for the
-        // same tenant slip past the limit.
-        let new_count = self.state.increment(&counter_key, 1, window_ttl).await?;
+        // 2. Increment usage counter. Fail-open on state store errors.
+        let new_count = match self.state.increment(&counter_key, 1, window_ttl).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "quota increment failed (fail-open)");
+                return Ok(None);
+            }
+        };
 
         #[allow(clippy::cast_sign_loss)]
         let used = new_count as u64;
@@ -755,7 +795,7 @@ impl Gateway {
             return Ok(None);
         }
 
-        // Quota exceeded — apply the configured overage behavior.
+        // Quota exceeded — apply behavior.
         self.apply_overage_behavior(action, &policy, used, &counter_key, window_ttl)
             .await
     }
@@ -1885,7 +1925,7 @@ impl Gateway {
         );
 
         // Build and execute the synthetic action.
-        let step_action = Action::new(
+        let mut step_action = Action::new(
             namespace,
             tenant,
             step_config.provider.as_str(),
@@ -1983,48 +2023,67 @@ impl Gateway {
         }
 
         // Enforce tenant quota for each chain step so chains cannot bypass
-        // limits.  If the overage behavior is Block, fail the step (and the
-        // chain).  Warn / Notify / Degrade are recorded but the step still
-        // executes — rerouting mid-chain is not supported.
-        if let Some(quota_outcome) = self.check_quota(&step_action).await?
-            && matches!(quota_outcome, ActionOutcome::QuotaExceeded { ref overage_behavior, .. } if overage_behavior == "block")
-        {
-            let now = Utc::now();
-            chain_state.step_results[step_idx] = Some(StepResult {
-                step_name: step_config.name.clone(),
-                success: false,
-                response_body: None,
-                error: Some("quota exceeded — chain step blocked".to_string()),
-                completed_at: now,
-            });
-            chain_state.status = ChainStatus::Failed;
-            chain_state.updated_at = now;
-            self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
-                .await?;
-            self.cleanup_pending_chain(namespace, tenant, chain_id)
-                .await?;
-            self.metrics.increment_chains_failed();
-            if let Some(ref sr) = chain_state.step_results[step_idx] {
-                self.emit_chain_step_audit(
-                    &chain_state,
-                    step_config,
-                    step_idx,
-                    "chain_step_quota_exceeded",
-                    sr,
-                    Duration::ZERO,
-                    None,
-                );
+        // limits.
+        if let Some(quota_outcome) = self.check_quota(&step_action).await? {
+            match quota_outcome {
+                ActionOutcome::QuotaExceeded {
+                    ref overage_behavior,
+                    ..
+                } if overage_behavior == "block" => {
+                    let now = Utc::now();
+                    chain_state.step_results[step_idx] = Some(StepResult {
+                        step_name: step_config.name.clone(),
+                        success: false,
+                        response_body: None,
+                        error: Some("quota exceeded — chain step blocked".to_string()),
+                        completed_at: now,
+                    });
+                    chain_state.status = ChainStatus::Failed;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                        .await?;
+                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                        .await?;
+                    self.metrics.increment_chains_failed();
+                    if let Some(ref sr) = chain_state.step_results[step_idx] {
+                        self.emit_chain_step_audit(
+                            &chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_quota_exceeded",
+                            sr,
+                            Duration::ZERO,
+                            None,
+                        );
+                    }
+                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                    let _ = self.state.delete(&step_dedup_key).await;
+                    guard
+                        .release()
+                        .await
+                        .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                    return Ok(());
+                }
+                ActionOutcome::QuotaExceeded {
+                    ref overage_behavior,
+                    ..
+                } if overage_behavior.starts_with("degrade:") => {
+                    if let Some(fallback) = overage_behavior.strip_prefix("degrade:") {
+                        info!(
+                            chain_id = %chain_id,
+                            step = %step_config.name,
+                            fallback = %fallback,
+                            "quota exceeded — degrading chain step to fallback provider"
+                        );
+                        step_action.provider = fallback.into();
+                    }
+                }
+                _ => {
+                    // Warn / Notify are already recorded by check_quota;
+                    // proceed with execution on original provider.
+                }
             }
-            self.emit_chain_terminal_audit(&chain_state, "chain_failed");
-            let _ = self.state.delete(&step_dedup_key).await;
-            guard
-                .release()
-                .await
-                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-            return Ok(());
         }
-        // Non-blocking overage (Warn / Notify / Degrade) — metrics are
-        // already recorded by check_quota; proceed with execution.
 
         let step_payload = step_action.payload.clone();
         let step_start = std::time::Instant::now();
