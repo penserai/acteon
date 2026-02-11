@@ -87,6 +87,10 @@ class ActionOutcome:
     verdict_details: Optional[dict[str, Any]] = None
     action_id: Optional[str] = None
     scheduled_for: Optional[str] = None
+    tenant: Optional[str] = None
+    limit: Optional[int] = None
+    used: Optional[int] = None
+    overage_behavior: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionOutcome":
@@ -141,6 +145,15 @@ class ActionOutcome:
                 action_id=scheduled.get("action_id"),
                 scheduled_for=scheduled.get("scheduled_for"),
             )
+        elif "QuotaExceeded" in data:
+            quota = data["QuotaExceeded"]
+            return cls(
+                outcome_type="quota_exceeded",
+                tenant=quota.get("tenant"),
+                limit=quota.get("limit"),
+                used=quota.get("used"),
+                overage_behavior=quota.get("overage_behavior"),
+            )
         else:
             return cls(outcome_type="unknown")
 
@@ -167,6 +180,9 @@ class ActionOutcome:
 
     def is_scheduled(self) -> bool:
         return self.outcome_type == "scheduled"
+
+    def is_quota_exceeded(self) -> bool:
+        return self.outcome_type == "quota_exceeded"
 
 
 @dataclass

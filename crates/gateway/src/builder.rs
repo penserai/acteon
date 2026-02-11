@@ -504,6 +504,20 @@ impl GatewayBuilder {
             Arc::clone(&lock),
         )?;
 
+        // Validate quota policies.
+        for (key, policy) in &self.quota_policies {
+            if policy.max_actions == 0 {
+                return Err(GatewayError::Configuration(format!(
+                    "quota policy '{key}' has max_actions = 0"
+                )));
+            }
+            if policy.window.duration_seconds() == 0 {
+                return Err(GatewayError::Configuration(format!(
+                    "quota policy '{key}' has a zero-duration window"
+                )));
+            }
+        }
+
         // Pre-compute step-name → index maps for each chain config so we
         // don't rebuild them on every step completion during chain advancement.
         let chain_step_indices: HashMap<String, HashMap<String, usize>> = self
@@ -722,6 +736,67 @@ mod tests {
         assert!(
             result.unwrap_err().to_string().contains("cycle"),
             "should detect A→B→C→A cycle"
+        );
+    }
+
+    #[test]
+    fn build_rejects_quota_policy_zero_max_actions() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let policy = acteon_core::QuotaPolicy {
+            id: "q-bad".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            max_actions: 0,
+            window: acteon_core::quota::QuotaWindow::Daily,
+            overage_behavior: acteon_core::quota::OverageBehavior::Block,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .quota_policy(policy)
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("max_actions = 0"),
+            "should reject quota with zero max_actions"
+        );
+    }
+
+    #[test]
+    fn build_rejects_quota_policy_zero_window() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let policy = acteon_core::QuotaPolicy {
+            id: "q-bad2".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            max_actions: 100,
+            window: acteon_core::quota::QuotaWindow::Custom { seconds: 0 },
+            overage_behavior: acteon_core::quota::OverageBehavior::Block,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .quota_policy(policy)
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("zero-duration window"),
+            "should reject quota with zero-duration window"
         );
     }
 

@@ -104,7 +104,8 @@ export type ActionOutcome =
   | { type: "throttled"; retryAfterSecs: number }
   | { type: "failed"; error: ActionError }
   | { type: "dry_run"; verdict: string; matchedRule?: string; wouldBeProvider: string }
-  | { type: "scheduled"; actionId: string; scheduledFor: string };
+  | { type: "scheduled"; actionId: string; scheduledFor: string }
+  | { type: "quota_exceeded"; tenant: string; limit: number; used: number; overageBehavior: string };
 
 /**
  * Error details when an action fails.
@@ -203,6 +204,17 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
       type: "scheduled",
       actionId: (scheduled.action_id as string) ?? "",
       scheduledFor: (scheduled.scheduled_for as string) ?? "",
+    };
+  }
+
+  if ("QuotaExceeded" in obj) {
+    const quota = obj.QuotaExceeded as Record<string, unknown>;
+    return {
+      type: "quota_exceeded",
+      tenant: (quota.tenant as string) ?? "",
+      limit: (quota.limit as number) ?? 0,
+      used: (quota.used as number) ?? 0,
+      overageBehavior: (quota.overage_behavior as string) ?? "",
     };
   }
 

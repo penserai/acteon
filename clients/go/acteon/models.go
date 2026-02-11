@@ -72,20 +72,25 @@ type ActionOutcome struct {
 	WouldBeProvider  string            // For DryRun
 	ActionID         string            // For Scheduled
 	ScheduledFor     string            // For Scheduled
+	Tenant           string            // For QuotaExceeded
+	Limit            int64             // For QuotaExceeded
+	Used             int64             // For QuotaExceeded
+	OverageBehavior  string            // For QuotaExceeded
 }
 
 // OutcomeType represents the type of action outcome.
 type OutcomeType string
 
 const (
-	OutcomeExecuted     OutcomeType = "executed"
-	OutcomeDeduplicated OutcomeType = "deduplicated"
-	OutcomeSuppressed   OutcomeType = "suppressed"
-	OutcomeRerouted     OutcomeType = "rerouted"
-	OutcomeThrottled    OutcomeType = "throttled"
-	OutcomeFailed       OutcomeType = "failed"
-	OutcomeDryRun       OutcomeType = "dry_run"
-	OutcomeScheduled    OutcomeType = "scheduled"
+	OutcomeExecuted      OutcomeType = "executed"
+	OutcomeDeduplicated  OutcomeType = "deduplicated"
+	OutcomeSuppressed    OutcomeType = "suppressed"
+	OutcomeRerouted      OutcomeType = "rerouted"
+	OutcomeThrottled     OutcomeType = "throttled"
+	OutcomeFailed        OutcomeType = "failed"
+	OutcomeDryRun        OutcomeType = "dry_run"
+	OutcomeScheduled     OutcomeType = "scheduled"
+	OutcomeQuotaExceeded OutcomeType = "quota_exceeded"
 )
 
 // ActionError represents error details when an action fails.
@@ -208,6 +213,24 @@ func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	if quotaExceeded, ok := raw["QuotaExceeded"]; ok {
+		o.Type = OutcomeQuotaExceeded
+		var q struct {
+			Tenant          string `json:"tenant"`
+			Limit           int64  `json:"limit"`
+			Used            int64  `json:"used"`
+			OverageBehavior string `json:"overage_behavior"`
+		}
+		if err := json.Unmarshal(quotaExceeded, &q); err != nil {
+			return err
+		}
+		o.Tenant = q.Tenant
+		o.Limit = q.Limit
+		o.Used = q.Used
+		o.OverageBehavior = q.OverageBehavior
+		return nil
+	}
+
 	o.Type = OutcomeFailed
 	o.Error = &ActionError{Code: "UNKNOWN", Message: "Unknown outcome"}
 	return nil
@@ -236,6 +259,9 @@ func (o *ActionOutcome) IsDryRun() bool { return o.Type == OutcomeDryRun }
 
 // IsScheduled returns true if the outcome is Scheduled.
 func (o *ActionOutcome) IsScheduled() bool { return o.Type == OutcomeScheduled }
+
+// IsQuotaExceeded returns true if the outcome is QuotaExceeded.
+func (o *ActionOutcome) IsQuotaExceeded() bool { return o.Type == OutcomeQuotaExceeded }
 
 // ErrorResponse represents an error response from the API.
 type ErrorResponse struct {
