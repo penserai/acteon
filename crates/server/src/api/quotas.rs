@@ -201,6 +201,15 @@ fn quota_state_key(id: &str) -> StateKey {
     StateKey::new(QUOTA_STORE_NS, QUOTA_STORE_TENANT, KeyKind::Quota, id)
 }
 
+/// Build a [`StateKey`] for the `namespace:tenant` → policy-ID index.
+///
+/// This secondary index enables O(1) lookups by namespace+tenant in both
+/// the API (for duplicate detection) and the gateway cold path.
+fn quota_index_key(namespace: &str, tenant: &str) -> StateKey {
+    let suffix = format!("idx:{namespace}:{tenant}");
+    StateKey::new(QUOTA_STORE_NS, QUOTA_STORE_TENANT, KeyKind::Quota, &suffix)
+}
+
 /// Load a [`QuotaPolicy`] from the state store by ID via direct key lookup.
 async fn load_quota(
     state_store: &dyn acteon_state::StateStore,
@@ -273,6 +282,7 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
     responses(
         (status = 201, description = "Quota policy created", body = QuotaResponse),
         (status = 400, description = "Validation error", body = ErrorResponse),
+        (status = 409, description = "A quota policy already exists for this namespace:tenant", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
     )
 )]
@@ -285,6 +295,27 @@ pub async fn create_quota(
         Ok(w) => w,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
     };
+
+    let gw = state.gateway.read().await;
+    let state_store = gw.state_store();
+
+    // Check for duplicate: only one quota policy per namespace:tenant.
+    let idx_key = quota_index_key(&req.namespace, &req.tenant);
+    match state_store.get(&idx_key).await {
+        Ok(Some(_)) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                &format!(
+                    "a quota policy already exists for namespace={} tenant={}",
+                    req.namespace, req.tenant
+                ),
+            );
+        }
+        Err(e) => {
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+        }
+        Ok(None) => {} // No existing policy — proceed.
+    }
 
     let now = Utc::now();
     let id = uuid::Uuid::new_v4().to_string();
@@ -303,9 +334,7 @@ pub async fn create_quota(
         labels: req.labels,
     };
 
-    // Persist to state store.
-    let gw = state.gateway.read().await;
-    let state_store = gw.state_store();
+    // Persist policy to state store.
     let key = quota_state_key(&id);
     let data = match serde_json::to_string(&policy) {
         Ok(d) => d,
@@ -317,6 +346,11 @@ pub async fn create_quota(
         }
     };
     if let Err(e) = state_store.set(&key, &data, None).await {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+    }
+
+    // Write the namespace:tenant → policy-ID index key.
+    if let Err(e) = state_store.set(&idx_key, &id, None).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
     drop(gw);
@@ -555,6 +589,10 @@ pub async fn delete_quota(
     if let Err(e) = state_store.delete(&key).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
+
+    // Remove the namespace:tenant → policy-ID index key.
+    let idx_key = quota_index_key(&policy.namespace, &policy.tenant);
+    let _ = state_store.delete(&idx_key).await;
     drop(gw);
 
     // Remove from gateway (uses interior mutability via RwLock).

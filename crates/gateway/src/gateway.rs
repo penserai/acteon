@@ -832,25 +832,41 @@ impl Gateway {
     /// This is the cold-path fallback used by [`check_quota`](Self::check_quota)
     /// when no in-memory policy is found, enabling cross-instance visibility
     /// without requiring a restart.
+    ///
+    /// Uses a two-step O(1) lookup via the `idx:{namespace}:{tenant}` index
+    /// key written by the API layer, avoiding a full `scan_keys_by_kind`.
     async fn load_quota_from_state_store(
         &self,
         namespace: &str,
         tenant: &str,
     ) -> Result<Option<acteon_core::QuotaPolicy>, GatewayError> {
-        let results = self
-            .state
-            .scan_keys_by_kind(acteon_state::KeyKind::Quota)
-            .await?;
+        // Step 1: look up the index key to get the policy ID.
+        let idx_suffix = format!("idx:{namespace}:{tenant}");
+        let idx_key = acteon_state::StateKey::new(
+            "_system",
+            "_quotas",
+            acteon_state::KeyKind::Quota,
+            &idx_suffix,
+        );
+        let Some(policy_id) = self.state.get(&idx_key).await? else {
+            return Ok(None);
+        };
 
-        for (_key, value) in results {
-            if let Ok(policy) = serde_json::from_str::<acteon_core::QuotaPolicy>(&value)
-                && policy.namespace == namespace
-                && policy.tenant == tenant
-            {
-                return Ok(Some(policy));
+        // Step 2: look up the policy by ID.
+        let policy_key = acteon_state::StateKey::new(
+            "_system",
+            "_quotas",
+            acteon_state::KeyKind::Quota,
+            &policy_id,
+        );
+        match self.state.get(&policy_key).await? {
+            Some(data) => {
+                let policy = serde_json::from_str::<acteon_core::QuotaPolicy>(&data)
+                    .map_err(|e| GatewayError::Configuration(e.to_string()))?;
+                Ok(Some(policy))
             }
+            None => Ok(None),
         }
-        Ok(None)
     }
 
     /// Load rules from a directory using the given frontends, replacing current rules.
