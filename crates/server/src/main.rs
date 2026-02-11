@@ -999,12 +999,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 // Construct a concrete Action from the template.
+                let mut payload = recurring.action_template.payload.clone();
+                // Mark as a recurring re-dispatch so quota enforcement
+                // does not double-count the action.
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert(
+                        "_recurring_dispatch".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
                 let action = acteon_core::Action::new(
                     event.namespace.as_str(),
                     event.tenant.as_str(),
                     recurring.action_template.provider.as_str(),
                     recurring.action_template.action_type.as_str(),
-                    recurring.action_template.payload.clone(),
+                    payload,
                 );
 
                 // Dispatch through the gateway.

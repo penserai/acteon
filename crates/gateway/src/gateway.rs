@@ -680,6 +680,23 @@ impl Gateway {
     /// should be blocked or degraded.
     #[instrument(name = "gateway.check_quota", skip_all)]
     async fn check_quota(&self, action: &Action) -> Result<Option<ActionOutcome>, GatewayError> {
+        // Skip quota for internal re-dispatches (scheduled, recurring) to
+        // avoid double-counting against the tenant's limit.  The action was
+        // already counted when it first entered the gateway.
+        if action
+            .payload
+            .get("_scheduled_dispatch")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            || action
+                .payload
+                .get("_recurring_dispatch")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            return Ok(None);
+        }
+
         let policy_key = format!("{}:{}", action.namespace, action.tenant);
 
         // Fast path: check in-memory cache.
@@ -739,12 +756,28 @@ impl Gateway {
         }
 
         // Quota exceeded — apply the configured overage behavior.
+        self.apply_overage_behavior(action, &policy, used, &counter_key, window_ttl)
+            .await
+    }
+
+    /// Apply the configured overage behavior when a tenant exceeds their quota.
+    ///
+    /// Separated from [`check_quota`](Self::check_quota) to keep each method
+    /// under the clippy line-count limit.
+    async fn apply_overage_behavior(
+        &self,
+        action: &Action,
+        policy: &acteon_core::QuotaPolicy,
+        used: u64,
+        counter_key: &acteon_state::StateKey,
+        window_ttl: Option<std::time::Duration>,
+    ) -> Result<Option<ActionOutcome>, GatewayError> {
         match &policy.overage_behavior {
             acteon_core::OverageBehavior::Block => {
                 self.metrics.increment_quota_exceeded();
                 // Roll back the increment so the blocked request doesn't
                 // consume a slot.
-                let _ = self.state.increment(&counter_key, -1, window_ttl).await;
+                let _ = self.state.increment(counter_key, -1, window_ttl).await;
                 info!(
                     tenant = %action.tenant,
                     limit = policy.max_actions,
