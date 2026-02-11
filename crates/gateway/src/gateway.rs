@@ -126,6 +126,13 @@ pub struct ApprovalStatus {
     pub message: Option<String>,
 }
 
+/// Internal wrapper for quota policies cached in memory.
+#[derive(Debug, Clone)]
+pub(crate) struct CachedPolicy {
+    pub(crate) policy: acteon_core::QuotaPolicy,
+    pub(crate) cached_at: chrono::DateTime<Utc>,
+}
+
 /// The central gateway that orchestrates the action dispatch pipeline.
 ///
 /// The dispatch pipeline for each action:
@@ -166,6 +173,12 @@ pub struct Gateway {
     pub(crate) circuit_breakers: Option<crate::circuit_breaker::CircuitBreakerRegistry>,
     /// Broadcast channel for real-time SSE event streaming.
     pub(crate) stream_tx: tokio::sync::broadcast::Sender<StreamEvent>,
+    /// Quota policies indexed by `"namespace:tenant"`.
+    ///
+    /// Wrapped in a `RwLock` so that [`check_quota`](Self::check_quota) can
+    /// lazily cache policies discovered from the state store (hot-reload
+    /// visibility across distributed instances).
+    pub(crate) quota_policies: parking_lot::RwLock<HashMap<String, CachedPolicy>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -254,6 +267,47 @@ impl Gateway {
 
         if !dry_run {
             info!("distributed lock acquired");
+        }
+
+        // 2b. Quota check (skip in dry-run mode).
+        if !dry_run && let Some(outcome) = self.check_quota(&action).await? {
+            let dummy_verdict = RuleVerdict::Allow(None);
+            if let Some(ref audit) = self.audit {
+                let record = build_audit_record(
+                    event_id.clone(),
+                    &action,
+                    &dummy_verdict,
+                    &outcome,
+                    dispatched_at,
+                    start.elapsed(),
+                    self.audit_ttl_seconds,
+                    self.audit_store_payload,
+                    caller,
+                );
+                let audit = Arc::clone(audit);
+                self.audit_tracker.spawn(async move {
+                    if let Err(e) = audit.record(record).await {
+                        warn!(error = %e, "audit recording failed");
+                    }
+                });
+            }
+            let stream_event = StreamEvent {
+                id: event_id,
+                timestamp: dispatched_at,
+                event_type: StreamEventType::ActionDispatched {
+                    outcome: sanitize_outcome(&outcome),
+                    provider: action.provider.to_string(),
+                },
+                namespace: action.namespace.to_string(),
+                tenant: action.tenant.to_string(),
+                action_type: Some(action.action_type.clone()),
+                action_id: Some(action.id.to_string()),
+            };
+            let _ = self.stream_tx.send(stream_event);
+            if let Some(g) = guard {
+                let _ = g.release().await;
+            }
+            return Ok(outcome);
         }
 
         // 3. Build the evaluation context and evaluate rules.
@@ -598,6 +652,261 @@ impl Gateway {
     /// Return `true` if the dead-letter queue is enabled.
     pub fn dlq_enabled(&self) -> bool {
         self.dlq.is_some()
+    }
+
+    /// Return a snapshot of the current in-memory quota policies.
+    pub fn quota_policies(&self) -> HashMap<String, acteon_core::QuotaPolicy> {
+        self.quota_policies
+            .read()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.policy.clone()))
+            .collect()
+    }
+
+    /// Add or replace a quota policy. Keyed by `"namespace:tenant"`.
+    pub fn set_quota_policy(&self, policy: acteon_core::QuotaPolicy) {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        let cached = CachedPolicy {
+            policy,
+            cached_at: Utc::now(),
+        };
+        self.quota_policies.write().insert(key, cached);
+    }
+
+    /// Remove a quota policy by its lookup key (`"namespace:tenant"`).
+    pub fn remove_quota_policy(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Option<acteon_core::QuotaPolicy> {
+        let key = format!("{namespace}:{tenant}");
+        self.quota_policies.write().remove(&key).map(|c| c.policy)
+    }
+
+    /// Check whether the action's tenant has exceeded their quota.
+    ///
+    /// Uses an atomic `increment()` to avoid read-then-write races between
+    /// concurrent actions for the same tenant.  The counter is always
+    /// incremented first; if the new value exceeds the limit the configured
+    /// [`OverageBehavior`](acteon_core::OverageBehavior) determines the outcome.
+    ///
+    /// Returns `None` when the action is within quota or no policy exists.
+    /// Returns `Some(ActionOutcome::QuotaExceeded { .. })` when the action
+    /// should be blocked or degraded.
+    #[instrument(name = "gateway.check_quota", skip_all)]
+    async fn check_quota(&self, action: &Action) -> Result<Option<ActionOutcome>, GatewayError> {
+        // Skip quota for internal re-dispatches (scheduled, recurring, groups)
+        // to avoid double-counting. The action was already counted when it
+        // first entered the gateway.
+        if action
+            .payload
+            .get("_scheduled_dispatch")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+            || action
+                .payload
+                .get("_recurring_dispatch")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            || action
+                .payload
+                .get("_group_dispatch")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+        {
+            return Ok(None);
+        }
+
+        let policy_key = format!("{}:{}", action.namespace, action.tenant);
+        let now = Utc::now();
+
+        // 1. Check in-memory cache with a 60-second TTL to ensure we eventually
+        //    see updates made on other instances.
+        let cached = {
+            let map = self.quota_policies.read();
+            map.get(&policy_key).cloned()
+        };
+
+        const CACHE_TTL_SECS: i64 = 60;
+
+        let policy = if let Some(c) = cached
+            && (now - c.cached_at).num_seconds() < CACHE_TTL_SECS
+        {
+            c.policy
+        } else {
+            // Cold path: fetch from state store. We fail-open if the store
+            // is down to protect system availability.
+            let found = match self
+                .load_quota_from_state_store(&action.namespace, &action.tenant)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!(error = %e, "quota policy lookup failed (fail-open)");
+                    return Ok(None);
+                }
+            };
+
+            match found {
+                Some(p) => {
+                    let cached = CachedPolicy {
+                        policy: p.clone(),
+                        cached_at: now,
+                    };
+                    self.quota_policies
+                        .write()
+                        .insert(policy_key.clone(), cached);
+                    p
+                }
+                None => return Ok(None),
+            }
+        };
+
+        if !policy.enabled {
+            return Ok(None);
+        }
+
+        let counter_id =
+            acteon_core::quota_counter_key(&action.namespace, &action.tenant, &policy.window, &now);
+        let counter_key = acteon_state::StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            acteon_state::KeyKind::QuotaUsage,
+            &counter_id,
+        );
+
+        let window_ttl = Some(std::time::Duration::from_secs(
+            policy.window.duration_seconds(),
+        ));
+
+        // 2. Increment usage counter. Fail-open on state store errors.
+        let new_count = match self.state.increment(&counter_key, 1, window_ttl).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "quota increment failed (fail-open)");
+                return Ok(None);
+            }
+        };
+
+        #[allow(clippy::cast_sign_loss)]
+        let used = new_count as u64;
+
+        if used <= policy.max_actions {
+            return Ok(None);
+        }
+
+        // Quota exceeded — apply behavior.
+        self.apply_overage_behavior(action, &policy, used, &counter_key, window_ttl)
+            .await
+    }
+
+    /// Apply the configured overage behavior when a tenant exceeds their quota.
+    ///
+    /// Separated from [`check_quota`](Self::check_quota) to keep each method
+    /// under the clippy line-count limit.
+    async fn apply_overage_behavior(
+        &self,
+        action: &Action,
+        policy: &acteon_core::QuotaPolicy,
+        used: u64,
+        counter_key: &acteon_state::StateKey,
+        window_ttl: Option<std::time::Duration>,
+    ) -> Result<Option<ActionOutcome>, GatewayError> {
+        match &policy.overage_behavior {
+            acteon_core::OverageBehavior::Block => {
+                self.metrics.increment_quota_exceeded();
+                // Roll back the increment so the blocked request doesn't
+                // consume a slot.
+                let _ = self.state.increment(counter_key, -1, window_ttl).await;
+                info!(
+                    tenant = %action.tenant,
+                    limit = policy.max_actions,
+                    used,
+                    "quota exceeded — blocking action"
+                );
+                Ok(Some(ActionOutcome::QuotaExceeded {
+                    tenant: action.tenant.to_string(),
+                    limit: policy.max_actions,
+                    used,
+                    overage_behavior: "block".into(),
+                }))
+            }
+            acteon_core::OverageBehavior::Warn => {
+                self.metrics.increment_quota_warned();
+                warn!(
+                    tenant = %action.tenant,
+                    limit = policy.max_actions,
+                    used,
+                    "quota exceeded — warning, allowing action"
+                );
+                Ok(None)
+            }
+            acteon_core::OverageBehavior::Degrade { fallback_provider } => {
+                self.metrics.increment_quota_degraded();
+                info!(
+                    tenant = %action.tenant,
+                    fallback = %fallback_provider,
+                    "quota exceeded — degrading to fallback provider"
+                );
+                Ok(Some(ActionOutcome::QuotaExceeded {
+                    tenant: action.tenant.to_string(),
+                    limit: policy.max_actions,
+                    used,
+                    overage_behavior: format!("degrade:{fallback_provider}"),
+                }))
+            }
+            acteon_core::OverageBehavior::Notify { target } => {
+                self.metrics.increment_quota_notified();
+                warn!(
+                    tenant = %action.tenant,
+                    target = %target,
+                    "quota exceeded — notifying admin, allowing action"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Try to load a quota policy for `namespace:tenant` from the state store.
+    ///
+    /// This is the cold-path fallback used by [`check_quota`](Self::check_quota)
+    /// when no in-memory policy is found, enabling cross-instance visibility
+    /// without requiring a restart.
+    ///
+    /// Uses a two-step O(1) lookup via the `idx:{namespace}:{tenant}` index
+    /// key written by the API layer, avoiding a full `scan_keys_by_kind`.
+    async fn load_quota_from_state_store(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<Option<acteon_core::QuotaPolicy>, GatewayError> {
+        // Step 1: look up the index key to get the policy ID.
+        let idx_suffix = format!("idx:{namespace}:{tenant}");
+        let idx_key = acteon_state::StateKey::new(
+            "_system",
+            "_quotas",
+            acteon_state::KeyKind::Quota,
+            &idx_suffix,
+        );
+        let Some(policy_id) = self.state.get(&idx_key).await? else {
+            return Ok(None);
+        };
+
+        // Step 2: look up the policy by ID.
+        let policy_key = acteon_state::StateKey::new(
+            "_system",
+            "_quotas",
+            acteon_state::KeyKind::Quota,
+            &policy_id,
+        );
+        match self.state.get(&policy_key).await? {
+            Some(data) => {
+                let policy = serde_json::from_str::<acteon_core::QuotaPolicy>(&data)
+                    .map_err(|e| GatewayError::Configuration(e.to_string()))?;
+                Ok(Some(policy))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Load rules from a directory using the given frontends, replacing current rules.
@@ -1616,7 +1925,7 @@ impl Gateway {
         );
 
         // Build and execute the synthetic action.
-        let step_action = Action::new(
+        let mut step_action = Action::new(
             namespace,
             tenant,
             step_config.provider.as_str(),
@@ -1711,6 +2020,69 @@ impl Gateway {
                 .await
                 .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
             return Ok(());
+        }
+
+        // Enforce tenant quota for each chain step so chains cannot bypass
+        // limits.
+        if let Some(quota_outcome) = self.check_quota(&step_action).await? {
+            match quota_outcome {
+                ActionOutcome::QuotaExceeded {
+                    ref overage_behavior,
+                    ..
+                } if overage_behavior == "block" => {
+                    let now = Utc::now();
+                    chain_state.step_results[step_idx] = Some(StepResult {
+                        step_name: step_config.name.clone(),
+                        success: false,
+                        response_body: None,
+                        error: Some("quota exceeded — chain step blocked".to_string()),
+                        completed_at: now,
+                    });
+                    chain_state.status = ChainStatus::Failed;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                        .await?;
+                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                        .await?;
+                    self.metrics.increment_chains_failed();
+                    if let Some(ref sr) = chain_state.step_results[step_idx] {
+                        self.emit_chain_step_audit(
+                            &chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_quota_exceeded",
+                            sr,
+                            Duration::ZERO,
+                            None,
+                        );
+                    }
+                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                    let _ = self.state.delete(&step_dedup_key).await;
+                    guard
+                        .release()
+                        .await
+                        .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                    return Ok(());
+                }
+                ActionOutcome::QuotaExceeded {
+                    ref overage_behavior,
+                    ..
+                } if overage_behavior.starts_with("degrade:") => {
+                    if let Some(fallback) = overage_behavior.strip_prefix("degrade:") {
+                        info!(
+                            chain_id = %chain_id,
+                            step = %step_config.name,
+                            fallback = %fallback,
+                            "quota exceeded — degrading chain step to fallback provider"
+                        );
+                        step_action.provider = fallback.into();
+                    }
+                }
+                _ => {
+                    // Warn / Notify are already recorded by check_quota;
+                    // proceed with execution on original provider.
+                }
+            }
         }
 
         let step_payload = step_action.payload.clone();
@@ -3063,6 +3435,7 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::CircuitOpen { .. } => "circuit_open",
         ActionOutcome::Scheduled { .. } => "scheduled",
         ActionOutcome::RecurringCreated { .. } => "recurring_created",
+        ActionOutcome::QuotaExceeded { .. } => "quota_exceeded",
     }
 }
 
@@ -3209,6 +3582,17 @@ fn build_audit_record(
             "recurring_id": recurring_id,
             "cron_expr": cron_expr,
             "next_execution_at": next_execution_at.map(|t| t.to_rfc3339()),
+        }),
+        ActionOutcome::QuotaExceeded {
+            tenant,
+            limit,
+            used,
+            overage_behavior,
+        } => serde_json::json!({
+            "tenant": tenant,
+            "limit": limit,
+            "used": used,
+            "overage_behavior": overage_behavior,
         }),
     };
 
@@ -5995,5 +6379,368 @@ mod tests {
                 "code 500 should fall through to default_next error_handler"
             );
         }
+    }
+
+    // -- Quota tests ----------------------------------------------------------
+
+    fn make_quota_policy(
+        namespace: &str,
+        tenant: &str,
+        max_actions: u64,
+        window: acteon_core::QuotaWindow,
+        overage_behavior: acteon_core::OverageBehavior,
+        enabled: bool,
+    ) -> acteon_core::QuotaPolicy {
+        acteon_core::QuotaPolicy {
+            id: uuid::Uuid::new_v4().to_string(),
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+            max_actions,
+            window,
+            overage_behavior,
+            enabled,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        }
+    }
+
+    fn build_gateway_with_quota(
+        policies: Vec<acteon_core::QuotaPolicy>,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .quota_policies(policies)
+            .build()
+            .expect("gateway should build")
+    }
+
+    #[tokio::test]
+    async fn quota_blocks_when_exceeded() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            3,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // First 3 dispatches should succeed.
+        for i in 0..3 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed within quota"
+            );
+        }
+
+        // 4th dispatch should be blocked.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::QuotaExceeded {
+                tenant,
+                limit,
+                used,
+                overage_behavior,
+            } => {
+                assert_eq!(tenant, "tenant-1");
+                assert_eq!(limit, 3);
+                assert_eq!(used, 4, "post-increment value after atomic increment");
+                assert_eq!(overage_behavior, "block");
+            }
+            other => panic!("expected QuotaExceeded, got {other:?}"),
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 3);
+        assert_eq!(snap.quota_exceeded, 1);
+    }
+
+    #[tokio::test]
+    async fn quota_warns_when_exceeded() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Warn,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Dispatch 3 actions — all should succeed because Warn doesn't block.
+        for i in 0..3 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed with Warn overage behavior"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 3);
+        assert_eq!(
+            snap.quota_warned, 1,
+            "third dispatch should trigger a quota warning"
+        );
+        assert_eq!(
+            snap.quota_exceeded, 0,
+            "Warn behavior should not increment exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_allows_when_under_limit() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            10,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Dispatch 5 actions — all well under the limit of 10.
+        for i in 0..5 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed under quota limit"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 5);
+        assert_eq!(snap.quota_exceeded, 0);
+        assert_eq!(snap.quota_warned, 0);
+    }
+
+    #[tokio::test]
+    async fn quota_ignores_disabled_policy() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            false, // disabled
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Even though max_actions=2, the disabled policy should be ignored.
+        for i in 0..5 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed with disabled quota policy"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 5);
+        assert_eq!(snap.quota_exceeded, 0);
+    }
+
+    #[tokio::test]
+    async fn quota_independent_per_tenant() {
+        let policy_a = make_quota_policy(
+            "notifications",
+            "tenant-a",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let policy_b = make_quota_policy(
+            "notifications",
+            "tenant-b",
+            3,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy_a, policy_b]);
+
+        let action_a = || {
+            Action::new(
+                "notifications",
+                "tenant-a",
+                "email",
+                "send_email",
+                serde_json::json!({"to": "a@example.com"}),
+            )
+        };
+        let action_b = || {
+            Action::new(
+                "notifications",
+                "tenant-b",
+                "email",
+                "send_email",
+                serde_json::json!({"to": "b@example.com"}),
+            )
+        };
+
+        // Tenant A: 2 succeed, 3rd blocked.
+        for _ in 0..2 {
+            let outcome = gw.dispatch(action_a(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+        let outcome_a3 = gw.dispatch(action_a(), None).await.unwrap();
+        assert!(
+            matches!(outcome_a3, ActionOutcome::QuotaExceeded { .. }),
+            "tenant-a third dispatch should be blocked"
+        );
+
+        // Tenant B should still have quota remaining — 3 succeed, 4th blocked.
+        for _ in 0..3 {
+            let outcome = gw.dispatch(action_b(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+        let outcome_b4 = gw.dispatch(action_b(), None).await.unwrap();
+        assert!(
+            matches!(outcome_b4, ActionOutcome::QuotaExceeded { .. }),
+            "tenant-b fourth dispatch should be blocked"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 5, "2 from tenant-a + 3 from tenant-b");
+        assert_eq!(snap.quota_exceeded, 2, "one block per tenant");
+    }
+
+    #[tokio::test]
+    async fn quota_degrades_when_exceeded() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Degrade {
+                fallback_provider: "sms-fallback".into(),
+            },
+            true,
+        );
+        // Need both providers registered so the gateway builds cleanly.
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .quota_policies(vec![policy])
+            .build()
+            .expect("gateway should build");
+
+        // First 2 dispatches succeed normally.
+        for i in 0..2 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed within quota"
+            );
+        }
+
+        // 3rd dispatch should return QuotaExceeded with degrade behavior.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        match outcome {
+            ActionOutcome::QuotaExceeded {
+                tenant,
+                limit,
+                used,
+                overage_behavior,
+            } => {
+                assert_eq!(tenant, "tenant-1");
+                assert_eq!(limit, 2);
+                assert_eq!(used, 3, "post-increment value after atomic increment");
+                assert_eq!(overage_behavior, "degrade:sms-fallback");
+            }
+            other => panic!("expected QuotaExceeded with degrade, got {other:?}"),
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 2);
+        assert_eq!(snap.quota_degraded, 1);
+        assert_eq!(
+            snap.quota_exceeded, 0,
+            "Degrade uses its own counter, not exceeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_passes_through_when_no_policy() {
+        // Build a gateway with no quota policies at all.
+        let gw = build_gateway_with_quota(vec![]);
+
+        // All dispatches should succeed — no quota enforcement.
+        for i in 0..10 {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should succeed with no quota policy"
+            );
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 10);
+        assert_eq!(snap.quota_exceeded, 0);
+        assert_eq!(snap.quota_warned, 0);
+        assert_eq!(snap.quota_degraded, 0);
+    }
+
+    #[tokio::test]
+    async fn dry_run_skips_quota_check() {
+        let policy = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_quota(vec![policy]);
+
+        // Use up the single allowed action.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+
+        // Normal dispatch should now be blocked.
+        let outcome = gw.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        // Dry-run should bypass quota and return DryRun verdict.
+        let outcome = gw.dispatch_dry_run(test_action(), None).await.unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::DryRun { .. }),
+            "dry-run should skip quota check and return DryRun, got {outcome:?}"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(
+            snap.quota_exceeded, 1,
+            "only the real dispatch should count"
+        );
     }
 }

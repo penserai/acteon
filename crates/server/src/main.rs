@@ -473,6 +473,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Load quota policies from state store on startup.
+    if config.quotas.enabled {
+        match store.scan_keys_by_kind(acteon_state::KeyKind::Quota).await {
+            Ok(entries) => {
+                let mut count = 0usize;
+                for (_key, value) in entries {
+                    if let Ok(policy) = serde_json::from_str::<acteon_core::QuotaPolicy>(&value) {
+                        gateway.set_quota_policy(policy);
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    info!(count, "loaded quota policies from state store");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load quota policies from state store");
+            }
+        }
+    }
+
     // Pre-warm the embedding topic cache with topics from loaded rules.
     if let Some(ref bridge) = embedding_bridge {
         let topics: Vec<&str> = gateway
@@ -621,7 +642,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Build a summary notification action from the grouped events.
                 // Uses the first event's metadata and aggregates the payloads.
                 let payloads: Vec<_> = group.events.iter().map(|e| e.payload.clone()).collect();
-                let summary_payload = serde_json::json!({
+                let mut summary_payload = serde_json::json!({
                     "group_id": group.group_id,
                     "group_key": group.group_key,
                     "event_count": group.size(),
@@ -629,6 +650,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "labels": group.labels,
                     "flushed_at": event.flushed_at.to_rfc3339(),
                 });
+
+                // Mark as a group re-dispatch so quota enforcement is skipped.
+                if let Some(obj) = summary_payload.as_object_mut() {
+                    obj.insert("_group_dispatch".to_string(), serde_json::Value::Bool(true));
+                }
 
                 // Extract namespace/tenant from labels or use defaults.
                 let namespace = group
@@ -978,12 +1004,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
 
                 // Construct a concrete Action from the template.
+                let mut payload = recurring.action_template.payload.clone();
+                // Mark as a recurring re-dispatch so quota enforcement
+                // does not double-count the action.
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert(
+                        "_recurring_dispatch".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
                 let action = acteon_core::Action::new(
                     event.namespace.as_str(),
                     event.tenant.as_str(),
                     recurring.action_template.provider.as_str(),
                     recurring.action_template.action_type.as_str(),
-                    recurring.action_template.payload.clone(),
+                    payload,
                 );
 
                 // Dispatch through the gateway.

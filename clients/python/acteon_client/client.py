@@ -35,6 +35,11 @@ from .models import (
     ListRecurringResponse,
     RecurringDetail,
     UpdateRecurringAction,
+    CreateQuotaRequest,
+    UpdateQuotaRequest,
+    QuotaPolicy,
+    ListQuotasResponse,
+    QuotaUsage,
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
@@ -903,6 +908,169 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to resume recurring action")
 
     # =========================================================================
+    # Quotas
+    # =========================================================================
+
+    def create_quota(self, req: "CreateQuotaRequest") -> "QuotaPolicy":
+        """Create a quota policy.
+
+        Args:
+            req: The quota policy definition.
+
+        Returns:
+            The created quota policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/quotas", json=req.to_dict())
+
+        if response.status_code == 201:
+            return QuotaPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_quotas(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListQuotasResponse":
+        """List quota policies.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+
+        Returns:
+            List of quota policies.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = self._request("GET", "/v1/quotas", params=params)
+
+        if response.status_code == 200:
+            return ListQuotasResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list quotas")
+
+    def get_quota(self, quota_id: str) -> Optional["QuotaPolicy"]:
+        """Get a single quota policy by ID.
+
+        Args:
+            quota_id: The quota policy ID.
+
+        Returns:
+            The quota policy, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/quotas/{quota_id}")
+
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get quota")
+
+    def update_quota(
+        self, quota_id: str, update: "UpdateQuotaRequest"
+    ) -> "QuotaPolicy":
+        """Update a quota policy.
+
+        Args:
+            quota_id: The quota policy ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated quota policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the quota is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/quotas/{quota_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_quota(
+        self, quota_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a quota policy.
+
+        Args:
+            quota_id: The quota policy ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the quota is not found (404).
+        """
+        response = self._request(
+            "DELETE",
+            f"/v1/quotas/{quota_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete quota")
+
+    def get_quota_usage(self, quota_id: str) -> "QuotaUsage":
+        """Get current usage statistics for a quota policy.
+
+        Args:
+            quota_id: The quota policy ID.
+
+        Returns:
+            The current usage statistics.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the quota is not found (404).
+        """
+        response = self._request("GET", f"/v1/quotas/{quota_id}/usage")
+
+        if response.status_code == 200:
+            return QuotaUsage.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get quota usage")
+
+    # =========================================================================
     # Chains
     # =========================================================================
 
@@ -1626,6 +1794,95 @@ class AsyncActeonClient:
             raise HttpError(409, "Recurring action is already active")
         else:
             raise HttpError(response.status_code, "Failed to resume recurring action")
+
+    # =========================================================================
+    # Quotas
+    # =========================================================================
+
+    async def create_quota(self, req: "CreateQuotaRequest") -> "QuotaPolicy":
+        """Create a quota policy."""
+        response = await self._request("POST", "/v1/quotas", json=req.to_dict())
+        if response.status_code == 201:
+            return QuotaPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_quotas(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListQuotasResponse":
+        """List quota policies."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = await self._request("GET", "/v1/quotas", params=params)
+        if response.status_code == 200:
+            return ListQuotasResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list quotas")
+
+    async def get_quota(self, quota_id: str) -> Optional["QuotaPolicy"]:
+        """Get a single quota policy by ID."""
+        response = await self._request("GET", f"/v1/quotas/{quota_id}")
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get quota")
+
+    async def update_quota(
+        self, quota_id: str, update: "UpdateQuotaRequest"
+    ) -> "QuotaPolicy":
+        """Update a quota policy."""
+        response = await self._request(
+            "PUT", f"/v1/quotas/{quota_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return QuotaPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_quota(
+        self, quota_id: str, namespace: str, tenant: str
+    ) -> None:
+        """Delete a quota policy."""
+        response = await self._request(
+            "DELETE",
+            f"/v1/quotas/{quota_id}",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete quota")
+
+    async def get_quota_usage(self, quota_id: str) -> "QuotaUsage":
+        """Get current usage statistics for a quota policy."""
+        response = await self._request("GET", f"/v1/quotas/{quota_id}/usage")
+        if response.status_code == 200:
+            return QuotaUsage.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Quota not found: {quota_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get quota usage")
 
     # =========================================================================
     # Chains

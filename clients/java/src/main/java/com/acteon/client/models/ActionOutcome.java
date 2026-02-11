@@ -21,9 +21,13 @@ public class ActionOutcome {
     private String wouldBeProvider;
     private String actionId;
     private String scheduledFor;
+    private String tenant;
+    private long quotaLimit;
+    private long quotaUsed;
+    private String overageBehavior;
 
     public enum OutcomeType {
-        EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN, SCHEDULED
+        EXECUTED, DEDUPLICATED, SUPPRESSED, REROUTED, THROTTLED, FAILED, DRY_RUN, SCHEDULED, QUOTA_EXCEEDED
     }
 
     // Getters and setters
@@ -71,6 +75,19 @@ public class ActionOutcome {
     public boolean isFailed() { return type == OutcomeType.FAILED; }
     public boolean isDryRun() { return type == OutcomeType.DRY_RUN; }
     public boolean isScheduled() { return type == OutcomeType.SCHEDULED; }
+    public boolean isQuotaExceeded() { return type == OutcomeType.QUOTA_EXCEEDED; }
+
+    public String getTenant() { return tenant; }
+    public void setTenant(String tenant) { this.tenant = tenant; }
+
+    public long getQuotaLimit() { return quotaLimit; }
+    public void setQuotaLimit(long quotaLimit) { this.quotaLimit = quotaLimit; }
+
+    public long getQuotaUsed() { return quotaUsed; }
+    public void setQuotaUsed(long quotaUsed) { this.quotaUsed = quotaUsed; }
+
+    public String getOverageBehavior() { return overageBehavior; }
+    public void setOverageBehavior(String overageBehavior) { this.overageBehavior = overageBehavior; }
 
     /**
      * Parse an ActionOutcome from a raw JSON string.
@@ -147,6 +164,13 @@ public class ActionOutcome {
             Map<String, Object> scheduled = (Map<String, Object>) data.get("Scheduled");
             outcome.actionId = (String) scheduled.get("action_id");
             outcome.scheduledFor = (String) scheduled.get("scheduled_for");
+        } else if (data.containsKey("QuotaExceeded")) {
+            outcome.type = OutcomeType.QUOTA_EXCEEDED;
+            Map<String, Object> quota = (Map<String, Object>) data.get("QuotaExceeded");
+            outcome.tenant = (String) quota.get("tenant");
+            outcome.quotaLimit = ((Number) quota.getOrDefault("limit", 0)).longValue();
+            outcome.quotaUsed = ((Number) quota.getOrDefault("used", 0)).longValue();
+            outcome.overageBehavior = (String) quota.get("overage_behavior");
         } else {
             outcome.type = OutcomeType.FAILED;
             outcome.error = new ActionError("UNKNOWN", "Unknown outcome", false, 0);

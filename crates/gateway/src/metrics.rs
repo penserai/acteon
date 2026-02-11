@@ -50,6 +50,14 @@ pub struct GatewayMetrics {
     pub recurring_errors: AtomicU64,
     /// Recurring actions skipped (disabled, expired, etc.).
     pub recurring_skipped: AtomicU64,
+    /// Actions blocked by tenant quota.
+    pub quota_exceeded: AtomicU64,
+    /// Actions that passed with a quota warning.
+    pub quota_warned: AtomicU64,
+    /// Actions degraded to a fallback provider due to quota.
+    pub quota_degraded: AtomicU64,
+    /// Actions that triggered a quota notification.
+    pub quota_notified: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -163,6 +171,26 @@ impl GatewayMetrics {
         self.recurring_skipped.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the quota exceeded (blocked) counter.
+    pub fn increment_quota_exceeded(&self) {
+        self.quota_exceeded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the quota warned counter.
+    pub fn increment_quota_warned(&self) {
+        self.quota_warned.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the quota degraded counter.
+    pub fn increment_quota_degraded(&self) {
+        self.quota_degraded.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the quota notified counter.
+    pub fn increment_quota_notified(&self) {
+        self.quota_notified.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -188,6 +216,10 @@ impl GatewayMetrics {
             recurring_dispatched: self.recurring_dispatched.load(Ordering::Relaxed),
             recurring_errors: self.recurring_errors.load(Ordering::Relaxed),
             recurring_skipped: self.recurring_skipped.load(Ordering::Relaxed),
+            quota_exceeded: self.quota_exceeded.load(Ordering::Relaxed),
+            quota_warned: self.quota_warned.load(Ordering::Relaxed),
+            quota_degraded: self.quota_degraded.load(Ordering::Relaxed),
+            quota_notified: self.quota_notified.load(Ordering::Relaxed),
         }
     }
 }
@@ -239,6 +271,14 @@ pub struct MetricsSnapshot {
     pub recurring_errors: u64,
     /// Recurring actions skipped (disabled, expired, etc.).
     pub recurring_skipped: u64,
+    /// Actions blocked by tenant quota.
+    pub quota_exceeded: u64,
+    /// Actions that passed with a quota warning.
+    pub quota_warned: u64,
+    /// Actions degraded to a fallback provider due to quota.
+    pub quota_degraded: u64,
+    /// Actions that triggered a quota notification.
+    pub quota_notified: u64,
 }
 
 #[cfg(test)]
@@ -271,6 +311,10 @@ mod tests {
         assert_eq!(snap.recurring_dispatched, 0);
         assert_eq!(snap.recurring_errors, 0);
         assert_eq!(snap.recurring_skipped, 0);
+        assert_eq!(snap.quota_exceeded, 0);
+        assert_eq!(snap.quota_warned, 0);
+        assert_eq!(snap.quota_degraded, 0);
+        assert_eq!(snap.quota_notified, 0);
     }
 
     #[test]
@@ -299,6 +343,10 @@ mod tests {
         m.increment_recurring_dispatched();
         m.increment_recurring_errors();
         m.increment_recurring_skipped();
+        m.increment_quota_exceeded();
+        m.increment_quota_warned();
+        m.increment_quota_degraded();
+        m.increment_quota_notified();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -323,5 +371,9 @@ mod tests {
         assert_eq!(snap.recurring_dispatched, 1);
         assert_eq!(snap.recurring_errors, 1);
         assert_eq!(snap.recurring_skipped, 1);
+        assert_eq!(snap.quota_exceeded, 1);
+        assert_eq!(snap.quota_warned, 1);
+        assert_eq!(snap.quota_degraded, 1);
+        assert_eq!(snap.quota_notified, 1);
     }
 }

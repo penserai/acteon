@@ -104,7 +104,8 @@ export type ActionOutcome =
   | { type: "throttled"; retryAfterSecs: number }
   | { type: "failed"; error: ActionError }
   | { type: "dry_run"; verdict: string; matchedRule?: string; wouldBeProvider: string }
-  | { type: "scheduled"; actionId: string; scheduledFor: string };
+  | { type: "scheduled"; actionId: string; scheduledFor: string }
+  | { type: "quota_exceeded"; tenant: string; limit: number; used: number; overageBehavior: string };
 
 /**
  * Error details when an action fails.
@@ -203,6 +204,17 @@ export function parseActionOutcome(data: unknown): ActionOutcome {
       type: "scheduled",
       actionId: (scheduled.action_id as string) ?? "",
       scheduledFor: (scheduled.scheduled_for as string) ?? "",
+    };
+  }
+
+  if ("QuotaExceeded" in obj) {
+    const quota = obj.QuotaExceeded as Record<string, unknown>;
+    return {
+      type: "quota_exceeded",
+      tenant: (quota.tenant as string) ?? "",
+      limit: (quota.limit as number) ?? 0,
+      used: (quota.used as number) ?? 0,
+      overageBehavior: (quota.overage_behavior as string) ?? "",
     };
   }
 
@@ -941,6 +953,133 @@ export function updateRecurringActionToRequest(action: UpdateRecurringAction): R
   if (action.dedupKey !== undefined) result.dedup_key = action.dedupKey;
   if (action.labels !== undefined) result.labels = action.labels;
   return result;
+}
+
+// =============================================================================
+// Quota Types
+// =============================================================================
+
+/** Request to create a quota policy. */
+export interface CreateQuotaRequest {
+  namespace: string;
+  tenant: string;
+  maxActions: number;
+  window: string;
+  overageBehavior: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateQuotaRequest to the API request format. */
+export function createQuotaRequestToApi(req: CreateQuotaRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+    max_actions: req.maxActions,
+    window: req.window,
+    overage_behavior: req.overageBehavior,
+  };
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a quota policy. */
+export interface UpdateQuotaRequest {
+  namespace: string;
+  tenant: string;
+  maxActions?: number;
+  window?: string;
+  overageBehavior?: string;
+  description?: string;
+  enabled?: boolean;
+}
+
+/** Convert an UpdateQuotaRequest to the API request format. */
+export function updateQuotaRequestToApi(req: UpdateQuotaRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+  };
+  if (req.maxActions !== undefined) result.max_actions = req.maxActions;
+  if (req.window !== undefined) result.window = req.window;
+  if (req.overageBehavior !== undefined) result.overage_behavior = req.overageBehavior;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.enabled !== undefined) result.enabled = req.enabled;
+  return result;
+}
+
+/** A quota policy. */
+export interface QuotaPolicy {
+  id: string;
+  namespace: string;
+  tenant: string;
+  maxActions: number;
+  window: string;
+  overageBehavior: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a QuotaPolicy from API response. */
+export function parseQuotaPolicy(data: Record<string, unknown>): QuotaPolicy {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    maxActions: data.max_actions as number,
+    window: data.window as string,
+    overageBehavior: data.overage_behavior as string,
+    enabled: data.enabled as boolean,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Response from listing quota policies. */
+export interface ListQuotasResponse {
+  quotas: QuotaPolicy[];
+  count: number;
+}
+
+/** Parse a ListQuotasResponse from API response. */
+export function parseListQuotasResponse(data: Record<string, unknown>): ListQuotasResponse {
+  const items = data.quotas as Record<string, unknown>[];
+  return {
+    quotas: items.map(parseQuotaPolicy),
+    count: data.count as number,
+  };
+}
+
+/** Current usage statistics for a quota. */
+export interface QuotaUsage {
+  tenant: string;
+  namespace: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  window: string;
+  resetsAt: string;
+  overageBehavior: string;
+}
+
+/** Parse a QuotaUsage from API response. */
+export function parseQuotaUsage(data: Record<string, unknown>): QuotaUsage {
+  return {
+    tenant: data.tenant as string,
+    namespace: data.namespace as string,
+    used: data.used as number,
+    limit: data.limit as number,
+    remaining: data.remaining as number,
+    window: data.window as string,
+    resetsAt: data.resets_at as string,
+    overageBehavior: data.overage_behavior as string,
+  };
 }
 
 // =============================================================================

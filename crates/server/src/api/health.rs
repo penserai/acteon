@@ -40,6 +40,10 @@ fn build_metrics_response(
         pending_approval: snap.pending_approval,
         circuit_open: snap.circuit_open,
         scheduled: snap.scheduled,
+        quota_exceeded: snap.quota_exceeded,
+        quota_warned: snap.quota_warned,
+        quota_degraded: snap.quota_degraded,
+        quota_notified: snap.quota_notified,
         embedding,
     }
 }

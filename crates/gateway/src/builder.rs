@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
+
 use acteon_audit::store::AuditStore;
 use acteon_core::{ChainConfig, StateMachineConfig};
 use acteon_executor::{DeadLetterQueue, DeadLetterSink, ExecutorConfig};
@@ -51,6 +53,7 @@ pub struct GatewayBuilder {
     circuit_breaker_default: Option<CircuitBreakerConfig>,
     circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
     stream_buffer_size: usize,
+    quota_policies: HashMap<String, acteon_core::QuotaPolicy>,
 }
 
 impl GatewayBuilder {
@@ -84,6 +87,7 @@ impl GatewayBuilder {
             circuit_breaker_default: None,
             circuit_breaker_overrides: HashMap::new(),
             stream_buffer_size: 1024,
+            quota_policies: HashMap::new(),
         }
     }
 
@@ -340,6 +344,58 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a quota policy for a tenant.
+    ///
+    /// The policy is keyed by `"namespace:tenant"`. Multiple policies for the
+    /// same tenant replace the previous one.
+    #[must_use]
+    pub fn quota_policy(mut self, policy: acteon_core::QuotaPolicy) -> Self {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        self.quota_policies.insert(key, policy);
+        self
+    }
+
+    /// Set all quota policies at once (replaces any previously added).
+    #[must_use]
+    pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
+        self.quota_policies = policies
+            .into_iter()
+            .map(|p| (format!("{}:{}", p.namespace, p.tenant), p))
+            .collect();
+        self
+    }
+
+    /// Validate quota policies and wrap them in [`CachedPolicy`] for TTL tracking.
+    fn validate_and_wrap_quota_policies(
+        policies: HashMap<String, acteon_core::QuotaPolicy>,
+    ) -> Result<HashMap<String, crate::gateway::CachedPolicy>, GatewayError> {
+        for (key, policy) in &policies {
+            if policy.max_actions == 0 {
+                return Err(GatewayError::Configuration(format!(
+                    "quota policy '{key}' has max_actions = 0"
+                )));
+            }
+            if policy.window.duration_seconds() == 0 {
+                return Err(GatewayError::Configuration(format!(
+                    "quota policy '{key}' has a zero-duration window"
+                )));
+            }
+        }
+        let now = Utc::now();
+        Ok(policies
+            .into_iter()
+            .map(|(k, p)| {
+                (
+                    k,
+                    crate::gateway::CachedPolicy {
+                        policy: p,
+                        cached_at: now,
+                    },
+                )
+            })
+            .collect())
+    }
+
     /// Build and validate the circuit breaker registry if a default config is provided.
     fn build_circuit_breaker_registry(
         default: Option<CircuitBreakerConfig>,
@@ -481,6 +537,8 @@ impl GatewayBuilder {
             Arc::clone(&lock),
         )?;
 
+        let quota_policies = Self::validate_and_wrap_quota_policies(self.quota_policies)?;
+
         // Pre-compute step-name → index maps for each chain config so we
         // don't rebuild them on every step completion during chain advancement.
         let chain_step_indices: HashMap<String, HashMap<String, usize>> = self
@@ -520,6 +578,7 @@ impl GatewayBuilder {
             default_timezone,
             circuit_breakers,
             stream_tx,
+            quota_policies: parking_lot::RwLock::new(quota_policies),
         })
     }
 }
@@ -698,6 +757,67 @@ mod tests {
         assert!(
             result.unwrap_err().to_string().contains("cycle"),
             "should detect A→B→C→A cycle"
+        );
+    }
+
+    #[test]
+    fn build_rejects_quota_policy_zero_max_actions() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let policy = acteon_core::QuotaPolicy {
+            id: "q-bad".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            max_actions: 0,
+            window: acteon_core::quota::QuotaWindow::Daily,
+            overage_behavior: acteon_core::quota::OverageBehavior::Block,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .quota_policy(policy)
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("max_actions = 0"),
+            "should reject quota with zero max_actions"
+        );
+    }
+
+    #[test]
+    fn build_rejects_quota_policy_zero_window() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let policy = acteon_core::QuotaPolicy {
+            id: "q-bad2".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            max_actions: 100,
+            window: acteon_core::quota::QuotaWindow::Custom { seconds: 0 },
+            overage_behavior: acteon_core::quota::OverageBehavior::Block,
+            enabled: true,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let result = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .quota_policy(policy)
+            .build();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("zero-duration window"),
+            "should reject quota with zero-duration window"
         );
     }
 

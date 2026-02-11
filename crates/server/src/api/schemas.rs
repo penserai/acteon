@@ -65,6 +65,18 @@ pub struct MetricsResponse {
     /// Actions scheduled for delayed execution.
     #[schema(example = 0)]
     pub scheduled: u64,
+    /// Actions blocked by tenant quota.
+    #[schema(example = 0)]
+    pub quota_exceeded: u64,
+    /// Actions that passed with a quota warning.
+    #[schema(example = 0)]
+    pub quota_warned: u64,
+    /// Actions degraded to a fallback provider due to quota.
+    #[schema(example = 0)]
+    pub quota_degraded: u64,
+    /// Actions that triggered a quota notification to the tenant admin.
+    #[schema(example = 0)]
+    pub quota_notified: u64,
     /// Embedding cache metrics (present when embedding provider is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingMetricsResponse>,

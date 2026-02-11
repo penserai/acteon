@@ -72,20 +72,25 @@ type ActionOutcome struct {
 	WouldBeProvider  string            // For DryRun
 	ActionID         string            // For Scheduled
 	ScheduledFor     string            // For Scheduled
+	Tenant           string            // For QuotaExceeded
+	Limit            int64             // For QuotaExceeded
+	Used             int64             // For QuotaExceeded
+	OverageBehavior  string            // For QuotaExceeded
 }
 
 // OutcomeType represents the type of action outcome.
 type OutcomeType string
 
 const (
-	OutcomeExecuted     OutcomeType = "executed"
-	OutcomeDeduplicated OutcomeType = "deduplicated"
-	OutcomeSuppressed   OutcomeType = "suppressed"
-	OutcomeRerouted     OutcomeType = "rerouted"
-	OutcomeThrottled    OutcomeType = "throttled"
-	OutcomeFailed       OutcomeType = "failed"
-	OutcomeDryRun       OutcomeType = "dry_run"
-	OutcomeScheduled    OutcomeType = "scheduled"
+	OutcomeExecuted      OutcomeType = "executed"
+	OutcomeDeduplicated  OutcomeType = "deduplicated"
+	OutcomeSuppressed    OutcomeType = "suppressed"
+	OutcomeRerouted      OutcomeType = "rerouted"
+	OutcomeThrottled     OutcomeType = "throttled"
+	OutcomeFailed        OutcomeType = "failed"
+	OutcomeDryRun        OutcomeType = "dry_run"
+	OutcomeScheduled     OutcomeType = "scheduled"
+	OutcomeQuotaExceeded OutcomeType = "quota_exceeded"
 )
 
 // ActionError represents error details when an action fails.
@@ -208,6 +213,24 @@ func (o *ActionOutcome) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	if quotaExceeded, ok := raw["QuotaExceeded"]; ok {
+		o.Type = OutcomeQuotaExceeded
+		var q struct {
+			Tenant          string `json:"tenant"`
+			Limit           int64  `json:"limit"`
+			Used            int64  `json:"used"`
+			OverageBehavior string `json:"overage_behavior"`
+		}
+		if err := json.Unmarshal(quotaExceeded, &q); err != nil {
+			return err
+		}
+		o.Tenant = q.Tenant
+		o.Limit = q.Limit
+		o.Used = q.Used
+		o.OverageBehavior = q.OverageBehavior
+		return nil
+	}
+
 	o.Type = OutcomeFailed
 	o.Error = &ActionError{Code: "UNKNOWN", Message: "Unknown outcome"}
 	return nil
@@ -236,6 +259,9 @@ func (o *ActionOutcome) IsDryRun() bool { return o.Type == OutcomeDryRun }
 
 // IsScheduled returns true if the outcome is Scheduled.
 func (o *ActionOutcome) IsScheduled() bool { return o.Type == OutcomeScheduled }
+
+// IsQuotaExceeded returns true if the outcome is QuotaExceeded.
+func (o *ActionOutcome) IsQuotaExceeded() bool { return o.Type == OutcomeQuotaExceeded }
 
 // ErrorResponse represents an error response from the API.
 type ErrorResponse struct {
@@ -627,6 +653,65 @@ type UpdateRecurringAction struct {
 type RecurringLifecycleRequest struct {
 	Namespace string `json:"namespace"`
 	Tenant    string `json:"tenant"`
+}
+
+// =============================================================================
+// Quota Types
+// =============================================================================
+
+// CreateQuotaRequest is the request to create a quota policy.
+type CreateQuotaRequest struct {
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	MaxActions      int64             `json:"max_actions"`
+	Window          string            `json:"window"`
+	OverageBehavior string            `json:"overage_behavior"`
+	Description     string            `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// UpdateQuotaRequest is the request to update a quota policy.
+type UpdateQuotaRequest struct {
+	Namespace       string  `json:"namespace"`
+	Tenant          string  `json:"tenant"`
+	MaxActions      *int64  `json:"max_actions,omitempty"`
+	Window          *string `json:"window,omitempty"`
+	OverageBehavior *string `json:"overage_behavior,omitempty"`
+	Description     *string `json:"description,omitempty"`
+	Enabled         *bool   `json:"enabled,omitempty"`
+}
+
+// QuotaPolicy represents a quota policy.
+type QuotaPolicy struct {
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	MaxActions      int64             `json:"max_actions"`
+	Window          string            `json:"window"`
+	OverageBehavior string            `json:"overage_behavior"`
+	Enabled         bool              `json:"enabled"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// ListQuotasResponse is the response from listing quota policies.
+type ListQuotasResponse struct {
+	Quotas []QuotaPolicy `json:"quotas"`
+	Count  int           `json:"count"`
+}
+
+// QuotaUsage represents current usage statistics for a quota.
+type QuotaUsage struct {
+	Tenant          string `json:"tenant"`
+	Namespace       string `json:"namespace"`
+	Used            int64  `json:"used"`
+	Limit           int64  `json:"limit"`
+	Remaining       int64  `json:"remaining"`
+	Window          string `json:"window"`
+	ResetsAt        string `json:"resets_at"`
+	OverageBehavior string `json:"overage_behavior"`
 }
 
 // =============================================================================

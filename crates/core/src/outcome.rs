@@ -105,6 +105,17 @@ pub enum ActionOutcome {
         /// Next scheduled execution time.
         next_execution_at: Option<DateTime<Utc>>,
     },
+    /// Action was blocked or modified because the tenant exceeded their quota.
+    QuotaExceeded {
+        /// Tenant that exceeded the quota.
+        tenant: String,
+        /// Maximum actions allowed in the window.
+        limit: u64,
+        /// Current usage count.
+        used: u64,
+        /// The overage behavior that was applied.
+        overage_behavior: String,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -377,6 +388,36 @@ mod tests {
                 assert!(next_execution_at.is_none());
             }
             other => panic!("expected RecurringCreated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_quota_exceeded() {
+        let outcome = ActionOutcome::QuotaExceeded {
+            tenant: "tenant-1".into(),
+            limit: 1000,
+            used: 1001,
+            overage_behavior: "block".into(),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("tenant-1"));
+        assert!(json.contains("1000"));
+        assert!(json.contains("1001"));
+        assert!(json.contains("block"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::QuotaExceeded {
+                tenant,
+                limit,
+                used,
+                overage_behavior,
+            } => {
+                assert_eq!(tenant, "tenant-1");
+                assert_eq!(limit, 1000);
+                assert_eq!(used, 1001);
+                assert_eq!(overage_behavior, "block");
+            }
+            other => panic!("expected QuotaExceeded, got {other:?}"),
         }
     }
 
