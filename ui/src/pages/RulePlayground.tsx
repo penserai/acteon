@@ -103,9 +103,15 @@ export function RulePlayground() {
     }
     setMockStateError('')
 
-    // Build metadata as Record<string, string>
-    const metaObj = parsedMetadata.value as Record<string, string>
-    const mockObj = parsedMockState.value as Record<string, string>
+    // Coerce all values to strings (backend expects HashMap<String, String>).
+    const toStringRecord = (obj: Record<string, unknown>): Record<string, string> =>
+      Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, String(v)]))
+
+    const metaObj = toStringRecord(parsedMetadata.value)
+    const mockObj = toStringRecord(parsedMockState.value)
+
+    // datetime-local produces "YYYY-MM-DDTHH:mm"; append ":00Z" for RFC 3339.
+    const evaluateAtRfc = evaluateAt ? `${evaluateAt}:00Z` : null
 
     evaluateMutation.mutate(
       {
@@ -117,7 +123,7 @@ export function RulePlayground() {
         metadata: Object.keys(metaObj).length > 0 ? metaObj : undefined,
         include_disabled: includeDisabled || undefined,
         evaluate_all: evaluateAll || undefined,
-        evaluate_at: evaluateAt || null,
+        evaluate_at: evaluateAtRfc,
         mock_state: Object.keys(mockObj).length > 0 ? mockObj : undefined,
       },
       {

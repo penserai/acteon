@@ -220,9 +220,11 @@ impl RuleEngine {
         let verdict_str = if errors_before_match {
             "error".to_owned()
         } else if let Some((_, rule)) = &first_match {
-            verdict_tag(&action_to_verdict(&rule.name, &rule.action)).to_owned()
+            action_to_verdict(&rule.name, &rule.action)
+                .as_tag()
+                .to_owned()
         } else {
-            verdict_tag(&RuleVerdict::Allow(None)).to_owned()
+            RuleVerdict::Allow(None).as_tag().to_owned()
         };
 
         let matched_rule = first_match.map(|(name, _)| name);
@@ -390,7 +392,7 @@ fn build_skip_entry(rule: &Rule, reason: &str) -> RuleTraceEntry {
         condition_display: rule.condition.to_source(),
         result: RuleTraceResult::Skipped,
         evaluation_duration_us: 0,
-        action: format!("{:?}", rule.action),
+        action: rule.action.kind_label().to_owned(),
         source: format!("{:?}", rule.source),
         description: rule.description.clone(),
         skip_reason: Some(reason.into()),
@@ -415,7 +417,7 @@ fn build_eval_entry(
         condition_display: rule.condition.to_source(),
         result,
         evaluation_duration_us: duration_us,
-        action: format!("{:?}", rule.action),
+        action: rule.action.kind_label().to_owned(),
         source: format!("{:?}", rule.source),
         description: rule.description.clone(),
         skip_reason: None,
@@ -442,24 +444,6 @@ fn build_trace_context(ctx: &EvalContext<'_>, tracker: &AccessTracker) -> TraceC
         environment_keys: env_keys,
         accessed_state_keys: state_keys,
         effective_timezone: effective_tz,
-    }
-}
-
-/// Map a `RuleVerdict` to a short string tag.
-fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
-    match verdict {
-        RuleVerdict::Allow(_) => "allow",
-        RuleVerdict::Deny(_) => "deny",
-        RuleVerdict::Deduplicate { .. } => "deduplicate",
-        RuleVerdict::Suppress(_) => "suppress",
-        RuleVerdict::Reroute { .. } => "reroute",
-        RuleVerdict::Throttle { .. } => "throttle",
-        RuleVerdict::Modify { .. } => "modify",
-        RuleVerdict::StateMachine { .. } => "state_machine",
-        RuleVerdict::Group { .. } => "group",
-        RuleVerdict::RequestApproval { .. } => "request_approval",
-        RuleVerdict::Chain { .. } => "chain",
-        RuleVerdict::Schedule { .. } => "schedule",
     }
 }
 

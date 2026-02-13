@@ -334,7 +334,7 @@ impl Gateway {
                 _ => action.provider.to_string(),
             };
             return Ok(ActionOutcome::DryRun {
-                verdict: verdict_tag(&verdict).to_owned(),
+                verdict: verdict.as_tag().to_owned(),
                 matched_rule: matched_rule_name(&verdict),
                 would_be_provider,
             });
@@ -748,7 +748,7 @@ impl Gateway {
             let mut running_payload = action.payload.clone();
             for entry in &mut trace.trace {
                 if entry.result == acteon_rules::RuleTraceResult::Matched
-                    && entry.action.contains("Modify")
+                    && entry.action == "modify"
                     && let Some(rule) = self
                         .engine
                         .rules()
@@ -3693,24 +3693,6 @@ impl acteon_state::StateStore for BorrowedStateStore<'_> {
 
 // -- Audit helpers -----------------------------------------------------------
 
-/// Extract a string tag from a `RuleVerdict`.
-fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
-    match verdict {
-        RuleVerdict::Allow(_) => "allow",
-        RuleVerdict::Deny(_) => "deny",
-        RuleVerdict::Deduplicate { .. } => "deduplicate",
-        RuleVerdict::Suppress(_) => "suppress",
-        RuleVerdict::Reroute { .. } => "reroute",
-        RuleVerdict::Throttle { .. } => "throttle",
-        RuleVerdict::Modify { .. } => "modify",
-        RuleVerdict::StateMachine { .. } => "state_machine",
-        RuleVerdict::Group { .. } => "group",
-        RuleVerdict::RequestApproval { .. } => "request_approval",
-        RuleVerdict::Chain { .. } => "chain",
-        RuleVerdict::Schedule { .. } => "schedule",
-    }
-}
-
 /// Extract the matched rule name from a `RuleVerdict`, if any.
 fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
     match verdict {
@@ -3920,11 +3902,11 @@ fn build_audit_record(
         tenant: action.tenant.to_string(),
         provider: action.provider.to_string(),
         action_type: action.action_type.clone(),
-        verdict: verdict_tag(verdict).to_owned(),
+        verdict: verdict.as_tag().to_owned(),
         matched_rule: matched_rule_name(verdict),
         outcome: outcome_tag(outcome).to_owned(),
         action_payload,
-        verdict_details: serde_json::json!({ "verdict": verdict_tag(verdict) }),
+        verdict_details: serde_json::json!({ "verdict": verdict.as_tag() }),
         outcome_details,
         metadata: enrich_audit_metadata(action),
         dispatched_at,
