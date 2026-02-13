@@ -3,7 +3,8 @@ use std::hash::{Hash, Hasher};
 use tracing::{debug, instrument};
 
 use crate::engine::context::EvalContext;
-use crate::engine::eval::eval;
+use crate::engine::eval::{build_time_map, eval};
+use crate::engine::trace::{RuleEvaluationTrace, RuleTraceEntry, RuleTraceResult, TraceContext};
 use crate::engine::verdict::{RuleVerdict, action_to_verdict};
 use crate::error::RuleError;
 use crate::ir::rule::Rule;
@@ -142,6 +143,173 @@ impl RuleEngine {
         }
     }
 
+    /// Evaluate all rules against the given context, returning a detailed trace.
+    ///
+    /// Unlike [`evaluate`](Self::evaluate), this method does **not** necessarily
+    /// short-circuit on the first match. If `evaluate_all` is `true`, it
+    /// evaluates every enabled rule so the trace shows exactly which rules
+    /// would have matched. If `false`, it follows production behavior and
+    /// stops at the first match.
+    ///
+    /// The verdict is always determined by the first matching rule in
+    /// priority order.
+    ///
+    /// When `include_disabled` is `true`, disabled rules appear in the trace
+    /// with `result: Skipped` and `skip_reason: "disabled"`.
+    #[instrument(skip_all, fields(rules_count = self.rules.len()))]
+    pub async fn evaluate_with_trace(
+        &self,
+        ctx: &EvalContext<'_>,
+        include_disabled: bool,
+        evaluate_all: bool,
+    ) -> Result<RuleEvaluationTrace, RuleError> {
+        let overall_start = std::time::Instant::now();
+        let mut entries = Vec::with_capacity(self.rules.len());
+        let mut first_match: Option<(String, &Rule)> = None;
+        let mut total_evaluated: usize = 0;
+        let mut total_skipped: usize = 0;
+        let mut has_errors = false;
+        let mut errors_before_match = false;
+
+        for rule in &self.rules {
+            if !rule.enabled {
+                if include_disabled {
+                    total_skipped += 1;
+                    entries.push(build_skip_entry(rule, "disabled"));
+                }
+                continue;
+            }
+
+            if first_match.is_some() && !evaluate_all {
+                total_skipped += 1;
+                entries.push(build_skip_entry(rule, "earlier_rule_matched"));
+                continue;
+            }
+
+            let (entry, matched) = self.trace_eval_rule(rule, ctx).await?;
+            total_evaluated += 1;
+            if entry.result == RuleTraceResult::Error {
+                has_errors = true;
+                if first_match.is_none() {
+                    errors_before_match = true;
+                }
+            }
+            if matched && first_match.is_none() {
+                first_match = Some((rule.name.clone(), rule));
+            }
+            entries.push(entry);
+        }
+
+        let verdict_str = if errors_before_match {
+            "error".to_owned()
+        } else if let Some((_, rule)) = &first_match {
+            verdict_tag(&action_to_verdict(&rule.name, &rule.action)).to_owned()
+        } else {
+            verdict_tag(&RuleVerdict::Allow(None)).to_owned()
+        };
+
+        let matched_rule = first_match.map(|(name, _)| name);
+
+        // Append a synthetic entry for default allow if no match occurred.
+        if matched_rule.is_none() && !errors_before_match {
+            entries.push(RuleTraceEntry {
+                rule_name: "(default fallthrough)".to_owned(),
+                priority: i32::MAX,
+                enabled: true,
+                condition_display: "no rules matched".to_owned(),
+                result: RuleTraceResult::Matched,
+                evaluation_duration_us: 0,
+                action: "Allow".to_owned(),
+                source: "System".to_owned(),
+                description: Some(
+                    "No rules matched the action. The system default is to allow.".to_owned(),
+                ),
+                skip_reason: None,
+                error: None,
+            });
+        }
+
+        let trace_ctx = build_trace_context(ctx);
+        let total_duration_us = micros_u64(overall_start.elapsed());
+
+        Ok(RuleEvaluationTrace {
+            verdict: verdict_str,
+            matched_rule,
+            has_errors,
+            total_rules_evaluated: total_evaluated,
+            total_rules_skipped: total_skipped,
+            evaluation_duration_us: total_duration_us,
+            trace: entries,
+            context: trace_ctx,
+            modified_payload: None,
+        })
+    }
+
+    /// Evaluate a single rule's condition and return a trace entry plus whether it matched.
+    async fn trace_eval_rule(
+        &self,
+        rule: &Rule,
+        ctx: &EvalContext<'_>,
+    ) -> Result<(RuleTraceEntry, bool), RuleError> {
+        let rule_tz = if let Some(ref tz_name) = rule.timezone {
+            if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
+                Some(tz)
+            } else {
+                let entry = build_eval_entry(
+                    rule,
+                    RuleTraceResult::Error,
+                    0,
+                    Some(format!("invalid timezone: {tz_name}")),
+                );
+                return Ok((entry, false));
+            }
+        } else {
+            None
+        };
+
+        let eval_ctx;
+        let effective_ctx = if let Some(tz) = rule_tz {
+            eval_ctx = EvalContext {
+                action: ctx.action,
+                state: ctx.state,
+                environment: ctx.environment,
+                now: ctx.now,
+                embedding: ctx.embedding.clone(),
+                timezone: Some(tz),
+                time_map_cache: std::sync::OnceLock::new(),
+            };
+            &eval_ctx
+        } else {
+            ctx
+        };
+
+        let rule_start = std::time::Instant::now();
+        let eval_result = eval(&rule.condition, effective_ctx).await;
+        let duration_us = micros_u64(rule_start.elapsed());
+
+        match eval_result {
+            Ok(value) => {
+                let matched = value.is_truthy();
+                let result = if matched {
+                    RuleTraceResult::Matched
+                } else {
+                    RuleTraceResult::NotMatched
+                };
+                let entry = build_eval_entry(rule, result, duration_us, None);
+                Ok((entry, matched))
+            }
+            Err(e) => {
+                let entry = build_eval_entry(
+                    rule,
+                    RuleTraceResult::Error,
+                    duration_us,
+                    Some(e.to_string()),
+                );
+                Ok((entry, false))
+            }
+        }
+    }
+
     /// Load rules from a directory using the provided frontends.
     ///
     /// Walks the directory for files matching frontend extensions,
@@ -184,6 +352,82 @@ impl RuleEngine {
 
         self.rules.sort_by_key(|r| r.priority);
         Ok(loaded)
+    }
+}
+
+/// Convert a `Duration` to microseconds, saturating at `u64::MAX`.
+fn micros_u64(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Build a trace entry for a skipped rule (disabled or lower-priority).
+fn build_skip_entry(rule: &Rule, reason: &str) -> RuleTraceEntry {
+    RuleTraceEntry {
+        rule_name: rule.name.clone(),
+        priority: rule.priority,
+        enabled: rule.enabled,
+        condition_display: rule.condition.to_source(),
+        result: RuleTraceResult::Skipped,
+        evaluation_duration_us: 0,
+        action: format!("{:?}", rule.action),
+        source: format!("{:?}", rule.source),
+        description: rule.description.clone(),
+        skip_reason: Some(reason.into()),
+        error: None,
+    }
+}
+
+/// Build a trace entry for a rule that was actually evaluated.
+fn build_eval_entry(
+    rule: &Rule,
+    result: RuleTraceResult,
+    duration_us: u64,
+    error: Option<String>,
+) -> RuleTraceEntry {
+    RuleTraceEntry {
+        rule_name: rule.name.clone(),
+        priority: rule.priority,
+        enabled: true,
+        condition_display: rule.condition.to_source(),
+        result,
+        evaluation_duration_us: duration_us,
+        action: format!("{:?}", rule.action),
+        source: format!("{:?}", rule.source),
+        description: rule.description.clone(),
+        skip_reason: None,
+        error,
+    }
+}
+
+/// Build the `TraceContext` from the evaluation context.
+fn build_trace_context(ctx: &EvalContext<'_>) -> TraceContext {
+    let time_value = build_time_map(ctx);
+    let time_json = serde_json::to_value(&time_value).unwrap_or(serde_json::Value::Null);
+    let mut env_keys: Vec<String> = ctx.environment.keys().cloned().collect();
+    env_keys.sort();
+    let effective_tz = ctx.timezone.map(|tz| tz.to_string());
+    TraceContext {
+        time: time_json,
+        environment_keys: env_keys,
+        effective_timezone: effective_tz,
+    }
+}
+
+/// Map a `RuleVerdict` to a short string tag.
+fn verdict_tag(verdict: &RuleVerdict) -> &'static str {
+    match verdict {
+        RuleVerdict::Allow(_) => "allow",
+        RuleVerdict::Deny(_) => "deny",
+        RuleVerdict::Deduplicate { .. } => "deduplicate",
+        RuleVerdict::Suppress(_) => "suppress",
+        RuleVerdict::Reroute { .. } => "reroute",
+        RuleVerdict::Throttle { .. } => "throttle",
+        RuleVerdict::Modify { .. } => "modify",
+        RuleVerdict::StateMachine { .. } => "state_machine",
+        RuleVerdict::Group { .. } => "group",
+        RuleVerdict::RequestApproval { .. } => "request_approval",
+        RuleVerdict::Chain { .. } => "chain",
+        RuleVerdict::Schedule { .. } => "schedule",
     }
 }
 

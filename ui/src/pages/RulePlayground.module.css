@@ -1,0 +1,269 @@
+@reference "../index.css";
+
+/* Layout */
+.container {
+  @apply max-w-6xl;
+}
+
+.layout {
+  @apply grid grid-cols-1 lg:grid-cols-2 gap-6;
+}
+
+/* Form card */
+.formCard {
+  @apply border rounded-lg p-6 space-y-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.formGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.textareaLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full h-32 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.textareaSmall {
+  @apply w-full h-20 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.warningText {
+  @apply text-xs text-error-500 mt-1;
+}
+
+.checkboxLabel {
+  @apply flex items-center gap-2 text-sm;
+}
+
+.checkbox {
+  @apply rounded border-gray-300 text-primary-400 focus:ring-primary-400;
+}
+
+.toggleRow {
+  @apply flex flex-wrap gap-6;
+}
+
+.submitContainer {
+  @apply pt-2;
+}
+
+/* Summary bar */
+.summaryBar {
+  @apply flex flex-wrap items-center gap-4 rounded-lg border p-4 mb-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.verdictAllow {
+  @apply bg-emerald-500/10 border-emerald-500/30;
+}
+
+.verdictDeny {
+  @apply bg-red-500/10 border-red-500/30;
+}
+
+.verdictSuppress {
+  @apply bg-red-500/10 border-red-500/30;
+}
+
+.verdictModify {
+  @apply bg-blue-500/10 border-blue-500/30;
+}
+
+.verdictError {
+  @apply bg-amber-500/10 border-amber-500/30;
+}
+
+.verdictLabel {
+  @apply text-sm font-medium;
+  color: var(--text-secondary);
+}
+
+.verdictValue {
+  @apply text-lg font-bold capitalize;
+}
+
+.verdictAllow .verdictValue {
+  @apply text-emerald-600;
+}
+
+.verdictDeny .verdictValue,
+.verdictSuppress .verdictValue {
+  @apply text-red-600;
+}
+
+.verdictModify .verdictValue {
+  @apply text-blue-600;
+}
+
+.verdictError .verdictValue {
+  @apply text-amber-600;
+}
+
+.summaryItem {
+  @apply text-sm;
+  color: var(--text-secondary);
+}
+
+.summaryItemValue {
+  @apply font-medium;
+  color: var(--text-default);
+}
+
+/* Error banner */
+.errorBanner {
+  @apply rounded-lg border p-3 mb-4 text-sm flex items-center gap-2;
+  background: rgb(245 158 11 / 0.1);
+  border-color: rgb(245 158 11 / 0.3);
+  color: rgb(180 83 9);
+}
+
+/* Trace table */
+.traceSection {
+  @apply mb-4;
+}
+
+.traceSectionTitle {
+  @apply text-sm font-semibold mb-2;
+  color: var(--text-default);
+}
+
+.traceTable {
+  @apply w-full text-sm border rounded-lg overflow-hidden;
+  border-color: var(--border-default);
+}
+
+.traceTable thead {
+  background: var(--bg-surface-secondary);
+}
+
+.traceTable th {
+  @apply px-3 py-2 text-left text-xs font-medium uppercase tracking-wide;
+  color: var(--text-muted);
+}
+
+.traceTable td {
+  @apply px-3 py-2 border-t;
+  border-color: var(--border-default);
+}
+
+.traceTable tbody tr {
+  background: var(--bg-surface);
+}
+
+.traceTable tbody tr:hover {
+  background: var(--bg-surface-secondary);
+}
+
+.ruleNameCell {
+  @apply font-mono text-xs;
+}
+
+.priorityCell {
+  @apply tabular-nums;
+}
+
+.durationCell {
+  @apply tabular-nums text-xs;
+  color: var(--text-muted);
+}
+
+.sourceCell {
+  @apply text-xs;
+  color: var(--text-muted);
+}
+
+/* Result badges */
+.resultBadge {
+  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+}
+
+.resultMatched {
+  @apply bg-emerald-500/10 text-emerald-700;
+}
+
+.resultNotMatched {
+  @apply bg-gray-500/10 text-gray-600;
+}
+
+.resultSkipped {
+  @apply bg-blue-500/10 text-blue-600;
+}
+
+.resultError {
+  @apply bg-red-500/10 text-red-600;
+}
+
+/* Context section */
+.contextSection {
+  @apply border rounded-lg overflow-hidden mb-4;
+  border-color: var(--border-default);
+}
+
+.contextHeader {
+  @apply flex items-center justify-between px-4 py-2 text-sm font-medium cursor-pointer select-none;
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+}
+
+.contextBody {
+  @apply p-4 text-sm;
+  background: var(--bg-surface);
+}
+
+.contextLabel {
+  @apply text-xs font-medium uppercase tracking-wide mb-1 block;
+  color: var(--text-muted);
+}
+
+/* JSON preview sections */
+.payloadPre {
+  @apply rounded-lg p-4 font-mono text-xs overflow-auto max-h-64;
+  background: var(--bg-surface-secondary);
+  color: var(--text-default);
+}
+
+/* Results area */
+.resultsCard {
+  @apply border rounded-lg p-6 space-y-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.resultsTitle {
+  @apply text-lg font-semibold mb-3;
+}
+
+.emptyResults {
+  @apply text-sm text-center py-8;
+  color: var(--text-muted);
+}
+
+/* Trace detail row (expandable) */
+.traceDetailRow td {
+  @apply px-3 py-2 border-t;
+  border-color: var(--border-default);
+  background: var(--bg-surface-secondary);
+}
+
+.traceDetailContent {
+  @apply text-xs space-y-1;
+  color: var(--text-secondary);
+}
+
+.traceDetailLabel {
+  @apply font-medium;
+  color: var(--text-muted);
+}

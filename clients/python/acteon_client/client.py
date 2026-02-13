@@ -11,6 +11,8 @@ from .models import (
     BatchResult,
     RuleInfo,
     ReloadResult,
+    EvaluateRulesRequest,
+    EvaluateRulesResponse,
     AuditQuery,
     AuditPage,
     AuditRecord,
@@ -302,6 +304,48 @@ class ActeonClient:
 
         if response.status_code != 200:
             raise HttpError(response.status_code, f"Failed to set rule enabled")
+
+    def evaluate_rules(self, request: EvaluateRulesRequest) -> EvaluateRulesResponse:
+        """Evaluate rules against a test action without dispatching.
+
+        This is the Rule Playground endpoint. It evaluates all matching rules
+        against the provided action parameters and returns a detailed trace
+        of each rule evaluation.
+
+        Args:
+            request: The evaluation request with action parameters.
+
+        Returns:
+            Detailed evaluation response with verdict, trace, and context.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        body: dict = {
+            "namespace": request.namespace,
+            "tenant": request.tenant,
+            "provider": request.provider,
+            "action_type": request.action_type,
+            "payload": request.payload,
+        }
+        if request.metadata:
+            body["metadata"] = request.metadata
+        if request.include_disabled:
+            body["include_disabled"] = True
+        if request.evaluate_all:
+            body["evaluate_all"] = True
+        if request.evaluate_at:
+            body["evaluate_at"] = request.evaluate_at
+        if request.mock_state:
+            body["mock_state"] = request.mock_state
+
+        response = self._request("POST", "/v1/rules/evaluate", json=body)
+
+        if response.status_code == 200:
+            return EvaluateRulesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to evaluate rules")
 
     # =========================================================================
     # Audit Trail
@@ -1484,6 +1528,34 @@ class AsyncActeonClient:
         )
         if response.status_code != 200:
             raise HttpError(response.status_code, f"Failed to set rule enabled")
+
+    async def evaluate_rules(
+        self, request: EvaluateRulesRequest
+    ) -> EvaluateRulesResponse:
+        """Evaluate rules against a test action without dispatching."""
+        body: dict = {
+            "namespace": request.namespace,
+            "tenant": request.tenant,
+            "provider": request.provider,
+            "action_type": request.action_type,
+            "payload": request.payload,
+        }
+        if request.metadata:
+            body["metadata"] = request.metadata
+        if request.include_disabled:
+            body["include_disabled"] = True
+        if request.evaluate_all:
+            body["evaluate_all"] = True
+        if request.evaluate_at:
+            body["evaluate_at"] = request.evaluate_at
+        if request.mock_state:
+            body["mock_state"] = request.mock_state
+
+        response = await self._request("POST", "/v1/rules/evaluate", json=body)
+        if response.status_code == 200:
+            return EvaluateRulesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to evaluate rules")
 
     async def query_audit(self, query: Optional[AuditQuery] = None) -> AuditPage:
         params = query.to_params() if query else {}

@@ -318,6 +318,33 @@ public class ActeonClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Evaluates rules against a test action without dispatching (Rule Playground).
+     * Returns detailed trace information about each rule's evaluation.
+     */
+    public EvaluateRulesResponse evaluateRules(EvaluateRulesRequest request) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(request);
+            HttpRequest httpReq = requestBuilder("/v1/rules/evaluate")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(httpReq, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, EvaluateRulesResponse.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
     // =========================================================================
     // Audit Trail
     // =========================================================================

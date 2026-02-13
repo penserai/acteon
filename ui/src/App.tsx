@@ -18,6 +18,7 @@ import { Embeddings } from './pages/Embeddings'
 import { ScheduledActions } from './pages/ScheduledActions'
 import { RecurringActions } from './pages/RecurringActions'
 import { Quotas } from './pages/Quotas'
+import { RulePlayground } from './pages/RulePlayground'
 import { Settings } from './pages/Settings'
 
 function App() {
@@ -29,6 +30,7 @@ function App() {
           <Route index element={<Dashboard />} />
           <Route path="dispatch" element={<Dispatch />} />
           <Route path="rules" element={<Rules />} />
+          <Route path="playground" element={<RulePlayground />} />
           <Route path="audit" element={<Actions />} />
           <Route path="events" element={<Events />} />
           <Route path="groups" element={<Groups />} />

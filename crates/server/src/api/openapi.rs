@@ -29,6 +29,7 @@ use super::recurring::{
     RecurringDetailResponse, RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
 };
 use super::replay::{ReplayResult, ReplaySummary};
+use super::rules::{EvaluateRulesRequest, EvaluateRulesResponse, RuleTraceEntryResponse};
 use super::schemas::{
     EmbeddingMetricsResponse, ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest,
     ReloadResponse, RuleSummary, SetEnabledRequest, SetEnabledResponse,
@@ -65,6 +66,7 @@ use super::schemas::{
         super::rules::list_rules,
         super::rules::reload_rules,
         super::rules::set_rule_enabled,
+        super::rules::evaluate_rules,
         super::audit::query_audit,
         super::audit::get_audit_by_action,
         super::replay::replay_action,
@@ -124,6 +126,7 @@ use super::schemas::{
         CreateQuotaRequest, UpdateQuotaRequest, QuotaResponse, QuotaUsageResponse,
         ListQuotasResponse,
         QuotaWindow, OverageBehavior, QuotaUsage,
+        EvaluateRulesRequest, EvaluateRulesResponse, RuleTraceEntryResponse,
     ))
 )]
 pub struct ApiDoc;

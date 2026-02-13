@@ -11,6 +11,8 @@ import {
   BatchResult,
   ReloadResult,
   RuleInfo,
+  EvaluateRulesRequest,
+  EvaluateRulesResponse,
   EventQuery,
   EventState,
   EventListResponse,
@@ -304,6 +306,25 @@ export class ActeonClient {
 
     if (!response.ok) {
       throw new HttpError(response.status, "Failed to set rule enabled");
+    }
+  }
+
+  /**
+   * Evaluate rules against a test action without dispatching.
+   *
+   * This is the Rule Playground endpoint. It evaluates all matching rules
+   * against the provided action parameters and returns a detailed trace
+   * of each rule evaluation.
+   */
+  async evaluateRules(request: EvaluateRulesRequest): Promise<EvaluateRulesResponse> {
+    const response = await this.request("POST", "/v1/rules/evaluate", {
+      body: request,
+    });
+
+    if (response.ok) {
+      return (await response.json()) as EvaluateRulesResponse;
+    } else {
+      throw new HttpError(response.status, "Failed to evaluate rules");
     }
   }
 

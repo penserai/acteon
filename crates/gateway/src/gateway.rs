@@ -683,6 +683,79 @@ impl Gateway {
         self.quota_policies.write().remove(&key).map(|c| c.policy)
     }
 
+    /// Rule Playground where users test actions against the current rule set.
+    ///
+    /// **Note:** The Playground reads live production state (throttle counters,
+    /// state-get values, etc.) unless overrides are provided in `mock_state`.
+    /// Its results will change as production state changes. It is not a fully
+    /// sandboxed environment.
+    ///
+    /// When `evaluate_all` is `true`, every enabled rule's condition is
+    /// evaluated even after a match, giving a complete picture of how the
+    /// entire rule set responds.
+    ///
+    /// When `evaluate_at` is `Some`, the provided timestamp overrides the
+    /// evaluation clock, allowing time-travel debugging of time-sensitive
+    /// rules (maintenance windows, weekday restrictions, etc.).
+    pub async fn evaluate_rules(
+        &self,
+        action: &acteon_core::Action,
+        include_disabled: bool,
+        evaluate_all: bool,
+        evaluate_at: Option<chrono::DateTime<chrono::Utc>>,
+        mock_state: HashMap<String, String>,
+    ) -> Result<acteon_rules::RuleEvaluationTrace, GatewayError> {
+        let state_store: Box<dyn acteon_state::StateStore> = if mock_state.is_empty() {
+            // No overrides: use the real store directly.
+            Box::new(BorrowedStateStore(self.state.as_ref()))
+        } else {
+            Box::new(PlaygroundStateStore {
+                inner: self.state.as_ref(),
+                overrides: mock_state,
+            })
+        };
+
+        let mut eval_ctx = EvalContext::new(action, state_store.as_ref(), &self.environment);
+        if let Some(ts) = evaluate_at {
+            eval_ctx = eval_ctx.with_now(ts);
+        }
+        if let Some(ref emb) = self.embedding {
+            eval_ctx = eval_ctx.with_embedding(std::sync::Arc::clone(emb));
+        }
+        if let Some(tz) = self.default_timezone {
+            eval_ctx = eval_ctx.with_timezone(tz);
+        }
+        let mut trace = self
+            .engine
+            .evaluate_with_trace(&eval_ctx, include_disabled, evaluate_all)
+            .await?;
+
+        // If the matched rule is a Modify action, compute the resulting payload
+        // by applying the JSON merge patch so the user can inspect the diff.
+        if trace.verdict == "modify"
+            && let Some(ref matched_name) = trace.matched_rule
+            && let Some(rule) = self.engine.rules().iter().find(|r| &r.name == matched_name)
+            && let acteon_rules::RuleAction::Modify { changes } = &rule.action
+        {
+            let mut patched = action.payload.clone();
+            json_patch::merge(&mut patched, changes);
+            trace.modified_payload = Some(patched);
+        }
+
+        // Filter environment keys to omit names that likely contain secrets.
+        trace.context.environment_keys.retain(|key| {
+            let k = key.to_uppercase();
+            !k.contains("SECRET")
+                && !k.contains("PASSWORD")
+                && !k.contains("TOKEN")
+                && !k.contains("CREDENTIAL")
+                && !k.contains("PRIVATE_KEY")
+                && !k.ends_with("_KEY")
+        });
+
+        Ok(trace)
+    }
+
     /// Check whether the action's tenant has exceeded their quota.
     ///
     /// Uses an atomic `increment()` to avoid read-then-write races between
@@ -3378,6 +3451,233 @@ impl Gateway {
     /// No-op if there are no subscribers. Does not propagate send errors.
     fn emit_stream_event(&self, event: StreamEvent) {
         let _ = self.stream_tx.send(event);
+    }
+}
+
+/// A read-only wrapper for a [`StateStore`] that allows overriding specific keys.
+/// Used by the Rule Playground to simulate different state conditions.
+struct PlaygroundStateStore<'a> {
+    inner: &'a dyn acteon_state::StateStore,
+    overrides: HashMap<String, String>,
+}
+
+#[async_trait::async_trait]
+impl acteon_state::StateStore for PlaygroundStateStore<'_> {
+    async fn get(
+        &self,
+        key: &acteon_state::StateKey,
+    ) -> Result<Option<String>, acteon_state::StateError> {
+        // Try the overrides map first.  We check for both the full canonical key
+        // and just the ID part for convenience.
+        if let Some(val) = self.overrides.get(&key.canonical()) {
+            return Ok(Some(val.clone()));
+        }
+        if let Some(val) = self.overrides.get(&key.id) {
+            return Ok(Some(val.clone()));
+        }
+        self.inner.get(key).await
+    }
+
+    // All other methods are no-ops or errors since the playground is read-only.
+    async fn set(
+        &self,
+        _: &acteon_state::StateKey,
+        _: &str,
+        _: Option<Duration>,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn check_and_set(
+        &self,
+        _: &acteon_state::StateKey,
+        _: &str,
+        _: Option<Duration>,
+    ) -> Result<bool, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn delete(&self, _: &acteon_state::StateKey) -> Result<bool, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn increment(
+        &self,
+        _: &acteon_state::StateKey,
+        _: i64,
+        _: Option<Duration>,
+    ) -> Result<i64, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn compare_and_swap(
+        &self,
+        _: &acteon_state::StateKey,
+        _: u64,
+        _: &str,
+        _: Option<Duration>,
+    ) -> Result<acteon_state::CasResult, acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn scan_keys(
+        &self,
+        ns: &str,
+        t: &str,
+        k: acteon_state::KeyKind,
+        p: Option<&str>,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.inner.scan_keys(ns, t, k, p).await
+    }
+    async fn scan_keys_by_kind(
+        &self,
+        k: acteon_state::KeyKind,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.inner.scan_keys_by_kind(k).await
+    }
+    async fn index_timeout(
+        &self,
+        _: &acteon_state::StateKey,
+        _: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn remove_timeout_index(
+        &self,
+        _: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn get_expired_timeouts(
+        &self,
+        now: i64,
+    ) -> Result<Vec<String>, acteon_state::StateError> {
+        self.inner.get_expired_timeouts(now).await
+    }
+    async fn index_chain_ready(
+        &self,
+        _: &acteon_state::StateKey,
+        _: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn remove_chain_ready_index(
+        &self,
+        _: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        Err(acteon_state::StateError::Backend(
+            "Playground state store is read-only".into(),
+        ))
+    }
+    async fn get_ready_chains(&self, now: i64) -> Result<Vec<String>, acteon_state::StateError> {
+        self.inner.get_ready_chains(now).await
+    }
+}
+
+/// Helper to wrap a reference to a [`StateStore`] as a trait object.
+struct BorrowedStateStore<'a>(&'a dyn acteon_state::StateStore);
+
+#[async_trait::async_trait]
+impl acteon_state::StateStore for BorrowedStateStore<'_> {
+    async fn get(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<Option<String>, acteon_state::StateError> {
+        self.0.get(k).await
+    }
+    async fn set(
+        &self,
+        k: &acteon_state::StateKey,
+        v: &str,
+        d: Option<Duration>,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.set(k, v, d).await
+    }
+    async fn check_and_set(
+        &self,
+        k: &acteon_state::StateKey,
+        v: &str,
+        d: Option<Duration>,
+    ) -> Result<bool, acteon_state::StateError> {
+        self.0.check_and_set(k, v, d).await
+    }
+    async fn delete(&self, k: &acteon_state::StateKey) -> Result<bool, acteon_state::StateError> {
+        self.0.delete(k).await
+    }
+    async fn increment(
+        &self,
+        k: &acteon_state::StateKey,
+        d: i64,
+        t: Option<Duration>,
+    ) -> Result<i64, acteon_state::StateError> {
+        self.0.increment(k, d, t).await
+    }
+    async fn compare_and_swap(
+        &self,
+        k: &acteon_state::StateKey,
+        ev: u64,
+        nv: &str,
+        t: Option<Duration>,
+    ) -> Result<acteon_state::CasResult, acteon_state::StateError> {
+        self.0.compare_and_swap(k, ev, nv, t).await
+    }
+    async fn scan_keys(
+        &self,
+        ns: &str,
+        t: &str,
+        k: acteon_state::KeyKind,
+        p: Option<&str>,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.0.scan_keys(ns, t, k, p).await
+    }
+    async fn scan_keys_by_kind(
+        &self,
+        k: acteon_state::KeyKind,
+    ) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+        self.0.scan_keys_by_kind(k).await
+    }
+    async fn index_timeout(
+        &self,
+        k: &acteon_state::StateKey,
+        e: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.index_timeout(k, e).await
+    }
+    async fn remove_timeout_index(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.remove_timeout_index(k).await
+    }
+    async fn get_expired_timeouts(&self, n: i64) -> Result<Vec<String>, acteon_state::StateError> {
+        self.0.get_expired_timeouts(n).await
+    }
+    async fn index_chain_ready(
+        &self,
+        k: &acteon_state::StateKey,
+        r: i64,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.index_chain_ready(k, r).await
+    }
+    async fn remove_chain_ready_index(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<(), acteon_state::StateError> {
+        self.0.remove_chain_ready_index(k).await
+    }
+    async fn get_ready_chains(&self, n: i64) -> Result<Vec<String>, acteon_state::StateError> {
+        self.0.get_ready_chains(n).await
     }
 }
 

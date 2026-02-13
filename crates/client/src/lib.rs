@@ -485,6 +485,91 @@ impl ActeonClient {
         }
     }
 
+    /// Evaluate rules against a test action without dispatching.
+    ///
+    /// Returns a detailed trace showing how each rule would evaluate against
+    /// the given action. This is useful for debugging and testing rule
+    /// configurations in a playground environment.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::{ActeonClient, EvaluateRulesOptions};
+    /// use acteon_core::Action;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let action = Action::new(
+    ///     "notifications",
+    ///     "tenant-1",
+    ///     "email",
+    ///     "send_notification",
+    ///     serde_json::json!({"to": "user@example.com"}),
+    /// );
+    ///
+    /// let options = EvaluateRulesOptions {
+    ///     evaluate_all: true,
+    ///     ..Default::default()
+    /// };
+    ///
+    /// let trace = client.evaluate_rules(&action, &options).await?;
+    /// println!("Verdict: {}", trace.verdict);
+    /// for entry in &trace.trace {
+    ///     println!("  {} -> {}", entry.rule_name, entry.result);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn evaluate_rules(
+        &self,
+        action: &Action,
+        options: &EvaluateRulesOptions,
+    ) -> Result<RuleEvaluationTrace, Error> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            namespace: &'a str,
+            tenant: &'a str,
+            provider: &'a str,
+            action_type: &'a str,
+            payload: &'a serde_json::Value,
+            metadata: &'a std::collections::HashMap<String, String>,
+            #[serde(flatten)]
+            options: &'a EvaluateRulesOptions,
+        }
+
+        let url = format!("{}/v1/rules/evaluate", self.base_url);
+
+        let body = Body {
+            namespace: action.namespace.as_str(),
+            tenant: action.tenant.as_str(),
+            provider: action.provider.as_str(),
+            action_type: &action.action_type,
+            payload: &action.payload,
+            metadata: &action.metadata.labels,
+            options,
+        };
+
+        let response = self
+            .add_auth(self.client.post(&url))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let trace = response
+                .json::<RuleEvaluationTrace>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(trace)
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to evaluate rules: {}", response.status()),
+            })
+        }
+    }
+
     // =========================================================================
     // Audit Trail
     // =========================================================================
@@ -2188,6 +2273,74 @@ pub struct ReloadResult {
     pub loaded: usize,
     /// Any errors that occurred during loading.
     pub errors: Vec<String>,
+}
+
+/// Options for rule evaluation playground requests.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct EvaluateRulesOptions {
+    /// When `true`, includes disabled rules in the trace.
+    #[serde(default)]
+    pub include_disabled: bool,
+    /// When `true`, evaluates every rule even after a match.
+    #[serde(default)]
+    pub evaluate_all: bool,
+    /// Optional timestamp override for time-travel debugging.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evaluate_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Optional state key overrides for testing state-dependent conditions.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub mock_state: std::collections::HashMap<String, String>,
+}
+
+/// Per-rule trace entry returned by the playground.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuleTraceEntry {
+    /// Name of the rule that was evaluated.
+    pub rule_name: String,
+    /// Rule priority (lower = higher priority).
+    pub priority: i32,
+    /// Whether the rule is enabled.
+    pub enabled: bool,
+    /// Human-readable display of the rule condition.
+    pub condition_display: String,
+    /// Evaluation result (e.g. `"matched"`, `"no_match"`, `"error"`).
+    pub result: String,
+    /// Time spent evaluating this rule in microseconds.
+    pub evaluation_duration_us: u64,
+    /// The action the rule would take on match.
+    pub action: String,
+    /// The source of the rule (e.g. `"yaml"`, `"cel"`).
+    pub source: String,
+    /// Optional description of the rule.
+    pub description: Option<String>,
+    /// Reason the rule was skipped, if applicable.
+    pub skip_reason: Option<String>,
+    /// Error message if evaluation failed.
+    pub error: Option<String>,
+}
+
+/// Response from the rule evaluation playground.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuleEvaluationTrace {
+    /// Final verdict (e.g. `"allow"`, `"deny"`, `"no_match"`).
+    pub verdict: String,
+    /// Name of the matched rule, if any.
+    pub matched_rule: Option<String>,
+    /// Whether any rule produced an error during evaluation.
+    #[serde(default)]
+    pub has_errors: bool,
+    /// Total number of rules that were evaluated.
+    pub total_rules_evaluated: usize,
+    /// Total number of rules that were skipped.
+    pub total_rules_skipped: usize,
+    /// Total evaluation time in microseconds.
+    pub evaluation_duration_us: u64,
+    /// Per-rule trace entries.
+    pub trace: Vec<RuleTraceEntry>,
+    /// The evaluation context that was used.
+    pub context: serde_json::Value,
+    /// The payload after any rule modifications, if changed.
+    pub modified_payload: Option<serde_json::Value>,
 }
 
 /// Query parameters for audit search.

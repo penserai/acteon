@@ -22,6 +22,20 @@ Send actions through the gateway directly from the UI. Fill in the required fiel
 !!! tip
     Enable **Dry Run** to test rule evaluation without actually sending the action to a provider. The response shows what *would* happen.
 
+## Rule Playground
+
+![Rule Playground](assets/playground.png)
+
+Test how rules evaluate against a synthetic action without dispatching. The playground shows a per-rule trace with verdict, match result, timing, and condition details.
+
+- **Evaluate All** -- force evaluation of every rule, even after the first match
+- **Include Disabled** -- show disabled rules as skipped entries in the trace
+- **Time-Travel** -- override the evaluation clock for time-sensitive rules
+- **Mock State** -- provide state key overrides for state-dependent conditions
+- **Modified Payload** -- when the verdict is `modify`, preview the resulting payload
+
+See [Rule Playground](../features/rule-playground.md) for full documentation.
+
 ## Rules
 
 ![Rules](assets/rules.png)

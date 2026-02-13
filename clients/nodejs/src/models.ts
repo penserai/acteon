@@ -279,6 +279,62 @@ export interface ReloadResult {
   errors: string[];
 }
 
+// =============================================================================
+// Rule Playground Types
+// =============================================================================
+
+/**
+ * Request to evaluate rules against a test action without dispatching.
+ */
+export interface EvaluateRulesRequest {
+  namespace: string;
+  tenant: string;
+  provider: string;
+  action_type: string;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, string>;
+  include_disabled?: boolean;
+  evaluate_all?: boolean;
+  evaluate_at?: string | null;
+  mock_state?: Record<string, string>;
+}
+
+/**
+ * Trace entry for a single rule evaluation.
+ */
+export interface RuleTraceEntry {
+  rule_name: string;
+  priority: number;
+  enabled: boolean;
+  condition_display: string;
+  result: 'matched' | 'not_matched' | 'skipped' | 'error';
+  evaluation_duration_us: number;
+  action: string;
+  source: string;
+  description?: string;
+  skip_reason?: string;
+  error?: string;
+}
+
+/**
+ * Response from the rule evaluation playground.
+ */
+export interface EvaluateRulesResponse {
+  verdict: string;
+  matched_rule?: string;
+  has_errors: boolean;
+  total_rules_evaluated: number;
+  total_rules_skipped: number;
+  evaluation_duration_us: number;
+  trace: RuleTraceEntry[];
+  context: {
+    time: Record<string, unknown>;
+    environment_keys: string[];
+    effective_timezone?: string;
+  };
+  modified_payload?: Record<string, unknown>;
+}
+
 /**
  * Query parameters for audit search.
  */
