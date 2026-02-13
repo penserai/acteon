@@ -247,7 +247,7 @@ rules locally without a running server. Enables CI/CD validation of rule
 changes before deployment. Output: matched rule, verdict, and evaluation
 trace.
 
-### Rule Playground API
+### ~~Rule Playground API~~ ✅ Done
 `POST /v1/rules/evaluate` accepts an action and returns which rule matched
 and why, without executing. Like dry-run but focused specifically on rule
 debugging. Returns the full evaluation trace: which rules were checked,

@@ -1141,6 +1141,38 @@ func (c *Client) GetQuotaUsage(ctx context.Context, quotaID string) (*QuotaUsage
 }
 
 // =============================================================================
+// Rule Evaluation (Rule Playground)
+// =============================================================================
+
+// EvaluateRules evaluates rules against a test action without dispatching.
+func (c *Client) EvaluateRules(ctx context.Context, req EvaluateRulesRequest) (*EvaluateRulesResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/rules/evaluate", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result EvaluateRulesResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to evaluate rules"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// =============================================================================
 // Chains
 // =============================================================================
 

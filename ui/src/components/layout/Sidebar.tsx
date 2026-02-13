@@ -3,7 +3,7 @@ import { NavLink, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/cn'
 import { useUiStore } from '../../stores/ui'
 import {
-  LayoutDashboard, Send, BookOpen, ScrollText, Radio, Layers, Link2, ShieldCheck,
+  LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
   PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart,
 } from 'lucide-react'
@@ -14,6 +14,7 @@ const mainItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/dispatch', icon: Send, label: 'Dispatch' },
   { to: '/rules', icon: BookOpen, label: 'Rules' },
+  { to: '/playground', icon: FlaskConical, label: 'Rule Playground' },
   { to: '/audit', icon: ScrollText, label: 'Audit Trail' },
   { to: '/events', icon: Radio, label: 'Events' },
   { to: '/groups', icon: Layers, label: 'Groups' },

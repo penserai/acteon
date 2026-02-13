@@ -115,6 +115,11 @@ Test rules without executing actions — see what *would* happen before it happe
 </div>
 
 <div class="card" markdown>
+### [Rule Playground](rule-playground.md)
+Detailed per-rule evaluation trace with time-travel debugging, mock state, and modify-payload preview.
+</div>
+
+<div class="card" markdown>
 ### [Time-Based Rules](time-based-rules.md)
 Apply rules based on time of day, day of week, or date — business hours, weekend routing, maintenance windows.
 </div>

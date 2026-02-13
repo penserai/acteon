@@ -279,6 +279,84 @@ export interface ReloadResult {
   errors: string[];
 }
 
+// =============================================================================
+// Rule Playground Types
+// =============================================================================
+
+/**
+ * Request to evaluate rules against a test action without dispatching.
+ */
+export interface EvaluateRulesRequest {
+  namespace: string;
+  tenant: string;
+  provider: string;
+  action_type: string;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, string>;
+  include_disabled?: boolean;
+  evaluate_all?: boolean;
+  evaluate_at?: string | null;
+  mock_state?: Record<string, string>;
+}
+
+/**
+ * Details about a semantic match evaluation performed during rule evaluation.
+ */
+export interface SemanticMatchDetail {
+  /** The text extracted from the action payload for semantic comparison. */
+  extracted_text: string;
+  /** The topic the rule is matching against. */
+  topic: string;
+  /** The computed similarity score between the extracted text and the topic. */
+  similarity: number;
+  /** The threshold the similarity must meet for a match. */
+  threshold: number;
+}
+
+/**
+ * Trace entry for a single rule evaluation.
+ */
+export interface RuleTraceEntry {
+  rule_name: string;
+  priority: number;
+  enabled: boolean;
+  condition_display: string;
+  result: 'matched' | 'not_matched' | 'skipped' | 'error';
+  evaluation_duration_us: number;
+  action: string;
+  source: string;
+  description?: string;
+  skip_reason?: string;
+  error?: string;
+  /** Details about semantic match evaluation, if the rule uses semantic matching. */
+  semantic_details?: SemanticMatchDetail;
+  /** JSON merge patch produced by a Modify rule in evaluate_all mode. */
+  modify_patch?: Record<string, unknown>;
+  /** Cumulative payload after applying this rule's merge patch. */
+  modified_payload_preview?: Record<string, unknown>;
+}
+
+/**
+ * Response from the rule evaluation playground.
+ */
+export interface EvaluateRulesResponse {
+  verdict: string;
+  matched_rule?: string;
+  has_errors: boolean;
+  total_rules_evaluated: number;
+  total_rules_skipped: number;
+  evaluation_duration_us: number;
+  trace: RuleTraceEntry[];
+  context: {
+    time: Record<string, unknown>;
+    environment_keys: string[];
+    effective_timezone?: string;
+    /** State keys that were actually accessed during rule evaluation. */
+    accessed_state_keys?: string[];
+  };
+  modified_payload?: Record<string, unknown>;
+}
+
 /**
  * Query parameters for audit search.
  */

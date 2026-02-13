@@ -354,6 +354,62 @@ export interface PauseResumeResponse {
   next_execution_at: string | null
 }
 
+// ---- Rule Playground ----
+
+export interface EvaluateRulesRequest {
+  namespace: string
+  tenant: string
+  provider: string
+  action_type: string
+  payload: Record<string, unknown>
+  metadata?: Record<string, string>
+  include_disabled?: boolean
+  evaluate_all?: boolean
+  evaluate_at?: string | null
+  mock_state?: Record<string, string>
+}
+
+export interface SemanticMatchDetail {
+  extracted_text: string
+  topic: string
+  similarity: number
+  threshold: number
+}
+
+export interface RuleTraceEntry {
+  rule_name: string
+  priority: number
+  enabled: boolean
+  condition_display: string
+  result: 'matched' | 'not_matched' | 'skipped' | 'error'
+  evaluation_duration_us: number
+  action: string
+  source: string
+  description?: string
+  skip_reason?: string
+  error?: string
+  semantic_details?: SemanticMatchDetail
+  modify_patch?: Record<string, unknown>
+  modified_payload_preview?: Record<string, unknown>
+}
+
+export interface EvaluateRulesResponse {
+  verdict: string
+  matched_rule?: string
+  has_errors: boolean
+  total_rules_evaluated: number
+  total_rules_skipped: number
+  evaluation_duration_us: number
+  trace: RuleTraceEntry[]
+  context: {
+    time: Record<string, unknown>
+    environment_keys: string[]
+    accessed_state_keys?: string[]
+    effective_timezone?: string
+  }
+  modified_payload?: Record<string, unknown>
+}
+
 // ---- Config ----
 export interface ConfigResponse {
   server: {

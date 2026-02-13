@@ -144,6 +144,132 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Returns a human-readable pseudo-code representation of the expression.
+    #[allow(clippy::too_many_lines)]
+    pub fn to_source(&self) -> String {
+        match self {
+            Self::Null => "null".to_owned(),
+            Self::Bool(b) => b.to_string(),
+            Self::Int(n) => n.to_string(),
+            Self::Float(f) => f.to_string(),
+            Self::String(s) => format!("\"{}\"", s.replace('"', "\\\"")),
+            Self::List(items) => {
+                let inner = items
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[{inner}]")
+            }
+            Self::Map(entries) => {
+                let inner = entries
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k.replace('"', "\\\""), v.to_source()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{{inner}}}")
+            }
+            Self::Ident(name) => name.clone(),
+            Self::Field(base, field) => format!("{}.{}", base.to_source(), field),
+            Self::Index(base, index) => format!("{}[{}]", base.to_source(), index.to_source()),
+            Self::Unary(op, expr) => {
+                let symbol = match op {
+                    UnaryOp::Not => "!",
+                    UnaryOp::Neg => "-",
+                };
+                format!("{}{}", symbol, expr.to_source())
+            }
+            Self::Binary(op, lhs, rhs) => {
+                let symbol = match op {
+                    BinaryOp::Add => "+",
+                    BinaryOp::Sub => "-",
+                    BinaryOp::Mul => "*",
+                    BinaryOp::Div => "/",
+                    BinaryOp::Mod => "%",
+                    BinaryOp::Eq => "==",
+                    BinaryOp::Ne => "!=",
+                    BinaryOp::Lt => "<",
+                    BinaryOp::Le => "<=",
+                    BinaryOp::Gt => ">",
+                    BinaryOp::Ge => ">=",
+                    BinaryOp::And => "&&",
+                    BinaryOp::Or => "||",
+                    BinaryOp::Contains => "contains",
+                    BinaryOp::StartsWith => "starts_with",
+                    BinaryOp::EndsWith => "ends_with",
+                    BinaryOp::Matches => "matches",
+                    BinaryOp::In => "in",
+                };
+                format!("({} {} {})", lhs.to_source(), symbol, rhs.to_source())
+            }
+            Self::Ternary(cond, then, els) => format!(
+                "({} ? {} : {})",
+                cond.to_source(),
+                then.to_source(),
+                els.to_source()
+            ),
+            Self::Call(name, args) => {
+                let inner = args
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{name}({inner})")
+            }
+            Self::All(exprs) => {
+                let inner = exprs
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(" && ");
+                format!("all({inner})")
+            }
+            Self::Any(exprs) => {
+                let inner = exprs
+                    .iter()
+                    .map(Self::to_source)
+                    .collect::<Vec<_>>()
+                    .join(" || ");
+                format!("any({inner})")
+            }
+            Self::StateGet(key) => format!("StateGet(\"{key}\")"),
+            Self::StateCounter(key) => format!("StateCounter(\"{key}\")"),
+            Self::StateTimeSince(key) => format!("StateTimeSince(\"{key}\")"),
+            Self::HasActiveEvent {
+                event_type,
+                label_value,
+            } => match label_value {
+                Some(v) => {
+                    let v_src = v.to_source();
+                    format!("HasActiveEvent(\"{event_type}\", {v_src})")
+                }
+                None => format!("HasActiveEvent(\"{event_type}\")"),
+            },
+            Self::GetEventState(fp) => {
+                let fp_src = fp.to_source();
+                format!("GetEventState({fp_src})")
+            }
+            Self::EventInState { fingerprint, state } => {
+                let fp_src = fingerprint.to_source();
+                format!("EventInState({fp_src}, \"{state}\")")
+            }
+            Self::SemanticMatch {
+                topic,
+                threshold,
+                text_field,
+            } => {
+                let text = text_field
+                    .as_ref()
+                    .map(|f| {
+                        let f_src = f.to_source();
+                        format!(", text={f_src}")
+                    })
+                    .unwrap_or_default();
+                format!("SemanticMatch(\"{topic}\", threshold={threshold}{text})")
+            }
+        }
+    }
+
     /// Returns `true` if this expression is a constant (literal) value.
     pub fn is_constant(&self) -> bool {
         matches!(

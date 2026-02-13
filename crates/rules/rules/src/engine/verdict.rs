@@ -95,6 +95,24 @@ pub enum RuleVerdict {
 }
 
 impl RuleVerdict {
+    /// Returns a short string tag for the verdict kind (e.g. `"allow"`, `"deny"`).
+    pub fn as_tag(&self) -> &'static str {
+        match self {
+            Self::Allow(_) => "allow",
+            Self::Deny(_) => "deny",
+            Self::Deduplicate { .. } => "deduplicate",
+            Self::Suppress(_) => "suppress",
+            Self::Reroute { .. } => "reroute",
+            Self::Throttle { .. } => "throttle",
+            Self::Modify { .. } => "modify",
+            Self::StateMachine { .. } => "state_machine",
+            Self::Group { .. } => "group",
+            Self::RequestApproval { .. } => "request_approval",
+            Self::Chain { .. } => "chain",
+            Self::Schedule { .. } => "schedule",
+        }
+    }
+
     /// Extract the rule name from the verdict, if any.
     ///
     /// Returns `None` for `Allow` and `Deduplicate` (which don't carry a rule name).

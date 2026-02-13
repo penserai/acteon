@@ -797,6 +797,75 @@ type DlqDrainResponse struct {
 }
 
 // =============================================================================
+// Rule Evaluation Types (Rule Playground)
+// =============================================================================
+
+// EvaluateRulesRequest is the request body for rule evaluation.
+type EvaluateRulesRequest struct {
+	Namespace       string                 `json:"namespace"`
+	Tenant          string                 `json:"tenant"`
+	Provider        string                 `json:"provider"`
+	ActionType      string                 `json:"action_type"`
+	Payload         map[string]interface{} `json:"payload"`
+	Metadata        map[string]string      `json:"metadata,omitempty"`
+	IncludeDisabled bool                   `json:"include_disabled,omitempty"`
+	EvaluateAll     bool                   `json:"evaluate_all,omitempty"`
+	EvaluateAt      *string                `json:"evaluate_at,omitempty"`
+	MockState       map[string]string      `json:"mock_state,omitempty"`
+}
+
+// SemanticMatchDetail contains details about a semantic match evaluation.
+type SemanticMatchDetail struct {
+	// ExtractedText is the text that was extracted and compared.
+	ExtractedText string `json:"extracted_text"`
+	// Topic is the topic the text was compared against.
+	Topic string `json:"topic"`
+	// Similarity is the computed similarity score.
+	Similarity float64 `json:"similarity"`
+	// Threshold is the threshold that was configured on the rule.
+	Threshold float64 `json:"threshold"`
+}
+
+// RuleTraceEntry is a per-rule trace entry from rule evaluation.
+type RuleTraceEntry struct {
+	RuleName               string               `json:"rule_name"`
+	Priority               int                  `json:"priority"`
+	Enabled                bool                 `json:"enabled"`
+	ConditionDisplay       string               `json:"condition_display"`
+	Result                 string               `json:"result"`
+	EvaluationDuration     uint64               `json:"evaluation_duration_us"`
+	Action                 string               `json:"action"`
+	Source                 string               `json:"source"`
+	Description            *string              `json:"description,omitempty"`
+	SkipReason             *string              `json:"skip_reason,omitempty"`
+	Error                  *string              `json:"error,omitempty"`
+	SemanticDetails        *SemanticMatchDetail `json:"semantic_details,omitempty"`
+	ModifyPatch            json.RawMessage      `json:"modify_patch,omitempty"`
+	ModifiedPayloadPreview json.RawMessage      `json:"modified_payload_preview,omitempty"`
+}
+
+// TraceContext holds contextual information from rule evaluation.
+type TraceContext struct {
+	Time              map[string]interface{} `json:"time"`
+	EnvironmentKeys   []string               `json:"environment_keys"`
+	AccessedStateKeys []string               `json:"accessed_state_keys,omitempty"`
+	EffectiveTimezone *string                `json:"effective_timezone,omitempty"`
+}
+
+// EvaluateRulesResponse is the response from rule evaluation.
+type EvaluateRulesResponse struct {
+	Verdict             string                 `json:"verdict"`
+	MatchedRule         *string                `json:"matched_rule,omitempty"`
+	HasErrors           bool                   `json:"has_errors"`
+	TotalRulesEvaluated int                    `json:"total_rules_evaluated"`
+	TotalRulesSkipped   int                    `json:"total_rules_skipped"`
+	EvaluationDuration  uint64                 `json:"evaluation_duration_us"`
+	Trace               []RuleTraceEntry       `json:"trace"`
+	Context             TraceContext            `json:"context"`
+	ModifiedPayload     map[string]interface{} `json:"modified_payload,omitempty"`
+}
+
+// =============================================================================
 // SSE Types (Server-Sent Events)
 // =============================================================================
 

@@ -1,9 +1,11 @@
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use tracing::{debug, instrument};
 
-use crate::engine::context::EvalContext;
-use crate::engine::eval::eval;
+use crate::engine::context::{AccessTracker, EvalContext};
+use crate::engine::eval::{build_time_map, eval};
+use crate::engine::trace::{RuleEvaluationTrace, RuleTraceEntry, RuleTraceResult, TraceContext};
 use crate::engine::verdict::{RuleVerdict, action_to_verdict};
 use crate::error::RuleError;
 use crate::ir::rule::Rule;
@@ -92,6 +94,7 @@ impl RuleEngine {
                     embedding: ctx.embedding.clone(),
                     timezone: Some(tz),
                     time_map_cache: std::sync::OnceLock::new(),
+                    access_tracker: None,
                 };
                 &eval_ctx
             } else {
@@ -142,6 +145,194 @@ impl RuleEngine {
         }
     }
 
+    /// Evaluate all rules against the given context, returning a detailed trace.
+    ///
+    /// Unlike [`evaluate`](Self::evaluate), this method does **not** necessarily
+    /// short-circuit on the first match. If `evaluate_all` is `true`, it
+    /// evaluates every enabled rule so the trace shows exactly which rules
+    /// would have matched. If `false`, it follows production behavior and
+    /// stops at the first match.
+    ///
+    /// The verdict is always determined by the first matching rule in
+    /// priority order.
+    ///
+    /// When `include_disabled` is `true`, disabled rules appear in the trace
+    /// with `result: Skipped` and `skip_reason: "disabled"`.
+    #[instrument(skip_all, fields(rules_count = self.rules.len()))]
+    pub async fn evaluate_with_trace(
+        &self,
+        ctx: &EvalContext<'_>,
+        include_disabled: bool,
+        evaluate_all: bool,
+    ) -> Result<RuleEvaluationTrace, RuleError> {
+        let overall_start = std::time::Instant::now();
+        let mut entries = Vec::with_capacity(self.rules.len());
+        let mut first_match: Option<(String, &Rule)> = None;
+        let mut total_evaluated: usize = 0;
+        let mut total_skipped: usize = 0;
+        let mut has_errors = false;
+        let mut errors_before_match = false;
+
+        // Create a shared access tracker so all per-rule contexts record to it.
+        let tracker = Arc::new(AccessTracker::default());
+        let traced_ctx = EvalContext {
+            action: ctx.action,
+            state: ctx.state,
+            environment: ctx.environment,
+            now: ctx.now,
+            embedding: ctx.embedding.clone(),
+            timezone: ctx.timezone,
+            time_map_cache: std::sync::OnceLock::new(),
+            access_tracker: Some(Arc::clone(&tracker)),
+        };
+
+        for rule in &self.rules {
+            if !rule.enabled {
+                if include_disabled {
+                    total_skipped += 1;
+                    entries.push(build_skip_entry(rule, "disabled"));
+                }
+                continue;
+            }
+
+            if first_match.is_some() && !evaluate_all {
+                total_skipped += 1;
+                entries.push(build_skip_entry(rule, "earlier_rule_matched"));
+                continue;
+            }
+
+            let (mut entry, matched) = self.trace_eval_rule(rule, &traced_ctx).await?;
+            // Attach semantic match detail if the rule produced one.
+            entry.semantic_details = tracker.take_semantic_detail();
+            total_evaluated += 1;
+            if entry.result == RuleTraceResult::Error {
+                has_errors = true;
+                if first_match.is_none() {
+                    errors_before_match = true;
+                }
+            }
+            if matched && first_match.is_none() {
+                first_match = Some((rule.name.clone(), rule));
+            }
+            entries.push(entry);
+        }
+
+        let verdict_str = if errors_before_match {
+            "error".to_owned()
+        } else if let Some((_, rule)) = &first_match {
+            action_to_verdict(&rule.name, &rule.action)
+                .as_tag()
+                .to_owned()
+        } else {
+            RuleVerdict::Allow(None).as_tag().to_owned()
+        };
+
+        let matched_rule = first_match.map(|(name, _)| name);
+
+        // Append a synthetic entry for default allow if no match occurred.
+        if matched_rule.is_none() && !errors_before_match {
+            entries.push(RuleTraceEntry {
+                rule_name: "(default fallthrough)".to_owned(),
+                priority: i32::MAX,
+                enabled: true,
+                condition_display: "no rules matched".to_owned(),
+                result: RuleTraceResult::Matched,
+                evaluation_duration_us: 0,
+                action: "Allow".to_owned(),
+                source: "System".to_owned(),
+                description: Some(
+                    "No rules matched the action. The system default is to allow.".to_owned(),
+                ),
+                skip_reason: None,
+                error: None,
+                semantic_details: None,
+                modify_patch: None,
+                modified_payload_preview: None,
+            });
+        }
+
+        let trace_ctx = build_trace_context(&traced_ctx, &tracker);
+        let total_duration_us = micros_u64(overall_start.elapsed());
+
+        Ok(RuleEvaluationTrace {
+            verdict: verdict_str,
+            matched_rule,
+            has_errors,
+            total_rules_evaluated: total_evaluated,
+            total_rules_skipped: total_skipped,
+            evaluation_duration_us: total_duration_us,
+            trace: entries,
+            context: trace_ctx,
+            modified_payload: None,
+        })
+    }
+
+    /// Evaluate a single rule's condition and return a trace entry plus whether it matched.
+    async fn trace_eval_rule(
+        &self,
+        rule: &Rule,
+        ctx: &EvalContext<'_>,
+    ) -> Result<(RuleTraceEntry, bool), RuleError> {
+        let rule_tz = if let Some(ref tz_name) = rule.timezone {
+            if let Ok(tz) = tz_name.parse::<chrono_tz::Tz>() {
+                Some(tz)
+            } else {
+                let entry = build_eval_entry(
+                    rule,
+                    RuleTraceResult::Error,
+                    0,
+                    Some(format!("invalid timezone: {tz_name}")),
+                );
+                return Ok((entry, false));
+            }
+        } else {
+            None
+        };
+
+        let eval_ctx;
+        let effective_ctx = if let Some(tz) = rule_tz {
+            eval_ctx = EvalContext {
+                action: ctx.action,
+                state: ctx.state,
+                environment: ctx.environment,
+                now: ctx.now,
+                embedding: ctx.embedding.clone(),
+                timezone: Some(tz),
+                time_map_cache: std::sync::OnceLock::new(),
+                access_tracker: ctx.access_tracker.clone(),
+            };
+            &eval_ctx
+        } else {
+            ctx
+        };
+
+        let rule_start = std::time::Instant::now();
+        let eval_result = eval(&rule.condition, effective_ctx).await;
+        let duration_us = micros_u64(rule_start.elapsed());
+
+        match eval_result {
+            Ok(value) => {
+                let matched = value.is_truthy();
+                let result = if matched {
+                    RuleTraceResult::Matched
+                } else {
+                    RuleTraceResult::NotMatched
+                };
+                let entry = build_eval_entry(rule, result, duration_us, None);
+                Ok((entry, matched))
+            }
+            Err(e) => {
+                let entry = build_eval_entry(
+                    rule,
+                    RuleTraceResult::Error,
+                    duration_us,
+                    Some(e.to_string()),
+                );
+                Ok((entry, false))
+            }
+        }
+    }
+
     /// Load rules from a directory using the provided frontends.
     ///
     /// Walks the directory for files matching frontend extensions,
@@ -184,6 +375,75 @@ impl RuleEngine {
 
         self.rules.sort_by_key(|r| r.priority);
         Ok(loaded)
+    }
+}
+
+/// Convert a `Duration` to microseconds, saturating at `u64::MAX`.
+fn micros_u64(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// Build a trace entry for a skipped rule (disabled or lower-priority).
+fn build_skip_entry(rule: &Rule, reason: &str) -> RuleTraceEntry {
+    RuleTraceEntry {
+        rule_name: rule.name.clone(),
+        priority: rule.priority,
+        enabled: rule.enabled,
+        condition_display: rule.condition.to_source(),
+        result: RuleTraceResult::Skipped,
+        evaluation_duration_us: 0,
+        action: rule.action.kind_label().to_owned(),
+        source: format!("{:?}", rule.source),
+        description: rule.description.clone(),
+        skip_reason: Some(reason.into()),
+        error: None,
+        semantic_details: None,
+        modify_patch: None,
+        modified_payload_preview: None,
+    }
+}
+
+/// Build a trace entry for a rule that was actually evaluated.
+fn build_eval_entry(
+    rule: &Rule,
+    result: RuleTraceResult,
+    duration_us: u64,
+    error: Option<String>,
+) -> RuleTraceEntry {
+    RuleTraceEntry {
+        rule_name: rule.name.clone(),
+        priority: rule.priority,
+        enabled: true,
+        condition_display: rule.condition.to_source(),
+        result,
+        evaluation_duration_us: duration_us,
+        action: rule.action.kind_label().to_owned(),
+        source: format!("{:?}", rule.source),
+        description: rule.description.clone(),
+        skip_reason: None,
+        error,
+        semantic_details: None,
+        modify_patch: None,
+        modified_payload_preview: None,
+    }
+}
+
+/// Build the `TraceContext` from the evaluation context.
+///
+/// When an `AccessTracker` is provided, environment and state keys are taken
+/// from the tracker (only keys that were actually accessed). Otherwise, all
+/// environment keys are listed for backward compatibility.
+fn build_trace_context(ctx: &EvalContext<'_>, tracker: &AccessTracker) -> TraceContext {
+    let time_value = build_time_map(ctx);
+    let time_json = serde_json::to_value(&time_value).unwrap_or(serde_json::Value::Null);
+    let env_keys = tracker.drain_env_keys();
+    let state_keys = tracker.drain_state_keys();
+    let effective_tz = ctx.timezone.map(|tz| tz.to_string());
+    TraceContext {
+        time: time_json,
+        environment_keys: env_keys,
+        accessed_state_keys: state_keys,
+        effective_timezone: effective_tz,
     }
 }
 

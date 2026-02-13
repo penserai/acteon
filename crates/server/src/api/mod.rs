@@ -103,6 +103,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/rules", get(rules::list_rules))
         .route("/v1/rules/reload", post(rules::reload_rules))
         .route("/v1/rules/{name}/enabled", put(rules::set_rule_enabled))
+        .route("/v1/rules/evaluate", post(rules::evaluate_rules))
         // Audit
         .route("/v1/audit", get(audit::query_audit))
         .route("/v1/audit/replay", post(replay::replay_audit))
