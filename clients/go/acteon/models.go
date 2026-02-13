@@ -814,25 +814,41 @@ type EvaluateRulesRequest struct {
 	MockState       map[string]string      `json:"mock_state,omitempty"`
 }
 
+// SemanticMatchDetail contains details about a semantic match evaluation.
+type SemanticMatchDetail struct {
+	// ExtractedText is the text that was extracted and compared.
+	ExtractedText string `json:"extracted_text"`
+	// Topic is the topic the text was compared against.
+	Topic string `json:"topic"`
+	// Similarity is the computed similarity score.
+	Similarity float64 `json:"similarity"`
+	// Threshold is the threshold that was configured on the rule.
+	Threshold float64 `json:"threshold"`
+}
+
 // RuleTraceEntry is a per-rule trace entry from rule evaluation.
 type RuleTraceEntry struct {
-	RuleName           string  `json:"rule_name"`
-	Priority           int     `json:"priority"`
-	Enabled            bool    `json:"enabled"`
-	ConditionDisplay   string  `json:"condition_display"`
-	Result             string  `json:"result"`
-	EvaluationDuration uint64  `json:"evaluation_duration_us"`
-	Action             string  `json:"action"`
-	Source             string  `json:"source"`
-	Description        *string `json:"description,omitempty"`
-	SkipReason         *string `json:"skip_reason,omitempty"`
-	Error              *string `json:"error,omitempty"`
+	RuleName               string               `json:"rule_name"`
+	Priority               int                  `json:"priority"`
+	Enabled                bool                 `json:"enabled"`
+	ConditionDisplay       string               `json:"condition_display"`
+	Result                 string               `json:"result"`
+	EvaluationDuration     uint64               `json:"evaluation_duration_us"`
+	Action                 string               `json:"action"`
+	Source                 string               `json:"source"`
+	Description            *string              `json:"description,omitempty"`
+	SkipReason             *string              `json:"skip_reason,omitempty"`
+	Error                  *string              `json:"error,omitempty"`
+	SemanticDetails        *SemanticMatchDetail `json:"semantic_details,omitempty"`
+	ModifyPatch            json.RawMessage      `json:"modify_patch,omitempty"`
+	ModifiedPayloadPreview json.RawMessage      `json:"modified_payload_preview,omitempty"`
 }
 
 // TraceContext holds contextual information from rule evaluation.
 type TraceContext struct {
 	Time              map[string]interface{} `json:"time"`
 	EnvironmentKeys   []string               `json:"environment_keys"`
+	AccessedStateKeys []string               `json:"accessed_state_keys,omitempty"`
 	EffectiveTimezone *string                `json:"effective_timezone,omitempty"`
 }
 

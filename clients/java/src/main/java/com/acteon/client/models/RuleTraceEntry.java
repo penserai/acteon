@@ -1,6 +1,8 @@
 package com.acteon.client.models;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 
 /**
  * A per-rule trace entry from rule evaluation.
@@ -39,6 +41,18 @@ public class RuleTraceEntry {
     @JsonProperty("error")
     private String error;
 
+    @JsonProperty("semantic_details")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private SemanticMatchDetail semanticDetails;
+
+    @JsonProperty("modify_patch")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private JsonNode modifyPatch;
+
+    @JsonProperty("modified_payload_preview")
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private JsonNode modifiedPayloadPreview;
+
     public String getRuleName() { return ruleName; }
     public void setRuleName(String ruleName) { this.ruleName = ruleName; }
 
@@ -71,4 +85,13 @@ public class RuleTraceEntry {
 
     public String getError() { return error; }
     public void setError(String error) { this.error = error; }
+
+    public SemanticMatchDetail getSemanticDetails() { return semanticDetails; }
+    public void setSemanticDetails(SemanticMatchDetail semanticDetails) { this.semanticDetails = semanticDetails; }
+
+    public JsonNode getModifyPatch() { return modifyPatch; }
+    public void setModifyPatch(JsonNode modifyPatch) { this.modifyPatch = modifyPatch; }
+
+    public JsonNode getModifiedPayloadPreview() { return modifiedPayloadPreview; }
+    public void setModifiedPayloadPreview(JsonNode modifiedPayloadPreview) { this.modifiedPayloadPreview = modifiedPayloadPreview; }
 }

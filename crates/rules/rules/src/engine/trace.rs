@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::context::SemanticMatchDetail;
+
 /// Result of evaluating a single rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -55,6 +57,17 @@ pub struct RuleTraceEntry {
     /// Error message if evaluation failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Details about semantic match evaluation, if the rule uses `SemanticMatch`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_details: Option<SemanticMatchDetail>,
+    /// The JSON merge patch this rule would apply (only for `Modify` rules in
+    /// `evaluate_all` mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modify_patch: Option<serde_json::Value>,
+    /// Cumulative payload after applying this rule's patch (only for `Modify`
+    /// rules in `evaluate_all` mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_payload_preview: Option<serde_json::Value>,
 }
 
 /// Contextual information captured during rule evaluation.
@@ -62,8 +75,12 @@ pub struct RuleTraceEntry {
 pub struct TraceContext {
     /// The `time.*` map that was used during evaluation.
     pub time: serde_json::Value,
-    /// Keys present in the environment (values omitted for security).
+    /// Environment keys that were actually accessed during evaluation
+    /// (values omitted for security).
     pub environment_keys: Vec<String>,
+    /// State keys that were actually accessed during evaluation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accessed_state_keys: Vec<String>,
     /// The effective timezone used for time-based conditions, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_timezone: Option<String>,

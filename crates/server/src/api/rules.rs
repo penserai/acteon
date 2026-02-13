@@ -11,6 +11,7 @@ use tracing::info;
 use utoipa::ToSchema;
 
 use acteon_core::Action;
+use acteon_rules::{RuleTraceEntry, SemanticMatchDetail};
 use acteon_rules_yaml::YamlFrontend;
 
 use crate::auth::identity::CallerIdentity;
@@ -90,6 +91,18 @@ pub struct RuleTraceEntryResponse {
     /// Error message if evaluation failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Details about semantic match evaluation, if the rule uses `SemanticMatch`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub semantic_details: Option<SemanticMatchDetail>,
+    /// The JSON merge patch this rule would apply (only for `Modify` rules in
+    /// `evaluate_all` mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modify_patch: Option<serde_json::Value>,
+    /// Cumulative payload after applying this rule's patch (only for `Modify`
+    /// rules in `evaluate_all` mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_payload_preview: Option<serde_json::Value>,
 }
 
 /// Response from the rule evaluation playground.
@@ -117,6 +130,43 @@ pub struct EvaluateRulesResponse {
     /// payload after applying the JSON merge patch.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified_payload: Option<serde_json::Value>,
+}
+
+impl From<RuleTraceEntry> for RuleTraceEntryResponse {
+    fn from(e: RuleTraceEntry) -> Self {
+        Self {
+            rule_name: e.rule_name,
+            priority: e.priority,
+            enabled: e.enabled,
+            condition_display: e.condition_display,
+            result: e.result.as_str().to_owned(),
+            evaluation_duration_us: e.evaluation_duration_us,
+            action: e.action,
+            source: e.source,
+            description: e.description,
+            skip_reason: e.skip_reason,
+            error: e.error,
+            semantic_details: e.semantic_details,
+            modify_patch: e.modify_patch,
+            modified_payload_preview: e.modified_payload_preview,
+        }
+    }
+}
+
+impl From<acteon_rules::RuleEvaluationTrace> for EvaluateRulesResponse {
+    fn from(trace: acteon_rules::RuleEvaluationTrace) -> Self {
+        Self {
+            verdict: trace.verdict,
+            matched_rule: trace.matched_rule,
+            has_errors: trace.has_errors,
+            total_rules_evaluated: trace.total_rules_evaluated,
+            total_rules_skipped: trace.total_rules_skipped,
+            evaluation_duration_us: trace.evaluation_duration_us,
+            trace: trace.trace.into_iter().map(Into::into).collect(),
+            context: serde_json::to_value(&trace.context).unwrap_or_default(),
+            modified_payload: trace.modified_payload,
+        }
+    }
 }
 
 /// `GET /v1/rules` -- list all loaded rules.
@@ -305,14 +355,24 @@ pub async fn set_rule_enabled(
     responses(
         (status = 200, description = "Rule evaluation trace", body = EvaluateRulesResponse),
         (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 500, description = "Internal error", body = ErrorResponse)
     )
 )]
 pub async fn evaluate_rules(
     State(state): State<AppState>,
-    axum::Extension(_identity): axum::Extension<CallerIdentity>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
     Json(req): Json<EvaluateRulesRequest>,
 ) -> impl IntoResponse {
+    if !identity.role.has_permission(Permission::RulesTest) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: "insufficient permissions: rules testing requires appropriate role".into(),
+            })),
+        );
+    }
+
     let action = Action::new(
         req.namespace,
         req.tenant,
@@ -336,36 +396,7 @@ pub async fn evaluate_rules(
         .await
     {
         Ok(trace) => {
-            let entries: Vec<RuleTraceEntryResponse> = trace
-                .trace
-                .iter()
-                .map(|e| RuleTraceEntryResponse {
-                    rule_name: e.rule_name.clone(),
-                    priority: e.priority,
-                    enabled: e.enabled,
-                    condition_display: e.condition_display.clone(),
-                    result: e.result.as_str().to_owned(),
-                    evaluation_duration_us: e.evaluation_duration_us,
-                    action: e.action.clone(),
-                    source: e.source.clone(),
-                    description: e.description.clone(),
-                    skip_reason: e.skip_reason.clone(),
-                    error: e.error.clone(),
-                })
-                .collect();
-
-            let resp = EvaluateRulesResponse {
-                verdict: trace.verdict,
-                matched_rule: trace.matched_rule,
-                has_errors: trace.has_errors,
-                total_rules_evaluated: trace.total_rules_evaluated,
-                total_rules_skipped: trace.total_rules_skipped,
-                evaluation_duration_us: trace.evaluation_duration_us,
-                trace: entries,
-                context: serde_json::to_value(&trace.context).unwrap_or_default(),
-                modified_payload: trace.modified_payload,
-            };
-
+            let resp: EvaluateRulesResponse = trace.into();
             (StatusCode::OK, Json(serde_json::json!(resp)))
         }
         Err(e) => (

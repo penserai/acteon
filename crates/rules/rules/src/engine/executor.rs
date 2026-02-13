@@ -1,8 +1,9 @@
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use tracing::{debug, instrument};
 
-use crate::engine::context::EvalContext;
+use crate::engine::context::{AccessTracker, EvalContext};
 use crate::engine::eval::{build_time_map, eval};
 use crate::engine::trace::{RuleEvaluationTrace, RuleTraceEntry, RuleTraceResult, TraceContext};
 use crate::engine::verdict::{RuleVerdict, action_to_verdict};
@@ -93,6 +94,7 @@ impl RuleEngine {
                     embedding: ctx.embedding.clone(),
                     timezone: Some(tz),
                     time_map_cache: std::sync::OnceLock::new(),
+                    access_tracker: None,
                 };
                 &eval_ctx
             } else {
@@ -171,6 +173,19 @@ impl RuleEngine {
         let mut has_errors = false;
         let mut errors_before_match = false;
 
+        // Create a shared access tracker so all per-rule contexts record to it.
+        let tracker = Arc::new(AccessTracker::default());
+        let traced_ctx = EvalContext {
+            action: ctx.action,
+            state: ctx.state,
+            environment: ctx.environment,
+            now: ctx.now,
+            embedding: ctx.embedding.clone(),
+            timezone: ctx.timezone,
+            time_map_cache: std::sync::OnceLock::new(),
+            access_tracker: Some(Arc::clone(&tracker)),
+        };
+
         for rule in &self.rules {
             if !rule.enabled {
                 if include_disabled {
@@ -186,7 +201,9 @@ impl RuleEngine {
                 continue;
             }
 
-            let (entry, matched) = self.trace_eval_rule(rule, ctx).await?;
+            let (mut entry, matched) = self.trace_eval_rule(rule, &traced_ctx).await?;
+            // Attach semantic match detail if the rule produced one.
+            entry.semantic_details = tracker.take_semantic_detail();
             total_evaluated += 1;
             if entry.result == RuleTraceResult::Error {
                 has_errors = true;
@@ -226,10 +243,13 @@ impl RuleEngine {
                 ),
                 skip_reason: None,
                 error: None,
+                semantic_details: None,
+                modify_patch: None,
+                modified_payload_preview: None,
             });
         }
 
-        let trace_ctx = build_trace_context(ctx);
+        let trace_ctx = build_trace_context(&traced_ctx, &tracker);
         let total_duration_us = micros_u64(overall_start.elapsed());
 
         Ok(RuleEvaluationTrace {
@@ -277,6 +297,7 @@ impl RuleEngine {
                 embedding: ctx.embedding.clone(),
                 timezone: Some(tz),
                 time_map_cache: std::sync::OnceLock::new(),
+                access_tracker: ctx.access_tracker.clone(),
             };
             &eval_ctx
         } else {
@@ -374,6 +395,9 @@ fn build_skip_entry(rule: &Rule, reason: &str) -> RuleTraceEntry {
         description: rule.description.clone(),
         skip_reason: Some(reason.into()),
         error: None,
+        semantic_details: None,
+        modify_patch: None,
+        modified_payload_preview: None,
     }
 }
 
@@ -396,19 +420,27 @@ fn build_eval_entry(
         description: rule.description.clone(),
         skip_reason: None,
         error,
+        semantic_details: None,
+        modify_patch: None,
+        modified_payload_preview: None,
     }
 }
 
 /// Build the `TraceContext` from the evaluation context.
-fn build_trace_context(ctx: &EvalContext<'_>) -> TraceContext {
+///
+/// When an `AccessTracker` is provided, environment and state keys are taken
+/// from the tracker (only keys that were actually accessed). Otherwise, all
+/// environment keys are listed for backward compatibility.
+fn build_trace_context(ctx: &EvalContext<'_>, tracker: &AccessTracker) -> TraceContext {
     let time_value = build_time_map(ctx);
     let time_json = serde_json::to_value(&time_value).unwrap_or(serde_json::Value::Null);
-    let mut env_keys: Vec<String> = ctx.environment.keys().cloned().collect();
-    env_keys.sort();
+    let env_keys = tracker.drain_env_keys();
+    let state_keys = tracker.drain_state_keys();
     let effective_tz = ctx.timezone.map(|tz| tz.to_string());
     TraceContext {
         time: time_json,
         environment_keys: env_keys,
+        accessed_state_keys: state_keys,
         effective_timezone: effective_tz,
     }
 }

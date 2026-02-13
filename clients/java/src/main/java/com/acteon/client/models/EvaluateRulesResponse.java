@@ -1,7 +1,9 @@
 package com.acteon.client.models;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -73,6 +75,10 @@ public class EvaluateRulesResponse {
         @JsonProperty("environment_keys")
         private List<String> environmentKeys;
 
+        @JsonProperty("accessed_state_keys")
+        @JsonInclude(JsonInclude.Include.NON_EMPTY)
+        private List<String> accessedStateKeys = Collections.emptyList();
+
         @JsonProperty("effective_timezone")
         private String effectiveTimezone;
 
@@ -81,6 +87,9 @@ public class EvaluateRulesResponse {
 
         public List<String> getEnvironmentKeys() { return environmentKeys; }
         public void setEnvironmentKeys(List<String> environmentKeys) { this.environmentKeys = environmentKeys; }
+
+        public List<String> getAccessedStateKeys() { return accessedStateKeys; }
+        public void setAccessedStateKeys(List<String> accessedStateKeys) { this.accessedStateKeys = accessedStateKeys; }
 
         public String getEffectiveTimezone() { return effectiveTimezone; }
         public void setEffectiveTimezone(String effectiveTimezone) { this.effectiveTimezone = effectiveTimezone; }

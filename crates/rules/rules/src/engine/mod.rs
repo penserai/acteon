@@ -9,7 +9,7 @@ pub mod trace;
 pub mod value;
 pub mod verdict;
 
-pub use context::{EmbeddingEvalSupport, EvalContext};
+pub use context::{AccessTracker, EmbeddingEvalSupport, EvalContext, SemanticMatchDetail};
 pub use executor::RuleEngine;
 pub use value::Value;
 pub use verdict::RuleVerdict;

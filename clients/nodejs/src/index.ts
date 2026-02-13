@@ -34,6 +34,7 @@ export {
   type RuleInfo,
   type ReloadResult,
   type EvaluateRulesRequest,
+  type SemanticMatchDetail,
   type RuleTraceEntry,
   type EvaluateRulesResponse,
   type AuditQuery,

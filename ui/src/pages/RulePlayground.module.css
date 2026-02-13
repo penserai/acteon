@@ -267,3 +267,60 @@
   @apply font-medium;
   color: var(--text-muted);
 }
+
+/* Semantic match details */
+.semanticSection {
+  @apply mt-2 p-3 rounded-lg border;
+  border-color: var(--border-default);
+  background: var(--bg-surface);
+}
+
+.semanticTitle {
+  @apply text-xs font-semibold uppercase tracking-wide mb-2;
+  color: var(--text-muted);
+}
+
+.semanticGrid {
+  @apply grid grid-cols-2 gap-x-4 gap-y-1 text-xs;
+}
+
+.semanticValue {
+  @apply font-mono;
+  color: var(--text-default);
+}
+
+.similarityBar {
+  @apply flex items-center gap-2 col-span-2 mt-1;
+}
+
+.similarityTrack {
+  @apply flex-1 h-1.5 rounded-full overflow-hidden;
+  background: var(--bg-surface-secondary);
+}
+
+.similarityFill {
+  @apply h-full rounded-full;
+}
+
+.similarityPass {
+  @apply bg-emerald-500;
+}
+
+.similarityFail {
+  @apply bg-red-500;
+}
+
+/* JSON detail sub-sections in trace rows */
+.traceDetailJsonSection {
+  @apply mt-2;
+}
+
+.traceDetailJsonLabel {
+  @apply text-xs font-semibold uppercase tracking-wide mb-1 block;
+  color: var(--text-muted);
+}
+
+.traceDetailJsonPre {
+  @apply rounded p-3 font-mono text-xs overflow-auto max-h-48;
+  background: var(--bg-surface);
+}

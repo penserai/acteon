@@ -742,16 +742,26 @@ impl Gateway {
             trace.modified_payload = Some(patched);
         }
 
-        // Filter environment keys to omit names that likely contain secrets.
-        trace.context.environment_keys.retain(|key| {
-            let k = key.to_uppercase();
-            !k.contains("SECRET")
-                && !k.contains("PASSWORD")
-                && !k.contains("TOKEN")
-                && !k.contains("CREDENTIAL")
-                && !k.contains("PRIVATE_KEY")
-                && !k.ends_with("_KEY")
-        });
+        // In evaluate_all mode, compute per-rule modify patches and a running
+        // cumulative payload preview for each matched Modify rule.
+        if evaluate_all {
+            let mut running_payload = action.payload.clone();
+            for entry in &mut trace.trace {
+                if entry.result == acteon_rules::RuleTraceResult::Matched
+                    && entry.action.contains("Modify")
+                    && let Some(rule) = self
+                        .engine
+                        .rules()
+                        .iter()
+                        .find(|r| r.name == entry.rule_name)
+                    && let acteon_rules::RuleAction::Modify { changes } = &rule.action
+                {
+                    entry.modify_patch = Some(changes.clone());
+                    json_patch::merge(&mut running_payload, changes);
+                    entry.modified_payload_preview = Some(running_payload.clone());
+                }
+            }
+        }
 
         Ok(trace)
     }

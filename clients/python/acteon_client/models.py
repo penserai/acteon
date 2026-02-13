@@ -275,6 +275,57 @@ class EvaluateRulesRequest:
 
 
 @dataclass
+class SemanticMatchDetail:
+    """Details about a semantic match evaluation.
+
+    Attributes:
+        extracted_text: The text that was extracted and compared.
+        topic: The topic the text was compared against.
+        similarity: The computed similarity score.
+        threshold: The threshold that was configured on the rule.
+    """
+    extracted_text: str
+    topic: str
+    similarity: float
+    threshold: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SemanticMatchDetail":
+        return cls(
+            extracted_text=data["extracted_text"],
+            topic=data["topic"],
+            similarity=data["similarity"],
+            threshold=data["threshold"],
+        )
+
+
+@dataclass
+class TraceContext:
+    """Contextual information captured during rule evaluation.
+
+    Attributes:
+        time: The time map that was used during evaluation.
+        environment_keys: Environment keys accessed during evaluation (values
+            omitted for security).
+        accessed_state_keys: State keys actually accessed during evaluation.
+        effective_timezone: The effective timezone used for time-based conditions.
+    """
+    time: Dict[str, Any]
+    environment_keys: List[str]
+    accessed_state_keys: List[str] = field(default_factory=list)
+    effective_timezone: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TraceContext":
+        return cls(
+            time=data.get("time", {}),
+            environment_keys=data.get("environment_keys", []),
+            accessed_state_keys=data.get("accessed_state_keys", []),
+            effective_timezone=data.get("effective_timezone"),
+        )
+
+
+@dataclass
 class RuleTraceEntry:
     """Trace entry for a single rule evaluation.
 
@@ -290,6 +341,11 @@ class RuleTraceEntry:
         description: Optional rule description.
         skip_reason: Reason the rule was skipped (if skipped).
         error: Error message (if evaluation errored).
+        semantic_details: Details about semantic match evaluation, if the rule
+            uses a semantic match condition.
+        modify_patch: JSON merge patch for Modify rules in evaluate_all mode.
+        modified_payload_preview: Cumulative payload after applying this rule's
+            patch (only for Modify rules in evaluate_all mode).
     """
     rule_name: str
     priority: int
@@ -302,9 +358,13 @@ class RuleTraceEntry:
     description: Optional[str] = None
     skip_reason: Optional[str] = None
     error: Optional[str] = None
+    semantic_details: Optional[SemanticMatchDetail] = None
+    modify_patch: Optional[Dict[str, Any]] = None
+    modified_payload_preview: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RuleTraceEntry":
+        semantic_raw = data.get("semantic_details")
         return cls(
             rule_name=data["rule_name"],
             priority=data["priority"],
@@ -317,6 +377,13 @@ class RuleTraceEntry:
             description=data.get("description"),
             skip_reason=data.get("skip_reason"),
             error=data.get("error"),
+            semantic_details=(
+                SemanticMatchDetail.from_dict(semantic_raw)
+                if semantic_raw is not None
+                else None
+            ),
+            modify_patch=data.get("modify_patch"),
+            modified_payload_preview=data.get("modified_payload_preview"),
         )
 
 
@@ -330,7 +397,7 @@ class EvaluateRulesResponse:
         total_rules_skipped: Number of rules that were skipped.
         evaluation_duration_us: Total evaluation time in microseconds.
         trace: Per-rule trace entries showing evaluation details.
-        context: Evaluation context including time and environment info.
+        context: Evaluation context including time, environment, and state info.
         matched_rule: Name of the matched rule (if any).
         has_errors: Whether any rule evaluation produced an error.
         modified_payload: The payload after rule modifications (if any).
@@ -340,7 +407,7 @@ class EvaluateRulesResponse:
     total_rules_skipped: int
     evaluation_duration_us: int
     trace: List[RuleTraceEntry]
-    context: Dict[str, Any]
+    context: TraceContext
     matched_rule: Optional[str] = None
     has_errors: bool = False
     modified_payload: Optional[Dict[str, Any]] = None
@@ -355,7 +422,7 @@ class EvaluateRulesResponse:
             total_rules_skipped=data["total_rules_skipped"],
             evaluation_duration_us=data["evaluation_duration_us"],
             trace=[RuleTraceEntry.from_dict(t) for t in data["trace"]],
-            context=data["context"],
+            context=TraceContext.from_dict(data["context"]),
             modified_payload=data.get("modified_payload"),
         )
 

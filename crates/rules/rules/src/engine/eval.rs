@@ -39,6 +39,12 @@ pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError
         Expr::Ident(name) => resolve_ident(name, ctx),
 
         Expr::Field(base, field) => {
+            // Track environment key access for the playground trace.
+            if let Some(ref tracker) = ctx.access_tracker
+                && matches!(base.as_ref(), Expr::Ident(name) if name == "env" || name == "environment")
+            {
+                tracker.record_env_key(field);
+            }
             let base_val = Box::pin(eval(base, ctx)).await?;
             base_val.field(field)
         }
@@ -138,6 +144,9 @@ pub(crate) fn resolve_ident(name: &str, ctx: &EvalContext<'_>) -> Result<Value, 
         _ => {
             // Try environment lookup as a shortcut.
             if let Some(val) = ctx.environment.get(name) {
+                if let Some(ref tracker) = ctx.access_tracker {
+                    tracker.record_env_key(name);
+                }
                 return Ok(Value::String(val.clone()));
             }
             Err(RuleError::UndefinedVariable(name.to_owned()))

@@ -2292,6 +2292,19 @@ pub struct EvaluateRulesOptions {
     pub mock_state: std::collections::HashMap<String, String>,
 }
 
+/// Details about a semantic match evaluation, used for explainability.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SemanticMatchDetail {
+    /// The text that was extracted and compared.
+    pub extracted_text: String,
+    /// The topic the text was compared against.
+    pub topic: String,
+    /// The computed similarity score.
+    pub similarity: f64,
+    /// The threshold that was configured on the rule.
+    pub threshold: f64,
+}
+
 /// Per-rule trace entry returned by the playground.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RuleTraceEntry {
@@ -2317,6 +2330,35 @@ pub struct RuleTraceEntry {
     pub skip_reason: Option<String>,
     /// Error message if evaluation failed.
     pub error: Option<String>,
+    /// Details about semantic match evaluation, if the rule uses `SemanticMatch`.
+    #[serde(default)]
+    pub semantic_details: Option<SemanticMatchDetail>,
+    /// The JSON merge patch this rule would apply (only for `Modify` rules in
+    /// `evaluate_all` mode).
+    #[serde(default)]
+    pub modify_patch: Option<serde_json::Value>,
+    /// Cumulative payload after applying this rule's patch (only for `Modify`
+    /// rules in `evaluate_all` mode).
+    #[serde(default)]
+    pub modified_payload_preview: Option<serde_json::Value>,
+}
+
+/// Contextual information captured during rule evaluation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TraceContext {
+    /// The `time.*` map that was used during evaluation.
+    #[serde(default)]
+    pub time: serde_json::Value,
+    /// Environment keys that were actually accessed during evaluation
+    /// (values omitted for security).
+    #[serde(default)]
+    pub environment_keys: Vec<String>,
+    /// State keys that were actually accessed during evaluation.
+    #[serde(default)]
+    pub accessed_state_keys: Vec<String>,
+    /// The effective timezone used for time-based conditions, if any.
+    #[serde(default)]
+    pub effective_timezone: Option<String>,
 }
 
 /// Response from the rule evaluation playground.
@@ -2338,7 +2380,7 @@ pub struct RuleEvaluationTrace {
     /// Per-rule trace entries.
     pub trace: Vec<RuleTraceEntry>,
     /// The evaluation context that was used.
-    pub context: serde_json::Value,
+    pub context: TraceContext,
     /// The payload after any rule modifications, if changed.
     pub modified_payload: Option<serde_json::Value>,
 }

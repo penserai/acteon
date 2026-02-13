@@ -369,6 +369,13 @@ export interface EvaluateRulesRequest {
   mock_state?: Record<string, string>
 }
 
+export interface SemanticMatchDetail {
+  extracted_text: string
+  topic: string
+  similarity: number
+  threshold: number
+}
+
 export interface RuleTraceEntry {
   rule_name: string
   priority: number
@@ -381,6 +388,9 @@ export interface RuleTraceEntry {
   description?: string
   skip_reason?: string
   error?: string
+  semantic_details?: SemanticMatchDetail
+  modify_patch?: Record<string, unknown>
+  modified_payload_preview?: Record<string, unknown>
 }
 
 export interface EvaluateRulesResponse {
@@ -394,6 +404,7 @@ export interface EvaluateRulesResponse {
   context: {
     time: Record<string, unknown>
     environment_keys: string[]
+    accessed_state_keys?: string[]
     effective_timezone?: string
   }
   modified_payload?: Record<string, unknown>

@@ -354,6 +354,12 @@ export function RulePlayground() {
                           <p>{result.context.environment_keys.join(', ')}</p>
                         </div>
                       )}
+                      {result.context.accessed_state_keys && result.context.accessed_state_keys.length > 0 && (
+                        <div style={{ marginTop: '0.5rem' }}>
+                          <span className={styles.contextLabel}>Accessed State Keys</span>
+                          <p>{result.context.accessed_state_keys.join(', ')}</p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -431,6 +437,52 @@ function TraceRow({ entry, expanded, onToggle }: {
                 <div>
                   <span className={styles.traceDetailLabel}>Error: </span>
                   <span className={styles.resultError}>{entry.error}</span>
+                </div>
+              )}
+              {entry.semantic_details && (
+                <div className={styles.semanticSection}>
+                  <div className={styles.semanticTitle}>Semantic Match</div>
+                  <div className={styles.semanticGrid}>
+                    <span className={styles.traceDetailLabel}>Topic</span>
+                    <span className={styles.semanticValue}>{entry.semantic_details.topic}</span>
+                    <span className={styles.traceDetailLabel}>Extracted Text</span>
+                    <span className={styles.semanticValue}>{entry.semantic_details.extracted_text}</span>
+                    <span className={styles.traceDetailLabel}>Similarity</span>
+                    <span className={styles.semanticValue}>{(entry.semantic_details.similarity * 100).toFixed(1)}%</span>
+                    <span className={styles.traceDetailLabel}>Threshold</span>
+                    <span className={styles.semanticValue}>{(entry.semantic_details.threshold * 100).toFixed(1)}%</span>
+                    <div className={styles.similarityBar}>
+                      <div className={styles.similarityTrack}>
+                        <div
+                          className={`${styles.similarityFill} ${
+                            entry.semantic_details.similarity >= entry.semantic_details.threshold
+                              ? styles.similarityPass
+                              : styles.similarityFail
+                          }`}
+                          style={{ width: `${Math.min(entry.semantic_details.similarity * 100, 100)}%` }}
+                        />
+                      </div>
+                      <span className={styles.semanticValue}>
+                        {entry.semantic_details.similarity >= entry.semantic_details.threshold ? 'pass' : 'fail'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {entry.modify_patch && (
+                <div className={styles.traceDetailJsonSection}>
+                  <span className={styles.traceDetailJsonLabel}>Modify Patch</span>
+                  <div className={styles.traceDetailJsonPre}>
+                    <JsonViewer data={entry.modify_patch} />
+                  </div>
+                </div>
+              )}
+              {entry.modified_payload_preview && (
+                <div className={styles.traceDetailJsonSection}>
+                  <span className={styles.traceDetailJsonLabel}>Modified Payload Preview</span>
+                  <div className={styles.traceDetailJsonPre}>
+                    <JsonViewer data={entry.modified_payload_preview} />
+                  </div>
                 </div>
               )}
             </div>

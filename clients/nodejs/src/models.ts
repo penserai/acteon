@@ -300,6 +300,20 @@ export interface EvaluateRulesRequest {
 }
 
 /**
+ * Details about a semantic match evaluation performed during rule evaluation.
+ */
+export interface SemanticMatchDetail {
+  /** The text extracted from the action payload for semantic comparison. */
+  extracted_text: string;
+  /** The topic the rule is matching against. */
+  topic: string;
+  /** The computed similarity score between the extracted text and the topic. */
+  similarity: number;
+  /** The threshold the similarity must meet for a match. */
+  threshold: number;
+}
+
+/**
  * Trace entry for a single rule evaluation.
  */
 export interface RuleTraceEntry {
@@ -314,6 +328,12 @@ export interface RuleTraceEntry {
   description?: string;
   skip_reason?: string;
   error?: string;
+  /** Details about semantic match evaluation, if the rule uses semantic matching. */
+  semantic_details?: SemanticMatchDetail;
+  /** JSON merge patch produced by a Modify rule in evaluate_all mode. */
+  modify_patch?: Record<string, unknown>;
+  /** Cumulative payload after applying this rule's merge patch. */
+  modified_payload_preview?: Record<string, unknown>;
 }
 
 /**
@@ -331,6 +351,8 @@ export interface EvaluateRulesResponse {
     time: Record<string, unknown>;
     environment_keys: string[];
     effective_timezone?: string;
+    /** State keys that were actually accessed during rule evaluation. */
+    accessed_state_keys?: string[];
   };
   modified_payload?: Record<string, unknown>;
 }
