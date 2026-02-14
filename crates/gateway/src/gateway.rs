@@ -1300,8 +1300,9 @@ impl Gateway {
         );
 
         let current_state = match self.state.get(&state_key).await? {
-            Some(val) => {
-                // Parse stored state JSON
+            Some(raw_val) => {
+                // Decrypt if encrypted, then parse stored state JSON.
+                let val = self.decrypt_state_value(&raw_val).unwrap_or(raw_val);
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&val) {
                     parsed
                         .get("state")
@@ -1338,16 +1339,15 @@ impl Gateway {
             (current_state.clone(), false)
         };
 
-        // Store updated state
+        // Store updated state (encrypted if encryptor is configured)
         let state_value = serde_json::json!({
             "state": &new_state,
             "fingerprint": &fingerprint,
             "updated_at": Utc::now().to_rfc3339(),
             "action_type": &action.action_type,
         });
-        self.state
-            .set(&state_key, &state_value.to_string(), None)
-            .await?;
+        let state_value_str = self.encrypt_state_value(&state_value.to_string())?;
+        self.state.set(&state_key, &state_value_str, None).await?;
 
         // Update active events index for inhibition lookups
         let active_key = StateKey::new(
@@ -1360,9 +1360,8 @@ impl Gateway {
             "state": &new_state,
             "fingerprint": &fingerprint,
         });
-        self.state
-            .set(&active_key, &active_value.to_string(), None)
-            .await?;
+        let active_value_str = self.encrypt_state_value(&active_value.to_string())?;
+        self.state.set(&active_key, &active_value_str, None).await?;
 
         // Create timeout entry if the new state has a configured timeout
         if let Some(timeout_config) = state_machine.get_timeout_for_state(&new_state) {
@@ -1384,8 +1383,9 @@ impl Gateway {
                 "created_at": Utc::now().to_rfc3339(),
                 "trace_context": &action.trace_context,
             });
+            let timeout_value_str = self.encrypt_state_value(&timeout_value.to_string())?;
             self.state
-                .set(&timeout_key, &timeout_value.to_string(), None)
+                .set(&timeout_key, &timeout_value_str, None)
                 .await?;
 
             // Add to timeout index for efficient O(log N) queries
@@ -1656,7 +1656,10 @@ impl Gateway {
             let updated_json = serde_json::to_string(&updated).map_err(|e| {
                 GatewayError::Configuration(format!("failed to serialize approval: {e}"))
             })?;
-            self.state.set(&approval_key, &updated_json, ttl).await?;
+            let updated_encrypted = self.encrypt_state_value(&updated_json)?;
+            self.state
+                .set(&approval_key, &updated_encrypted, ttl)
+                .await?;
         }
 
         self.metrics.increment_pending_approval();
@@ -1682,7 +1685,13 @@ impl Gateway {
     ) -> Result<ActionOutcome, GatewayError> {
         let (group_id, group_key, group_size, notify_at) = self
             .group_manager
-            .add_to_group(action, group_by, group_wait_seconds, self.state.as_ref())
+            .add_to_group(
+                action,
+                group_by,
+                group_wait_seconds,
+                self.state.as_ref(),
+                self.payload_encryptor.as_deref(),
+            )
             .await?;
 
         self.emit_stream_event(StreamEvent {

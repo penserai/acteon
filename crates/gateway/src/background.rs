@@ -382,6 +382,7 @@ impl BackgroundProcessor {
     ///
     /// Uses an indexed approach to efficiently find expired timeouts in O(log N + M)
     /// where M is the number of expired entries, instead of scanning all timeout keys.
+    #[allow(clippy::too_many_lines)]
     async fn process_timeouts(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now();
         let now_ms = now.timestamp_millis();
@@ -423,8 +424,16 @@ impl BackgroundProcessor {
                 continue;
             };
 
-            // Parse the timeout entry
-            let Ok(timeout_data) = serde_json::from_str::<serde_json::Value>(&value) else {
+            // Decrypt and parse the timeout entry.
+            let decrypted_value = match self.decrypt_state_value(&value) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(key = %canonical_key, error = %e, "failed to decrypt timeout data");
+                    continue;
+                }
+            };
+            let Ok(timeout_data) = serde_json::from_str::<serde_json::Value>(&decrypted_value)
+            else {
                 warn!(key = %canonical_key, "failed to parse timeout data");
                 continue;
             };
@@ -475,9 +484,14 @@ impl BackgroundProcessor {
                 "transitioned_by": "timeout",
             });
 
-            self.state
-                .set(&state_key, &new_state_value.to_string(), None)
-                .await?;
+            let encrypted_state = match self.payload_encryptor {
+                Some(ref enc) => enc
+                    .encrypt_str(&new_state_value.to_string())
+                    .unwrap_or_else(|_| new_state_value.to_string()),
+                None => new_state_value.to_string(),
+            };
+
+            self.state.set(&state_key, &encrypted_state, None).await?;
 
             // Delete the processed timeout entry and remove from index
             self.state.delete(&timeout_key).await?;

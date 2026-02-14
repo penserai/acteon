@@ -509,9 +509,16 @@ impl GatewayBuilder {
 
         let engine = RuleEngine::new(self.rules);
 
-        // Create the DLQ if enabled.
+        // Create the DLQ if enabled, wrapping with encryption if configured.
         let dlq: Option<Arc<dyn DeadLetterSink>> = if self.dlq_enabled {
-            self.dlq.or_else(|| Some(Arc::new(DeadLetterQueue::new())))
+            let raw_dlq = self.dlq.unwrap_or_else(|| Arc::new(DeadLetterQueue::new()));
+            if let Some(ref enc) = self.payload_encryptor {
+                Some(Arc::new(
+                    crate::encrypting_dlq::EncryptingDeadLetterSink::new(raw_dlq, Arc::clone(enc)),
+                ))
+            } else {
+                Some(raw_dlq)
+            }
         } else {
             None
         };

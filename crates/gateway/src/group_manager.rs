@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use acteon_core::{Action, EventGroup, GroupState, GroupedEvent, compute_fingerprint};
+use acteon_crypto::PayloadEncryptor;
 use acteon_state::{KeyKind, StateKey, StateStore};
 
 use crate::error::GatewayError;
@@ -38,11 +39,14 @@ impl GroupManager {
     /// This method scans the state store for pending group entries and
     /// repopulates the in-memory cache. Should be called during gateway
     /// initialization to prevent data loss after restarts.
+    ///
+    /// If an encryptor is provided, group metadata is decrypted before parsing.
     pub async fn recover_groups(
         &self,
         state: &dyn StateStore,
         namespace: &str,
         tenant: &str,
+        encryptor: Option<&PayloadEncryptor>,
     ) -> Result<usize, GatewayError> {
         let entries = state
             .scan_keys(namespace, tenant, KeyKind::Group, None)
@@ -51,8 +55,13 @@ impl GroupManager {
         let mut recovered = 0;
         let mut groups = self.groups.write();
 
-        for (key, value) in entries {
-            // Parse the group metadata from stored JSON
+        for (key, raw_value) in entries {
+            // Decrypt if encrypted, then parse the group metadata from stored JSON.
+            let value = if let Some(enc) = encryptor {
+                enc.decrypt_str(&raw_value).unwrap_or(raw_value)
+            } else {
+                raw_value
+            };
             if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&value) {
                 let group_id = metadata
                     .get("group_id")
@@ -74,15 +83,32 @@ impl GroupManager {
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
                     .unwrap_or_default();
 
+                // Restore events and labels if present (backward compatible:
+                // old entries without these keys get empty defaults).
+                let events: Vec<GroupedEvent> = metadata
+                    .get("events")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                let labels: HashMap<String, String> = metadata
+                    .get("labels")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+
                 // Only recover if not already in memory
                 if !groups.contains_key(&group_key) {
+                    let event_count = events.len();
                     let mut group = EventGroup::new(&group_id, &group_key, notify_at);
                     group.trace_context = trace_context;
+                    group.labels = labels;
+                    for event in events {
+                        group.add_event(event);
+                    }
                     groups.insert(group_key.clone(), group);
                     recovered += 1;
                     tracing::info!(
                         group_id = %group_id,
                         group_key = %group_key,
+                        event_count,
                         "recovered pending group from state store"
                     );
                 }
@@ -96,13 +122,15 @@ impl GroupManager {
 
     /// Add an event to a group based on the `group_by` fields.
     ///
-    /// Returns a tuple of (group ID, current group size, notify at time).
+    /// Returns a tuple of (group ID, group key, current group size, notify at time).
+    /// If an encryptor is provided, group metadata is encrypted before storage.
     pub async fn add_to_group(
         &self,
         action: &Action,
         group_by: &[String],
         group_wait_seconds: u64,
         state: &dyn StateStore,
+        encryptor: Option<&PayloadEncryptor>,
     ) -> Result<(String, String, usize, DateTime<Utc>), GatewayError> {
         // Compute group key from action fields
         let group_key = compute_group_key(action, group_by);
@@ -121,14 +149,26 @@ impl GroupManager {
             grouped_event
         };
 
-        // Check if group exists or create new one
-        let (group_id, group_size, notify_at) = {
+        // Check if group exists or create new one.
+        // We capture events + labels snapshots while holding the lock so
+        // they can be persisted (encrypted) alongside the metadata.
+        let (group_id, group_size, notify_at, events_snapshot, labels_snapshot, trace_ctx) = {
             let mut groups = self.groups.write();
 
             if let Some(group) = groups.get_mut(&group_key) {
                 // Add to existing group
                 group.add_event(grouped_event);
-                (group.group_id.clone(), group.size(), group.notify_at)
+                let events = group.events.clone();
+                let labels = group.labels.clone();
+                let trace = group.trace_context.clone();
+                (
+                    group.group_id.clone(),
+                    group.size(),
+                    group.notify_at,
+                    events,
+                    labels,
+                    trace,
+                )
             } else {
                 // Create new group
                 let group_id = Uuid::new_v4().to_string();
@@ -151,13 +191,17 @@ impl GroupManager {
 
                 let size = group.size();
                 let notify = group.notify_at;
+                let events = group.events.clone();
+                let labels = group.labels.clone();
+                let trace = group.trace_context.clone();
                 groups.insert(group_key.clone(), group);
 
-                (group_id, size, notify)
+                (group_id, size, notify, events, labels, trace)
             }
         };
 
-        // Persist group state
+        // Persist group state (encrypted if encryptor is provided).
+        // Events and labels are included so they survive crash recovery.
         let state_key = StateKey::new(
             action.namespace.as_str(),
             action.tenant.as_str(),
@@ -169,11 +213,18 @@ impl GroupManager {
             "group_key": &group_key,
             "size": group_size,
             "notify_at": notify_at.to_rfc3339(),
-            "trace_context": &action.trace_context,
+            "trace_context": &trace_ctx,
+            "labels": &labels_snapshot,
+            "events": &events_snapshot,
         });
-        state
-            .set(&state_key, &group_value.to_string(), None)
-            .await?;
+        let group_value_str = if let Some(enc) = encryptor {
+            enc.encrypt_str(&group_value.to_string()).map_err(|e| {
+                GatewayError::Configuration(format!("group metadata encryption failed: {e}"))
+            })?
+        } else {
+            group_value.to_string()
+        };
+        state.set(&state_key, &group_value_str, None).await?;
 
         // Add to pending groups index
         let pending_key = StateKey::new(
@@ -366,7 +417,7 @@ mod tests {
         let action = test_action();
 
         let (group_id, _group_key, size, notify_at) = manager
-            .add_to_group(&action, &["metadata.cluster".to_string()], 60, &state)
+            .add_to_group(&action, &["metadata.cluster".to_string()], 60, &state, None)
             .await
             .unwrap();
 
@@ -384,12 +435,24 @@ mod tests {
         let action2 = test_action();
 
         let (group_id1, _, size1, _) = manager
-            .add_to_group(&action1, &["metadata.cluster".to_string()], 60, &state)
+            .add_to_group(
+                &action1,
+                &["metadata.cluster".to_string()],
+                60,
+                &state,
+                None,
+            )
             .await
             .unwrap();
 
         let (group_id2, _, size2, _) = manager
-            .add_to_group(&action2, &["metadata.cluster".to_string()], 60, &state)
+            .add_to_group(
+                &action2,
+                &["metadata.cluster".to_string()],
+                60,
+                &state,
+                None,
+            )
             .await
             .unwrap();
 
