@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "acteon": {
+      "command": "./target/debug/acteon-mcp-server",
+      "args": ["--endpoint", "http://localhost:8080"]
+    }
+  }
+}
