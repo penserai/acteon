@@ -381,3 +381,127 @@ Ranked by impact-to-effort ratio:
 | 11 | Action Status Subscriptions | Low | Medium | **DONE** |
 | 12 | Recurring Actions | Medium | Medium | **DONE** |
 | 13 | Tenant Usage Quotas | Medium | Medium | **DONE** |
+| 14 | Rule Playground API | Medium | Medium | **DONE** |
+| 15 | MCP Server | Medium | Medium | **DONE** |
+| 16 | Payload Encryption at Rest | Medium | High | Not started |
+| 17 | Rule Testing CLI | Low-Med | High | Not started |
+| 18 | Data Retention Policies | Low-Med | Medium | Not started |
+| 19 | Provider Health Dashboard | Medium | Medium | Not started |
+| 20 | Grafana Dashboard Templates | Low | Medium | Not started |
+| 21 | Parallel Chain Steps | Large | Medium | Not started |
+| 22 | Sub-Chains | Medium | Medium | Not started |
+| 23 | Native Providers (Twilio, Teams, Discord) | Medium ea. | Medium | Not started |
+| 24 | Weighted/Canary Routing | Medium | Medium | Not started |
+| 25 | Kafka/RabbitMQ Producers | Medium | Medium | Not started |
+| 26 | Cost-Aware Routing | Medium | Medium | Not started |
+| 27 | Action Analytics API | Med-Large | Medium | Not started |
+| 28 | SOC2/HIPAA Audit Mode | Med-Large | Medium | Not started |
+| 29 | mTLS Support | Medium | Medium | Not started |
+| 30 | gRPC Ingress | Large | Low-Med | Not started |
+| 31 | WASM Rule Plugins | Large | Medium | Not started |
+
+---
+
+## Next Wave: Implementation Notes
+
+> Added 2026-02-14. Detailed scoping for the next batch of features.
+
+### P0 — Do Next
+
+**16. Payload Encryption at Rest**
+- `acteon-crypto` crate already has AES-256-GCM primitives for config secrets
+- Extend to action payloads in state and audit backends
+- Key management strategy needed: envelope encryption, optional KMS integration
+- Transparent to providers — decrypt on read, encrypt on write
+
+**17. Rule Testing CLI**
+- Wraps existing rule playground / trace infrastructure in a CLI
+- `acteon-cli test-rules --rules ./rules/ --fixtures tests/cases.yaml`
+- Reads YAML test cases: input action + expected verdict/matched rule
+- CI/CD friendly: exit code 0/1, machine-readable output option
+- Low effort because trace engine (`evaluate_with_trace`) is already built
+
+### P1 — High Value
+
+**18. Data Retention Policies**
+- Background reaper following `process_recurring_actions()` pattern
+- Per-tenant TTL configs stored in state backend
+- Sweeps audit and state backends on a configurable interval
+- Respects SOC2/HIPAA audit mode if enabled (skip deletion)
+
+**19. Provider Health Dashboard**
+- New Admin UI page aggregating existing Prometheus metrics
+- API endpoint `GET /v1/providers/health` returning per-provider stats
+- Success rate, p50/p95/p99 latency, circuit breaker state, last error
+- Refresh interval configurable in UI
+
+**20. Grafana Dashboard Templates**
+- Pre-built JSON dashboards under `deploy/grafana/`
+- Panels: throughput, latency percentiles, rule match distribution, provider health, error rates, per-tenant usage
+- Quick win for operators adopting Acteon
+
+### P2 — Workflow Power
+
+**21. Parallel Chain Steps (Fan-out / Fan-in)**
+- New step kind: `parallel` with list of concurrent sub-steps
+- Join semantics: `all` (wait for all) or `any` (first to complete)
+- `execution_path` becomes a tree rather than linear list
+- Partial failure handling: configurable (fail-fast vs best-effort)
+- Timeout per parallel group
+
+**22. Sub-Chains (Composable Workflows)**
+- New chain step type referencing another `ChainConfig` by name
+- Results from sub-chain available via `{{prev.*}}` in parent chain
+- `validate()` must detect circular references across chain boundaries
+- Promotes reusability: standard "escalation" or "notification" sub-chains
+
+**23. Native Providers**
+- Each provider is a new crate under `crates/providers/`
+- Start with Twilio (highest demand), then Teams, then Discord
+- Typed request/response structs, specialized error handling, rate limit awareness
+- Generic Webhook remains the fallback for unlisted services
+
+**24. Weighted / Canary Routing**
+- New rule action or rule modifier: `weight: 90` on rule A, `weight: 10` on rule B
+- Deterministic hashing (by action ID) or random distribution
+- Supports canary provider rollouts and load balancing
+
+### P3 — Advanced
+
+**25. Kafka / RabbitMQ Producers**
+- New provider crate(s) following existing provider pattern
+- Config: broker list, topic/queue, serialization format (JSON, Avro, Protobuf)
+- Enables Acteon as an event bridge
+
+**26. Cost-Aware Routing**
+- Cost metadata on providers; budget tracking per tenant
+- Rule conditions that reference remaining budget
+- Ties into quota system for enforcement
+
+**27. Action Analytics API**
+- `GET /v1/analytics/...` with time-bucketed aggregations
+- Leverages ClickHouse audit backend for efficient aggregation
+- Endpoints: top actions, suppression rates, chain completion times, provider error trends
+
+**28. SOC2/HIPAA Audit Mode**
+- Config toggle: `compliance_mode = "soc2"` or `"hipaa"`
+- Synchronous audit writes, immutable records, hash-chaining
+- Disables data retention deletion for covered records
+
+**29. mTLS Support**
+- Mutual TLS for Postgres, Redis, and provider egress connections
+- Certificate rotation support
+- Server already uses `axum` + `rustls`; extend to outbound
+
+### P4 — Long-Term
+
+**30. gRPC Ingress**
+- Add `tonic` to server, define `.proto` schemas for Action/ActionOutcome/API
+- Coexists with REST on a separate port
+- Gateway dispatch pipeline is already transport-agnostic
+
+**31. WASM Rule Plugins**
+- Sandboxed Wasmtime/Wasmer runtime for user-supplied rule logic
+- Plugin interface: receives action JSON, returns verdict
+- Resource limits (memory, CPU time) per plugin invocation
+- Biggest effort on the roadmap; long-term extensibility play
