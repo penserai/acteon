@@ -143,6 +143,8 @@ nav:
   - API Reference:
     - api/index.md
     - REST API: api/rest-api.md
+    - MCP Server: api/mcp-server.md
+    - CLI: api/cli.md
     - Rust Client: api/rust-client.md
     - Polyglot Clients: api/polyglot-clients.md
     - YAML Rule Reference: api/rule-reference.md

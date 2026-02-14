@@ -3,8 +3,7 @@
 //! Each tool maps to one or more operations on the Acteon gateway
 //! via the HTTP client.
 
-use acteon_ops::acteon_client::{AuditQuery, EvaluateRulesOptions, EventQuery};
-use acteon_ops::acteon_core::Action;
+use acteon_ops::acteon_client::{AuditQuery, EventQuery};
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
@@ -152,19 +151,23 @@ impl ActeonMcpServer {
         &self,
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, McpError> {
-        let mut action = Action::new(p.namespace, p.tenant, p.provider, &p.action_type, p.payload);
-
-        if !p.metadata.is_empty() {
-            action.metadata.labels = p.metadata;
-        }
-
-        let outcome = if p.dry_run {
-            self.ops.client().dispatch_dry_run(&action).await
-        } else {
-            self.ops.client().dispatch(&action).await
+        let options = acteon_ops::DispatchOptions {
+            metadata: p.metadata,
+            dry_run: p.dry_run,
         };
 
-        match outcome {
+        match self
+            .ops
+            .dispatch(
+                p.namespace,
+                p.tenant,
+                p.provider,
+                p.action_type,
+                p.payload,
+                options,
+            )
+            .await
+        {
             Ok(o) => {
                 let json = serde_json::to_string_pretty(&o).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -192,7 +195,7 @@ impl ActeonMcpServer {
             offset: None,
         };
 
-        match self.ops.client().query_audit(&query).await {
+        match self.ops.query_audit(query).await {
             Ok(page) => {
                 let json = serde_json::to_string_pretty(&page).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -208,7 +211,7 @@ impl ActeonMcpServer {
         &self,
         Parameters(_p): Parameters<ListRulesParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.ops.client().list_rules().await {
+        match self.ops.list_rules().await {
             Ok(rules) => {
                 let json = serde_json::to_string_pretty(&rules).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -227,14 +230,18 @@ impl ActeonMcpServer {
         &self,
         Parameters(p): Parameters<EvaluateRulesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let action = Action::new(p.namespace, p.tenant, p.provider, &p.action_type, p.payload);
-
-        let options = EvaluateRulesOptions {
-            include_disabled: p.include_disabled,
-            ..EvaluateRulesOptions::default()
-        };
-
-        match self.ops.client().evaluate_rules(&action, &options).await {
+        match self
+            .ops
+            .evaluate_rules(
+                p.namespace,
+                p.tenant,
+                p.provider,
+                p.action_type,
+                p.payload,
+                p.include_disabled,
+            )
+            .await
+        {
             Ok(trace) => {
                 let json = serde_json::to_string_pretty(&trace).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -254,8 +261,7 @@ impl ActeonMcpServer {
     ) -> Result<CallToolResult, McpError> {
         match self
             .ops
-            .client()
-            .transition_event(&p.fingerprint, &p.action, &p.namespace, &p.tenant)
+            .transition_event(p.fingerprint, p.action, p.namespace, p.tenant)
             .await
         {
             Ok(resp) => {
@@ -282,7 +288,7 @@ impl ActeonMcpServer {
             limit: p.limit,
         };
 
-        match self.ops.client().list_events(&query).await {
+        match self.ops.list_events(query).await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -299,12 +305,7 @@ impl ActeonMcpServer {
         &self,
         Parameters(p): Parameters<ListChainsParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self
-            .ops
-            .client()
-            .list_chains(&p.namespace, &p.tenant, p.status.as_deref())
-            .await
-        {
+        match self.ops.list_chains(p.namespace, p.tenant, p.status).await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
@@ -321,8 +322,7 @@ impl ActeonMcpServer {
     ) -> Result<CallToolResult, McpError> {
         match self
             .ops
-            .client()
-            .set_rule_enabled(&p.rule_name, p.enabled)
+            .set_rule_enabled(p.rule_name.clone(), p.enabled)
             .await
         {
             Ok(()) => {
@@ -339,7 +339,7 @@ impl ActeonMcpServer {
     /// Check gateway health and service status.
     #[tool(description = "Check if the Acteon gateway is healthy and responding.")]
     async fn check_health(&self) -> Result<CallToolResult, McpError> {
-        match self.ops.client().health().await {
+        match self.ops.health().await {
             Ok(true) => Ok(CallToolResult::success(vec![Content::text(
                 "Acteon gateway is healthy.",
             )])),

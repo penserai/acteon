@@ -1,6 +1,6 @@
-use acteon_ops::OpsClient;
-use acteon_ops::acteon_core::Action;
+use acteon_ops::{DispatchOptions, OpsClient};
 use clap::Args;
+use std::collections::HashMap;
 
 use crate::OutputFormat;
 
@@ -21,9 +21,19 @@ pub struct DispatchArgs {
     /// JSON payload (string or @file path).
     #[arg(long)]
     pub payload: String,
+    /// Metadata labels (key=value).
+    #[arg(long, value_parser = parse_key_val)]
+    pub metadata: Vec<(String, String)>,
     /// Dry-run mode.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+fn parse_key_val(s: &str) -> Result<(String, String), String> {
+    let pos = s
+        .find('=')
+        .ok_or_else(|| format!("invalid KEY=VALUE: no `=` found in `{s}`"))?;
+    Ok((s[..pos].to_string(), s[pos + 1..].to_string()))
 }
 
 pub async fn run(
@@ -39,19 +49,21 @@ pub async fn run(
         serde_json::from_str(&args.payload)?
     };
 
-    let action = Action::new(
-        args.namespace.as_str(),
-        args.tenant.as_str(),
-        args.provider.as_str(),
-        &args.action_type,
-        payload,
-    );
-
-    let outcome = if args.dry_run {
-        ops.client().dispatch_dry_run(&action).await?
-    } else {
-        ops.client().dispatch(&action).await?
+    let options = DispatchOptions {
+        metadata: args.metadata.iter().cloned().collect::<HashMap<_, _>>(),
+        dry_run: args.dry_run,
     };
+
+    let outcome = ops
+        .dispatch(
+            args.namespace.clone(),
+            args.tenant.clone(),
+            args.provider.clone(),
+            args.action_type.clone(),
+            payload,
+            options,
+        )
+        .await?;
 
     match format {
         OutputFormat::Json => {
