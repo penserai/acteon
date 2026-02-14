@@ -6,11 +6,13 @@ version = 4
 name = "acteon-audit"
 version = "0.1.0"
 dependencies = [
+ "acteon-crypto",
  "async-trait",
  "chrono",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "utoipa",
 ]
 
@@ -122,6 +124,7 @@ dependencies = [
  "hex",
  "regex",
  "secrecy",
+ "serde_json",
  "thiserror 2.0.18",
  "zeroize",
 ]
@@ -174,6 +177,7 @@ version = "0.1.0"
 dependencies = [
  "acteon-audit",
  "acteon-core",
+ "acteon-crypto",
  "acteon-executor",
  "acteon-llm",
  "acteon-provider",
@@ -397,6 +401,7 @@ dependencies = [
  "acteon-audit-postgres",
  "acteon-client",
  "acteon-core",
+ "acteon-crypto",
  "acteon-executor",
  "acteon-gateway",
  "acteon-provider",

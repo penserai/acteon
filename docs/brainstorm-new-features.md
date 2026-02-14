@@ -408,11 +408,13 @@ Ranked by impact-to-effort ratio:
 
 ### P0 — Do Next
 
-**16. Payload Encryption at Rest**
-- `acteon-crypto` crate already has AES-256-GCM primitives for config secrets
-- Extend to action payloads in state and audit backends
-- Key management strategy needed: envelope encryption, optional KMS integration
-- Transparent to providers — decrypt on read, encrypt on write
+**16. Payload Encryption at Rest** — DONE
+- `PayloadEncryptor` in `acteon-crypto` for AES-256-GCM encryption of JSON payloads
+- Gateway-level encrypt/decrypt at state store boundaries (scheduled, chain, approval, recurring actions)
+- `EncryptingAuditStore` decorator encrypts `action_payload` in audit records
+- `BackgroundProcessor` decrypts state values before deserializing
+- Opt-in via `encryption.enabled = true` + `ACTEON_PAYLOAD_KEY` env var
+- Backward compatible: unencrypted values pass through decrypt unchanged
 
 **17. Rule Testing CLI**
 - Wraps existing rule playground / trace infrastructure in a CLI

@@ -179,6 +179,8 @@ pub struct Gateway {
     /// lazily cache policies discovered from the state store (hot-reload
     /// visibility across distributed instances).
     pub(crate) quota_policies: parking_lot::RwLock<HashMap<String, CachedPolicy>>,
+    /// Optional payload encryptor for encrypting action payloads at rest.
+    pub(crate) payload_encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -191,6 +193,31 @@ impl std::fmt::Debug for Gateway {
 }
 
 impl Gateway {
+    /// Returns a reference to the payload encryptor, if configured.
+    pub fn payload_encryptor(&self) -> Option<&acteon_crypto::PayloadEncryptor> {
+        self.payload_encryptor.as_deref()
+    }
+
+    /// Encrypt a state value if a payload encryptor is configured, otherwise passthrough.
+    pub fn encrypt_state_value(&self, value: &str) -> Result<String, GatewayError> {
+        match self.payload_encryptor {
+            Some(ref enc) => enc.encrypt_str(value).map_err(|e| {
+                GatewayError::Configuration(format!("payload encryption failed: {e}"))
+            }),
+            None => Ok(value.to_owned()),
+        }
+    }
+
+    /// Decrypt a state value if a payload encryptor is configured, otherwise passthrough.
+    pub fn decrypt_state_value(&self, value: &str) -> Result<String, GatewayError> {
+        match self.payload_encryptor {
+            Some(ref enc) => enc.decrypt_str(value).map_err(|e| {
+                GatewayError::Configuration(format!("payload decryption failed: {e}"))
+            }),
+            None => Ok(value.to_owned()),
+        }
+    }
+
     /// Dispatch a single action through the full gateway pipeline.
     ///
     /// This acquires a per-action distributed lock, evaluates rules, and
@@ -1526,6 +1553,7 @@ impl Gateway {
         let record_json = serde_json::to_string(&record).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
+        let record_encrypted = self.encrypt_state_value(&record_json)?;
 
         // Store the approval record keyed by namespace:tenant:approval:id
         let approval_key = StateKey::new(
@@ -1534,7 +1562,9 @@ impl Gateway {
             KeyKind::Approval,
             &id,
         );
-        self.state.set(&approval_key, &record_json, ttl).await?;
+        self.state
+            .set(&approval_key, &record_encrypted, ttl)
+            .await?;
 
         // Store pending approvals index by action ID
         let pending_key = StateKey::new(
@@ -1760,9 +1790,8 @@ impl Gateway {
             "scheduled_for": scheduled_for.to_rfc3339(),
             "created_at": now.to_rfc3339(),
         });
-        self.state
-            .set(&sched_key, &sched_data.to_string(), ttl)
-            .await?;
+        let sched_value = self.encrypt_state_value(&sched_data.to_string())?;
+        self.state.set(&sched_key, &sched_value, ttl).await?;
 
         // Add to pending scheduled index using the timeout index mechanism.
         let pending_key = StateKey::new(
@@ -1864,7 +1893,8 @@ impl Gateway {
         let state_json = serde_json::to_string(&chain_state).map_err(|e| {
             GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
         })?;
-        self.state.set(&chain_key, &state_json, None).await?;
+        let state_encrypted = self.encrypt_state_value(&state_json)?;
+        self.state.set(&chain_key, &state_encrypted, None).await?;
 
         // Add to pending chains index.
         let pending_key = StateKey::new(
@@ -1926,9 +1956,10 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         // Load current chain state.
-        let state_json = self.state.get(&chain_key).await?.ok_or_else(|| {
+        let state_raw = self.state.get(&chain_key).await?.ok_or_else(|| {
             GatewayError::ChainError(format!("chain state not found: {chain_id}"))
         })?;
+        let state_json = self.decrypt_state_value(&state_raw)?;
         let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
             GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
         })?;
@@ -2647,7 +2678,8 @@ impl Gateway {
         let json = serde_json::to_string(chain_state).map_err(|e| {
             GatewayError::ChainError(format!("failed to serialize chain state: {e}"))
         })?;
-        self.state.set(chain_key, &json, ttl).await?;
+        let encrypted = self.encrypt_state_value(&json)?;
+        self.state.set(chain_key, &encrypted, ttl).await?;
         Ok(())
     }
 
@@ -2838,7 +2870,8 @@ impl Gateway {
     ) -> Result<Option<ChainState>, GatewayError> {
         let chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
         match self.state.get(&chain_key).await? {
-            Some(json) => {
+            Some(raw) => {
+                let json = self.decrypt_state_value(&raw)?;
                 let state: ChainState = serde_json::from_str(&json).map_err(|e| {
                     GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
                 })?;
@@ -2898,11 +2931,12 @@ impl Gateway {
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
-        let state_json = self
+        let state_raw = self
             .state
             .get(&chain_key)
             .await?
             .ok_or_else(|| GatewayError::ChainError(format!("chain not found: {chain_id}")))?;
+        let state_json = self.decrypt_state_value(&state_raw)?;
         let mut chain_state: ChainState = serde_json::from_str(&state_json).map_err(|e| {
             GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
         })?;
@@ -3005,7 +3039,8 @@ impl Gateway {
     ) -> Result<Option<ApprovalRecord>, GatewayError> {
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
         match self.state.get(&approval_key).await? {
-            Some(val) => {
+            Some(raw) => {
+                let val = self.decrypt_state_value(&raw)?;
                 let record: ApprovalRecord = serde_json::from_str(&val).map_err(|e| {
                     GatewayError::Configuration(format!("corrupt approval record: {e}"))
                 })?;
@@ -3065,11 +3100,12 @@ impl Gateway {
     ) -> Result<ActionOutcome, GatewayError> {
         // 3. Read the approval record
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let val = self
+        let raw = self
             .state
             .get(&approval_key)
             .await?
             .ok_or(GatewayError::ApprovalNotFound)?;
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -3084,7 +3120,10 @@ impl Gateway {
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
-        self.state.set(&approval_key, &updated_json, None).await?;
+        let updated_encrypted = self.encrypt_state_value(&updated_json)?;
+        self.state
+            .set(&approval_key, &updated_encrypted, None)
+            .await?;
 
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
@@ -3191,11 +3230,12 @@ impl Gateway {
     ) -> Result<(), GatewayError> {
         // 3. Read the approval record
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let val = self
+        let raw = self
             .state
             .get(&approval_key)
             .await?
             .ok_or(GatewayError::ApprovalNotFound)?;
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -3210,7 +3250,10 @@ impl Gateway {
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
-        self.state.set(&approval_key, &updated_json, None).await?;
+        let updated_encrypted = self.encrypt_state_value(&updated_json)?;
+        self.state
+            .set(&approval_key, &updated_encrypted, None)
+            .await?;
 
         self.emit_stream_event(StreamEvent {
             id: uuid::Uuid::now_v7().to_string(),
@@ -3242,11 +3285,12 @@ impl Gateway {
     ) -> Result<bool, GatewayError> {
         // Read the approval record
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let val = self
+        let raw = self
             .state
             .get(&approval_key)
             .await?
             .ok_or(GatewayError::ApprovalNotFound)?;
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -3353,6 +3397,7 @@ impl Gateway {
         let updated_json = serde_json::to_string(&updated).map_err(|e| {
             GatewayError::Configuration(format!("failed to serialize approval: {e}"))
         })?;
+        let updated_encrypted = self.encrypt_state_value(&updated_json)?;
 
         // Preserve the original TTL by computing remaining time
         let remaining = updated.expires_at - Utc::now();
@@ -3362,7 +3407,9 @@ impl Gateway {
         } else {
             None
         };
-        self.state.set(&approval_key, &updated_json, ttl).await?;
+        self.state
+            .set(&approval_key, &updated_encrypted, ttl)
+            .await?;
 
         info!(approval_id = %id, "approval notification retry succeeded");
         Ok(true)
@@ -3384,10 +3431,11 @@ impl Gateway {
         }
 
         let approval_key = StateKey::new(namespace, tenant, KeyKind::Approval, id);
-        let Some(val) = self.state.get(&approval_key).await? else {
+        let Some(raw) = self.state.get(&approval_key).await? else {
             return Ok(None);
         };
 
+        let val = self.decrypt_state_value(&raw)?;
         let record: ApprovalRecord = serde_json::from_str(&val)
             .map_err(|e| GatewayError::Configuration(format!("corrupt approval record: {e}")))?;
 
@@ -3414,7 +3462,10 @@ impl Gateway {
             .await?;
 
         let mut results = Vec::new();
-        for (_key, val) in entries {
+        for (_key, raw) in entries {
+            let Ok(val) = self.decrypt_state_value(&raw) else {
+                continue;
+            };
             if let Ok(record) = serde_json::from_str::<ApprovalRecord>(&val) {
                 results.push(ApprovalStatus {
                     token: record.token,

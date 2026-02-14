@@ -47,6 +47,9 @@ pub struct ActeonConfig {
     /// OpenTelemetry distributed tracing configuration.
     #[serde(default)]
     pub telemetry: TelemetryConfig,
+    /// Payload encryption at rest configuration.
+    #[serde(default)]
+    pub encryption: EncryptionConfig,
     /// Quota policy configuration.
     #[serde(default)]
     pub quotas: QuotaConfig,
@@ -743,6 +746,25 @@ pub struct CircuitBreakerProviderConfig {
     pub fallback_provider: Option<String>,
 }
 
+/// Configuration for payload encryption at rest.
+///
+/// When enabled, action payloads stored in the state and audit backends are
+/// encrypted using AES-256-GCM. Requires the `ACTEON_PAYLOAD_KEY` environment
+/// variable to be set to a 32-byte key (hex or base64 encoded).
+///
+/// # Example
+///
+/// ```toml
+/// [encryption]
+/// enabled = true
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct EncryptionConfig {
+    /// Whether payload encryption is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 /// Configuration for tenant quota policies.
 #[derive(Debug, Deserialize)]
 pub struct QuotaConfig {
@@ -990,6 +1012,8 @@ pub struct ConfigSnapshot {
     pub telemetry: TelemetrySnapshot,
     /// Task chain configuration.
     pub chains: ChainsSnapshot,
+    /// Payload encryption configuration.
+    pub encryption: EncryptionSnapshot,
     /// Registered provider summaries.
     pub providers: Vec<ProviderSnapshot>,
 }
@@ -1011,6 +1035,7 @@ impl From<&ActeonConfig> for ConfigSnapshot {
             background: BackgroundSnapshot::from(&cfg.background),
             telemetry: TelemetrySnapshot::from(&cfg.telemetry),
             chains: ChainsSnapshot::from(&cfg.chains),
+            encryption: EncryptionSnapshot::from(&cfg.encryption),
             providers: cfg.providers.iter().map(ProviderSnapshot::from).collect(),
         }
     }
@@ -1477,6 +1502,21 @@ impl From<&ChainConfigToml> for ChainDefinitionSnapshot {
             name: cfg.name.clone(),
             steps_count: cfg.steps.len(),
             timeout_seconds: cfg.timeout_seconds,
+        }
+    }
+}
+
+/// Sanitized encryption configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct EncryptionSnapshot {
+    /// Whether payload encryption is enabled.
+    pub enabled: bool,
+}
+
+impl From<&EncryptionConfig> for EncryptionSnapshot {
+    fn from(cfg: &EncryptionConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
         }
     }
 }

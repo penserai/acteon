@@ -187,6 +187,63 @@ pub fn encrypt_value(plaintext: &str, master_key: &MasterKey) -> Result<String, 
     ))
 }
 
+/// Encrypts and decrypts action payloads at rest.
+///
+/// Wraps a [`MasterKey`] and provides JSON-aware encryption helpers for the
+/// gateway to call before writing payloads to state/audit stores and after
+/// reading them back. Plaintext (non-`ENC[...]`) values pass through
+/// `decrypt_*` methods unchanged, ensuring backward compatibility with
+/// data written before encryption was enabled.
+pub struct PayloadEncryptor {
+    key: MasterKey,
+}
+
+impl PayloadEncryptor {
+    /// Create a new encryptor from a [`MasterKey`].
+    pub fn new(key: MasterKey) -> Self {
+        Self { key }
+    }
+
+    /// Encrypt a [`serde_json::Value`], returning an `ENC[...]` envelope string.
+    ///
+    /// The value is serialized to a JSON string before encryption.
+    pub fn encrypt_json(&self, value: &serde_json::Value) -> Result<String, CryptoError> {
+        let plain = serde_json::to_string(value).map_err(|e| {
+            CryptoError::EncryptionFailed(format!("JSON serialization failed: {e}"))
+        })?;
+        encrypt_value(&plain, &self.key)
+    }
+
+    /// Decrypt a string that may be an `ENC[...]` envelope back into a
+    /// [`serde_json::Value`].
+    ///
+    /// If the input is a plain (non-encrypted) string, it is parsed as JSON
+    /// directly, providing backward compatibility with pre-encryption data.
+    pub fn decrypt_json(&self, value: &str) -> Result<serde_json::Value, CryptoError> {
+        let plain = decrypt_value(value, &self.key)?;
+        serde_json::from_str(plain.expose_secret())
+            .map_err(|e| CryptoError::InvalidFormat(format!("JSON parse failed: {e}")))
+    }
+
+    /// Encrypt a plaintext string, returning an `ENC[...]` envelope.
+    pub fn encrypt_str(&self, value: &str) -> Result<String, CryptoError> {
+        encrypt_value(value, &self.key)
+    }
+
+    /// Decrypt a string that may be an `ENC[...]` envelope back to plaintext.
+    ///
+    /// Non-encrypted strings pass through unchanged.
+    pub fn decrypt_str(&self, value: &str) -> Result<String, CryptoError> {
+        Ok(decrypt_value(value, &self.key)?.expose_secret().clone())
+    }
+}
+
+impl fmt::Debug for PayloadEncryptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("PayloadEncryptor([REDACTED])")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +324,85 @@ mod tests {
         let malformed = "ENC[AES256-GCM,garbage]";
         let result = decrypt_value(malformed, &key).unwrap();
         assert_eq!(result.expose_secret(), malformed);
+    }
+
+    // -----------------------------------------------------------------------
+    // PayloadEncryptor tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn payload_encryptor_roundtrip_json_object() {
+        let enc = PayloadEncryptor::new(test_key());
+        let value = serde_json::json!({"user": "alice", "amount": 42});
+        let encrypted = enc.encrypt_json(&value).unwrap();
+        assert!(encrypted.starts_with("ENC[AES256-GCM,"));
+        let decrypted = enc.decrypt_json(&encrypted).unwrap();
+        assert_eq!(decrypted, value);
+    }
+
+    #[test]
+    fn payload_encryptor_roundtrip_json_array() {
+        let enc = PayloadEncryptor::new(test_key());
+        let value = serde_json::json!([1, "two", null, true]);
+        let encrypted = enc.encrypt_json(&value).unwrap();
+        let decrypted = enc.decrypt_json(&encrypted).unwrap();
+        assert_eq!(decrypted, value);
+    }
+
+    #[test]
+    fn payload_encryptor_roundtrip_json_null() {
+        let enc = PayloadEncryptor::new(test_key());
+        let value = serde_json::Value::Null;
+        let encrypted = enc.encrypt_json(&value).unwrap();
+        let decrypted = enc.decrypt_json(&encrypted).unwrap();
+        assert_eq!(decrypted, value);
+    }
+
+    #[test]
+    fn payload_encryptor_roundtrip_nested() {
+        let enc = PayloadEncryptor::new(test_key());
+        let value = serde_json::json!({
+            "action": {"id": "a1", "payload": {"key": "secret"}},
+            "scheduled_for": "2026-03-01T00:00:00Z"
+        });
+        let encrypted = enc.encrypt_json(&value).unwrap();
+        let decrypted = enc.decrypt_json(&encrypted).unwrap();
+        assert_eq!(decrypted, value);
+    }
+
+    #[test]
+    fn payload_encryptor_decrypt_plain_json_passthrough() {
+        let enc = PayloadEncryptor::new(test_key());
+        let plain = r#"{"user":"alice","amount":42}"#;
+        let decrypted = enc.decrypt_json(plain).unwrap();
+        assert_eq!(
+            decrypted,
+            serde_json::json!({"user": "alice", "amount": 42})
+        );
+    }
+
+    #[test]
+    fn payload_encryptor_roundtrip_str() {
+        let enc = PayloadEncryptor::new(test_key());
+        let plain = r#"{"action":"test"}"#;
+        let encrypted = enc.encrypt_str(plain).unwrap();
+        assert!(encrypted.starts_with("ENC[AES256-GCM,"));
+        let decrypted = enc.decrypt_str(&encrypted).unwrap();
+        assert_eq!(decrypted, plain);
+    }
+
+    #[test]
+    fn payload_encryptor_decrypt_str_passthrough() {
+        let enc = PayloadEncryptor::new(test_key());
+        let plain = "not-encrypted-at-all";
+        let decrypted = enc.decrypt_str(plain).unwrap();
+        assert_eq!(decrypted, plain);
+    }
+
+    #[test]
+    fn payload_encryptor_debug_is_redacted() {
+        let enc = PayloadEncryptor::new(test_key());
+        let debug = format!("{enc:?}");
+        assert_eq!(debug, "PayloadEncryptor([REDACTED])");
     }
 }

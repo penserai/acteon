@@ -314,26 +314,42 @@ fn recurring_to_summary(rec: &RecurringAction) -> RecurringSummary {
 }
 
 /// Load a [`RecurringAction`] from the state store by ID.
+///
+/// If a `payload_encryptor` is provided, the stored value is decrypted before
+/// deserialization (backward-compatible with unencrypted records).
 async fn load_recurring(
     state_store: &dyn acteon_state::StateStore,
     namespace: &str,
     tenant: &str,
     id: &str,
+    encryptor: Option<&acteon_crypto::PayloadEncryptor>,
 ) -> Result<Option<RecurringAction>, String> {
     let key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, id);
     match state_store.get(&key).await {
-        Ok(Some(data)) => serde_json::from_str::<RecurringAction>(&data)
-            .map(Some)
-            .map_err(|e| format!("corrupt recurring action data: {e}")),
+        Ok(Some(raw)) => {
+            let data = if let Some(enc) = encryptor {
+                enc.decrypt_str(&raw)
+                    .map_err(|e| format!("recurring action decryption failed: {e}"))?
+            } else {
+                raw
+            };
+            serde_json::from_str::<RecurringAction>(&data)
+                .map(Some)
+                .map_err(|e| format!("corrupt recurring action data: {e}"))
+        }
         Ok(None) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
 }
 
 /// Persist a [`RecurringAction`] to the state store.
+///
+/// If a `payload_encryptor` is provided, the serialized value is encrypted
+/// before storage.
 async fn save_recurring(
     state_store: &dyn acteon_state::StateStore,
     rec: &RecurringAction,
+    encryptor: Option<&acteon_crypto::PayloadEncryptor>,
 ) -> Result<(), String> {
     let key = StateKey::new(
         rec.namespace.as_str(),
@@ -342,6 +358,12 @@ async fn save_recurring(
         &rec.id,
     );
     let data = serde_json::to_string(rec).map_err(|e| format!("serialization error: {e}"))?;
+    let data = if let Some(enc) = encryptor {
+        enc.encrypt_str(&data)
+            .map_err(|e| format!("recurring action encryption failed: {e}"))?
+    } else {
+        data
+    };
     state_store
         .set(&key, &data, None)
         .await
@@ -519,6 +541,7 @@ pub async fn create_recurring(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
 
     // Enforce per-tenant limit.
     let max_actions = state.config.background.max_recurring_actions_per_tenant;
@@ -569,7 +592,7 @@ pub async fn create_recurring(
     };
 
     // Save and index.
-    if let Err(e) = save_recurring(state_store.as_ref(), &recurring).await {
+    if let Err(e) = save_recurring(state_store.as_ref(), &recurring, enc).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
     if let Err(e) = index_pending(state_store.as_ref(), &recurring).await {
@@ -615,6 +638,7 @@ pub async fn list_recurring(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
 
     let results = match state_store
         .scan_keys(
@@ -642,7 +666,12 @@ pub async fn list_recurring(
     let mut skipped = 0usize;
 
     for (_key, value) in results {
-        let Ok(rec) = serde_json::from_str::<RecurringAction>(&value) else {
+        let data = if let Some(e) = enc {
+            e.decrypt_str(&value).unwrap_or(value)
+        } else {
+            value
+        };
+        let Ok(rec) = serde_json::from_str::<RecurringAction>(&data) else {
             continue;
         };
 
@@ -706,8 +735,17 @@ pub async fn get_recurring(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
 
-    match load_recurring(state_store.as_ref(), &params.namespace, &params.tenant, &id).await {
+    match load_recurring(
+        state_store.as_ref(),
+        &params.namespace,
+        &params.tenant,
+        &id,
+        enc,
+    )
+    .await
+    {
         Ok(Some(rec)) => (
             StatusCode::OK,
             Json(serde_json::json!(recurring_to_detail(&rec))),
@@ -753,27 +791,28 @@ pub async fn update_recurring(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
 
-    let mut rec = match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id).await
-    {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!(ErrorResponse {
-                    error: format!("recurring action not found: {id}"),
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!(ErrorResponse { error: e })),
-            )
-                .into_response();
-        }
-    };
+    let mut rec =
+        match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id, enc).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!(ErrorResponse {
+                        error: format!("recurring action not found: {id}"),
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!(ErrorResponse { error: e })),
+                )
+                    .into_response();
+            }
+        };
 
     let mut cron_changed = false;
 
@@ -873,7 +912,7 @@ pub async fn update_recurring(
     rec.updated_at = Utc::now();
 
     // Save and re-index.
-    if let Err(e) = save_recurring(state_store.as_ref(), &rec).await {
+    if let Err(e) = save_recurring(state_store.as_ref(), &rec, enc).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!(ErrorResponse { error: e })),
@@ -931,28 +970,36 @@ pub async fn delete_recurring(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
 
     // Verify the recurring action exists.
-    let rec =
-        match load_recurring(state_store.as_ref(), &params.namespace, &params.tenant, &id).await {
-            Ok(Some(r)) => r,
-            Ok(None) => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!(ErrorResponse {
-                        error: format!("recurring action not found: {id}"),
-                    })),
-                )
-                    .into_response();
-            }
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!(ErrorResponse { error: e })),
-                )
-                    .into_response();
-            }
-        };
+    let rec = match load_recurring(
+        state_store.as_ref(),
+        &params.namespace,
+        &params.tenant,
+        &id,
+        enc,
+    )
+    .await
+    {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!(ErrorResponse {
+                    error: format!("recurring action not found: {id}"),
+                })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!(ErrorResponse { error: e })),
+            )
+                .into_response();
+        }
+    };
 
     // Remove from timeout index.
     let _ = remove_pending(state_store.as_ref(), &params.namespace, &params.tenant, &id).await;
@@ -1009,27 +1056,28 @@ pub async fn pause_recurring(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
 
-    let mut rec = match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id).await
-    {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!(ErrorResponse {
-                    error: format!("recurring action not found: {id}"),
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!(ErrorResponse { error: e })),
-            )
-                .into_response();
-        }
-    };
+    let mut rec =
+        match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id, enc).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!(ErrorResponse {
+                        error: format!("recurring action not found: {id}"),
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!(ErrorResponse { error: e })),
+                )
+                    .into_response();
+            }
+        };
 
     if !rec.enabled {
         return (
@@ -1045,7 +1093,7 @@ pub async fn pause_recurring(
     rec.next_execution_at = None;
     rec.updated_at = Utc::now();
 
-    if let Err(e) = save_recurring(state_store.as_ref(), &rec).await {
+    if let Err(e) = save_recurring(state_store.as_ref(), &rec, enc).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!(ErrorResponse { error: e })),
@@ -1095,27 +1143,28 @@ pub async fn resume_recurring(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
+    let enc = gw.payload_encryptor();
 
-    let mut rec = match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id).await
-    {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!(ErrorResponse {
-                    error: format!("recurring action not found: {id}"),
-                })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!(ErrorResponse { error: e })),
-            )
-                .into_response();
-        }
-    };
+    let mut rec =
+        match load_recurring(state_store.as_ref(), &req.namespace, &req.tenant, &id, enc).await {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!(ErrorResponse {
+                        error: format!("recurring action not found: {id}"),
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!(ErrorResponse { error: e })),
+                )
+                    .into_response();
+            }
+        };
 
     if rec.enabled {
         return (
@@ -1158,7 +1207,7 @@ pub async fn resume_recurring(
     rec.next_execution_at = next_occurrence(&cron, tz, &now);
     rec.updated_at = now;
 
-    if let Err(e) = save_recurring(state_store.as_ref(), &rec).await {
+    if let Err(e) = save_recurring(state_store.as_ref(), &rec, enc).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!(ErrorResponse { error: e })),

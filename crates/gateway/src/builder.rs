@@ -12,6 +12,7 @@ use acteon_rules::{Rule, RuleEngine};
 use acteon_state::{DistributedLock, StateStore};
 use tokio_util::task::TaskTracker;
 
+use acteon_crypto::PayloadEncryptor;
 use acteon_llm::LlmEvaluator;
 
 use crate::circuit_breaker::{CircuitBreakerConfig, CircuitBreakerRegistry};
@@ -54,6 +55,7 @@ pub struct GatewayBuilder {
     circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
     stream_buffer_size: usize,
     quota_policies: HashMap<String, acteon_core::QuotaPolicy>,
+    payload_encryptor: Option<Arc<PayloadEncryptor>>,
 }
 
 impl GatewayBuilder {
@@ -88,6 +90,7 @@ impl GatewayBuilder {
             circuit_breaker_overrides: HashMap::new(),
             stream_buffer_size: 1024,
             quota_policies: HashMap::new(),
+            payload_encryptor: None,
         }
     }
 
@@ -355,6 +358,17 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the payload encryptor for encrypting action payloads at rest.
+    ///
+    /// When set, the gateway encrypts payload-carrying state values before
+    /// writing to the state store and decrypts them on read. This protects
+    /// scheduled actions, chain state, approval records, and recurring actions.
+    #[must_use]
+    pub fn payload_encryptor(mut self, enc: Arc<PayloadEncryptor>) -> Self {
+        self.payload_encryptor = Some(enc);
+        self
+    }
+
     /// Set all quota policies at once (replaces any previously added).
     #[must_use]
     pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
@@ -579,6 +593,7 @@ impl GatewayBuilder {
             circuit_breakers,
             stream_tx,
             quota_policies: parking_lot::RwLock::new(quota_policies),
+            payload_encryptor: self.payload_encryptor,
         })
     }
 }

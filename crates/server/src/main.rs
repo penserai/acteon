@@ -200,6 +200,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a shared group manager for the gateway and background processor.
     let group_manager = Arc::new(GroupManager::new());
 
+    // Parse the payload encryption key if available.
+    let payload_encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>> =
+        if config.encryption.enabled {
+            let raw = std::env::var("ACTEON_PAYLOAD_KEY").map_err(|_| {
+                "ACTEON_PAYLOAD_KEY environment variable is required when encryption.enabled = true"
+            })?;
+            let key = acteon_crypto::parse_master_key(&raw)
+                .map_err(|e| format!("invalid ACTEON_PAYLOAD_KEY: {e}"))?;
+            let enc = Arc::new(acteon_crypto::PayloadEncryptor::new(key));
+            info!("payload encryption at rest enabled");
+            Some(enc)
+        } else {
+            None
+        };
+
+    // Wrap audit store with encryption if enabled.
+    // Wrapping order: EncryptingAuditStore(RedactingAuditStore(Inner))
+    // Redaction runs first (on plaintext), then encryption.
+    let audit_store: Option<Arc<dyn acteon_audit::store::AuditStore>> = if let Some(store) =
+        audit_store
+    {
+        // Wrap with redaction if configured.
+        let store = if config.audit.redact.enabled {
+            let redact_config = acteon_audit::RedactConfig::new(config.audit.redact.fields.clone())
+                .with_placeholder(&config.audit.redact.placeholder);
+            Arc::new(acteon_audit::RedactingAuditStore::new(
+                store,
+                &redact_config,
+            )) as Arc<dyn acteon_audit::store::AuditStore>
+        } else {
+            store
+        };
+
+        // Wrap with encryption if enabled.
+        if let Some(ref enc) = payload_encryptor {
+            Some(Arc::new(acteon_audit::EncryptingAuditStore::new(
+                store,
+                Arc::clone(enc),
+            )) as Arc<dyn acteon_audit::store::AuditStore>)
+        } else {
+            Some(store)
+        }
+    } else {
+        None
+    };
+
     // Build the gateway.
     let external_url = config
         .server
@@ -214,6 +260,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .dlq_enabled(config.executor.dlq_enabled)
         .group_manager(Arc::clone(&group_manager))
         .external_url(external_url);
+
+    if let Some(ref enc) = payload_encryptor {
+        builder = builder.payload_encryptor(Arc::clone(enc));
+    }
 
     if let Some(ref tz) = config.rules.default_timezone {
         builder = builder.default_timezone(tz);
@@ -611,6 +661,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if config.background.enable_recurring_actions {
             bg_builder = bg_builder.recurring_action_channel(recurring_action_tx);
+        }
+
+        if let Some(ref enc) = payload_encryptor {
+            bg_builder = bg_builder.payload_encryptor(Arc::clone(enc));
         }
 
         let (mut processor, shutdown_tx) = bg_builder
@@ -1042,7 +1096,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             acteon_state::KeyKind::RecurringAction,
                             &event.recurring_id,
                         );
-                        if let Ok(Some(data_str)) = recurring_store.get(&rec_key).await
+                        if let Ok(Some(raw_str)) = recurring_store.get(&rec_key).await
+                            && let Ok(data_str) = gw.decrypt_state_value(&raw_str)
                             && let Ok(mut rec) =
                                 serde_json::from_str::<acteon_core::RecurringAction>(&data_str)
                         {
@@ -1070,7 +1125,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             rec.next_execution_at = if still_active { next } else { None };
 
                             if let Ok(json) = serde_json::to_string(&rec) {
-                                let _ = recurring_store.set(&rec_key, &json, None).await;
+                                let encrypted = gw.encrypt_state_value(&json).unwrap_or(json);
+                                let _ = recurring_store.set(&rec_key, &encrypted, None).await;
                             }
 
                             // Re-index or remove from pending index.
