@@ -2200,7 +2200,7 @@ impl ActeonClient {
 // =============================================================================
 
 /// Error response from the API.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
     /// Error code.
     pub code: String,
@@ -2212,7 +2212,7 @@ pub struct ErrorResponse {
 }
 
 /// Result from a batch dispatch operation.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BatchResult {
     /// Action was processed successfully.
@@ -2253,7 +2253,7 @@ impl BatchResult {
 }
 
 /// Information about a loaded rule.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleInfo {
     /// Rule name.
     pub name: String,
@@ -2267,7 +2267,7 @@ pub struct RuleInfo {
 }
 
 /// Result of reloading rules.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReloadResult {
     /// Number of rules loaded.
     pub loaded: usize,
@@ -2293,7 +2293,7 @@ pub struct EvaluateRulesOptions {
 }
 
 /// Details about a semantic match evaluation, used for explainability.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SemanticMatchDetail {
     /// The text that was extracted and compared.
     pub extracted_text: String,
@@ -2306,7 +2306,7 @@ pub struct SemanticMatchDetail {
 }
 
 /// Per-rule trace entry returned by the playground.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleTraceEntry {
     /// Name of the rule that was evaluated.
     pub rule_name: String,
@@ -2344,7 +2344,7 @@ pub struct RuleTraceEntry {
 }
 
 /// Contextual information captured during rule evaluation.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceContext {
     /// The `time.*` map that was used during evaluation.
     #[serde(default)]
@@ -2362,7 +2362,7 @@ pub struct TraceContext {
 }
 
 /// Response from the rule evaluation playground.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleEvaluationTrace {
     /// Final verdict (e.g. `"allow"`, `"deny"`, `"no_match"`).
     pub verdict: String,
@@ -2412,7 +2412,7 @@ pub struct AuditQuery {
 }
 
 /// Paginated audit results.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditPage {
     /// Audit records.
     pub records: Vec<AuditRecord>,
@@ -2425,7 +2425,7 @@ pub struct AuditPage {
 }
 
 /// An audit record.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRecord {
     /// Record ID.
     pub id: String,
@@ -2491,7 +2491,7 @@ pub struct ReplayQuery {
 }
 
 /// Result of replaying a single action.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayResult {
     /// The original action ID from the audit record.
     pub original_action_id: String,
@@ -2504,7 +2504,7 @@ pub struct ReplayResult {
 }
 
 /// Summary of a bulk replay operation.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplaySummary {
     /// Number of actions successfully replayed.
     pub replayed: usize,
@@ -2536,7 +2536,7 @@ pub struct EventQuery {
 }
 
 /// Current state of an event.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventState {
     /// The event fingerprint.
     pub fingerprint: String,
@@ -2549,7 +2549,7 @@ pub struct EventState {
 }
 
 /// Response from listing events.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventListResponse {
     /// List of events.
     pub events: Vec<EventState>,
@@ -2558,7 +2558,7 @@ pub struct EventListResponse {
 }
 
 /// Response from transitioning an event.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransitionResponse {
     /// The event fingerprint.
     pub fingerprint: String,
@@ -2575,7 +2575,7 @@ pub struct TransitionResponse {
 // =============================================================================
 
 /// Response from approving or rejecting an action.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalActionResponse {
     /// The approval ID.
     pub id: String,
@@ -2586,7 +2586,7 @@ pub struct ApprovalActionResponse {
 }
 
 /// Public-facing approval status (no payload exposed).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalStatusResponse {
     /// The approval token.
     pub token: String,
@@ -2605,7 +2605,7 @@ pub struct ApprovalStatusResponse {
 }
 
 /// Response from listing pending approvals.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApprovalListResponse {
     /// List of pending approvals.
     pub approvals: Vec<ApprovalStatusResponse>,
@@ -2618,7 +2618,7 @@ pub struct ApprovalListResponse {
 // =============================================================================
 
 /// Summary of an event group.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupSummary {
     /// Unique identifier for the group.
     pub group_id: String,
@@ -2635,7 +2635,7 @@ pub struct GroupSummary {
 }
 
 /// Response from listing groups.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupListResponse {
     /// List of groups.
     pub groups: Vec<GroupSummary>,
@@ -2644,7 +2644,7 @@ pub struct GroupListResponse {
 }
 
 /// Detailed information about a group.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupDetail {
     /// Group summary.
     pub group: GroupSummary,
@@ -2655,7 +2655,7 @@ pub struct GroupDetail {
 }
 
 /// Response from flushing a group.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlushGroupResponse {
     /// The group ID that was flushed.
     pub group_id: String,
@@ -2708,7 +2708,7 @@ pub struct CreateRecurringAction {
 }
 
 /// Response from creating a recurring action.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRecurringResponse {
     /// Assigned recurring action ID.
     pub id: String,
@@ -2739,7 +2739,7 @@ pub struct RecurringFilter {
 }
 
 /// Summary of a recurring action for list responses.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecurringSummary {
     /// Unique recurring action ID.
     pub id: String,
@@ -2768,7 +2768,7 @@ pub struct RecurringSummary {
 }
 
 /// Response from listing recurring actions.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListRecurringResponse {
     /// List of recurring action summaries.
     pub recurring_actions: Vec<RecurringSummary>,
@@ -2777,7 +2777,7 @@ pub struct ListRecurringResponse {
 }
 
 /// Full detail response for a single recurring action.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecurringDetail {
     /// Unique recurring action ID.
     pub id: String,
@@ -2907,7 +2907,7 @@ pub struct UpdateQuotaRequest {
 }
 
 /// A quota policy.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuotaPolicy {
     /// Unique quota policy ID.
     pub id: String,
@@ -2936,7 +2936,7 @@ pub struct QuotaPolicy {
 }
 
 /// Response from listing quota policies.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListQuotasResponse {
     /// List of quota policies.
     pub quotas: Vec<QuotaPolicy>,
@@ -2945,7 +2945,7 @@ pub struct ListQuotasResponse {
 }
 
 /// Current usage statistics for a quota.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuotaUsage {
     /// Tenant.
     pub tenant: String,
