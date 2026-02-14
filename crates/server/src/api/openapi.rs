@@ -12,9 +12,6 @@ use super::approvals::{
 use super::chains::{
     ChainCancelRequest, ChainDetailResponse, ChainStepStatus, ChainSummary, ListChainsResponse,
 };
-use super::circuit_breakers::{
-    CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
-};
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
 use super::embeddings::{SimilarityRequest, SimilarityResponse};
 use super::events::{
@@ -33,6 +30,9 @@ use super::rules::{EvaluateRulesRequest, EvaluateRulesResponse, RuleTraceEntryRe
 use super::schemas::{
     EmbeddingMetricsResponse, ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest,
     ReloadResponse, RuleSummary, SetEnabledRequest, SetEnabledResponse,
+};
+use acteon_core::{
+    CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
 };
 
 #[derive(utoipa::OpenApi)]
