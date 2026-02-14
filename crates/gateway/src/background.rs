@@ -16,6 +16,8 @@ use tracing::{debug, error, info, warn};
 use acteon_core::{EventGroup, StateMachineConfig};
 use acteon_state::{KeyKind, StateKey, StateStore};
 
+use acteon_crypto::PayloadEncryptor;
+
 use crate::gateway::ApprovalRecord;
 use crate::group_manager::GroupManager;
 
@@ -181,6 +183,8 @@ pub struct BackgroundProcessor {
     scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
     /// Channel to send recurring action due events.
     recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
+    /// Optional payload encryptor for decrypting state values.
+    payload_encryptor: Option<Arc<PayloadEncryptor>>,
 }
 
 impl BackgroundProcessor {
@@ -204,6 +208,25 @@ impl BackgroundProcessor {
             chain_advance_tx: None,
             scheduled_action_tx: None,
             recurring_action_tx: None,
+            payload_encryptor: None,
+        }
+    }
+
+    /// Set the payload encryptor for decrypting state values.
+    #[must_use]
+    pub fn with_payload_encryptor(mut self, enc: Arc<PayloadEncryptor>) -> Self {
+        self.payload_encryptor = Some(enc);
+        self
+    }
+
+    /// Decrypt a state value if a payload encryptor is configured, otherwise passthrough.
+    fn decrypt_state_value(
+        &self,
+        value: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        match self.payload_encryptor {
+            Some(ref enc) => Ok(enc.decrypt_str(value)?),
+            None => Ok(value.to_owned()),
         }
     }
 
@@ -359,6 +382,7 @@ impl BackgroundProcessor {
     ///
     /// Uses an indexed approach to efficiently find expired timeouts in O(log N + M)
     /// where M is the number of expired entries, instead of scanning all timeout keys.
+    #[allow(clippy::too_many_lines)]
     async fn process_timeouts(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now();
         let now_ms = now.timestamp_millis();
@@ -400,8 +424,16 @@ impl BackgroundProcessor {
                 continue;
             };
 
-            // Parse the timeout entry
-            let Ok(timeout_data) = serde_json::from_str::<serde_json::Value>(&value) else {
+            // Decrypt and parse the timeout entry.
+            let decrypted_value = match self.decrypt_state_value(&value) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(key = %canonical_key, error = %e, "failed to decrypt timeout data");
+                    continue;
+                }
+            };
+            let Ok(timeout_data) = serde_json::from_str::<serde_json::Value>(&decrypted_value)
+            else {
                 warn!(key = %canonical_key, "failed to parse timeout data");
                 continue;
             };
@@ -452,9 +484,14 @@ impl BackgroundProcessor {
                 "transitioned_by": "timeout",
             });
 
-            self.state
-                .set(&state_key, &new_state_value.to_string(), None)
-                .await?;
+            let encrypted_state = match self.payload_encryptor {
+                Some(ref enc) => enc
+                    .encrypt_str(&new_state_value.to_string())
+                    .unwrap_or_else(|_| new_state_value.to_string()),
+                None => new_state_value.to_string(),
+            };
+
+            self.state.set(&state_key, &encrypted_state, None).await?;
 
             // Delete the processed timeout entry and remove from index
             self.state.delete(&timeout_key).await?;
@@ -508,11 +545,15 @@ impl BackgroundProcessor {
         let now = Utc::now();
         let mut retry_count = 0u32;
 
-        for (key, value) in entries {
+        for (key, raw_value) in entries {
             // Skip claim keys (format: namespace:tenant:approval:id:claim)
             if key.ends_with(":claim") {
                 continue;
             }
+
+            let Ok(value) = self.decrypt_state_value(&raw_value) else {
+                continue;
+            };
 
             let record: ApprovalRecord = match serde_json::from_str(&value) {
                 Ok(r) => r,
@@ -619,13 +660,21 @@ impl BackgroundProcessor {
 
             // Load the scheduled action data.
             let sched_key = StateKey::new(namespace, tenant, KeyKind::ScheduledAction, action_id);
-            let Some(data_str) = self.state.get(&sched_key).await? else {
+            let Some(raw_str) = self.state.get(&sched_key).await? else {
                 // Already processed, clean up pending key.
                 let pending_key =
                     StateKey::new(namespace, tenant, KeyKind::PendingScheduled, action_id);
                 self.state.delete(&pending_key).await?;
                 self.state.remove_timeout_index(&pending_key).await?;
                 continue;
+            };
+
+            let data_str = match self.decrypt_state_value(&raw_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(action_id = %action_id, error = %e, "failed to decrypt scheduled action data");
+                    continue;
+                }
             };
 
             let Ok(data) = serde_json::from_str::<serde_json::Value>(&data_str) else {
@@ -753,13 +802,21 @@ impl BackgroundProcessor {
 
             // Load the recurring action data.
             let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, recurring_id);
-            let Some(data_str) = self.state.get(&rec_key).await? else {
+            let Some(raw_str) = self.state.get(&rec_key).await? else {
                 // Already deleted, clean up pending key.
                 let pending_key =
                     StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
                 self.state.delete(&pending_key).await?;
                 self.state.remove_timeout_index(&pending_key).await?;
                 continue;
+            };
+
+            let data_str = match self.decrypt_state_value(&raw_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!(recurring_id = %recurring_id, error = %e, "failed to decrypt recurring action data");
+                    continue;
+                }
             };
 
             let Ok(recurring) = serde_json::from_str::<acteon_core::RecurringAction>(&data_str)
@@ -885,6 +942,7 @@ pub struct BackgroundProcessorBuilder {
     chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
     scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
     recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
+    payload_encryptor: Option<Arc<PayloadEncryptor>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -902,7 +960,15 @@ impl BackgroundProcessorBuilder {
             chain_advance_tx: None,
             scheduled_action_tx: None,
             recurring_action_tx: None,
+            payload_encryptor: None,
         }
+    }
+
+    /// Set the payload encryptor for decrypting state values.
+    #[must_use]
+    pub fn payload_encryptor(mut self, enc: Arc<PayloadEncryptor>) -> Self {
+        self.payload_encryptor = Some(enc);
+        self
     }
 
     /// Set the configuration.
@@ -1014,6 +1080,10 @@ impl BackgroundProcessorBuilder {
 
         if let Some(tx) = self.recurring_action_tx {
             processor = processor.with_recurring_action_channel(tx);
+        }
+
+        if let Some(enc) = self.payload_encryptor {
+            processor = processor.with_payload_encryptor(enc);
         }
 
         Ok((processor, shutdown_tx))

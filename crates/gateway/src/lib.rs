@@ -2,6 +2,7 @@ pub mod background;
 pub mod builder;
 pub mod chain;
 pub mod circuit_breaker;
+pub mod encrypting_dlq;
 pub mod error;
 pub mod gateway;
 pub mod group_manager;
@@ -15,6 +16,7 @@ pub use background::{
 };
 pub use builder::GatewayBuilder;
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerRegistry, CircuitState};
+pub use encrypting_dlq::EncryptingDeadLetterSink;
 pub use error::GatewayError;
 pub use gateway::{ApprovalKey, ApprovalKeySet, ApprovalRecord, ApprovalStatus, Gateway};
 pub use group_manager::GroupManager;

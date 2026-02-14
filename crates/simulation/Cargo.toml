@@ -9,6 +9,7 @@ description = "Simulation and testing framework for Acteon"
 
 [dependencies]
 acteon-core.workspace = true
+acteon-crypto.workspace = true
 acteon-gateway.workspace = true
 acteon-state.workspace = true
 acteon-state-memory.workspace = true
@@ -131,6 +132,10 @@ name = "quota_simulation"
 
 [[example]]
 name = "recurring_actions_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "payload_encryption_simulation"
 # No required-features - uses in-memory backends
 
 [lints]
