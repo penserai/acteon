@@ -1,6 +1,7 @@
 pub mod action;
 pub mod caller;
 pub mod chain;
+pub mod circuit_breaker;
 pub mod context;
 pub mod error;
 pub mod fingerprint;
@@ -18,6 +19,9 @@ pub use caller::Caller;
 pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,
     ChainState, ChainStatus, ChainStepConfig, StepFailurePolicy, StepResult,
+};
+pub use circuit_breaker::{
+    CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
 };
 pub use context::ActionContext;
 pub use error::ActeonError;

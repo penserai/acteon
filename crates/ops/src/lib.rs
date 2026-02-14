@@ -14,7 +14,9 @@ use acteon_client::{
     EventListResponse, EventQuery, ListChainsResponse, RuleEvaluationTrace, RuleInfo,
     TransitionResponse,
 };
-use acteon_core::{Action, ActionOutcome};
+use acteon_core::{
+    Action, ActionOutcome, CircuitBreakerActionResponse, ListCircuitBreakersResponse,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -166,5 +168,26 @@ impl OpsClient {
     /// Check health.
     pub async fn health(&self) -> Result<bool, OpsError> {
         Ok(self.inner.health().await?)
+    }
+
+    /// List all circuit breakers.
+    pub async fn list_circuit_breakers(&self) -> Result<ListCircuitBreakersResponse, OpsError> {
+        Ok(self.inner.list_circuit_breakers().await?)
+    }
+
+    /// Trip a circuit breaker.
+    pub async fn trip_circuit_breaker(
+        &self,
+        provider: String,
+    ) -> Result<CircuitBreakerActionResponse, OpsError> {
+        Ok(self.inner.trip_circuit_breaker(&provider).await?)
+    }
+
+    /// Reset a circuit breaker.
+    pub async fn reset_circuit_breaker(
+        &self,
+        provider: String,
+    ) -> Result<CircuitBreakerActionResponse, OpsError> {
+        Ok(self.inner.reset_circuit_breaker(&provider).await?)
     }
 }

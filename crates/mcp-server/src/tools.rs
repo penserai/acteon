@@ -3,7 +3,7 @@
 //! Each tool maps to one or more operations on the Acteon gateway
 //! via the HTTP client.
 
-use acteon_ops::acteon_client::{AuditQuery, EventQuery};
+use acteon_ops::acteon_client::{AuditQuery, EventQuery, RecurringFilter};
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
@@ -125,6 +125,45 @@ pub struct SetRuleEnabledParams {
     pub rule_name: String,
     /// Set to true to enable, false to disable.
     pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListRecurringParams {
+    /// Namespace (required).
+    pub namespace: String,
+    /// Tenant (required).
+    pub tenant: String,
+    /// Optional status filter: "active" or "paused".
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListGroupsParams {
+    // Currently no filters exposed by client list_groups.
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListQuotasParams {
+    /// Filter by namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Filter by tenant.
+    #[serde(default)]
+    pub tenant: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListCircuitBreakersParams {
+    // No params.
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageCircuitBreakerParams {
+    /// Provider name.
+    pub provider: String,
+    /// Action: "trip" (open) or "reset" (close).
+    pub action: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -349,6 +388,105 @@ impl ActeonMcpServer {
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Failed to reach gateway: {e}"
             ))])),
+        }
+    }
+
+    /// List recurring actions for a tenant.
+    #[tool(description = "List recurring actions (scheduled jobs) for a namespace and tenant.")]
+    async fn list_recurring_actions(
+        &self,
+        Parameters(p): Parameters<ListRecurringParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let filter = RecurringFilter {
+            namespace: p.namespace,
+            tenant: p.tenant,
+            status: p.status,
+            ..Default::default()
+        };
+
+        match self.ops.client().list_recurring(&filter).await {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// List active event groups.
+    #[tool(description = "List active event groups (batched notifications).")]
+    async fn list_groups(
+        &self,
+        Parameters(_p): Parameters<ListGroupsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.ops.client().list_groups().await {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// List tenant quotas.
+    #[tool(description = "List action quotas for tenants.")]
+    async fn list_quotas(
+        &self,
+        Parameters(p): Parameters<ListQuotasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .ops
+            .client()
+            .list_quotas(p.namespace.as_deref(), p.tenant.as_deref())
+            .await
+        {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// List circuit breaker statuses.
+    #[tool(description = "List all circuit breakers and their current status (Open/Closed).")]
+    async fn list_circuit_breakers(
+        &self,
+        Parameters(_p): Parameters<ListCircuitBreakersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.ops.list_circuit_breakers().await {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// Manage a circuit breaker (trip or reset).
+    #[tool(
+        description = "Trip (force open) or reset (force close) a circuit breaker for a provider."
+    )]
+    async fn manage_circuit_breaker(
+        &self,
+        Parameters(p): Parameters<ManageCircuitBreakerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = match p.action.as_str() {
+            "trip" => self.ops.trip_circuit_breaker(p.provider).await,
+            "reset" => self.ops.reset_circuit_breaker(p.provider).await,
+            _ => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Invalid action: must be 'trip' or 'reset'",
+                )]));
+            }
+        };
+
+        match result {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
     }
 }
