@@ -612,6 +612,11 @@ impl Gateway {
         &self.metrics
     }
 
+    /// Return a shared reference to the gateway's metrics.
+    pub fn metrics_arc(&self) -> Arc<GatewayMetrics> {
+        Arc::clone(&self.metrics)
+    }
+
     /// Return a reference to the circuit breaker registry, if configured.
     pub fn circuit_breakers(&self) -> Option<&crate::circuit_breaker::CircuitBreakerRegistry> {
         self.circuit_breakers.as_ref()

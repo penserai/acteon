@@ -706,6 +706,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut bg_builder = BackgroundProcessorBuilder::new()
             .config(bg_config)
+            .metrics(gateway.read().await.metrics_arc())
             .group_manager(Arc::clone(&group_manager))
             .state(Arc::clone(&store))
             .group_flush_channel(flush_tx)
