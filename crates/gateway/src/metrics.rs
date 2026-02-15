@@ -1155,9 +1155,9 @@ mod tests {
 
     #[test]
     fn sanitize_error_auth_headers() {
-        let msg = "HTTP 401: Authorization: Bearer sk-proj-abc123xyz";
+        let msg = "HTTP 401: Authorization: Bearer fake-test-token-000";
         let sanitized = super::sanitize_error_message(msg);
-        assert!(!sanitized.contains("sk-proj-abc123xyz"));
+        assert!(!sanitized.contains("fake-test-token-000"));
         assert!(sanitized.contains("Authorization: ***"));
     }
 
