@@ -14,6 +14,7 @@ pub mod openapi;
 pub mod quotas;
 pub mod recurring;
 pub mod replay;
+pub mod retention;
 pub mod rules;
 pub mod schemas;
 pub mod stream;
@@ -155,6 +156,17 @@ pub fn router(state: AppState) -> Router {
                 .delete(quotas::delete_quota),
         )
         .route("/v1/quotas/{id}/usage", get(quotas::get_quota_usage))
+        // Retention policies
+        .route(
+            "/v1/retention",
+            get(retention::list_retention).post(retention::create_retention),
+        )
+        .route(
+            "/v1/retention/{id}",
+            get(retention::get_retention)
+                .put(retention::update_retention)
+                .delete(retention::delete_retention),
+        )
         // Embeddings
         .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)

@@ -55,6 +55,7 @@ pub struct GatewayBuilder {
     circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
     stream_buffer_size: usize,
     quota_policies: HashMap<String, acteon_core::QuotaPolicy>,
+    retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
 }
 
@@ -90,6 +91,7 @@ impl GatewayBuilder {
             circuit_breaker_overrides: HashMap::new(),
             stream_buffer_size: 1024,
             quota_policies: HashMap::new(),
+            retention_policies: HashMap::new(),
             payload_encryptor: None,
         }
     }
@@ -358,6 +360,27 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a data retention policy for a tenant.
+    ///
+    /// The policy is keyed by `"namespace:tenant"`. Multiple policies for the
+    /// same tenant replace the previous one.
+    #[must_use]
+    pub fn retention_policy(mut self, policy: acteon_core::RetentionPolicy) -> Self {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        self.retention_policies.insert(key, policy);
+        self
+    }
+
+    /// Set all retention policies at once (replaces any previously added).
+    #[must_use]
+    pub fn retention_policies(mut self, policies: Vec<acteon_core::RetentionPolicy>) -> Self {
+        self.retention_policies = policies
+            .into_iter()
+            .map(|p| (format!("{}:{}", p.namespace, p.tenant), p))
+            .collect();
+        self
+    }
+
     /// Set the payload encryptor for encrypting action payloads at rest.
     ///
     /// When set, the gateway encrypts payload-carrying state values before
@@ -600,6 +623,7 @@ impl GatewayBuilder {
             circuit_breakers,
             stream_tx,
             quota_policies: parking_lot::RwLock::new(quota_policies),
+            retention_policies: parking_lot::RwLock::new(self.retention_policies),
             payload_encryptor: self.payload_encryptor,
         })
     }

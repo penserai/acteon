@@ -715,6 +715,55 @@ type QuotaUsage struct {
 }
 
 // =============================================================================
+// Retention Policy Types
+// =============================================================================
+
+// CreateRetentionRequest is the request to create a retention policy.
+type CreateRetentionRequest struct {
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	AuditTTLSeconds int64             `json:"audit_ttl_seconds"`
+	StateTTLSeconds int64             `json:"state_ttl_seconds"`
+	EventTTLSeconds int64             `json:"event_ttl_seconds"`
+	ComplianceHold  bool              `json:"compliance_hold,omitempty"`
+	Description     string            `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// UpdateRetentionRequest is the request to update a retention policy.
+type UpdateRetentionRequest struct {
+	Enabled         *bool             `json:"enabled,omitempty"`
+	AuditTTLSeconds *int64            `json:"audit_ttl_seconds,omitempty"`
+	StateTTLSeconds *int64            `json:"state_ttl_seconds,omitempty"`
+	EventTTLSeconds *int64            `json:"event_ttl_seconds,omitempty"`
+	ComplianceHold  *bool             `json:"compliance_hold,omitempty"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// RetentionPolicy represents a retention policy.
+type RetentionPolicy struct {
+	ID              string            `json:"id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	Enabled         bool              `json:"enabled"`
+	AuditTTLSeconds int64             `json:"audit_ttl_seconds"`
+	StateTTLSeconds int64             `json:"state_ttl_seconds"`
+	EventTTLSeconds int64             `json:"event_ttl_seconds"`
+	ComplianceHold  bool              `json:"compliance_hold"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+}
+
+// ListRetentionResponse is the response from listing retention policies.
+type ListRetentionResponse struct {
+	Policies []RetentionPolicy `json:"policies"`
+	Count    int               `json:"count"`
+}
+
+// =============================================================================
 // Chain Types
 // =============================================================================
 

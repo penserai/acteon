@@ -5,6 +5,7 @@
 
 mod config;
 mod error;
+pub mod test_rules;
 
 pub use config::OpsConfig;
 pub use error::OpsError;
@@ -181,6 +182,18 @@ impl OpsClient {
         provider: String,
     ) -> Result<CircuitBreakerActionResponse, OpsError> {
         Ok(self.inner.trip_circuit_breaker(&provider).await?)
+    }
+
+    /// List retention policies, optionally filtered by namespace and tenant.
+    pub async fn list_retention(
+        &self,
+        namespace: Option<String>,
+        tenant: Option<String>,
+    ) -> Result<acteon_client::ListRetentionResponse, OpsError> {
+        Ok(self
+            .inner
+            .list_retention(namespace.as_deref(), tenant.as_deref())
+            .await?)
     }
 
     /// Reset a circuit breaker.

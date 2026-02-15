@@ -26,6 +26,9 @@ use super::recurring::{
     RecurringDetailResponse, RecurringLifecycleRequest, RecurringSummary, UpdateRecurringRequest,
 };
 use super::replay::{ReplayResult, ReplaySummary};
+use super::retention::{
+    CreateRetentionRequest, ListRetentionResponse, RetentionResponse, UpdateRetentionRequest,
+};
 use super::rules::{EvaluateRulesRequest, EvaluateRulesResponse, RuleTraceEntryResponse};
 use super::schemas::{
     EmbeddingMetricsResponse, ErrorResponse, HealthResponse, MetricsResponse, ReloadRequest,
@@ -56,7 +59,8 @@ use acteon_core::{
         (name = "Embeddings", description = "Embedding similarity testing"),
         (name = "Circuit Breakers", description = "Circuit breaker admin operations"),
         (name = "Recurring Actions", description = "Cron-scheduled recurring action management"),
-        (name = "Quotas", description = "Tenant quota policy management")
+        (name = "Quotas", description = "Tenant quota policy management"),
+        (name = "Retention", description = "Per-tenant data retention policy management")
     ),
     paths(
         super::health::health,
@@ -103,6 +107,11 @@ use acteon_core::{
         super::quotas::update_quota,
         super::quotas::delete_quota,
         super::quotas::get_quota_usage,
+        super::retention::create_retention,
+        super::retention::list_retention,
+        super::retention::get_retention,
+        super::retention::update_retention,
+        super::retention::delete_retention,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -127,6 +136,8 @@ use acteon_core::{
         ListQuotasResponse,
         QuotaWindow, OverageBehavior, QuotaUsage,
         EvaluateRulesRequest, EvaluateRulesResponse, RuleTraceEntryResponse,
+        CreateRetentionRequest, UpdateRetentionRequest, RetentionResponse,
+        ListRetentionResponse,
     ))
 )]
 pub struct ApiDoc;

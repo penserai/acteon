@@ -42,6 +42,10 @@ from .models import (
     QuotaPolicy,
     ListQuotasResponse,
     QuotaUsage,
+    CreateRetentionRequest,
+    UpdateRetentionRequest,
+    RetentionPolicy,
+    ListRetentionResponse,
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
@@ -1115,6 +1119,150 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to get quota usage")
 
     # =========================================================================
+    # Retention Policies
+    # =========================================================================
+
+    def create_retention(self, req: "CreateRetentionRequest") -> "RetentionPolicy":
+        """Create a retention policy.
+
+        Args:
+            req: The retention policy definition.
+
+        Returns:
+            The created retention policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/retention", json=req.to_dict())
+
+        if response.status_code == 201:
+            return RetentionPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_retention(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> "ListRetentionResponse":
+        """List retention policies.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            limit: Optional maximum number of results.
+            offset: Optional offset for pagination.
+
+        Returns:
+            List of retention policies.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        response = self._request("GET", "/v1/retention", params=params)
+
+        if response.status_code == 200:
+            return ListRetentionResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list retention policies")
+
+    def get_retention(self, retention_id: str) -> Optional["RetentionPolicy"]:
+        """Get a single retention policy by ID.
+
+        Args:
+            retention_id: The retention policy ID.
+
+        Returns:
+            The retention policy, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/retention/{retention_id}")
+
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get retention policy")
+
+    def update_retention(
+        self, retention_id: str, update: "UpdateRetentionRequest"
+    ) -> "RetentionPolicy":
+        """Update a retention policy.
+
+        Args:
+            retention_id: The retention policy ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated retention policy.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the retention policy is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/retention/{retention_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_retention(self, retention_id: str) -> None:
+        """Delete a retention policy.
+
+        Args:
+            retention_id: The retention policy ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the retention policy is not found (404).
+        """
+        response = self._request(
+            "DELETE",
+            f"/v1/retention/{retention_id}",
+        )
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete retention policy")
+
+    # =========================================================================
     # Chains
     # =========================================================================
 
@@ -1955,6 +2103,88 @@ class AsyncActeonClient:
             raise HttpError(404, f"Quota not found: {quota_id}")
         else:
             raise HttpError(response.status_code, "Failed to get quota usage")
+
+    # =========================================================================
+    # Retention Policies
+    # =========================================================================
+
+    async def create_retention(self, req: "CreateRetentionRequest") -> "RetentionPolicy":
+        """Create a retention policy."""
+        response = await self._request("POST", "/v1/retention", json=req.to_dict())
+        if response.status_code == 201:
+            return RetentionPolicy.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_retention(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> "ListRetentionResponse":
+        """List retention policies."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+        response = await self._request("GET", "/v1/retention", params=params)
+        if response.status_code == 200:
+            return ListRetentionResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list retention policies")
+
+    async def get_retention(self, retention_id: str) -> Optional["RetentionPolicy"]:
+        """Get a single retention policy by ID."""
+        response = await self._request("GET", f"/v1/retention/{retention_id}")
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get retention policy")
+
+    async def update_retention(
+        self, retention_id: str, update: "UpdateRetentionRequest"
+    ) -> "RetentionPolicy":
+        """Update a retention policy."""
+        response = await self._request(
+            "PUT", f"/v1/retention/{retention_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return RetentionPolicy.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_retention(self, retention_id: str) -> None:
+        """Delete a retention policy."""
+        response = await self._request(
+            "DELETE",
+            f"/v1/retention/{retention_id}",
+        )
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Retention policy not found: {retention_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete retention policy")
 
     # =========================================================================
     # Chains

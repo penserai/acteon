@@ -181,6 +181,9 @@ pub struct Gateway {
     pub(crate) quota_policies: parking_lot::RwLock<HashMap<String, CachedPolicy>>,
     /// Optional payload encryptor for encrypting action payloads at rest.
     pub(crate) payload_encryptor: Option<Arc<acteon_crypto::PayloadEncryptor>>,
+    /// Data retention policies indexed by `"namespace:tenant"`.
+    pub(crate) retention_policies:
+        parking_lot::RwLock<HashMap<String, acteon_core::RetentionPolicy>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -307,7 +310,7 @@ impl Gateway {
                     &outcome,
                     dispatched_at,
                     start.elapsed(),
-                    self.audit_ttl_seconds,
+                    self.effective_audit_ttl(&action.namespace, &action.tenant),
                     self.audit_store_payload,
                     caller,
                 );
@@ -452,7 +455,7 @@ impl Gateway {
                 &outcome,
                 dispatched_at,
                 start.elapsed(),
-                self.audit_ttl_seconds,
+                self.effective_audit_ttl(&action.namespace, &action.tenant),
                 self.audit_store_payload,
                 caller,
             );
@@ -708,6 +711,48 @@ impl Gateway {
     ) -> Option<acteon_core::QuotaPolicy> {
         let key = format!("{namespace}:{tenant}");
         self.quota_policies.write().remove(&key).map(|c| c.policy)
+    }
+
+    /// Return a snapshot of the current in-memory retention policies.
+    pub fn retention_policies(&self) -> HashMap<String, acteon_core::RetentionPolicy> {
+        self.retention_policies.read().clone()
+    }
+
+    /// Add or replace a retention policy. Keyed by `"namespace:tenant"`.
+    pub fn set_retention_policy(&self, policy: acteon_core::RetentionPolicy) {
+        let key = format!("{}:{}", policy.namespace, policy.tenant);
+        self.retention_policies.write().insert(key, policy);
+    }
+
+    /// Remove a retention policy by its lookup key (`"namespace:tenant"`).
+    pub fn remove_retention_policy(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> Option<acteon_core::RetentionPolicy> {
+        let key = format!("{namespace}:{tenant}");
+        self.retention_policies.write().remove(&key)
+    }
+
+    /// Compute the effective audit TTL for a given namespace and tenant.
+    ///
+    /// Resolution order (most specific wins):
+    /// 1. Per-tenant retention policy with `compliance_hold` → `None` (never expires)
+    /// 2. Per-tenant retention policy with `audit_ttl_seconds` → that value
+    /// 3. Gateway-wide `audit_ttl_seconds` → the global default
+    fn effective_audit_ttl(&self, namespace: &str, tenant: &str) -> Option<u64> {
+        let key = format!("{namespace}:{tenant}");
+        if let Some(policy) = self.retention_policies.read().get(&key)
+            && policy.enabled
+        {
+            if policy.compliance_hold {
+                return None; // Never expires
+            }
+            if let Some(ttl) = policy.audit_ttl_seconds {
+                return Some(ttl);
+            }
+        }
+        self.audit_ttl_seconds
     }
 
     /// Rule Playground where users test actions against the current rule set.
@@ -2736,7 +2781,7 @@ impl Gateway {
 
             #[allow(clippy::cast_possible_wrap)]
             let expires_at = self
-                .audit_ttl_seconds
+                .effective_audit_ttl(&chain_state.namespace, &chain_state.tenant)
                 .map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
 
             let action_payload = if self.audit_store_payload {
@@ -2825,7 +2870,7 @@ impl Gateway {
 
             #[allow(clippy::cast_possible_wrap)]
             let expires_at = self
-                .audit_ttl_seconds
+                .effective_audit_ttl(&chain_state.namespace, &chain_state.tenant)
                 .map(|secs| chain_state.started_at + chrono::Duration::seconds(secs as i64));
 
             let action_payload = if self.audit_store_payload {

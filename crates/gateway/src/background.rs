@@ -5,6 +5,7 @@
 //! - Processing state machine timeouts
 //! - Cleaning up expired state entries
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,6 +50,10 @@ pub struct BackgroundConfig {
     pub enable_recurring_actions: bool,
     /// How often to check for due recurring actions (default: 60 seconds).
     pub recurring_check_interval: Duration,
+    /// Whether the data retention reaper is enabled (default: false).
+    pub enable_retention_reaper: bool,
+    /// How often to run the data retention reaper (default: 3600 seconds).
+    pub retention_check_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -70,6 +75,8 @@ impl Default for BackgroundConfig {
             scheduled_check_interval: Duration::from_secs(5),
             enable_recurring_actions: false,
             recurring_check_interval: Duration::from_secs(60),
+            enable_retention_reaper: false,
+            retention_check_interval: Duration::from_secs(3600),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -185,6 +192,8 @@ pub struct BackgroundProcessor {
     recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
     /// Optional payload encryptor for decrypting state values.
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
+    /// In-memory copy of retention policies for the reaper.
+    retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
 }
 
 impl BackgroundProcessor {
@@ -209,7 +218,18 @@ impl BackgroundProcessor {
             scheduled_action_tx: None,
             recurring_action_tx: None,
             payload_encryptor: None,
+            retention_policies: HashMap::new(),
         }
+    }
+
+    /// Set the retention policies for the reaper.
+    #[must_use]
+    pub fn with_retention_policies(
+        mut self,
+        policies: HashMap<String, acteon_core::RetentionPolicy>,
+    ) -> Self {
+        self.retention_policies = policies;
+        self
     }
 
     /// Set the payload encryptor for decrypting state values.
@@ -288,6 +308,7 @@ impl BackgroundProcessor {
         let mut chain_interval = interval(self.config.chain_check_interval);
         let mut scheduled_interval = interval(self.config.scheduled_check_interval);
         let mut recurring_interval = interval(self.config.recurring_check_interval);
+        let mut retention_interval = interval(self.config.retention_check_interval);
 
         loop {
             tokio::select! {
@@ -318,6 +339,11 @@ impl BackgroundProcessor {
                 _ = recurring_interval.tick(), if self.config.enable_recurring_actions => {
                     if let Err(e) = self.process_recurring_actions().await {
                         error!(error = %e, "error processing recurring actions");
+                    }
+                }
+                _ = retention_interval.tick(), if self.config.enable_retention_reaper => {
+                    if let Err(e) = self.run_retention_reaper().await {
+                        error!(error = %e, "error running retention reaper");
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -888,6 +914,223 @@ impl BackgroundProcessor {
         Ok(())
     }
 
+    /// Run the data retention reaper.
+    ///
+    /// Loads retention policies from the state store, then scans for completed
+    /// chains and resolved events older than the configured TTLs and deletes them.
+    async fn run_retention_reaper(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Reload retention policies from the state store (hot-reload across instances).
+        let entries = self
+            .state
+            .scan_keys_by_kind(KeyKind::Retention)
+            .await
+            .unwrap_or_default();
+
+        let mut policies: HashMap<String, acteon_core::RetentionPolicy> = HashMap::new();
+        for (key, value) in entries {
+            // Skip index keys (format: idx:namespace:tenant).
+            if key.contains(":retention:idx:") {
+                continue;
+            }
+            if let Ok(policy) = serde_json::from_str::<acteon_core::RetentionPolicy>(&value)
+                && policy.enabled
+            {
+                let key = format!("{}:{}", policy.namespace, policy.tenant);
+                policies.insert(key, policy);
+            }
+        }
+        self.retention_policies = policies;
+
+        if self.retention_policies.is_empty() {
+            return Ok(());
+        }
+
+        let mut total_deleted = 0u64;
+        let mut total_skipped = 0u64;
+        let mut total_errors = 0u64;
+
+        for policy in self.retention_policies.values() {
+            if policy.compliance_hold {
+                total_skipped += 1;
+                continue;
+            }
+
+            // Reap completed chains.
+            if let Some(state_ttl) = policy.state_ttl_seconds {
+                match self
+                    .reap_completed_chains(&policy.namespace, &policy.tenant, state_ttl)
+                    .await
+                {
+                    Ok(count) => total_deleted += count,
+                    Err(e) => {
+                        warn!(
+                            namespace = %policy.namespace,
+                            tenant = %policy.tenant,
+                            error = %e,
+                            "retention reaper: error reaping chains"
+                        );
+                        total_errors += 1;
+                    }
+                }
+            }
+
+            // Reap resolved events.
+            if let Some(event_ttl) = policy.event_ttl_seconds {
+                match self
+                    .reap_resolved_events(&policy.namespace, &policy.tenant, event_ttl)
+                    .await
+                {
+                    Ok(count) => total_deleted += count,
+                    Err(e) => {
+                        warn!(
+                            namespace = %policy.namespace,
+                            tenant = %policy.tenant,
+                            error = %e,
+                            "retention reaper: error reaping events"
+                        );
+                        total_errors += 1;
+                    }
+                }
+            }
+        }
+
+        if total_deleted > 0 || total_errors > 0 || total_skipped > 0 {
+            info!(
+                deleted = total_deleted,
+                skipped_compliance = total_skipped,
+                errors = total_errors,
+                "retention reaper cycle complete"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Delete completed/failed/cancelled chain state records older than `ttl_seconds`.
+    async fn reap_completed_chains(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        ttl_seconds: u64,
+    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now();
+        #[allow(clippy::cast_possible_wrap)]
+        let cutoff = now - chrono::Duration::seconds(ttl_seconds as i64);
+
+        let entries = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut deleted = 0u64;
+
+        for (key, raw_value) in entries {
+            // Filter to the target namespace:tenant.
+            if !key.starts_with(&format!("{namespace}:{tenant}:")) {
+                continue;
+            }
+
+            let Ok(value) = self.decrypt_state_value(&raw_value) else {
+                continue;
+            };
+
+            let Ok(chain_data) = serde_json::from_str::<serde_json::Value>(&value) else {
+                continue;
+            };
+
+            // Only delete terminal chains.
+            let status = chain_data
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if !matches!(status, "completed" | "failed" | "cancelled" | "timed_out") {
+                continue;
+            }
+
+            // Check age via started_at or updated_at.
+            let timestamp_str = chain_data
+                .get("started_at")
+                .or_else(|| chain_data.get("updated_at"))
+                .and_then(|v| v.as_str());
+            let Some(ts_str) = timestamp_str else {
+                continue;
+            };
+            let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                continue;
+            };
+
+            if ts.with_timezone(&Utc) < cutoff {
+                // Parse the key parts to build a proper StateKey.
+                let parts: Vec<&str> = key.splitn(4, ':').collect();
+                if parts.len() >= 4 {
+                    let state_key = StateKey::new(parts[0], parts[1], KeyKind::Chain, parts[3]);
+                    self.state.delete(&state_key).await?;
+                    deleted += 1;
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
+
+    /// Delete resolved event state records older than `ttl_seconds`.
+    async fn reap_resolved_events(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        ttl_seconds: u64,
+    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now();
+        #[allow(clippy::cast_possible_wrap)]
+        let cutoff = now - chrono::Duration::seconds(ttl_seconds as i64);
+
+        let entries = self.state.scan_keys_by_kind(KeyKind::EventState).await?;
+        let mut deleted = 0u64;
+
+        for (key, raw_value) in entries {
+            // Filter to the target namespace:tenant.
+            if !key.starts_with(&format!("{namespace}:{tenant}:")) {
+                continue;
+            }
+
+            let Ok(value) = self.decrypt_state_value(&raw_value) else {
+                continue;
+            };
+
+            let Ok(event_data) = serde_json::from_str::<serde_json::Value>(&value) else {
+                continue;
+            };
+
+            // Only delete resolved events.
+            let state = event_data
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if state != "resolved" {
+                continue;
+            }
+
+            // Check age via updated_at.
+            let timestamp_str = event_data.get("updated_at").and_then(|v| v.as_str());
+            let Some(ts_str) = timestamp_str else {
+                continue;
+            };
+            let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                continue;
+            };
+
+            if ts.with_timezone(&Utc) < cutoff {
+                let parts: Vec<&str> = key.splitn(4, ':').collect();
+                if parts.len() >= 4 {
+                    let state_key =
+                        StateKey::new(parts[0], parts[1], KeyKind::EventState, parts[3]);
+                    self.state.delete(&state_key).await?;
+                    deleted += 1;
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
+
     /// Scan for pending chains and emit advance events.
     ///
     /// Uses the chain-ready index for efficient O(log N + M) lookups instead
@@ -1121,6 +1364,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_secs(5),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -1235,6 +1480,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_millis(50),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1341,6 +1588,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_millis(50),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1437,6 +1686,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_secs(5),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })

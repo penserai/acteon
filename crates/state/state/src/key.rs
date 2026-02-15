@@ -42,6 +42,8 @@ pub enum KeyKind {
     Quota,
     /// Quota usage counter for a tenant window.
     QuotaUsage,
+    /// Data retention policy definition.
+    Retention,
     Custom(String),
 }
 
@@ -71,6 +73,7 @@ impl KeyKind {
             Self::PendingRecurring => "pending_recurring",
             Self::Quota => "quota",
             Self::QuotaUsage => "quota_usage",
+            Self::Retention => "retention",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -162,6 +165,7 @@ mod tests {
         assert_eq!(KeyKind::PendingRecurring.as_str(), "pending_recurring");
         assert_eq!(KeyKind::Quota.as_str(), "quota");
         assert_eq!(KeyKind::QuotaUsage.as_str(), "quota_usage");
+        assert_eq!(KeyKind::Retention.as_str(), "retention");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 
