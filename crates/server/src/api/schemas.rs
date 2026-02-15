@@ -62,9 +62,24 @@ pub struct MetricsResponse {
     /// Actions rejected because the provider circuit breaker was open.
     #[schema(example = 0)]
     pub circuit_open: u64,
+    /// Circuit breaker state transitions (any direction).
+    #[schema(example = 0)]
+    pub circuit_transitions: u64,
+    /// Actions rerouted to a fallback provider due to an open circuit.
+    #[schema(example = 0)]
+    pub circuit_fallbacks: u64,
     /// Actions scheduled for delayed execution.
     #[schema(example = 0)]
     pub scheduled: u64,
+    /// Recurring actions dispatched successfully.
+    #[schema(example = 0)]
+    pub recurring_dispatched: u64,
+    /// Recurring action dispatch errors.
+    #[schema(example = 0)]
+    pub recurring_errors: u64,
+    /// Recurring actions skipped (disabled, expired, etc.).
+    #[schema(example = 0)]
+    pub recurring_skipped: u64,
     /// Actions blocked by tenant quota.
     #[schema(example = 0)]
     pub quota_exceeded: u64,
@@ -77,6 +92,15 @@ pub struct MetricsResponse {
     /// Actions that triggered a quota notification to the tenant admin.
     #[schema(example = 0)]
     pub quota_notified: u64,
+    /// State entries deleted by the retention reaper.
+    #[schema(example = 0)]
+    pub retention_deleted_state: u64,
+    /// Retention reaper skipped entries due to compliance hold.
+    #[schema(example = 0)]
+    pub retention_skipped_compliance: u64,
+    /// Retention reaper errors.
+    #[schema(example = 0)]
+    pub retention_errors: u64,
     /// Embedding cache metrics (present when embedding provider is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingMetricsResponse>,

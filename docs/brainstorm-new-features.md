@@ -214,11 +214,21 @@ fully instrumented with `#[instrument]` spans: `gateway.dispatch`,
 with graceful shutdown flush ensures no data loss during deployments.
 See [Distributed Tracing](book/features/distributed-tracing.md) for full docs.
 
-### Grafana Dashboard Templates
+### Grafana Dashboard Templates — IMPLEMENTED
 Ship pre-built Grafana dashboard JSON that visualizes the Prometheus metrics
 already exported. Panels for: throughput, latency percentiles, rule match
 distribution, provider health, error rates, per-tenant usage. Reduces
 time-to-value significantly.
+
+**Implemented**: Two pre-built Grafana dashboards under `deploy/grafana/`:
+Overview dashboard (17 panels across 7 sections: throughput, LLM guardrail,
+chains, circuit breaker, recurring actions, quotas/retention, embedding cache)
+and Provider Health dashboard (7 panels: success rates, request volume, latency
+percentiles with table summary). Lightweight Prometheus exporter at
+`GET /metrics/prometheus` using hand-written text format serialization (no
+`prometheus` crate dependency). Docker Compose `monitoring` profile starts
+Prometheus + Grafana with auto-provisioned datasource and dashboards.
+See [Grafana Dashboards](book/features/grafana-dashboards.md) for full docs.
 
 ### Action Replay from Audit Trail — IMPLEMENTED
 Replay failed or historical actions from the audit log. Invaluable for
@@ -406,7 +416,7 @@ Ranked by impact-to-effort ratio:
 | 17 | Rule Testing CLI | Low-Med | High | **DONE** |
 | 18 | Data Retention Policies | Low-Med | Medium | **DONE** |
 | 19 | Provider Health Dashboard | Medium | Medium | **DONE** |
-| 20 | Grafana Dashboard Templates | Low | Medium | Not started |
+| 20 | Grafana Dashboard Templates | Low | Medium | **DONE** |
 | 21 | Parallel Chain Steps | Large | Medium | Not started |
 | 22 | Sub-Chains | Medium | Medium | Not started |
 | 23 | Native Providers (Twilio, Teams, Discord) | Medium ea. | Medium | Not started |
@@ -459,10 +469,13 @@ Ranked by impact-to-effort ratio:
 - Success rate, p50/p95/p99 latency, circuit breaker state, last error
 - Refresh interval configurable in UI
 
-**20. Grafana Dashboard Templates**
-- Pre-built JSON dashboards under `deploy/grafana/`
-- Panels: throughput, latency percentiles, rule match distribution, provider health, error rates, per-tenant usage
-- Quick win for operators adopting Acteon
+**20. Grafana Dashboard Templates** — DONE
+- Pre-built JSON dashboards under `deploy/grafana/dashboards/`
+- Overview dashboard: 17 panels (throughput, LLM guardrail, chains, circuit breaker, recurring, quotas/retention, embedding cache)
+- Provider Health dashboard: 7 panels (success rates, request/failure volume, latency percentiles, summary table)
+- Prometheus exporter: zero-dependency text format handler at `GET /metrics/prometheus`
+- Docker Compose `monitoring` profile with auto-provisioned Grafana datasource and dashboards
+- 40+ metrics exported with `acteon_` prefix (counters + per-provider gauges)
 
 ### P2 — Workflow Power
 

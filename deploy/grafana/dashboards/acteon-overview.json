@@ -1,0 +1,502 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Acteon Gateway overview: throughput, outcomes, errors, chains, quotas, and retention.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Throughput",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisLabel": "actions/s",
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none" }
+          },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "Action Throughput",
+      "targets": [
+        {
+          "expr": "rate(acteon_actions_dispatched_total[5m])",
+          "legendFormat": "dispatched",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(acteon_actions_executed_total[5m])",
+          "legendFormat": "executed",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(acteon_actions_failed_total[5m])",
+          "legendFormat": "failed",
+          "refId": "C"
+        }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "stacking": { "mode": "normal" }
+          },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 2,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "Action Outcomes (stacked)",
+      "targets": [
+        {
+          "expr": "rate(acteon_actions_executed_total[5m])",
+          "legendFormat": "executed",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(acteon_actions_suppressed_total[5m])",
+          "legendFormat": "suppressed",
+          "refId": "B"
+        },
+        {
+          "expr": "rate(acteon_actions_deduplicated_total[5m])",
+          "legendFormat": "deduplicated",
+          "refId": "C"
+        },
+        {
+          "expr": "rate(acteon_actions_rerouted_total[5m])",
+          "legendFormat": "rerouted",
+          "refId": "D"
+        },
+        {
+          "expr": "rate(acteon_actions_throttled_total[5m])",
+          "legendFormat": "throttled",
+          "refId": "E"
+        },
+        {
+          "expr": "rate(acteon_actions_failed_total[5m])",
+          "legendFormat": "failed",
+          "refId": "F"
+        },
+        {
+          "expr": "rate(acteon_quota_exceeded_total[5m])",
+          "legendFormat": "quota exceeded",
+          "refId": "G"
+        }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Failed" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] },
+          { "matcher": { "id": "byName", "options": "Throttled" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } }] }
+        ]
+      },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 9 },
+      "id": 3,
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Totals",
+      "targets": [
+        { "expr": "acteon_actions_dispatched_total", "legendFormat": "Dispatched", "refId": "A" },
+        { "expr": "acteon_actions_executed_total", "legendFormat": "Executed", "refId": "B" },
+        { "expr": "acteon_actions_suppressed_total", "legendFormat": "Suppressed", "refId": "C" },
+        { "expr": "acteon_actions_deduplicated_total", "legendFormat": "Deduplicated", "refId": "D" },
+        { "expr": "acteon_actions_rerouted_total", "legendFormat": "Rerouted", "refId": "E" },
+        { "expr": "acteon_actions_throttled_total", "legendFormat": "Throttled", "refId": "F" },
+        { "expr": "acteon_actions_failed_total", "legendFormat": "Failed", "refId": "G" },
+        { "expr": "acteon_actions_pending_approval_total", "legendFormat": "Pending Approval", "refId": "H" },
+        { "expr": "acteon_actions_scheduled_total", "legendFormat": "Scheduled", "refId": "I" }
+      ],
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+      "id": 101,
+      "title": "LLM Guardrail",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 14 },
+      "id": 4,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "LLM Guardrail Decisions",
+      "targets": [
+        { "expr": "rate(acteon_llm_guardrail_allowed_total[5m])", "legendFormat": "allowed", "refId": "A" },
+        { "expr": "rate(acteon_llm_guardrail_denied_total[5m])", "legendFormat": "denied", "refId": "B" },
+        { "expr": "rate(acteon_llm_guardrail_errors_total[5m])", "legendFormat": "errors", "refId": "C" }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } } },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 14 },
+      "id": 5,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "LLM Guardrail Totals",
+      "targets": [
+        { "expr": "acteon_llm_guardrail_allowed_total", "legendFormat": "Allowed", "refId": "A" },
+        { "expr": "acteon_llm_guardrail_denied_total", "legendFormat": "Denied", "refId": "B" },
+        { "expr": "acteon_llm_guardrail_errors_total", "legendFormat": "Errors", "refId": "C" }
+      ],
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "id": 102,
+      "title": "Chains (Workflows)",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 21 },
+      "id": 6,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "Chain Throughput",
+      "targets": [
+        { "expr": "rate(acteon_chains_started_total[5m])", "legendFormat": "started", "refId": "A" },
+        { "expr": "rate(acteon_chains_completed_total[5m])", "legendFormat": "completed", "refId": "B" },
+        { "expr": "rate(acteon_chains_failed_total[5m])", "legendFormat": "failed", "refId": "C" },
+        { "expr": "rate(acteon_chains_cancelled_total[5m])", "legendFormat": "cancelled", "refId": "D" }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.9 }, { "color": "green", "value": 0.95 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 21 },
+      "id": 7,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Chain Success Rate",
+      "targets": [
+        {
+          "expr": "acteon_chains_completed_total / clamp_min(acteon_chains_started_total, 1)",
+          "legendFormat": "success rate",
+          "refId": "A"
+        }
+      ],
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } } },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 21 },
+      "id": 8,
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Chain Totals",
+      "targets": [
+        { "expr": "acteon_chains_started_total", "legendFormat": "Started", "refId": "A" },
+        { "expr": "acteon_chains_completed_total", "legendFormat": "Completed", "refId": "B" },
+        { "expr": "acteon_chains_failed_total", "legendFormat": "Failed", "refId": "C" },
+        { "expr": "acteon_chains_cancelled_total", "legendFormat": "Cancelled", "refId": "D" }
+      ],
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 103,
+      "title": "Circuit Breaker",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 28 },
+      "id": 9,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "Circuit Breaker Activity",
+      "targets": [
+        { "expr": "rate(acteon_circuit_open_total[5m])", "legendFormat": "open rejections", "refId": "A" },
+        { "expr": "rate(acteon_circuit_transitions_total[5m])", "legendFormat": "transitions", "refId": "B" },
+        { "expr": "rate(acteon_circuit_fallbacks_total[5m])", "legendFormat": "fallbacks", "refId": "C" }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 28 },
+      "id": 10,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Circuit Breaker Totals",
+      "targets": [
+        { "expr": "acteon_circuit_open_total", "legendFormat": "Open Rejections", "refId": "A" },
+        { "expr": "acteon_circuit_transitions_total", "legendFormat": "Transitions", "refId": "B" },
+        { "expr": "acteon_circuit_fallbacks_total", "legendFormat": "Fallbacks", "refId": "C" }
+      ],
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "id": 104,
+      "title": "Recurring Actions",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Errors" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] }
+        ]
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 35 },
+      "id": 11,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Recurring Action Totals",
+      "targets": [
+        { "expr": "acteon_recurring_dispatched_total", "legendFormat": "Dispatched", "refId": "A" },
+        { "expr": "acteon_recurring_errors_total", "legendFormat": "Errors", "refId": "B" },
+        { "expr": "acteon_recurring_skipped_total", "legendFormat": "Skipped", "refId": "C" }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 35 },
+      "id": 12,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "Recurring Action Rate",
+      "targets": [
+        { "expr": "rate(acteon_recurring_dispatched_total[5m])", "legendFormat": "dispatched", "refId": "A" },
+        { "expr": "rate(acteon_recurring_errors_total[5m])", "legendFormat": "errors", "refId": "B" }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "id": 105,
+      "title": "Quotas & Retention",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Exceeded" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] }
+        ]
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 41 },
+      "id": 13,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Quota Totals",
+      "targets": [
+        { "expr": "acteon_quota_exceeded_total", "legendFormat": "Exceeded", "refId": "A" },
+        { "expr": "acteon_quota_warned_total", "legendFormat": "Warned", "refId": "B" },
+        { "expr": "acteon_quota_degraded_total", "legendFormat": "Degraded", "refId": "C" },
+        { "expr": "acteon_quota_notified_total", "legendFormat": "Notified", "refId": "D" }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Errors" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] }
+        ]
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 41 },
+      "id": 14,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Retention Reaper Totals",
+      "targets": [
+        { "expr": "acteon_retention_deleted_state_total", "legendFormat": "Deleted", "refId": "A" },
+        { "expr": "acteon_retention_skipped_compliance_total", "legendFormat": "Compliance Hold", "refId": "B" },
+        { "expr": "acteon_retention_errors_total", "legendFormat": "Errors", "refId": "C" }
+      ],
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 46 },
+      "id": 106,
+      "title": "Embedding Provider",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 47 },
+      "id": 15,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "Embedding Cache Hit/Miss Rate",
+      "targets": [
+        { "expr": "rate(acteon_embedding_topic_cache_hits_total[5m])", "legendFormat": "topic hits", "refId": "A" },
+        { "expr": "rate(acteon_embedding_topic_cache_misses_total[5m])", "legendFormat": "topic misses", "refId": "B" },
+        { "expr": "rate(acteon_embedding_text_cache_hits_total[5m])", "legendFormat": "text hits", "refId": "C" },
+        { "expr": "rate(acteon_embedding_text_cache_misses_total[5m])", "legendFormat": "text misses", "refId": "D" }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.5 }, { "color": "green", "value": 0.8 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 47 },
+      "id": 16,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Topic Cache Hit Rate",
+      "targets": [
+        {
+          "expr": "acteon_embedding_topic_cache_hits_total / clamp_min(acteon_embedding_topic_cache_hits_total + acteon_embedding_topic_cache_misses_total, 1)",
+          "legendFormat": "hit rate",
+          "refId": "A"
+        }
+      ],
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 0.5 }, { "color": "green", "value": 0.8 }] }
+        }
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 47 },
+      "id": 17,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Text Cache Hit Rate",
+      "targets": [
+        {
+          "expr": "acteon_embedding_text_cache_hits_total / clamp_min(acteon_embedding_text_cache_hits_total + acteon_embedding_text_cache_misses_total, 1)",
+          "legendFormat": "hit rate",
+          "refId": "A"
+        }
+      ],
+      "type": "gauge"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Errors" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] },
+          { "matcher": { "id": "byName", "options": "Fail-Open" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } }] }
+        ]
+      },
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 53 },
+      "id": 18,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Embedding Error Totals",
+      "targets": [
+        { "expr": "acteon_embedding_errors_total", "legendFormat": "Errors", "refId": "A" },
+        { "expr": "acteon_embedding_fail_open_total", "legendFormat": "Fail-Open", "refId": "B" }
+      ],
+      "type": "stat"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["acteon"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "prometheus" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Data Source",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Acteon Overview",
+  "uid": "acteon-overview",
+  "version": 1
+}

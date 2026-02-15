@@ -115,6 +115,7 @@ use acteon_core::{
         super::retention::update_retention,
         super::retention::delete_retention,
         super::provider_health::list_provider_health,
+        super::prometheus::prometheus_metrics,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
