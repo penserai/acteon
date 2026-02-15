@@ -1439,6 +1439,39 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Provider Health
+    // =========================================================================
+
+    /**
+     * Lists health and metrics for all providers.
+     *
+     * @return health status and metrics for all registered providers
+     * @throws ActeonException if the request fails
+     */
+    public ListProviderHealthResponse listProviderHealth() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/providers/health")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
+                return ListProviderHealthResponse.fromMap(data);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list provider health");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Chains (Task Chain Orchestration)
     // =========================================================================
 

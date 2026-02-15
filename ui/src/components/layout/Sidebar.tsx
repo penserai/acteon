@@ -5,7 +5,7 @@ import { useUiStore } from '../../stores/ui'
 import {
   LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
-  PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart, Database,
+  PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart, Database, HeartPulse,
 } from 'lucide-react'
 import logoPng from '../../assets/logo.png'
 import styles from './Sidebar.module.css'
@@ -21,6 +21,7 @@ const mainItems = [
   { to: '/chains', icon: Link2, label: 'Chains' },
   { to: '/approvals', icon: ShieldCheck, label: 'Approvals', badge: true },
   { to: '/circuit-breakers', icon: Zap, label: 'Circuit Breakers' },
+  { to: '/provider-health', icon: HeartPulse, label: 'Provider Health' },
   { to: '/dlq', icon: AlertTriangle, label: 'Dead-Letter Queue' },
   { to: '/stream', icon: Rss, label: 'Stream' },
   { to: '/embeddings', icon: Brain, label: 'Embeddings' },

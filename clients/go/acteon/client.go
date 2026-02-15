@@ -1287,6 +1287,29 @@ func (c *Client) DeleteRetention(ctx context.Context, retentionID string) error 
 }
 
 // =============================================================================
+// Provider Health
+// =============================================================================
+
+// ListProviderHealth lists health and metrics for all providers.
+func (c *Client) ListProviderHealth(ctx context.Context) (*ListProviderHealthResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/providers/health", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list provider health"}
+	}
+
+	var result ListProviderHealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode provider health response: %w", err)
+	}
+	return &result, nil
+}
+
+// =============================================================================
 // Rule Evaluation (Rule Playground)
 // =============================================================================
 

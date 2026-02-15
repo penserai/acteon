@@ -117,3 +117,84 @@ func TestWebhookActionChaining(t *testing.T) {
 		t.Error("expected metadata with env=prod")
 	}
 }
+
+func TestProviderHealthStatus(t *testing.T) {
+	status := ProviderHealthStatus{
+		Provider:            "email",
+		Healthy:             true,
+		CircuitBreakerState: "closed",
+		TotalRequests:       1500,
+		Successes:           1480,
+		Failures:            20,
+		SuccessRate:         98.67,
+		AvgLatencyMs:        45.2,
+		P50LatencyMs:        32.0,
+		P95LatencyMs:        120.5,
+		P99LatencyMs:        250.0,
+	}
+
+	if status.Provider != "email" {
+		t.Errorf("expected provider email, got %s", status.Provider)
+	}
+	if !status.Healthy {
+		t.Error("expected healthy to be true")
+	}
+	if status.CircuitBreakerState != "closed" {
+		t.Errorf("expected circuit breaker state closed, got %s", status.CircuitBreakerState)
+	}
+	if status.TotalRequests != 1500 {
+		t.Errorf("expected total requests 1500, got %d", status.TotalRequests)
+	}
+	if status.SuccessRate != 98.67 {
+		t.Errorf("expected success rate 98.67, got %f", status.SuccessRate)
+	}
+}
+
+func TestListProviderHealthResponse(t *testing.T) {
+	response := ListProviderHealthResponse{
+		Providers: []ProviderHealthStatus{
+			{
+				Provider:            "email",
+				Healthy:             true,
+				CircuitBreakerState: "closed",
+				TotalRequests:       1000,
+				Successes:           990,
+				Failures:            10,
+				SuccessRate:         99.0,
+				AvgLatencyMs:        50.0,
+				P50LatencyMs:        40.0,
+				P95LatencyMs:        100.0,
+				P99LatencyMs:        150.0,
+			},
+			{
+				Provider:            "slack",
+				Healthy:             false,
+				CircuitBreakerState: "open",
+				TotalRequests:       500,
+				Successes:           450,
+				Failures:            50,
+				SuccessRate:         90.0,
+				AvgLatencyMs:        200.0,
+				P50LatencyMs:        150.0,
+				P95LatencyMs:        400.0,
+				P99LatencyMs:        600.0,
+			},
+		},
+	}
+
+	if len(response.Providers) != 2 {
+		t.Errorf("expected 2 providers, got %d", len(response.Providers))
+	}
+	if response.Providers[0].Provider != "email" {
+		t.Errorf("expected first provider to be email, got %s", response.Providers[0].Provider)
+	}
+	if response.Providers[1].Provider != "slack" {
+		t.Errorf("expected second provider to be slack, got %s", response.Providers[1].Provider)
+	}
+	if response.Providers[0].Healthy != true {
+		t.Error("expected first provider to be healthy")
+	}
+	if response.Providers[1].Healthy != false {
+		t.Error("expected second provider to be unhealthy")
+	}
+}

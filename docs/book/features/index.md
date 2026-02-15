@@ -69,6 +69,11 @@ Automatic provider health tracking — stop requests to failing providers, rerou
 </div>
 
 <div class="card" markdown>
+### [Provider Health Dashboard](provider-health.md)
+Real-time visibility into provider health, performance metrics, and circuit breaker state — success rates, latency percentiles, and last errors at a glance.
+</div>
+
+<div class="card" markdown>
 ### [Event Streaming](event-streaming.md)
 Real-time SSE event stream for dashboards and monitoring — subscribe to action outcomes as they happen.
 </div>

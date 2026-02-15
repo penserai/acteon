@@ -128,9 +128,18 @@ state. Distributed mutation lock prevents race conditions in multi-instance
 deployments. See [Circuit Breaker](book/features/circuit-breaker.md) for full
 docs.
 
-### Provider Health Dashboard
+### Provider Health Dashboard — IMPLEMENTED
 Expose per-provider success rates, latency percentiles, and circuit breaker
 status via the API (`GET /v1/providers/health`) and Prometheus metrics.
+
+**Implemented**: Real-time provider health dashboard with per-provider success
+rates, latency percentiles (p50/p95/p99), circuit breaker state, health check
+status, and last error tracking. In-memory metrics collection with 1,000-sample
+rolling window for percentile accuracy. Admin UI page with auto-refresh. Zero
+configuration required — works automatically when providers are registered.
+Thread-safe atomic counters + `parking_lot::Mutex` for latency buffer. Memory
+overhead ~8 KB per provider. See [Provider Health Dashboard](book/features/provider-health.md)
+for full docs.
 
 ### Weighted/Percentage-Based Routing
 Split traffic across providers by percentage (e.g., 90% SendGrid / 10%
@@ -396,7 +405,7 @@ Ranked by impact-to-effort ratio:
 | 16 | Payload Encryption at Rest | Medium | High | Not started |
 | 17 | Rule Testing CLI | Low-Med | High | **DONE** |
 | 18 | Data Retention Policies | Low-Med | Medium | **DONE** |
-| 19 | Provider Health Dashboard | Medium | Medium | Not started |
+| 19 | Provider Health Dashboard | Medium | Medium | **DONE** |
 | 20 | Grafana Dashboard Templates | Low | Medium | Not started |
 | 21 | Parallel Chain Steps | Large | Medium | Not started |
 | 22 | Sub-Chains | Medium | Medium | Not started |

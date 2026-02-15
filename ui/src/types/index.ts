@@ -206,6 +206,24 @@ export interface CircuitBreakerStatus {
   fallback_provider?: string
 }
 
+// ---- Provider Health ----
+export interface ProviderHealthStatus {
+  provider: string
+  healthy: boolean
+  health_check_error?: string
+  circuit_breaker_state?: string
+  total_requests: number
+  successes: number
+  failures: number
+  success_rate: number
+  avg_latency_ms: number
+  p50_latency_ms: number
+  p95_latency_ms: number
+  p99_latency_ms: number
+  last_request_at?: number
+  last_error?: string
+}
+
 // ---- DLQ ----
 export interface DlqStats {
   enabled: boolean

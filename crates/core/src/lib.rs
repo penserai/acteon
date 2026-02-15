@@ -8,6 +8,7 @@ pub mod fingerprint;
 pub mod group;
 pub mod key;
 pub mod outcome;
+pub mod provider_health;
 pub mod quota;
 pub mod recurring;
 pub mod retention;
@@ -30,6 +31,7 @@ pub use fingerprint::compute_fingerprint;
 pub use group::{EventGroup, GroupState, GroupedEvent};
 pub use key::ActionKey;
 pub use outcome::{ActionError, ActionOutcome, ProviderResponse, ResponseStatus};
+pub use provider_health::{ListProviderHealthResponse, ProviderHealthStatus};
 pub use quota::{
     OverageBehavior, QuotaPolicy, QuotaUsage, QuotaWindow, compute_window_boundaries,
     quota_counter_key,

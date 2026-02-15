@@ -1636,3 +1636,75 @@ def _parse_sse_stream(lines: Iterator[str]) -> Iterator[SseEvent]:
         elif line.startswith("data:"):
             data_parts.append(line[len("data:"):].strip())
         # Other fields are ignored per the SSE spec.
+
+
+# =============================================================================
+# Provider Health Types
+# =============================================================================
+
+
+@dataclass
+class ProviderHealthStatus:
+    """Health and metrics for a single provider.
+
+    Attributes:
+        provider: Provider name.
+        healthy: Whether the provider is healthy (circuit breaker closed).
+        health_check_error: Error message from last health check (if any).
+        circuit_breaker_state: Current circuit breaker state (closed, open, half_open).
+        total_requests: Total number of requests to this provider.
+        successes: Number of successful requests.
+        failures: Number of failed requests.
+        success_rate: Success rate as percentage (0-100).
+        avg_latency_ms: Average request latency in milliseconds.
+        p50_latency_ms: 50th percentile latency in milliseconds.
+        p95_latency_ms: 95th percentile latency in milliseconds.
+        p99_latency_ms: 99th percentile latency in milliseconds.
+        last_request_at: Timestamp of last request (milliseconds since epoch).
+        last_error: Last error message (if any).
+    """
+    provider: str
+    healthy: bool
+    circuit_breaker_state: str
+    total_requests: int
+    successes: int
+    failures: int
+    success_rate: float
+    avg_latency_ms: float
+    p50_latency_ms: float
+    p95_latency_ms: float
+    p99_latency_ms: float
+    health_check_error: Optional[str] = None
+    last_request_at: Optional[int] = None
+    last_error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProviderHealthStatus":
+        return cls(
+            provider=data["provider"],
+            healthy=data["healthy"],
+            health_check_error=data.get("health_check_error"),
+            circuit_breaker_state=data["circuit_breaker_state"],
+            total_requests=data["total_requests"],
+            successes=data["successes"],
+            failures=data["failures"],
+            success_rate=data["success_rate"],
+            avg_latency_ms=data["avg_latency_ms"],
+            p50_latency_ms=data["p50_latency_ms"],
+            p95_latency_ms=data["p95_latency_ms"],
+            p99_latency_ms=data["p99_latency_ms"],
+            last_request_at=data.get("last_request_at"),
+            last_error=data.get("last_error"),
+        )
+
+
+@dataclass
+class ListProviderHealthResponse:
+    """Response from listing provider health."""
+    providers: list[ProviderHealthStatus]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListProviderHealthResponse":
+        return cls(
+            providers=[ProviderHealthStatus.from_dict(p) for p in data["providers"]],
+        )

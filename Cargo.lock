@@ -196,6 +196,7 @@ dependencies = [
  "json-patch",
  "notify",
  "parking_lot",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

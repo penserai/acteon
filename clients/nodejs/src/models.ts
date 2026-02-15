@@ -1503,3 +1503,70 @@ export interface StreamOptions {
   /** Last event ID for reconnection catch-up. */
   lastEventId?: string;
 }
+
+// =============================================================================
+// Provider Health Types
+// =============================================================================
+
+/** Health and metrics for a single provider. */
+export interface ProviderHealthStatus {
+  /** Provider name. */
+  provider: string;
+  /** Whether the provider is healthy (circuit breaker closed). */
+  healthy: boolean;
+  /** Error message from last health check (if any). */
+  healthCheckError?: string;
+  /** Current circuit breaker state (closed, open, half_open). */
+  circuitBreakerState: string;
+  /** Total number of requests to this provider. */
+  totalRequests: number;
+  /** Number of successful requests. */
+  successes: number;
+  /** Number of failed requests. */
+  failures: number;
+  /** Success rate as percentage (0-100). */
+  successRate: number;
+  /** Average request latency in milliseconds. */
+  avgLatencyMs: number;
+  /** 50th percentile latency in milliseconds. */
+  p50LatencyMs: number;
+  /** 95th percentile latency in milliseconds. */
+  p95LatencyMs: number;
+  /** 99th percentile latency in milliseconds. */
+  p99LatencyMs: number;
+  /** Timestamp of last request (milliseconds since epoch). */
+  lastRequestAt?: number;
+  /** Last error message (if any). */
+  lastError?: string;
+}
+
+export function parseProviderHealthStatus(data: Record<string, unknown>): ProviderHealthStatus {
+  return {
+    provider: data.provider as string,
+    healthy: data.healthy as boolean,
+    healthCheckError: data.health_check_error as string | undefined,
+    circuitBreakerState: data.circuit_breaker_state as string,
+    totalRequests: data.total_requests as number,
+    successes: data.successes as number,
+    failures: data.failures as number,
+    successRate: data.success_rate as number,
+    avgLatencyMs: data.avg_latency_ms as number,
+    p50LatencyMs: data.p50_latency_ms as number,
+    p95LatencyMs: data.p95_latency_ms as number,
+    p99LatencyMs: data.p99_latency_ms as number,
+    lastRequestAt: data.last_request_at as number | undefined,
+    lastError: data.last_error as string | undefined,
+  };
+}
+
+/** Response from listing provider health. */
+export interface ListProviderHealthResponse {
+  providers: ProviderHealthStatus[];
+}
+
+export function parseListProviderHealthResponse(data: Record<string, unknown>): ListProviderHealthResponse {
+  const items = data.providers as Record<string, unknown>[];
+  return {
+    providers: items.map(parseProviderHealthStatus),
+  };
+}

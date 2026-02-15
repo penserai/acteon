@@ -12,6 +12,7 @@ import { Chains } from './pages/Chains'
 import { ChainDetail } from './pages/ChainDetail'
 import { Approvals } from './pages/Approvals'
 import { Providers } from './pages/Providers'
+import { ProviderHealth } from './pages/ProviderHealth'
 import { DeadLetterQueue } from './pages/DeadLetterQueue'
 import { EventStream } from './pages/EventStream'
 import { Embeddings } from './pages/Embeddings'
@@ -39,6 +40,7 @@ function App() {
           <Route path="chains/:chainId" element={<ChainDetail />} />
           <Route path="approvals" element={<Approvals />} />
           <Route path="circuit-breakers" element={<Providers />} />
+          <Route path="provider-health" element={<ProviderHealth />} />
           <Route path="dlq" element={<DeadLetterQueue />} />
           <Route path="stream" element={<EventStream />} />
           <Route path="embeddings" element={<Embeddings />} />
