@@ -507,31 +507,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Register providers from config.
     for provider_cfg in &config.providers {
-        let provider: std::sync::Arc<dyn acteon_provider::DynProvider> =
-            match provider_cfg.provider_type.as_str() {
-                "webhook" => {
-                    let url = provider_cfg.url.as_deref().ok_or_else(|| {
+        let provider: std::sync::Arc<dyn acteon_provider::DynProvider> = match provider_cfg
+            .provider_type
+            .as_str()
+        {
+            "webhook" => {
+                let url = provider_cfg.url.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': webhook type requires a 'url' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let mut wp =
+                    acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url);
+                if !provider_cfg.headers.is_empty() {
+                    wp = wp.with_headers(provider_cfg.headers.clone());
+                }
+                std::sync::Arc::new(wp)
+            }
+            "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
+            "twilio" => {
+                let account_sid = provider_cfg.account_sid.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': twilio type requires an 'account_sid' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let auth_token_raw = provider_cfg.auth_token.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': twilio type requires an 'auth_token' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let auth_token = require_decrypt(auth_token_raw, master_key.as_ref())?;
+                let mut twilio_config = acteon_twilio::TwilioConfig::new(account_sid, auth_token);
+                if let Some(ref from) = provider_cfg.from_number {
+                    twilio_config = twilio_config.with_from_number(from);
+                }
+                std::sync::Arc::new(acteon_twilio::TwilioProvider::new(twilio_config))
+            }
+            "teams" => {
+                let webhook_url = provider_cfg
+                    .webhook_url
+                    .as_deref()
+                    .or(provider_cfg.url.as_deref())
+                    .ok_or_else(|| {
                         format!(
-                            "provider '{}': webhook type requires a 'url' field",
+                            "provider '{}': teams type requires a 'webhook_url' field",
                             provider_cfg.name
                         )
                     })?;
-                    let mut wp =
-                        acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url);
-                    if !provider_cfg.headers.is_empty() {
-                        wp = wp.with_headers(provider_cfg.headers.clone());
-                    }
-                    std::sync::Arc::new(wp)
+                let teams_config = acteon_teams::TeamsConfig::new(webhook_url);
+                std::sync::Arc::new(acteon_teams::TeamsProvider::new(teams_config))
+            }
+            "discord" => {
+                let webhook_url = provider_cfg
+                    .webhook_url
+                    .as_deref()
+                    .or(provider_cfg.url.as_deref())
+                    .ok_or_else(|| {
+                        format!(
+                            "provider '{}': discord type requires a 'webhook_url' field",
+                            provider_cfg.name
+                        )
+                    })?;
+                let mut discord_config = acteon_discord::DiscordConfig::new(webhook_url);
+                if let Some(ref username) = provider_cfg.default_channel {
+                    discord_config = discord_config.with_default_username(username);
                 }
-                "log" => std::sync::Arc::new(acteon_provider::LogProvider::new(&provider_cfg.name)),
-                other => {
-                    return Err(format!(
-                        "provider '{}': unknown type '{other}' (expected 'webhook' or 'log')",
+                std::sync::Arc::new(acteon_discord::DiscordProvider::new(discord_config))
+            }
+            other => {
+                return Err(format!(
+                        "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', 'teams', or 'discord')",
                         provider_cfg.name
                     )
                     .into());
-                }
-            };
+            }
+        };
         builder = builder.provider(provider);
     }
     if !config.providers.is_empty() {

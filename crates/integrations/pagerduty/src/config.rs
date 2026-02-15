@@ -8,7 +8,7 @@ use crate::error::PagerDutyError;
 ///
 /// Supports multiple `PagerDuty` services, each identified by a service ID and
 /// mapped to an integration routing key.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PagerDutyConfig {
     /// Map of `PagerDuty` service ID → integration routing key.
     services: HashMap<String, String>,
@@ -25,6 +25,30 @@ pub struct PagerDutyConfig {
 
     /// Default source when not specified in the event payload.
     pub default_source: Option<String>,
+}
+
+impl std::fmt::Debug for PagerDutyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// Helper to display service IDs with redacted routing keys.
+        struct RedactedServices<'a>(&'a HashMap<String, String>);
+        impl std::fmt::Debug for RedactedServices<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let mut map = f.debug_map();
+                for key in self.0.keys() {
+                    map.entry(key, &"[REDACTED]");
+                }
+                map.finish()
+            }
+        }
+
+        f.debug_struct("PagerDutyConfig")
+            .field("services", &RedactedServices(&self.services))
+            .field("default_service_id", &self.default_service_id)
+            .field("api_base_url", &self.api_base_url)
+            .field("default_severity", &self.default_severity)
+            .field("default_source", &self.default_source)
+            .finish()
+    }
 }
 
 impl PagerDutyConfig {
@@ -290,5 +314,29 @@ mod tests {
 
         let err = config.decrypt_secrets(&master_key).unwrap_err();
         assert!(matches!(err, PagerDutyError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn debug_redacts_routing_keys() {
+        let config = PagerDutyConfig::new()
+            .with_service("PSVC1", "test-rk-placeholder-1")
+            .with_service("PSVC2", "test-rk-placeholder-2");
+        let debug = format!("{config:?}");
+        assert!(
+            debug.contains("[REDACTED]"),
+            "routing keys must be redacted"
+        );
+        assert!(
+            !debug.contains("test-rk-placeholder"),
+            "routing keys must not appear in debug output"
+        );
+        assert!(
+            debug.contains("PSVC1"),
+            "service IDs should still be visible"
+        );
+        assert!(
+            debug.contains("PSVC2"),
+            "service IDs should still be visible"
+        );
     }
 }

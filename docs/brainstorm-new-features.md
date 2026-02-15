@@ -419,7 +419,7 @@ Ranked by impact-to-effort ratio:
 | 20 | Grafana Dashboard Templates | Low | Medium | **DONE** |
 | 21 | Parallel Chain Steps | Large | Medium | Not started |
 | 22 | Sub-Chains | Medium | Medium | Not started |
-| 23 | Native Providers (Twilio, Teams, Discord) | Medium ea. | Medium | Not started |
+| 23 | Native Providers (Twilio, Teams, Discord) | Medium ea. | Medium | **DONE** |
 | 24 | Weighted/Canary Routing | Medium | Medium | Not started |
 | 25 | Kafka/RabbitMQ Producers | Medium | Medium | Not started |
 | 26 | Cost-Aware Routing | Medium | Medium | Not started |

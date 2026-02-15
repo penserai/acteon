@@ -39,6 +39,9 @@ acteon-state-clickhouse = { workspace = true, optional = true }
 acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true, features = ["webhook"] }
+acteon-twilio = { workspace = true }
+acteon-teams = { workspace = true }
+acteon-discord = { workspace = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }

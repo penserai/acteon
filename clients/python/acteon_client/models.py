@@ -1708,3 +1708,110 @@ class ListProviderHealthResponse:
         return cls(
             providers=[ProviderHealthStatus.from_dict(p) for p in data["providers"]],
         )
+
+
+# =============================================================================
+# Provider Payload Helpers
+# =============================================================================
+
+
+def twilio_sms_payload(
+    to: str,
+    body: str,
+    *,
+    from_number: Optional[str] = None,
+    media_url: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the Twilio SMS provider.
+
+    Args:
+        to: Destination phone number (E.164 format).
+        body: Message body text.
+        from_number: Override the default sender phone number.
+        media_url: URL of media to attach (MMS).
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Twilio provider.
+    """
+    payload: dict[str, Any] = {"to": to, "body": body}
+    if from_number is not None:
+        payload["from"] = from_number
+    if media_url is not None:
+        payload["media_url"] = media_url
+    return payload
+
+
+def teams_message_payload(
+    text: str,
+    *,
+    title: Optional[str] = None,
+    theme_color: Optional[str] = None,
+    summary: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the Microsoft Teams provider (MessageCard).
+
+    Args:
+        text: Message body text (supports basic markdown).
+        title: Card title.
+        theme_color: Hex color string (e.g., "FF0000").
+        summary: Summary text for notifications.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Teams provider.
+    """
+    payload: dict[str, Any] = {"text": text}
+    if title is not None:
+        payload["title"] = title
+    if theme_color is not None:
+        payload["theme_color"] = theme_color
+    if summary is not None:
+        payload["summary"] = summary
+    return payload
+
+
+def teams_adaptive_card_payload(card: dict[str, Any]) -> dict[str, Any]:
+    """Build a payload for the Microsoft Teams provider (Adaptive Card).
+
+    Args:
+        card: The Adaptive Card JSON object.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Teams provider.
+    """
+    return {"adaptive_card": card}
+
+
+def discord_message_payload(
+    *,
+    content: Optional[str] = None,
+    embeds: Optional[List[dict[str, Any]]] = None,
+    username: Optional[str] = None,
+    avatar_url: Optional[str] = None,
+    tts: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the Discord webhook provider.
+
+    At least one of ``content`` or ``embeds`` must be provided.
+
+    Args:
+        content: Plain-text message content.
+        embeds: List of Discord embed objects.
+        username: Override the webhook's default username.
+        avatar_url: Override the webhook's default avatar.
+        tts: Whether the message should be read aloud.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the Discord provider.
+    """
+    payload: dict[str, Any] = {}
+    if content is not None:
+        payload["content"] = content
+    if embeds is not None:
+        payload["embeds"] = embeds
+    if username is not None:
+        payload["username"] = username
+    if avatar_url is not None:
+        payload["avatar_url"] = avatar_url
+    if tts is not None:
+        payload["tts"] = tts
+    return payload

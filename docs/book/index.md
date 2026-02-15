@@ -36,7 +36,7 @@ flowchart LR
     C -->|Suppress| F[Block Action]
     C -->|Throttle| G[Rate Limit]
     C -->|Reroute| H[Different Provider]
-    D --> I[Email / SMS / Slack / Webhook]
+    D --> I[Email / Twilio / Slack / Teams / Discord / Webhook]
 ```
 
 ---
@@ -239,6 +239,9 @@ graph TB
     EX --> PROV
     PROV --> Email[Email SMTP]
     PROV --> Slack[Slack]
+    PROV --> Twilio[Twilio SMS]
+    PROV --> Teams[Teams]
+    PROV --> Discord[Discord]
     PROV --> WH[Webhooks]
     RE -.-> MEM & RED & PG & DDB & CH
     EX -.-> AUD_PG & AUD_CH & AUD_ES
