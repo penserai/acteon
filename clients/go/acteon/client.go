@@ -1141,6 +1141,152 @@ func (c *Client) GetQuotaUsage(ctx context.Context, quotaID string) (*QuotaUsage
 }
 
 // =============================================================================
+// Retention Policies
+// =============================================================================
+
+// CreateRetention creates a retention policy.
+func (c *Client) CreateRetention(ctx context.Context, req *CreateRetentionRequest) (*RetentionPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/retention", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result RetentionPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create retention policy"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListRetention lists retention policies with optional namespace, tenant, limit, and offset filters.
+func (c *Client) ListRetention(ctx context.Context, namespace, tenant *string, limit, offset *int) (*ListRetentionResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+	if limit != nil {
+		params.Set("limit", strconv.Itoa(*limit))
+	}
+	if offset != nil {
+		params.Set("offset", strconv.Itoa(*offset))
+	}
+
+	path := "/v1/retention"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list retention policies"}
+	}
+
+	var result ListRetentionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetRetention gets a single retention policy by ID.
+func (c *Client) GetRetention(ctx context.Context, retentionID string) (*RetentionPolicy, error) {
+	path := fmt.Sprintf("/v1/retention/%s", retentionID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get retention policy"}
+	}
+
+	var result RetentionPolicy
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateRetention updates a retention policy.
+func (c *Client) UpdateRetention(ctx context.Context, retentionID string, update *UpdateRetentionRequest) (*RetentionPolicy, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/retention/%s", retentionID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result RetentionPolicy
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Retention policy not found: %s", retentionID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update retention policy"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteRetention deletes a retention policy.
+func (c *Client) DeleteRetention(ctx context.Context, retentionID string) error {
+	path := fmt.Sprintf("/v1/retention/%s", retentionID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Retention policy not found: %s", retentionID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete retention policy"}
+}
+
+// =============================================================================
 // Rule Evaluation (Rule Playground)
 // =============================================================================
 

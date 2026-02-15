@@ -1251,6 +1251,119 @@ class QuotaUsage:
 
 
 # =============================================================================
+# Retention Policy Types
+# =============================================================================
+
+
+@dataclass
+class CreateRetentionRequest:
+    """Request to create a retention policy."""
+    namespace: str
+    tenant: str
+    audit_ttl_seconds: int
+    state_ttl_seconds: int
+    event_ttl_seconds: int
+    compliance_hold: bool = False
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "audit_ttl_seconds": self.audit_ttl_seconds,
+            "state_ttl_seconds": self.state_ttl_seconds,
+            "event_ttl_seconds": self.event_ttl_seconds,
+            "compliance_hold": self.compliance_hold,
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateRetentionRequest:
+    """Request to update a retention policy."""
+    enabled: Optional[bool] = None
+    audit_ttl_seconds: Optional[int] = None
+    state_ttl_seconds: Optional[int] = None
+    event_ttl_seconds: Optional[int] = None
+    compliance_hold: Optional[bool] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {}
+        if self.enabled is not None:
+            result["enabled"] = self.enabled
+        if self.audit_ttl_seconds is not None:
+            result["audit_ttl_seconds"] = self.audit_ttl_seconds
+        if self.state_ttl_seconds is not None:
+            result["state_ttl_seconds"] = self.state_ttl_seconds
+        if self.event_ttl_seconds is not None:
+            result["event_ttl_seconds"] = self.event_ttl_seconds
+        if self.compliance_hold is not None:
+            result["compliance_hold"] = self.compliance_hold
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class RetentionPolicy:
+    """A retention policy."""
+    id: str
+    namespace: str
+    tenant: str
+    enabled: bool
+    audit_ttl_seconds: int
+    state_ttl_seconds: int
+    event_ttl_seconds: int
+    compliance_hold: bool
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RetentionPolicy":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            enabled=data["enabled"],
+            audit_ttl_seconds=data["audit_ttl_seconds"],
+            state_ttl_seconds=data["state_ttl_seconds"],
+            event_ttl_seconds=data["event_ttl_seconds"],
+            compliance_hold=data["compliance_hold"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class ListRetentionResponse:
+    """Response from listing retention policies."""
+    policies: list[RetentionPolicy]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListRetentionResponse":
+        return cls(
+            policies=[RetentionPolicy.from_dict(p) for p in data["policies"]],
+            count=data["count"],
+        )
+
+
+# =============================================================================
 # Chain Types
 # =============================================================================
 

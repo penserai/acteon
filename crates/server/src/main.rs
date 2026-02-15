@@ -581,6 +581,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Load retention policies from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::Retention)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(policy) = serde_json::from_str::<acteon_core::RetentionPolicy>(&value) {
+                    gateway.set_retention_policy(policy);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded retention policies from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load retention policies from state store");
+        }
+    }
+
     // Pre-warm the embedding topic cache with topics from loaded rules.
     if let Some(ref bridge) = embedding_bridge {
         let topics: Vec<&str> = gateway
@@ -666,6 +688,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             recurring_check_interval: Duration::from_secs(
                 config.background.recurring_check_interval_seconds,
             ),
+            enable_retention_reaper: config.background.enable_retention_reaper,
+            retention_check_interval: Duration::from_secs(
+                config.background.retention_check_interval_seconds,
+            ),
             namespace: config.background.namespace.clone(),
             tenant: config.background.tenant.clone(),
         };
@@ -680,6 +706,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut bg_builder = BackgroundProcessorBuilder::new()
             .config(bg_config)
+            .metrics(gateway.read().await.metrics_arc())
             .group_manager(Arc::clone(&group_manager))
             .state(Arc::clone(&store))
             .group_flush_channel(flush_tx)

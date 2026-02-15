@@ -5,6 +5,7 @@
 //! - Processing state machine timeouts
 //! - Cleaning up expired state entries
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ use acteon_crypto::PayloadEncryptor;
 
 use crate::gateway::ApprovalRecord;
 use crate::group_manager::GroupManager;
+use crate::metrics::GatewayMetrics;
 
 /// Configuration for the background processor.
 #[derive(Debug, Clone)]
@@ -49,6 +51,10 @@ pub struct BackgroundConfig {
     pub enable_recurring_actions: bool,
     /// How often to check for due recurring actions (default: 60 seconds).
     pub recurring_check_interval: Duration,
+    /// Whether the data retention reaper is enabled (default: false).
+    pub enable_retention_reaper: bool,
+    /// How often to run the data retention reaper (default: 3600 seconds).
+    pub retention_check_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -70,6 +76,8 @@ impl Default for BackgroundConfig {
             scheduled_check_interval: Duration::from_secs(5),
             enable_recurring_actions: false,
             recurring_check_interval: Duration::from_secs(60),
+            enable_retention_reaper: false,
+            retention_check_interval: Duration::from_secs(3600),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -185,6 +193,10 @@ pub struct BackgroundProcessor {
     recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
     /// Optional payload encryptor for decrypting state values.
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
+    /// Gateway metrics for tracking background tasks.
+    metrics: Arc<GatewayMetrics>,
+    /// In-memory copy of retention policies for the reaper.
+    retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
 }
 
 impl BackgroundProcessor {
@@ -193,6 +205,7 @@ impl BackgroundProcessor {
         config: BackgroundConfig,
         group_manager: Arc<GroupManager>,
         state: Arc<dyn StateStore>,
+        metrics: Arc<GatewayMetrics>,
         state_machines: Vec<StateMachineConfig>,
         shutdown_rx: mpsc::Receiver<()>,
     ) -> Self {
@@ -200,6 +213,7 @@ impl BackgroundProcessor {
             config,
             group_manager,
             state,
+            metrics,
             state_machines,
             shutdown_rx,
             group_flush_tx: None,
@@ -209,7 +223,18 @@ impl BackgroundProcessor {
             scheduled_action_tx: None,
             recurring_action_tx: None,
             payload_encryptor: None,
+            retention_policies: HashMap::new(),
         }
+    }
+
+    /// Set the retention policies for the reaper.
+    #[must_use]
+    pub fn with_retention_policies(
+        mut self,
+        policies: HashMap<String, acteon_core::RetentionPolicy>,
+    ) -> Self {
+        self.retention_policies = policies;
+        self
     }
 
     /// Set the payload encryptor for decrypting state values.
@@ -288,6 +313,7 @@ impl BackgroundProcessor {
         let mut chain_interval = interval(self.config.chain_check_interval);
         let mut scheduled_interval = interval(self.config.scheduled_check_interval);
         let mut recurring_interval = interval(self.config.recurring_check_interval);
+        let mut retention_interval = interval(self.config.retention_check_interval);
 
         loop {
             tokio::select! {
@@ -318,6 +344,11 @@ impl BackgroundProcessor {
                 _ = recurring_interval.tick(), if self.config.enable_recurring_actions => {
                     if let Err(e) = self.process_recurring_actions().await {
                         error!(error = %e, "error processing recurring actions");
+                    }
+                }
+                _ = retention_interval.tick(), if self.config.enable_retention_reaper => {
+                    if let Err(e) = self.run_retention_reaper().await {
+                        error!(error = %e, "error running retention reaper");
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -888,6 +919,280 @@ impl BackgroundProcessor {
         Ok(())
     }
 
+    /// Run the data retention reaper.
+    ///
+    /// Loads retention policies from the state store, then scans for completed
+    /// chains and resolved events older than the configured TTLs and deletes them.
+    /// This implementation is optimized to scan each kind only once.
+    async fn run_retention_reaper(
+        &mut self,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Reload retention policies from the state store (hot-reload across instances).
+        let entries = self
+            .state
+            .scan_keys_by_kind(KeyKind::Retention)
+            .await
+            .unwrap_or_default();
+
+        let mut policies: HashMap<String, acteon_core::RetentionPolicy> = HashMap::new();
+        for (key, value) in entries {
+            // Skip index keys (format: idx:namespace:tenant).
+            if key.contains(":retention:idx:") {
+                continue;
+            }
+            if let Ok(policy) = serde_json::from_str::<acteon_core::RetentionPolicy>(&value)
+                && policy.enabled
+            {
+                let key = format!("{}:{}", policy.namespace, policy.tenant);
+                policies.insert(key, policy);
+            }
+        }
+        self.retention_policies = policies;
+
+        if self.retention_policies.is_empty() {
+            return Ok(());
+        }
+
+        let mut total_deleted = 0u64;
+        let mut total_skipped = 0u64;
+        let mut total_errors = 0u64;
+
+        // Check if any policy requires chain or event reaping (including
+        // compliance-hold policies so the skip metric is tracked).
+        let any_chain_reap = self
+            .retention_policies
+            .values()
+            .any(|p| p.state_ttl_seconds.is_some() || p.compliance_hold);
+        let any_event_reap = self
+            .retention_policies
+            .values()
+            .any(|p| p.event_ttl_seconds.is_some() || p.compliance_hold);
+
+        if any_chain_reap {
+            match self.reap_chains_optimized().await {
+                Ok((deleted, errors, skipped)) => {
+                    total_deleted += deleted;
+                    total_errors += errors;
+                    total_skipped += skipped;
+                }
+                Err(e) => {
+                    error!(error = %e, "retention reaper: failed to scan chains");
+                    total_errors += 1;
+                    self.metrics.increment_retention_errors();
+                }
+            }
+        }
+
+        if any_event_reap {
+            match self.reap_events_optimized().await {
+                Ok((deleted, errors, skipped)) => {
+                    total_deleted += deleted;
+                    total_errors += errors;
+                    total_skipped += skipped;
+                }
+                Err(e) => {
+                    error!(error = %e, "retention reaper: failed to scan events");
+                    total_errors += 1;
+                    self.metrics.increment_retention_errors();
+                }
+            }
+        }
+
+        if total_deleted > 0 || total_errors > 0 || total_skipped > 0 {
+            info!(
+                deleted = total_deleted,
+                skipped_compliance = total_skipped,
+                errors = total_errors,
+                "retention reaper cycle complete"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Optimized chain reaping: scan once and process all policies.
+    async fn reap_chains_optimized(
+        &self,
+    ) -> Result<(u64, u64, u64), Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now();
+        let entries = self.state.scan_keys_by_kind(KeyKind::Chain).await?;
+        let mut deleted = 0u64;
+        let mut errors = 0u64;
+        let mut skipped = 0u64;
+
+        for (key, raw_value) in entries {
+            // Key format: {namespace}:{tenant}:chain:{id}
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+
+            let namespace = parts[0];
+            let tenant = parts[1];
+            let policy_key = format!("{namespace}:{tenant}");
+
+            let Some(policy) = self.retention_policies.get(&policy_key) else {
+                continue;
+            };
+
+            if policy.compliance_hold {
+                skipped += 1;
+                self.metrics.increment_retention_skipped_compliance();
+                continue;
+            }
+
+            if policy.state_ttl_seconds.is_none() {
+                continue;
+            }
+
+            let ttl_seconds = policy.state_ttl_seconds.unwrap();
+            #[allow(clippy::cast_possible_wrap)]
+            let cutoff = now - chrono::Duration::seconds(ttl_seconds as i64);
+
+            let Ok(value) = self.decrypt_state_value(&raw_value) else {
+                continue;
+            };
+
+            let Ok(chain_data) = serde_json::from_str::<serde_json::Value>(&value) else {
+                continue;
+            };
+
+            // Only delete terminal chains.
+            let status = chain_data
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if !matches!(status, "completed" | "failed" | "cancelled" | "timed_out") {
+                continue;
+            }
+
+            // Check age via started_at or updated_at.
+            let timestamp_str = chain_data
+                .get("started_at")
+                .or_else(|| chain_data.get("updated_at"))
+                .and_then(|v| v.as_str());
+            let Some(ts_str) = timestamp_str else {
+                continue;
+            };
+            let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                continue;
+            };
+
+            if ts.with_timezone(&Utc) < cutoff {
+                let state_key = StateKey::new(namespace, tenant, KeyKind::Chain, parts[3]);
+                match self.state.delete(&state_key).await {
+                    Ok(_) => {
+                        deleted += 1;
+                        self.metrics.increment_retention_deleted_state();
+                    }
+                    Err(e) => {
+                        warn!(
+                            namespace = %namespace,
+                            tenant = %tenant,
+                            key = %key,
+                            error = %e,
+                            "retention reaper: error deleting chain"
+                        );
+                        errors += 1;
+                        self.metrics.increment_retention_errors();
+                    }
+                }
+            }
+        }
+
+        Ok((deleted, errors, skipped))
+    }
+
+    /// Optimized event reaping: scan once and process all policies.
+    async fn reap_events_optimized(
+        &self,
+    ) -> Result<(u64, u64, u64), Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now();
+        let entries = self.state.scan_keys_by_kind(KeyKind::EventState).await?;
+        let mut deleted = 0u64;
+        let mut errors = 0u64;
+        let mut skipped = 0u64;
+
+        for (key, raw_value) in entries {
+            // Key format: {namespace}:{tenant}:event_state:{id}
+            let parts: Vec<&str> = key.splitn(4, ':').collect();
+            if parts.len() < 4 {
+                continue;
+            }
+
+            let namespace = parts[0];
+            let tenant = parts[1];
+            let policy_key = format!("{namespace}:{tenant}");
+
+            let Some(policy) = self.retention_policies.get(&policy_key) else {
+                continue;
+            };
+
+            if policy.compliance_hold {
+                skipped += 1;
+                self.metrics.increment_retention_skipped_compliance();
+                continue;
+            }
+
+            if policy.event_ttl_seconds.is_none() {
+                continue;
+            }
+
+            let ttl_seconds = policy.event_ttl_seconds.unwrap();
+            #[allow(clippy::cast_possible_wrap)]
+            let cutoff = now - chrono::Duration::seconds(ttl_seconds as i64);
+
+            let Ok(value) = self.decrypt_state_value(&raw_value) else {
+                continue;
+            };
+
+            let Ok(event_data) = serde_json::from_str::<serde_json::Value>(&value) else {
+                continue;
+            };
+
+            // Only delete resolved events.
+            let state = event_data
+                .get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            if state != "resolved" {
+                continue;
+            }
+
+            // Check age via updated_at.
+            let timestamp_str = event_data.get("updated_at").and_then(|v| v.as_str());
+            let Some(ts_str) = timestamp_str else {
+                continue;
+            };
+            let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                continue;
+            };
+
+            if ts.with_timezone(&Utc) < cutoff {
+                let state_key = StateKey::new(namespace, tenant, KeyKind::EventState, parts[3]);
+                match self.state.delete(&state_key).await {
+                    Ok(_) => {
+                        deleted += 1;
+                        self.metrics.increment_retention_deleted_state();
+                    }
+                    Err(e) => {
+                        warn!(
+                            namespace = %namespace,
+                            tenant = %tenant,
+                            key = %key,
+                            error = %e,
+                            "retention reaper: error deleting event state"
+                        );
+                        errors += 1;
+                        self.metrics.increment_retention_errors();
+                    }
+                }
+            }
+        }
+
+        Ok((deleted, errors, skipped))
+    }
+
     /// Scan for pending chains and emit advance events.
     ///
     /// Uses the chain-ready index for efficient O(log N + M) lookups instead
@@ -943,6 +1248,7 @@ pub struct BackgroundProcessorBuilder {
     scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
     recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
+    metrics: Option<Arc<GatewayMetrics>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -961,7 +1267,15 @@ impl BackgroundProcessorBuilder {
             scheduled_action_tx: None,
             recurring_action_tx: None,
             payload_encryptor: None,
+            metrics: None,
         }
+    }
+
+    /// Set the metrics for the background processor.
+    #[must_use]
+    pub fn metrics(mut self, metrics: Arc<GatewayMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Set the payload encryptor for decrypting state values.
@@ -1047,6 +1361,7 @@ impl BackgroundProcessorBuilder {
     pub fn build(self) -> Result<(BackgroundProcessor, mpsc::Sender<()>), &'static str> {
         let group_manager = self.group_manager.ok_or("group_manager is required")?;
         let state = self.state.ok_or("state store is required")?;
+        let metrics = self.metrics.ok_or("metrics is required")?;
 
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
@@ -1054,6 +1369,7 @@ impl BackgroundProcessorBuilder {
             self.config,
             group_manager,
             state,
+            metrics,
             self.state_machines,
             shutdown_rx,
         );
@@ -1108,6 +1424,7 @@ mod tests {
         let state = Arc::new(MemoryStateStore::new());
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 group_flush_interval: Duration::from_millis(100),
                 timeout_check_interval: Duration::from_millis(100),
@@ -1121,6 +1438,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_secs(5),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -1159,6 +1478,7 @@ mod tests {
         let (sched_tx, _sched_rx) = mpsc::channel(10);
 
         let result = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_scheduled_actions: true,
                 scheduled_check_interval: Duration::from_millis(100),
@@ -1222,6 +1542,7 @@ mod tests {
         let (sched_tx, mut sched_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 group_flush_interval: Duration::from_secs(100),
                 timeout_check_interval: Duration::from_secs(100),
@@ -1235,6 +1556,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_millis(50),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1328,6 +1651,7 @@ mod tests {
         let (sched_tx, mut sched_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 group_flush_interval: Duration::from_secs(100),
                 timeout_check_interval: Duration::from_secs(100),
@@ -1341,6 +1665,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_millis(50),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1376,6 +1702,7 @@ mod tests {
 
         // Enable scheduled actions but do NOT set a channel.
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,
@@ -1424,6 +1751,7 @@ mod tests {
         let (flush_tx, mut flush_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 group_flush_interval: Duration::from_millis(50),
                 timeout_check_interval: Duration::from_secs(100),
@@ -1437,6 +1765,8 @@ mod tests {
                 scheduled_check_interval: Duration::from_secs(5),
                 enable_recurring_actions: false,
                 recurring_check_interval: Duration::from_secs(60),
+                enable_retention_reaper: false,
+                retention_check_interval: Duration::from_secs(3600),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -1520,6 +1850,7 @@ mod tests {
         let (rec_tx, _rec_rx) = mpsc::channel(10);
 
         let result = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_recurring_actions: true,
                 recurring_check_interval: Duration::from_millis(100),
@@ -1570,6 +1901,7 @@ mod tests {
         let (rec_tx, mut rec_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,
@@ -1647,6 +1979,7 @@ mod tests {
         let (rec_tx, mut rec_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,
@@ -1686,6 +2019,218 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retention_reaper_cleans_up_expired_data() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let metrics = Arc::new(GatewayMetrics::default());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // 1. Create a retention policy.
+        let policy = acteon_core::RetentionPolicy {
+            id: "ret-001".into(),
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+            enabled: true,
+            audit_ttl_seconds: Some(3600),
+            state_ttl_seconds: Some(3600), // 1 hour
+            event_ttl_seconds: Some(3600), // 1 hour
+            compliance_hold: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let policy_key = StateKey::new("_system", "_retention", KeyKind::Retention, "ret-001");
+        state
+            .set(&policy_key, &serde_json::to_string(&policy).unwrap(), None)
+            .await
+            .unwrap();
+
+        // 2. Create an expired chain.
+        let expired_ts = (Utc::now() - chrono::Duration::seconds(7200)).to_rfc3339();
+        let expired_chain = serde_json::json!({
+            "id": "chain-expired",
+            "status": "completed",
+            "started_at": expired_ts,
+            "updated_at": expired_ts,
+        });
+        let expired_chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, "chain-expired");
+        state
+            .set(
+                &expired_chain_key,
+                &serde_json::to_string(&expired_chain).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // 3. Create a fresh chain (should NOT be deleted).
+        let fresh_ts = Utc::now().to_rfc3339();
+        let fresh_chain = serde_json::json!({
+            "id": "chain-fresh",
+            "status": "completed",
+            "started_at": fresh_ts,
+            "updated_at": fresh_ts,
+        });
+        let fresh_chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, "chain-fresh");
+        state
+            .set(
+                &fresh_chain_key,
+                &serde_json::to_string(&fresh_chain).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // 4. Create an active chain (should NOT be deleted regardless of age).
+        let active_chain = serde_json::json!({
+            "id": "chain-active",
+            "status": "running",
+            "started_at": expired_ts,
+        });
+        let active_chain_key = StateKey::new(namespace, tenant, KeyKind::Chain, "chain-active");
+        state
+            .set(
+                &active_chain_key,
+                &serde_json::to_string(&active_chain).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // 5. Create an expired event state.
+        let expired_event = serde_json::json!({
+            "id": "event-expired",
+            "state": "resolved",
+            "updated_at": expired_ts,
+        });
+        let expired_event_key =
+            StateKey::new(namespace, tenant, KeyKind::EventState, "event-expired");
+        state
+            .set(
+                &expired_event_key,
+                &serde_json::to_string(&expired_event).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // 6. Run the reaper.
+        let mut processor = BackgroundProcessor::new(
+            BackgroundConfig {
+                enable_retention_reaper: true,
+                retention_check_interval: Duration::from_secs(3600),
+                ..BackgroundConfig::default()
+            },
+            group_manager,
+            Arc::clone(&state),
+            Arc::clone(&metrics),
+            Vec::new(),
+            mpsc::channel(1).1,
+        );
+
+        processor.run_retention_reaper().await.unwrap();
+
+        // 7. Verify results.
+        assert!(
+            state.get(&expired_chain_key).await.unwrap().is_none(),
+            "expired chain should be deleted"
+        );
+        assert!(
+            state.get(&fresh_chain_key).await.unwrap().is_some(),
+            "fresh chain should remain"
+        );
+        assert!(
+            state.get(&active_chain_key).await.unwrap().is_some(),
+            "active chain should remain"
+        );
+        assert!(
+            state.get(&expired_event_key).await.unwrap().is_none(),
+            "expired event state should be deleted"
+        );
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.retention_deleted_state, 2);
+        assert_eq!(snap.retention_errors, 0);
+        assert_eq!(snap.retention_skipped_compliance, 0);
+    }
+
+    #[tokio::test]
+    async fn retention_reaper_respects_compliance_hold() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let metrics = Arc::new(GatewayMetrics::default());
+        let namespace = "test-ns";
+        let tenant = "compliance-tenant";
+
+        // 1. Create a retention policy with compliance_hold = true.
+        let policy = acteon_core::RetentionPolicy {
+            id: "ret-compliance".into(),
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+            enabled: true,
+            audit_ttl_seconds: Some(3600),
+            state_ttl_seconds: Some(3600),
+            event_ttl_seconds: Some(3600),
+            compliance_hold: true, // <-- HOLD
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        let policy_key = StateKey::new("_system", "_retention", KeyKind::Retention, "ret-comp");
+        state
+            .set(&policy_key, &serde_json::to_string(&policy).unwrap(), None)
+            .await
+            .unwrap();
+
+        // 2. Create an expired chain.
+        let expired_ts = (Utc::now() - chrono::Duration::seconds(7200)).to_rfc3339();
+        let expired_chain = serde_json::json!({
+            "id": "chain-compliance",
+            "status": "completed",
+            "started_at": expired_ts,
+        });
+        let expired_chain_key =
+            StateKey::new(namespace, tenant, KeyKind::Chain, "chain-compliance");
+        state
+            .set(
+                &expired_chain_key,
+                &serde_json::to_string(&expired_chain).unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // 3. Run the reaper.
+        let mut processor = BackgroundProcessor::new(
+            BackgroundConfig {
+                enable_retention_reaper: true,
+                retention_check_interval: Duration::from_secs(3600),
+                ..BackgroundConfig::default()
+            },
+            group_manager,
+            Arc::clone(&state),
+            Arc::clone(&metrics),
+            Vec::new(),
+            mpsc::channel(1).1,
+        );
+
+        processor.run_retention_reaper().await.unwrap();
+
+        // 4. Verify results: chain should still be there.
+        assert!(
+            state.get(&expired_chain_key).await.unwrap().is_some(),
+            "chain on compliance hold should NOT be deleted"
+        );
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.retention_deleted_state, 0);
+        assert_eq!(snap.retention_skipped_compliance, 1);
+    }
+
+    #[tokio::test]
     async fn skips_expired_recurring_action() {
         let group_manager = Arc::new(GroupManager::new());
         let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
@@ -1718,6 +2263,7 @@ mod tests {
         let (rec_tx, mut rec_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,
@@ -1763,6 +2309,7 @@ mod tests {
 
         // Enable recurring actions but do NOT set a channel.
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,
@@ -1823,6 +2370,7 @@ mod tests {
         let (rec_tx, mut rec_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,
@@ -1878,6 +2426,7 @@ mod tests {
         let (rec_tx, mut rec_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,
@@ -1960,6 +2509,7 @@ mod tests {
         let (rec_tx, mut rec_rx) = mpsc::channel(10);
 
         let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::new(GatewayMetrics::default()))
             .config(BackgroundConfig {
                 enable_group_flush: false,
                 enable_timeout_processing: false,

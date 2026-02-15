@@ -420,6 +420,12 @@ pub struct BackgroundProcessingConfig {
     /// Maximum number of recurring actions per tenant.
     #[serde(default = "default_max_recurring_actions_per_tenant")]
     pub max_recurring_actions_per_tenant: usize,
+    /// Whether to run the data retention reaper.
+    #[serde(default)]
+    pub enable_retention_reaper: bool,
+    /// How often to run the data retention reaper (seconds).
+    #[serde(default = "default_retention_check_interval")]
+    pub retention_check_interval_seconds: u64,
     /// Namespace to scan for timeouts (required for timeout processing).
     #[serde(default)]
     pub namespace: String,
@@ -443,10 +449,16 @@ impl Default for BackgroundProcessingConfig {
             enable_recurring_actions: false,
             recurring_check_interval_seconds: default_recurring_check_interval(),
             max_recurring_actions_per_tenant: default_max_recurring_actions_per_tenant(),
+            enable_retention_reaper: false,
+            retention_check_interval_seconds: default_retention_check_interval(),
             namespace: String::new(),
             tenant: String::new(),
         }
     }
+}
+
+fn default_retention_check_interval() -> u64 {
+    3600
 }
 
 fn default_background_enabled() -> bool {
@@ -1397,6 +1409,10 @@ pub struct BackgroundSnapshot {
     pub recurring_check_interval_seconds: u64,
     /// Maximum number of recurring actions per tenant.
     pub max_recurring_actions_per_tenant: usize,
+    /// Whether the retention reaper is enabled.
+    pub enable_retention_reaper: bool,
+    /// Retention reaper check interval in seconds.
+    pub retention_check_interval_seconds: u64,
 }
 
 impl Default for BackgroundSnapshot {
@@ -1421,6 +1437,8 @@ impl From<&BackgroundProcessingConfig> for BackgroundSnapshot {
             enable_recurring_actions: cfg.enable_recurring_actions,
             recurring_check_interval_seconds: cfg.recurring_check_interval_seconds,
             max_recurring_actions_per_tenant: cfg.max_recurring_actions_per_tenant,
+            enable_retention_reaper: cfg.enable_retention_reaper,
+            retention_check_interval_seconds: cfg.retention_check_interval_seconds,
         }
     }
 }

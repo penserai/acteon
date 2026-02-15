@@ -4,6 +4,7 @@
 //! via the HTTP client.
 
 use acteon_ops::acteon_client::{AuditQuery, EventQuery, RecurringFilter};
+use acteon_ops::test_rules;
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
@@ -154,6 +155,16 @@ pub struct ListQuotasParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListRetentionParams {
+    /// Filter by namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Filter by tenant.
+    #[serde(default)]
+    pub tenant: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListCircuitBreakersParams {
     // No params.
 }
@@ -164,6 +175,15 @@ pub struct ManageCircuitBreakerParams {
     pub provider: String,
     /// Action: "trip" (open) or "reset" (close).
     pub action: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TestRulesParams {
+    /// Path to a YAML test-fixture file.
+    pub fixtures_path: String,
+    /// Only run tests whose name contains this substring.
+    #[serde(default)]
+    pub filter: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +468,21 @@ impl ActeonMcpServer {
         }
     }
 
+    /// List data retention policies.
+    #[tool(description = "List data retention policies for tenants.")]
+    async fn list_retention(
+        &self,
+        Parameters(p): Parameters<ListRetentionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self.ops.list_retention(p.namespace, p.tenant).await {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     /// List circuit breaker statuses.
     #[tool(description = "List all circuit breakers and their current status (Open/Closed).")]
     async fn list_circuit_breakers(
@@ -457,6 +492,29 @@ impl ActeonMcpServer {
         match self.ops.list_circuit_breakers().await {
             Ok(resp) => {
                 let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// Run a test suite of rule fixtures against the gateway and return
+    /// pass/fail results for each test case.
+    #[tool(
+        description = "Run a test suite of rule fixtures against the gateway. Returns pass/fail results for each test case."
+    )]
+    async fn test_rules(
+        &self,
+        Parameters(p): Parameters<TestRulesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let yaml = std::fs::read_to_string(&p.fixtures_path)
+            .map_err(|e| mcp_err(format!("failed to read {}: {e}", p.fixtures_path)))?;
+
+        let fixture_file = test_rules::parse_fixture(&yaml).map_err(mcp_err)?;
+
+        match test_rules::run_test_suite(&self.ops, &fixture_file, p.filter.as_deref()).await {
+            Ok(summary) => {
+                let json = serde_json::to_string_pretty(&summary).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),

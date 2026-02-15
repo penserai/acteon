@@ -1161,6 +1161,110 @@ export function parseQuotaUsage(data: Record<string, unknown>): QuotaUsage {
 }
 
 // =============================================================================
+// Retention Policy Types
+// =============================================================================
+
+/** Request to create a retention policy. */
+export interface CreateRetentionRequest {
+  namespace: string;
+  tenant: string;
+  auditTtlSeconds: number;
+  stateTtlSeconds: number;
+  eventTtlSeconds: number;
+  complianceHold?: boolean;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateRetentionRequest to the API request format. */
+export function createRetentionRequestToApi(req: CreateRetentionRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+    audit_ttl_seconds: req.auditTtlSeconds,
+    state_ttl_seconds: req.stateTtlSeconds,
+    event_ttl_seconds: req.eventTtlSeconds,
+  };
+  if (req.complianceHold !== undefined) result.compliance_hold = req.complianceHold;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a retention policy. */
+export interface UpdateRetentionRequest {
+  enabled?: boolean;
+  auditTtlSeconds?: number;
+  stateTtlSeconds?: number;
+  eventTtlSeconds?: number;
+  complianceHold?: boolean;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert an UpdateRetentionRequest to the API request format. */
+export function updateRetentionRequestToApi(req: UpdateRetentionRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.enabled !== undefined) result.enabled = req.enabled;
+  if (req.auditTtlSeconds !== undefined) result.audit_ttl_seconds = req.auditTtlSeconds;
+  if (req.stateTtlSeconds !== undefined) result.state_ttl_seconds = req.stateTtlSeconds;
+  if (req.eventTtlSeconds !== undefined) result.event_ttl_seconds = req.eventTtlSeconds;
+  if (req.complianceHold !== undefined) result.compliance_hold = req.complianceHold;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** A retention policy. */
+export interface RetentionPolicy {
+  id: string;
+  namespace: string;
+  tenant: string;
+  enabled: boolean;
+  auditTtlSeconds: number;
+  stateTtlSeconds: number;
+  eventTtlSeconds: number;
+  complianceHold: boolean;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a RetentionPolicy from API response. */
+export function parseRetentionPolicy(data: Record<string, unknown>): RetentionPolicy {
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    enabled: data.enabled as boolean,
+    auditTtlSeconds: data.audit_ttl_seconds as number,
+    stateTtlSeconds: data.state_ttl_seconds as number,
+    eventTtlSeconds: data.event_ttl_seconds as number,
+    complianceHold: data.compliance_hold as boolean,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Response from listing retention policies. */
+export interface ListRetentionResponse {
+  policies: RetentionPolicy[];
+  count: number;
+}
+
+/** Parse a ListRetentionResponse from API response. */
+export function parseListRetentionResponse(data: Record<string, unknown>): ListRetentionResponse {
+  const items = data.policies as Record<string, unknown>[];
+  return {
+    policies: items.map(parseRetentionPolicy),
+    count: data.count as number,
+  };
+}
+
+// =============================================================================
 // Chain Types
 // =============================================================================
 

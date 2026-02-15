@@ -289,11 +289,21 @@ state backend. CRUD API at `/v1/quotas` with usage query endpoint.
 Metrics: `quota_exceeded`, `quota_warned`, `quota_degraded` counters.
 See [Tenant Quotas](book/features/tenant-quotas.md) for full docs.
 
-### Data Retention Policies
+### Data Retention Policies -- IMPLEMENTED
 Automatic cleanup of old audit records and state entries based on
 configurable TTLs per tenant/namespace. Currently the system accumulates
 data indefinitely. A background reaper process with configurable policies
 would handle this.
+
+**Implemented**: Per-tenant retention policies with three-level audit TTL
+resolution (compliance hold > policy TTL > gateway default). Background
+reaper scans for expired chain state and event records on a configurable
+interval. Compliance hold flag preserves audit records indefinitely for
+GDPR/SOC2/HIPAA scenarios. CRUD API at `/v1/retention`. Retention policies
+can be managed at runtime without restart (hot-reload via state store).
+Metrics: `retention_deleted_state`, `retention_skipped_compliance`,
+`retention_errors` counters.
+See [Data Retention](book/features/data-retention.md) for full docs.
 
 ---
 
@@ -384,8 +394,8 @@ Ranked by impact-to-effort ratio:
 | 14 | Rule Playground API | Medium | Medium | **DONE** |
 | 15 | MCP Server | Medium | Medium | **DONE** |
 | 16 | Payload Encryption at Rest | Medium | High | Not started |
-| 17 | Rule Testing CLI | Low-Med | High | Not started |
-| 18 | Data Retention Policies | Low-Med | Medium | Not started |
+| 17 | Rule Testing CLI | Low-Med | High | **DONE** |
+| 18 | Data Retention Policies | Low-Med | Medium | **DONE** |
 | 19 | Provider Health Dashboard | Medium | Medium | Not started |
 | 20 | Grafana Dashboard Templates | Low | Medium | Not started |
 | 21 | Parallel Chain Steps | Large | Medium | Not started |
@@ -425,11 +435,14 @@ Ranked by impact-to-effort ratio:
 
 ### P1 — High Value
 
-**18. Data Retention Policies**
-- Background reaper following `process_recurring_actions()` pattern
-- Per-tenant TTL configs stored in state backend
-- Sweeps audit and state backends on a configurable interval
-- Respects SOC2/HIPAA audit mode if enabled (skip deletion)
+**18. Data Retention Policies** — DONE
+- `RetentionPolicy` struct in `acteon-core` with per-tenant audit/state/event TTLs
+- Three-level audit TTL resolution: compliance hold > policy TTL > gateway default
+- Background reaper following `process_recurring_actions()` pattern (configurable interval)
+- Compliance hold flag preserves audit records indefinitely (GDPR/SOC2/HIPAA)
+- CRUD API at `/v1/retention` with namespace:tenant uniqueness constraint
+- Hot-reload: reaper reloads policies from state store each cycle
+- Metrics: `retention_deleted_state`, `retention_skipped_compliance`, `retention_errors`
 
 **19. Provider Health Dashboard**
 - New Admin UI page aggregating existing Prometheus metrics

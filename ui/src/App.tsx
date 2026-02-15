@@ -18,6 +18,7 @@ import { Embeddings } from './pages/Embeddings'
 import { ScheduledActions } from './pages/ScheduledActions'
 import { RecurringActions } from './pages/RecurringActions'
 import { Quotas } from './pages/Quotas'
+import { RetentionPolicies } from './pages/RetentionPolicies'
 import { RulePlayground } from './pages/RulePlayground'
 import { Settings } from './pages/Settings'
 
@@ -44,6 +45,7 @@ function App() {
           <Route path="scheduled" element={<ScheduledActions />} />
           <Route path="recurring" element={<RecurringActions />} />
           <Route path="quotas" element={<Quotas />} />
+          <Route path="retention" element={<RetentionPolicies />} />
           <Route path="settings/*" element={<Settings />} />
         </Route>
       </Routes>

@@ -10,6 +10,7 @@ pub mod key;
 pub mod outcome;
 pub mod quota;
 pub mod recurring;
+pub mod retention;
 pub mod state_machine;
 pub mod stream;
 pub mod types;
@@ -37,6 +38,7 @@ pub use recurring::{
     CronValidationError, DEFAULT_MIN_INTERVAL_SECONDS, RecurringAction, RecurringActionTemplate,
     next_occurrence, validate_cron_expr, validate_min_interval, validate_timezone,
 };
+pub use retention::RetentionPolicy;
 pub use state_machine::{StateMachineConfig, TimeoutConfig, TransitionConfig, TransitionEffects};
 pub use stream::{
     StreamEvent, StreamEventType, outcome_category, reconstruct_outcome, sanitize_outcome,

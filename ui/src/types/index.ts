@@ -573,3 +573,51 @@ export interface UpdateQuotaRequest {
 export interface CreateQuotaResponse {
   id: string
 }
+
+// ---- Retention Policies ----
+
+export interface RetentionPolicy {
+  id: string
+  namespace: string
+  tenant: string
+  enabled: boolean
+  audit_ttl_seconds: number | null
+  state_ttl_seconds: number | null
+  event_ttl_seconds: number | null
+  compliance_hold: boolean
+  created_at: string
+  updated_at: string
+  description: string | null
+  labels: Record<string, string>
+}
+
+export interface RetentionListResponse {
+  policies: RetentionPolicy[]
+  count: number
+}
+
+export interface CreateRetentionRequest {
+  namespace: string
+  tenant: string
+  audit_ttl_seconds?: number | null
+  state_ttl_seconds?: number | null
+  event_ttl_seconds?: number | null
+  compliance_hold?: boolean
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateRetentionRequest {
+  audit_ttl_seconds?: number | null
+  state_ttl_seconds?: number | null
+  event_ttl_seconds?: number | null
+  compliance_hold?: boolean
+  enabled?: boolean
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateRetentionResponse {
+  id: string
+}

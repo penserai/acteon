@@ -1282,6 +1282,163 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Retention Policies
+    // =========================================================================
+
+    /**
+     * Creates a retention policy.
+     */
+    public RetentionPolicy createRetention(CreateRetentionRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/retention")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, RetentionPolicy.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists retention policies with optional namespace, tenant, limit, and offset filters.
+     */
+    public ListRetentionResponse listRetention(String namespace, String tenant, Integer limit, Integer offset) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+            if (limit != null) {
+                params.add("limit=" + limit);
+            }
+            if (offset != null) {
+                params.add("offset=" + offset);
+            }
+
+            String path = "/v1/retention";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListRetentionResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list retention policies");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single retention policy by ID.
+     */
+    public Optional<RetentionPolicy> getRetention(String retentionId) throws ActeonException {
+        try {
+            String path = "/v1/retention/" + URLEncoder.encode(retentionId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, RetentionPolicy.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get retention policy");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a retention policy.
+     */
+    public RetentionPolicy updateRetention(String retentionId, UpdateRetentionRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/retention/" + URLEncoder.encode(retentionId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RetentionPolicy.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Retention policy not found: " + retentionId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a retention policy.
+     */
+    public void deleteRetention(String retentionId) throws ActeonException {
+        try {
+            String path = "/v1/retention/" + URLEncoder.encode(retentionId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Retention policy not found: " + retentionId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete retention policy");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Chains (Task Chain Orchestration)
     // =========================================================================
 

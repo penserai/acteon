@@ -81,6 +81,14 @@ import {
   parseListQuotasResponse,
   QuotaUsage,
   parseQuotaUsage,
+  CreateRetentionRequest,
+  createRetentionRequestToApi,
+  UpdateRetentionRequest,
+  updateRetentionRequestToApi,
+  RetentionPolicy,
+  parseRetentionPolicy,
+  ListRetentionResponse,
+  parseListRetentionResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -873,6 +881,104 @@ export class ActeonClient {
       throw new HttpError(404, `Quota not found: ${quotaId}`);
     } else {
       throw new HttpError(response.status, "Failed to get quota usage");
+    }
+  }
+
+  // =========================================================================
+  // Retention Policies
+  // =========================================================================
+
+  /**
+   * Create a retention policy.
+   */
+  async createRetention(req: CreateRetentionRequest): Promise<RetentionPolicy> {
+    const response = await this.request("POST", "/v1/retention", {
+      body: createRetentionRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRetentionPolicy(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List retention policies.
+   */
+  async listRetention(namespace?: string, tenant?: string, limit?: number, offset?: number): Promise<ListRetentionResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    if (limit !== undefined) params.set("limit", limit.toString());
+    if (offset !== undefined) params.set("offset", offset.toString());
+    const response = await this.request("GET", "/v1/retention", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListRetentionResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list retention policies");
+    }
+  }
+
+  /**
+   * Get a single retention policy by ID.
+   */
+  async getRetention(retentionId: string): Promise<RetentionPolicy | null> {
+    const response = await this.request("GET", `/v1/retention/${retentionId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRetentionPolicy(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get retention policy");
+    }
+  }
+
+  /**
+   * Update a retention policy.
+   */
+  async updateRetention(retentionId: string, update: UpdateRetentionRequest): Promise<RetentionPolicy> {
+    const response = await this.request("PUT", `/v1/retention/${retentionId}`, {
+      body: updateRetentionRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRetentionPolicy(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Retention policy not found: ${retentionId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a retention policy.
+   */
+  async deleteRetention(retentionId: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/retention/${retentionId}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Retention policy not found: ${retentionId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete retention policy");
     }
   }
 

@@ -58,6 +58,12 @@ pub struct GatewayMetrics {
     pub quota_degraded: AtomicU64,
     /// Actions that triggered a quota notification.
     pub quota_notified: AtomicU64,
+    /// State entries deleted by the retention reaper.
+    pub retention_deleted_state: AtomicU64,
+    /// Retention reaper skipped entries due to compliance hold.
+    pub retention_skipped_compliance: AtomicU64,
+    /// Retention reaper errors.
+    pub retention_errors: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -191,6 +197,22 @@ impl GatewayMetrics {
         self.quota_notified.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the retention deleted state counter.
+    pub fn increment_retention_deleted_state(&self) {
+        self.retention_deleted_state.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the retention skipped compliance counter.
+    pub fn increment_retention_skipped_compliance(&self) {
+        self.retention_skipped_compliance
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the retention errors counter.
+    pub fn increment_retention_errors(&self) {
+        self.retention_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -220,6 +242,9 @@ impl GatewayMetrics {
             quota_warned: self.quota_warned.load(Ordering::Relaxed),
             quota_degraded: self.quota_degraded.load(Ordering::Relaxed),
             quota_notified: self.quota_notified.load(Ordering::Relaxed),
+            retention_deleted_state: self.retention_deleted_state.load(Ordering::Relaxed),
+            retention_skipped_compliance: self.retention_skipped_compliance.load(Ordering::Relaxed),
+            retention_errors: self.retention_errors.load(Ordering::Relaxed),
         }
     }
 }
@@ -279,6 +304,12 @@ pub struct MetricsSnapshot {
     pub quota_degraded: u64,
     /// Actions that triggered a quota notification.
     pub quota_notified: u64,
+    /// State entries deleted by the retention reaper.
+    pub retention_deleted_state: u64,
+    /// Retention reaper skipped entries due to compliance hold.
+    pub retention_skipped_compliance: u64,
+    /// Retention reaper errors.
+    pub retention_errors: u64,
 }
 
 #[cfg(test)]
@@ -315,6 +346,9 @@ mod tests {
         assert_eq!(snap.quota_warned, 0);
         assert_eq!(snap.quota_degraded, 0);
         assert_eq!(snap.quota_notified, 0);
+        assert_eq!(snap.retention_deleted_state, 0);
+        assert_eq!(snap.retention_skipped_compliance, 0);
+        assert_eq!(snap.retention_errors, 0);
     }
 
     #[test]
@@ -347,6 +381,9 @@ mod tests {
         m.increment_quota_warned();
         m.increment_quota_degraded();
         m.increment_quota_notified();
+        m.increment_retention_deleted_state();
+        m.increment_retention_skipped_compliance();
+        m.increment_retention_errors();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -375,5 +412,8 @@ mod tests {
         assert_eq!(snap.quota_warned, 1);
         assert_eq!(snap.quota_degraded, 1);
         assert_eq!(snap.quota_notified, 1);
+        assert_eq!(snap.retention_deleted_state, 1);
+        assert_eq!(snap.retention_skipped_compliance, 1);
+        assert_eq!(snap.retention_errors, 1);
     }
 }
