@@ -30,6 +30,35 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Monitoring stack — start with:
+  #   docker compose --profile monitoring up
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    profiles: [monitoring]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    profiles: [monitoring]
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
   # Optional backends — start with:
   #   docker compose --profile postgres up
   #   docker compose --profile clickhouse up
@@ -108,6 +137,8 @@ services:
 
 volumes:
   redis-data:
+  prometheus-data:
+  grafana-data:
   postgres-data:
   clickhouse-data:
   elasticsearch-data:

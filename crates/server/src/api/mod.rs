@@ -11,6 +11,7 @@ pub mod events;
 pub mod groups;
 pub mod health;
 pub mod openapi;
+pub mod prometheus;
 pub mod provider_health;
 pub mod quotas;
 pub mod recurring;
@@ -81,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         // Health & metrics (always public)
         .route("/health", get(health::health))
         .route("/metrics", get(health::metrics))
+        .route("/metrics/prometheus", get(prometheus::prometheus_metrics))
         // Login (must be public)
         .route("/v1/auth/login", post(auth::login))
         // Approvals (public, HMAC-authenticated via query signature)

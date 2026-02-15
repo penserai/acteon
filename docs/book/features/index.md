@@ -83,6 +83,11 @@ Real-time SSE event stream for dashboards and monitoring — subscribe to action
 OpenTelemetry distributed tracing — end-to-end visibility across the dispatch pipeline with OTLP export to Jaeger, Tempo, Zipkin, and more.
 </div>
 
+<div class="card" markdown>
+### [Grafana Dashboards](grafana-dashboards.md)
+Pre-built Grafana dashboard templates with Prometheus integration — throughput, provider health, latency percentiles, and error rates out of the box.
+</div>
+
 </div>
 
 ## Advanced Features
