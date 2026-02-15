@@ -970,3 +970,85 @@ type ProviderHealthStatus struct {
 type ListProviderHealthResponse struct {
 	Providers []ProviderHealthStatus `json:"providers"`
 }
+
+// =============================================================================
+// Provider Payload Helpers
+// =============================================================================
+
+// NewTwilioSmsPayload creates a payload for the Twilio SMS provider.
+func NewTwilioSmsPayload(to, body string) map[string]any {
+	return map[string]any{
+		"to":   to,
+		"body": body,
+	}
+}
+
+// NewTwilioSmsPayloadWithOptions creates a Twilio SMS payload with optional fields.
+func NewTwilioSmsPayloadWithOptions(to, body string, from string, mediaURL string) map[string]any {
+	p := NewTwilioSmsPayload(to, body)
+	if from != "" {
+		p["from"] = from
+	}
+	if mediaURL != "" {
+		p["media_url"] = mediaURL
+	}
+	return p
+}
+
+// NewTeamsMessagePayload creates a payload for the Microsoft Teams provider.
+func NewTeamsMessagePayload(text string) map[string]any {
+	return map[string]any{
+		"text": text,
+	}
+}
+
+// NewTeamsMessagePayloadWithOptions creates a Teams message payload with optional fields.
+func NewTeamsMessagePayloadWithOptions(text, title, themeColor string) map[string]any {
+	p := NewTeamsMessagePayload(text)
+	if title != "" {
+		p["title"] = title
+	}
+	if themeColor != "" {
+		p["theme_color"] = themeColor
+	}
+	return p
+}
+
+// NewTeamsAdaptiveCardPayload creates a payload for Teams with an Adaptive Card.
+func NewTeamsAdaptiveCardPayload(card map[string]any) map[string]any {
+	return map[string]any{
+		"adaptive_card": card,
+	}
+}
+
+// NewDiscordMessagePayload creates a payload for the Discord webhook provider.
+func NewDiscordMessagePayload(content string) map[string]any {
+	return map[string]any{
+		"content": content,
+	}
+}
+
+// NewDiscordEmbedPayload creates a Discord payload with an embed.
+func NewDiscordEmbedPayload(embeds []map[string]any) map[string]any {
+	return map[string]any{
+		"embeds": embeds,
+	}
+}
+
+// NewDiscordMessagePayloadWithOptions creates a Discord payload with all options.
+func NewDiscordMessagePayloadWithOptions(content, username, avatarURL string, embeds []map[string]any) map[string]any {
+	p := map[string]any{}
+	if content != "" {
+		p["content"] = content
+	}
+	if username != "" {
+		p["username"] = username
+	}
+	if avatarURL != "" {
+		p["avatar_url"] = avatarURL
+	}
+	if len(embeds) > 0 {
+		p["embeds"] = embeds
+	}
+	return p
+}

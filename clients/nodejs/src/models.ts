@@ -1570,3 +1570,93 @@ export function parseListProviderHealthResponse(data: Record<string, unknown>): 
     providers: items.map(parseProviderHealthStatus),
   };
 }
+
+// =============================================================================
+// Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the Twilio SMS provider. */
+export interface TwilioSmsPayload {
+  to: string;
+  body: string;
+  from?: string;
+  media_url?: string;
+}
+
+/** Create a payload for the Twilio SMS provider. */
+export function createTwilioSmsPayload(
+  to: string,
+  body: string,
+  options?: { from?: string; mediaUrl?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { to, body };
+  if (options?.from) payload.from = options.from;
+  if (options?.mediaUrl) payload.media_url = options.mediaUrl;
+  return payload;
+}
+
+/** Payload for the Microsoft Teams provider. */
+export interface TeamsMessagePayload {
+  text?: string;
+  title?: string;
+  theme_color?: string;
+  summary?: string;
+  adaptive_card?: Record<string, unknown>;
+}
+
+/** Create a payload for the Teams provider (MessageCard). */
+export function createTeamsMessagePayload(
+  text: string,
+  options?: { title?: string; themeColor?: string; summary?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { text };
+  if (options?.title) payload.title = options.title;
+  if (options?.themeColor) payload.theme_color = options.themeColor;
+  if (options?.summary) payload.summary = options.summary;
+  return payload;
+}
+
+/** Create a payload for the Teams provider (Adaptive Card). */
+export function createTeamsAdaptiveCardPayload(
+  card: Record<string, unknown>
+): Record<string, unknown> {
+  return { adaptive_card: card };
+}
+
+/** Payload for the Discord webhook provider. */
+export interface DiscordMessagePayload {
+  content?: string;
+  embeds?: DiscordEmbed[];
+  username?: string;
+  avatar_url?: string;
+  tts?: boolean;
+}
+
+/** A Discord embed object. */
+export interface DiscordEmbed {
+  title?: string;
+  description?: string;
+  color?: number;
+  fields?: Array<{ name: string; value: string; inline?: boolean }>;
+  footer?: { text: string };
+  timestamp?: string;
+}
+
+/** Create a payload for the Discord webhook provider. */
+export function createDiscordMessagePayload(
+  options: {
+    content?: string;
+    embeds?: DiscordEmbed[];
+    username?: string;
+    avatarUrl?: string;
+    tts?: boolean;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (options.content !== undefined) payload.content = options.content;
+  if (options.embeds !== undefined) payload.embeds = options.embeds;
+  if (options.username !== undefined) payload.username = options.username;
+  if (options.avatarUrl !== undefined) payload.avatar_url = options.avatarUrl;
+  if (options.tts !== undefined) payload.tts = options.tts;
+  return payload;
+}

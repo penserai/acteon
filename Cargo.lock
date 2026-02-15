@@ -130,6 +130,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-discord"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-provider",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "acteon-email"
 version = "0.1.0"
 dependencies = [
@@ -346,6 +360,7 @@ dependencies = [
  "acteon-audit-postgres",
  "acteon-core",
  "acteon-crypto",
+ "acteon-discord",
  "acteon-embedding",
  "acteon-executor",
  "acteon-gateway",
@@ -359,6 +374,8 @@ dependencies = [
  "acteon-state-memory",
  "acteon-state-postgres",
  "acteon-state-redis",
+ "acteon-teams",
+ "acteon-twilio",
  "argon2",
  "async-trait",
  "axum 0.8.8",
@@ -533,6 +550,35 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "acteon-teams"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-provider",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "acteon-twilio"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-provider",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

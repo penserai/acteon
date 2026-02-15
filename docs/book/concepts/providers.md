@@ -10,6 +10,9 @@ flowchart LR
     R --> E[Email SMTP]
     R --> S[Slack]
     R --> P[PagerDuty]
+    R --> T[Twilio SMS]
+    R --> TM[Teams]
+    R --> DC[Discord]
     R --> W[Webhook]
     R --> C[Custom Provider]
 ```
@@ -115,8 +118,11 @@ use std::sync::Arc;
 
 let gateway = GatewayBuilder::new()
     .provider(Arc::new(EmailProvider::new(smtp_config)))
-    .provider(Arc::new(SlackProvider::new(slack_token)))
+    .provider(Arc::new(SlackProvider::new(slack_config)))
     .provider(Arc::new(PagerDutyProvider::new(pagerduty_config)))
+    .provider(Arc::new(TwilioProvider::new(twilio_config)))
+    .provider(Arc::new(TeamsProvider::new(teams_config)))
+    .provider(Arc::new(DiscordProvider::new(discord_config)))
     .provider(Arc::new(MyWebhookProvider {
         client: reqwest::Client::new(),
         base_url: "https://api.example.com".into(),
@@ -224,6 +230,81 @@ When multiple services are configured, each action payload can specify a `servic
 | `custom_details` | No | — | Arbitrary key-value details |
 | `images` | No | — | Images to display in the incident |
 | `links` | No | — | Links to display in the incident |
+
+### Twilio (SMS)
+
+The `acteon-twilio` crate provides an SMS provider via the Twilio REST API.
+
+**Expected payload:**
+
+```json
+{
+  "to": "+15559876543",
+  "body": "Your verification code is 123456",
+  "from": "+15551234567",
+  "media_url": "https://example.com/image.jpg"
+}
+```
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `to` | Yes | — | Destination phone number (E.164 format) |
+| `body` | Yes | — | Message body text |
+| `from` | No | Config default | Sender phone number (E.164 format) |
+| `media_url` | No | — | URL of media to attach (MMS) |
+
+### Microsoft Teams
+
+The `acteon-teams` crate provides a Microsoft Teams provider via incoming webhooks.
+
+**MessageCard payload:**
+
+```json
+{
+  "text": "Deployment complete",
+  "title": "CI/CD Pipeline",
+  "summary": "Build #42 passed",
+  "theme_color": "00FF00"
+}
+```
+
+**Adaptive Card payload:**
+
+```json
+{
+  "adaptive_card": {
+    "type": "AdaptiveCard",
+    "version": "1.4",
+    "body": [{"type": "TextBlock", "text": "Hello!"}]
+  }
+}
+```
+
+At least one of `text` or `adaptive_card` must be provided.
+
+### Discord
+
+The `acteon-discord` crate provides a Discord provider via webhooks.
+
+**Expected payload:**
+
+```json
+{
+  "content": "Build passed!",
+  "embeds": [{
+    "title": "Build #42",
+    "description": "All tests passed",
+    "color": 65280,
+    "fields": [{"name": "Branch", "value": "main", "inline": true}],
+    "footer": {"text": "CI/CD"}
+  }],
+  "username": "Acteon Bot",
+  "avatar_url": "https://example.com/avatar.png",
+  "tts": false
+}
+```
+
+At least one of `content` or `embeds` must be provided.
 
 ### Webhook
 

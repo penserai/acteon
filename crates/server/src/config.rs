@@ -80,7 +80,7 @@ pub struct ActeonConfig {
 pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
-    /// Provider type: `"webhook"` or `"log"`.
+    /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, or `"discord"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -88,6 +88,18 @@ pub struct ProviderConfig {
     /// Additional HTTP headers (used by `"webhook"` type).
     #[serde(default)]
     pub headers: HashMap<String, String>,
+    /// Twilio Account SID (required for `"twilio"` type).
+    pub account_sid: Option<String>,
+    /// Twilio Auth Token (required for `"twilio"` type). Supports `ENC[...]`.
+    pub auth_token: Option<String>,
+    /// Default sender phone number (used by `"twilio"` type).
+    pub from_number: Option<String>,
+    /// Webhook URL (used by `"teams"` and `"discord"` types).
+    pub webhook_url: Option<String>,
+    /// Generic token field (future use).
+    pub token: Option<String>,
+    /// Default channel or recipient.
+    pub default_channel: Option<String>,
 }
 
 /// Configuration for the state store backend.
@@ -1550,6 +1562,12 @@ pub struct ProviderSnapshot {
     pub url: Option<String>,
     /// Number of custom headers configured (values hidden).
     pub header_count: usize,
+    /// Whether a token is configured.
+    pub has_token: bool,
+    /// Whether an auth token is configured (Twilio).
+    pub has_auth_token: bool,
+    /// Whether a webhook URL is configured (Teams, Discord).
+    pub has_webhook_url: bool,
 }
 
 impl From<&ProviderConfig> for ProviderSnapshot {
@@ -1559,6 +1577,9 @@ impl From<&ProviderConfig> for ProviderSnapshot {
             provider_type: cfg.provider_type.clone(),
             url: cfg.url.clone(),
             header_count: cfg.headers.len(),
+            has_token: cfg.token.is_some(),
+            has_auth_token: cfg.auth_token.is_some(),
+            has_webhook_url: cfg.webhook_url.is_some(),
         }
     }
 }
@@ -1806,6 +1827,83 @@ mod tests {
 
         assert!(!snapshot.llm_guardrail.has_api_key);
         assert!(!snapshot.embedding.has_api_key);
+    }
+
+    #[test]
+    fn twilio_provider_parsed_from_toml() {
+        let toml = r#"
+            [[providers]]
+            name = "sms"
+            type = "twilio"
+            account_sid = "ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+            auth_token = "test-placeholder-token"
+            from_number = "+15551234567"
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.providers.len(), 1);
+        assert_eq!(config.providers[0].name, "sms");
+        assert_eq!(config.providers[0].provider_type, "twilio");
+        assert_eq!(
+            config.providers[0].account_sid.as_deref(),
+            Some("ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX")
+        );
+        assert_eq!(
+            config.providers[0].auth_token.as_deref(),
+            Some("test-placeholder-token")
+        );
+        assert_eq!(
+            config.providers[0].from_number.as_deref(),
+            Some("+15551234567")
+        );
+
+        let snapshot = ProviderSnapshot::from(&config.providers[0]);
+        assert!(snapshot.has_auth_token);
+        assert!(!snapshot.has_webhook_url);
+        assert!(!snapshot.has_token);
+    }
+
+    #[test]
+    fn teams_provider_parsed_from_toml() {
+        let toml = r#"
+            [[providers]]
+            name = "teams-alerts"
+            type = "teams"
+            webhook_url = "https://outlook.office.com/webhook/test"
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.providers.len(), 1);
+        assert_eq!(config.providers[0].provider_type, "teams");
+        assert_eq!(
+            config.providers[0].webhook_url.as_deref(),
+            Some("https://outlook.office.com/webhook/test")
+        );
+
+        let snapshot = ProviderSnapshot::from(&config.providers[0]);
+        assert!(snapshot.has_webhook_url);
+        assert!(!snapshot.has_auth_token);
+    }
+
+    #[test]
+    fn discord_provider_parsed_from_toml() {
+        let toml = r#"
+            [[providers]]
+            name = "discord-alerts"
+            type = "discord"
+            webhook_url = "https://discord.com/api/webhooks/123/abc"
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.providers.len(), 1);
+        assert_eq!(config.providers[0].provider_type, "discord");
+        assert_eq!(
+            config.providers[0].webhook_url.as_deref(),
+            Some("https://discord.com/api/webhooks/123/abc")
+        );
+
+        let snapshot = ProviderSnapshot::from(&config.providers[0]);
+        assert!(snapshot.has_webhook_url);
     }
 
     #[test]

@@ -30,6 +30,10 @@ flowchart TB
     subgraph Providers["Provider Layer (acteon-provider)"]
         Email["Email SMTP"]
         Slack["Slack"]
+        PD["PagerDuty"]
+        Twilio["Twilio SMS"]
+        Teams["Teams"]
+        Discord["Discord"]
         WH["Webhooks"]
         Custom["Custom Providers"]
     end
@@ -113,6 +117,11 @@ All crates live under the `crates/` directory with logical groupings:
 |-------|---------|-------------|
 | `crates/integrations/email` | `acteon-email` | Email/SMTP provider via Lettre |
 | `crates/integrations/slack` | `acteon-slack` | Slack message provider |
+| `crates/integrations/pagerduty` | `acteon-pagerduty` | PagerDuty Events API v2 provider |
+| `crates/integrations/twilio` | `acteon-twilio` | Twilio SMS provider |
+| `crates/integrations/teams` | `acteon-teams` | Microsoft Teams incoming webhooks |
+| `crates/integrations/discord` | `acteon-discord` | Discord webhook provider |
+| `crates/integrations/webhook` | `acteon-webhook` | Generic HTTP webhook provider |
 | `crates/llm` | `acteon-llm` | LLM-based guardrail evaluation |
 
 ## Data Flow

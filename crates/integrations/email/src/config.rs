@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 /// assert_eq!(config.smtp_port, 587);
 /// assert!(config.tls);
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EmailConfig {
     /// SMTP server hostname.
     pub smtp_host: String,
@@ -35,6 +35,19 @@ pub struct EmailConfig {
 
     /// Whether to use TLS for the SMTP connection. Defaults to `true`.
     pub tls: bool,
+}
+
+impl std::fmt::Debug for EmailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailConfig")
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("from_address", &self.from_address)
+            .field("tls", &self.tls)
+            .finish()
+    }
 }
 
 impl EmailConfig {
@@ -163,5 +176,21 @@ mod tests {
         assert_eq!(deserialized.password.as_deref(), Some("secret"));
         assert_eq!(deserialized.from_address, "test@example.com");
         assert!(!deserialized.tls);
+    }
+
+    #[test]
+    fn debug_redacts_password() {
+        let config = EmailConfig::new("smtp.example.com", "test@example.com")
+            .with_credentials("user", "test-pw-placeholder");
+        let debug = format!("{config:?}");
+        assert!(debug.contains("[REDACTED]"), "password must be redacted");
+        assert!(
+            !debug.contains("test-pw-placeholder"),
+            "password must not appear in debug output"
+        );
+        assert!(
+            debug.contains("smtp.example.com"),
+            "non-secret fields should be visible"
+        );
     }
 }
