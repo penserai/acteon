@@ -625,6 +625,7 @@ impl GatewayBuilder {
             quota_policies: parking_lot::RwLock::new(quota_policies),
             retention_policies: parking_lot::RwLock::new(self.retention_policies),
             payload_encryptor: self.payload_encryptor,
+            provider_metrics: Arc::new(crate::metrics::ProviderMetrics::default()),
         })
     }
 }

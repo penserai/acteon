@@ -1,0 +1,115 @@
+@reference "../index.css";
+
+.loadingGrid {
+  @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4;
+}
+
+.providersGrid {
+  @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4;
+}
+
+.providerCard {
+  @apply border rounded-lg p-5 text-left transition-all cursor-pointer;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+
+  &:hover {
+    box-shadow: var(--shadow-md);
+    border-color: var(--border-strong);
+  }
+}
+
+.cardHeader {
+  @apply flex items-center justify-between mb-4;
+}
+
+.providerName {
+  @apply text-sm font-semibold;
+  color: var(--text-default);
+}
+
+.badges {
+  @apply flex items-center gap-1.5;
+}
+
+.statsRow {
+  @apply grid grid-cols-3 gap-3 mb-4;
+}
+
+.stat {
+  @apply text-center;
+}
+
+.statValue {
+  @apply text-lg font-semibold tabular-nums;
+  color: var(--text-default);
+}
+
+.statLabel {
+  @apply text-xs;
+  color: var(--text-muted);
+}
+
+.latencyRow {
+  @apply flex items-center gap-4 text-xs;
+  color: var(--text-muted);
+}
+
+.latencyValue {
+  @apply font-mono tabular-nums;
+  color: var(--text-default);
+}
+
+.cardFooter {
+  @apply mt-3 pt-3 border-t text-xs;
+  border-color: var(--border-default);
+  color: var(--text-muted);
+}
+
+.errorText {
+  @apply text-xs mt-2 truncate;
+  color: var(--color-red-500);
+}
+
+/* Drawer detail sections */
+.detailContent {
+  @apply space-y-6;
+}
+
+.sectionTitle {
+  @apply text-sm font-semibold mb-3;
+  color: var(--text-default);
+}
+
+.detailsGrid {
+  @apply space-y-2 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between items-center;
+}
+
+.detailLabel {
+  color: var(--text-muted);
+}
+
+.detailValue {
+  @apply font-mono text-xs tabular-nums;
+  color: var(--text-default);
+}
+
+.successRate {
+  @apply text-2xl font-bold tabular-nums;
+}
+
+.successRateHigh {
+  color: var(--color-green-500);
+}
+
+.successRateMedium {
+  color: var(--color-yellow-500);
+}
+
+.successRateLow {
+  color: var(--color-red-500);
+}

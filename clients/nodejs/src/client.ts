@@ -89,6 +89,9 @@ import {
   parseRetentionPolicy,
   ListRetentionResponse,
   parseListRetentionResponse,
+  ProviderHealthStatus,
+  ListProviderHealthResponse,
+  parseListProviderHealthResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -979,6 +982,24 @@ export class ActeonClient {
       throw new HttpError(404, `Retention policy not found: ${retentionId}`);
     } else {
       throw new HttpError(response.status, "Failed to delete retention policy");
+    }
+  }
+
+  // =========================================================================
+  // Provider Health
+  // =========================================================================
+
+  /**
+   * List health and metrics for all providers.
+   */
+  async listProviderHealth(): Promise<ListProviderHealthResponse> {
+    const response = await this.request("GET", "/v1/providers/health");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListProviderHealthResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list provider health");
     }
   }
 

@@ -36,6 +36,7 @@ use super::schemas::{
 };
 use acteon_core::{
     CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
+    ListProviderHealthResponse, ProviderHealthStatus,
 };
 
 #[derive(utoipa::OpenApi)]
@@ -60,7 +61,8 @@ use acteon_core::{
         (name = "Circuit Breakers", description = "Circuit breaker admin operations"),
         (name = "Recurring Actions", description = "Cron-scheduled recurring action management"),
         (name = "Quotas", description = "Tenant quota policy management"),
-        (name = "Retention", description = "Per-tenant data retention policy management")
+        (name = "Retention", description = "Per-tenant data retention policy management"),
+        (name = "Provider Health", description = "Per-provider health and performance monitoring")
     ),
     paths(
         super::health::health,
@@ -112,6 +114,7 @@ use acteon_core::{
         super::retention::get_retention,
         super::retention::update_retention,
         super::retention::delete_retention,
+        super::provider_health::list_provider_health,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -138,6 +141,7 @@ use acteon_core::{
         EvaluateRulesRequest, EvaluateRulesResponse, RuleTraceEntryResponse,
         CreateRetentionRequest, UpdateRetentionRequest, RetentionResponse,
         ListRetentionResponse,
+        ProviderHealthStatus, ListProviderHealthResponse,
     ))
 )]
 pub struct ApiDoc;

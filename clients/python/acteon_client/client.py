@@ -46,6 +46,8 @@ from .models import (
     UpdateRetentionRequest,
     RetentionPolicy,
     ListRetentionResponse,
+    ProviderHealthStatus,
+    ListProviderHealthResponse,
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
@@ -1263,6 +1265,27 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to delete retention policy")
 
     # =========================================================================
+    # Provider Health
+    # =========================================================================
+
+    def list_provider_health(self) -> ListProviderHealthResponse:
+        """List health and metrics for all providers.
+
+        Returns:
+            Health status and metrics for all registered providers.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/providers/health")
+
+        if response.status_code == 200:
+            return ListProviderHealthResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list provider health")
+
+    # =========================================================================
     # Chains
     # =========================================================================
 
@@ -2185,6 +2208,18 @@ class AsyncActeonClient:
             raise HttpError(404, f"Retention policy not found: {retention_id}")
         else:
             raise HttpError(response.status_code, "Failed to delete retention policy")
+
+    # =========================================================================
+    # Provider Health
+    # =========================================================================
+
+    async def list_provider_health(self) -> ListProviderHealthResponse:
+        """List health and metrics for all providers."""
+        response = await self._request("GET", "/v1/providers/health")
+        if response.status_code == 200:
+            return ListProviderHealthResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list provider health")
 
     # =========================================================================
     # Chains

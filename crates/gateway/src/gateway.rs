@@ -184,6 +184,8 @@ pub struct Gateway {
     /// Data retention policies indexed by `"namespace:tenant"`.
     pub(crate) retention_policies:
         parking_lot::RwLock<HashMap<String, acteon_core::RetentionPolicy>>,
+    /// Per-provider execution metrics (latency, success/failure counters).
+    pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -620,6 +622,21 @@ impl Gateway {
     /// Return a reference to the circuit breaker registry, if configured.
     pub fn circuit_breakers(&self) -> Option<&crate::circuit_breaker::CircuitBreakerRegistry> {
         self.circuit_breakers.as_ref()
+    }
+
+    /// Return a reference to the per-provider execution metrics.
+    pub fn provider_metrics(&self) -> &crate::metrics::ProviderMetrics {
+        &self.provider_metrics
+    }
+
+    /// Return the list of registered provider names.
+    pub fn provider_names(&self) -> Vec<&str> {
+        self.providers.list()
+    }
+
+    /// Run health checks on all registered providers.
+    pub async fn check_provider_health(&self) -> Vec<acteon_provider::health::HealthStatus> {
+        acteon_provider::health::check_all(&self.providers).await
     }
 
     /// Replace the rule engine's rules with a new set, re-sorting by priority.
@@ -1151,7 +1168,22 @@ impl Gateway {
             fallback = %target_name,
             "circuit open, rerouting to fallback provider"
         );
+        let exec_start = std::time::Instant::now();
         let result = self.executor.execute(action, target.as_ref()).await;
+        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        // Record per-provider metrics for the fallback provider.
+        match &result {
+            ActionOutcome::Executed(_) => {
+                self.provider_metrics
+                    .record_success(target_name, latency_us);
+            }
+            ActionOutcome::Failed(err) => {
+                self.provider_metrics
+                    .record_failure(target_name, latency_us, &err.message);
+            }
+            _ => {}
+        }
 
         // Record result in the fallback provider's circuit breaker.
         if let Some(fallback_cb) = registry.get(target_name) {
@@ -1222,7 +1254,25 @@ impl Gateway {
                 attempts: 0,
             });
         };
+        let exec_start = std::time::Instant::now();
         let result = self.executor.execute(action, provider.as_ref()).await;
+        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        // Record per-provider metrics.
+        match &result {
+            ActionOutcome::Executed(_) => {
+                self.provider_metrics
+                    .record_success(action.provider.as_str(), latency_us);
+            }
+            ActionOutcome::Failed(err) => {
+                self.provider_metrics.record_failure(
+                    action.provider.as_str(),
+                    latency_us,
+                    &err.message,
+                );
+            }
+            _ => {}
+        }
 
         // Record result in circuit breaker.
         // Only retryable failures indicate provider health issues;
@@ -1291,7 +1341,23 @@ impl Gateway {
             .get(target_provider)
             .ok_or_else(|| GatewayError::ProviderNotFound(target_provider.to_owned()))?;
 
+        let exec_start = std::time::Instant::now();
         let result = self.executor.execute(action, provider.as_ref()).await;
+        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        // Record per-provider metrics for the reroute target.
+        match &result {
+            ActionOutcome::Executed(_) => {
+                self.provider_metrics
+                    .record_success(target_provider, latency_us);
+            }
+            ActionOutcome::Failed(err) => {
+                self.provider_metrics
+                    .record_failure(target_provider, latency_us, &err.message);
+            }
+            _ => {}
+        }
+
         match &result {
             ActionOutcome::Executed(resp) => {
                 self.metrics.increment_rerouted();
@@ -7144,5 +7210,290 @@ mod tests {
             snap.quota_exceeded, 1,
             "only the real dispatch should count"
         );
+    }
+
+    // -- Provider metrics integration test -----------------------------------
+
+    /// Provider that succeeds after a delay.
+    struct SlowProvider {
+        name: String,
+        delay_ms: u64,
+    }
+
+    impl SlowProvider {
+        fn new(name: &str, delay_ms: u64) -> Self {
+            Self {
+                name: name.to_owned(),
+                delay_ms,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DynProvider for SlowProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn execute(&self, _action: &Action) -> Result<ProviderResponse, ProviderError> {
+            tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            Ok(ProviderResponse::success(serde_json::json!({"ok": true})))
+        }
+
+        async fn health_check(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    /// Provider that always fails.
+    struct FailingProvider {
+        name: String,
+    }
+
+    impl FailingProvider {
+        fn new(name: &str) -> Self {
+            Self {
+                name: name.to_owned(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DynProvider for FailingProvider {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn execute(&self, _action: &Action) -> Result<ProviderResponse, ProviderError> {
+            Err(ProviderError::ExecutionFailed("intentional failure".into()))
+        }
+
+        async fn health_check(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_metrics_recorded_on_dispatch() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(SlowProvider::new("email", 50)))
+            .provider(Arc::new(FailingProvider::new("sms")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch successful action to email provider
+        let action1 = Action::new(
+            "notifications",
+            "tenant-1",
+            "email",
+            "send_email",
+            serde_json::json!({"to": "user@example.com"}),
+        );
+        let outcome1 = gw.dispatch(action1, None).await.unwrap();
+        assert!(matches!(outcome1, ActionOutcome::Executed(_)));
+
+        // Dispatch another successful action
+        let action2 = Action::new(
+            "notifications",
+            "tenant-1",
+            "email",
+            "send_email",
+            serde_json::json!({"to": "admin@example.com"}),
+        );
+        let outcome2 = gw.dispatch(action2, None).await.unwrap();
+        assert!(matches!(outcome2, ActionOutcome::Executed(_)));
+
+        // Dispatch failing action to sms provider
+        let action3 = Action::new(
+            "notifications",
+            "tenant-1",
+            "sms",
+            "send_sms",
+            serde_json::json!({"to": "+1234567890"}),
+        );
+        let outcome3 = gw.dispatch(action3, None).await.unwrap();
+        assert!(matches!(outcome3, ActionOutcome::Failed { .. }));
+
+        // Check provider metrics
+        let provider_stats = gw.provider_metrics().snapshot();
+
+        // Email provider should have 2 successes
+        let email_stats = provider_stats
+            .get("email")
+            .expect("email provider should exist");
+        assert_eq!(email_stats.total_requests, 2);
+        assert_eq!(email_stats.successes, 2);
+        assert_eq!(email_stats.failures, 0);
+        assert!((email_stats.success_rate - 100.0).abs() < f64::EPSILON);
+        assert!(
+            email_stats.avg_latency_ms > 0.0,
+            "should have recorded latency"
+        );
+        assert!(email_stats.p50_latency_ms > 0.0, "p50 should be computed");
+        assert!(
+            email_stats.last_request_at.is_some(),
+            "should have timestamp"
+        );
+        assert!(email_stats.last_error.is_none(), "no errors recorded");
+
+        // SMS provider should have 1 failure
+        let sms_stats = provider_stats
+            .get("sms")
+            .expect("sms provider should exist");
+        assert_eq!(sms_stats.total_requests, 1);
+        assert_eq!(sms_stats.successes, 0);
+        assert_eq!(sms_stats.failures, 1);
+        assert!((sms_stats.success_rate - 0.0).abs() < f64::EPSILON);
+        assert!(sms_stats.last_error.is_some(), "should have error message");
+        assert!(
+            sms_stats
+                .last_error
+                .as_ref()
+                .unwrap()
+                .contains("intentional failure")
+        );
+
+        // Gateway metrics should also reflect executions
+        let gateway_snap = gw.metrics().snapshot();
+        assert_eq!(gateway_snap.dispatched, 3);
+        assert_eq!(gateway_snap.executed, 2);
+        assert_eq!(gateway_snap.failed, 1);
+    }
+
+    #[tokio::test]
+    async fn provider_metrics_records_rerouted_provider() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let rules = vec![Rule::new(
+            "reroute-to-sms",
+            Expr::Bool(true),
+            RuleAction::Reroute {
+                target_provider: "sms-fallback".into(),
+            },
+        )];
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(rules)
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("sms-fallback")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch action that will be rerouted
+        let action = Action::new(
+            "notifications",
+            "tenant-1",
+            "email",
+            "send_email",
+            serde_json::json!({"to": "user@example.com"}),
+        );
+        let outcome = gw.dispatch(action, None).await.unwrap();
+        assert!(matches!(outcome, ActionOutcome::Rerouted { .. }));
+
+        // Provider metrics should record stats for the rerouted provider (sms-fallback), not email
+        let provider_stats = gw.provider_metrics().snapshot();
+
+        // Email provider should have no stats (action was rerouted before execution)
+        assert!(
+            provider_stats.get("email").is_none(),
+            "email provider should not have executed"
+        );
+
+        // SMS fallback provider should have stats
+        let sms_stats = provider_stats
+            .get("sms-fallback")
+            .expect("sms-fallback should exist");
+        assert_eq!(sms_stats.total_requests, 1);
+        assert_eq!(sms_stats.successes, 1);
+    }
+
+    #[tokio::test]
+    async fn provider_metrics_multiple_providers_concurrent() {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .provider(Arc::new(MockProvider::new("pagerduty")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 50,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Dispatch actions concurrently to different providers
+        let gw = Arc::new(gw);
+        let mut handles = Vec::new();
+
+        for i in 0..30 {
+            let gw_clone = Arc::clone(&gw);
+            let handle = tokio::spawn(async move {
+                let provider = match i % 3 {
+                    0 => "email",
+                    1 => "slack",
+                    _ => "pagerduty",
+                };
+                let action = Action::new(
+                    "notifications",
+                    "tenant-1",
+                    provider,
+                    "send_notification",
+                    serde_json::json!({"id": i}),
+                );
+                gw_clone.dispatch(action, None).await
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all dispatches to complete
+        for handle in handles {
+            let outcome = handle.await.expect("task should complete").unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        // Check that all three providers have stats recorded
+        let provider_stats = gw.provider_metrics().snapshot();
+        assert_eq!(provider_stats.len(), 3, "should have stats for 3 providers");
+
+        for provider in ["email", "slack", "pagerduty"] {
+            let stats = provider_stats.get(provider).expect("provider should exist");
+            assert_eq!(
+                stats.total_requests, 10,
+                "each provider should have 10 requests"
+            );
+            assert_eq!(stats.successes, 10);
+            assert_eq!(stats.failures, 0);
+        }
+
+        // Gateway metrics
+        let gateway_snap = gw.metrics().snapshot();
+        assert_eq!(gateway_snap.dispatched, 30);
+        assert_eq!(gateway_snap.executed, 30);
     }
 }

@@ -943,3 +943,30 @@ type SseEvent struct {
 	Event string `json:"event,omitempty"`
 	Data  string `json:"data,omitempty"`
 }
+
+// =============================================================================
+// Provider Health Types
+// =============================================================================
+
+// ProviderHealthStatus represents health and metrics for a single provider.
+type ProviderHealthStatus struct {
+	Provider             string   `json:"provider"`
+	Healthy              bool     `json:"healthy"`
+	HealthCheckError     *string  `json:"health_check_error,omitempty"`
+	CircuitBreakerState  string   `json:"circuit_breaker_state"`
+	TotalRequests        int      `json:"total_requests"`
+	Successes            int      `json:"successes"`
+	Failures             int      `json:"failures"`
+	SuccessRate          float64  `json:"success_rate"`
+	AvgLatencyMs         float64  `json:"avg_latency_ms"`
+	P50LatencyMs         float64  `json:"p50_latency_ms"`
+	P95LatencyMs         float64  `json:"p95_latency_ms"`
+	P99LatencyMs         float64  `json:"p99_latency_ms"`
+	LastRequestAt        *int64   `json:"last_request_at,omitempty"`
+	LastError            *string  `json:"last_error,omitempty"`
+}
+
+// ListProviderHealthResponse is the response from listing provider health.
+type ListProviderHealthResponse struct {
+	Providers []ProviderHealthStatus `json:"providers"`
+}

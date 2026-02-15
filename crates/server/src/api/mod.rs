@@ -11,6 +11,7 @@ pub mod events;
 pub mod groups;
 pub mod health;
 pub mod openapi;
+pub mod provider_health;
 pub mod quotas;
 pub mod recurring;
 pub mod replay;
@@ -171,6 +172,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)
         .route("/v1/approvals", get(approvals::list_approvals))
+        // Provider health dashboard
+        .route(
+            "/v1/providers/health",
+            get(provider_health::list_provider_health),
+        )
         // Circuit breaker admin
         .route(
             "/admin/circuit-breakers",
