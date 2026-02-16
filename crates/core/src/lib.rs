@@ -1,6 +1,7 @@
 pub mod action;
 pub mod caller;
 pub mod chain;
+pub mod chain_dag;
 pub mod circuit_breaker;
 pub mod context;
 pub mod error;
@@ -20,8 +21,9 @@ pub use action::{Action, ActionMetadata};
 pub use caller::Caller;
 pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,
-    ChainState, ChainStatus, ChainStepConfig, StepFailurePolicy, StepResult,
+    ChainState, ChainStatus, ChainStepConfig, StepFailurePolicy, StepResult, validate_chain_graph,
 };
+pub use chain_dag::{DagEdge, DagNode, DagResponse};
 pub use circuit_breaker::{
     CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
 };

@@ -26,6 +26,9 @@ public class ChainSummary {
     @JsonProperty("updated_at")
     private String updatedAt;
 
+    @JsonProperty("parent_chain_id")
+    private String parentChainId;
+
     public String getChainId() { return chainId; }
     public void setChainId(String chainId) { this.chainId = chainId; }
 
@@ -46,4 +49,7 @@ public class ChainSummary {
 
     public String getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
+
+    public String getParentChainId() { return parentChainId; }
+    public void setParentChainId(String parentChainId) { this.parentChainId = parentChainId; }
 }

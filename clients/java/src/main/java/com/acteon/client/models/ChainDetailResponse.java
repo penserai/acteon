@@ -42,6 +42,12 @@ public class ChainDetailResponse {
     @JsonProperty("execution_path")
     private List<String> executionPath;
 
+    @JsonProperty("parent_chain_id")
+    private String parentChainId;
+
+    @JsonProperty("child_chain_ids")
+    private List<String> childChainIds;
+
     public String getChainId() { return chainId; }
     public void setChainId(String chainId) { this.chainId = chainId; }
 
@@ -77,4 +83,10 @@ public class ChainDetailResponse {
 
     public List<String> getExecutionPath() { return executionPath; }
     public void setExecutionPath(List<String> executionPath) { this.executionPath = executionPath; }
+
+    public String getParentChainId() { return parentChainId; }
+    public void setParentChainId(String parentChainId) { this.parentChainId = parentChainId; }
+
+    public List<String> getChildChainIds() { return childChainIds; }
+    public void setChildChainIds(List<String> childChainIds) { this.childChainIds = childChainIds; }
 }

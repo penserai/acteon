@@ -1380,6 +1380,7 @@ class ChainSummary:
         total_steps: Total number of steps.
         started_at: When the chain started.
         updated_at: When the chain was last updated.
+        parent_chain_id: Parent chain ID if this is a sub-chain.
     """
     chain_id: str
     chain_name: str
@@ -1388,6 +1389,7 @@ class ChainSummary:
     total_steps: int
     started_at: str
     updated_at: str
+    parent_chain_id: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainSummary":
@@ -1399,6 +1401,7 @@ class ChainSummary:
             total_steps=data["total_steps"],
             started_at=data["started_at"],
             updated_at=data["updated_at"],
+            parent_chain_id=data.get("parent_chain_id"),
         )
 
 
@@ -1425,6 +1428,8 @@ class ChainStepStatus:
         response_body: Response body from the provider (if completed).
         error: Error message (if failed).
         completed_at: When this step completed.
+        sub_chain: Name of the sub-chain this step triggers, if any.
+        child_chain_id: ID of the child chain instance spawned by this step, if any.
     """
     name: str
     provider: str
@@ -1432,6 +1437,8 @@ class ChainStepStatus:
     response_body: Optional[Any] = None
     error: Optional[str] = None
     completed_at: Optional[str] = None
+    sub_chain: Optional[str] = None
+    child_chain_id: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainStepStatus":
@@ -1442,6 +1449,8 @@ class ChainStepStatus:
             response_body=data.get("response_body"),
             error=data.get("error"),
             completed_at=data.get("completed_at"),
+            sub_chain=data.get("sub_chain"),
+            child_chain_id=data.get("child_chain_id"),
         )
 
 
@@ -1462,6 +1471,8 @@ class ChainDetailResponse:
         cancel_reason: Reason for cancellation (if cancelled).
         cancelled_by: Who cancelled the chain (if cancelled).
         execution_path: Ordered list of step names that were executed.
+        parent_chain_id: Parent chain ID if this is a sub-chain.
+        child_chain_ids: IDs of child chains spawned by sub-chain steps.
     """
     chain_id: str
     chain_name: str
@@ -1475,6 +1486,8 @@ class ChainDetailResponse:
     cancel_reason: Optional[str] = None
     cancelled_by: Optional[str] = None
     execution_path: list[str] = field(default_factory=list)
+    parent_chain_id: Optional[str] = None
+    child_chain_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainDetailResponse":
@@ -1490,6 +1503,111 @@ class ChainDetailResponse:
             expires_at=data.get("expires_at"),
             cancel_reason=data.get("cancel_reason"),
             cancelled_by=data.get("cancelled_by"),
+            execution_path=data.get("execution_path", []),
+            parent_chain_id=data.get("parent_chain_id"),
+            child_chain_ids=data.get("child_chain_ids", []),
+        )
+
+
+# =============================================================================
+# DAG Types (Chain Visualization)
+# =============================================================================
+
+
+@dataclass
+class DagNode:
+    """A node in the chain DAG.
+
+    Attributes:
+        name: Node name (step name or sub-chain name).
+        node_type: Node type ("step" or "sub_chain").
+        provider: Provider for this step, if applicable.
+        action_type: Action type for this step, if applicable.
+        sub_chain_name: Name of the sub-chain, if this is a sub-chain node.
+        status: Current status of this node (for instance DAGs).
+        child_chain_id: ID of the child chain instance (for instance DAGs).
+        children: Nested DAG for sub-chain expansion.
+    """
+    name: str
+    node_type: str
+    provider: Optional[str] = None
+    action_type: Optional[str] = None
+    sub_chain_name: Optional[str] = None
+    status: Optional[str] = None
+    child_chain_id: Optional[str] = None
+    children: Optional["DagResponse"] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DagNode":
+        children_data = data.get("children")
+        return cls(
+            name=data["name"],
+            node_type=data["node_type"],
+            provider=data.get("provider"),
+            action_type=data.get("action_type"),
+            sub_chain_name=data.get("sub_chain_name"),
+            status=data.get("status"),
+            child_chain_id=data.get("child_chain_id"),
+            children=(
+                DagResponse.from_dict(children_data)
+                if children_data is not None
+                else None
+            ),
+        )
+
+
+@dataclass
+class DagEdge:
+    """An edge in the chain DAG.
+
+    Attributes:
+        source: Source node name.
+        target: Target node name.
+        label: Edge label (e.g., branch condition).
+        on_execution_path: Whether this edge is on the execution path.
+    """
+    source: str
+    target: str
+    label: Optional[str] = None
+    on_execution_path: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DagEdge":
+        return cls(
+            source=data["source"],
+            target=data["target"],
+            label=data.get("label"),
+            on_execution_path=data.get("on_execution_path", False),
+        )
+
+
+@dataclass
+class DagResponse:
+    """DAG representation of a chain (config or instance).
+
+    Attributes:
+        chain_name: Chain configuration name.
+        chain_id: Chain instance ID (only for instance DAGs).
+        status: Chain status (only for instance DAGs).
+        nodes: Nodes in the DAG.
+        edges: Edges connecting the nodes.
+        execution_path: Ordered list of step names on the execution path.
+    """
+    chain_name: str
+    nodes: List[DagNode]
+    edges: List[DagEdge]
+    chain_id: Optional[str] = None
+    status: Optional[str] = None
+    execution_path: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DagResponse":
+        return cls(
+            chain_name=data["chain_name"],
+            chain_id=data.get("chain_id"),
+            status=data.get("status"),
+            nodes=[DagNode.from_dict(n) for n in data.get("nodes", [])],
+            edges=[DagEdge.from_dict(e) for e in data.get("edges", [])],
             execution_path=data.get("execution_path", []),
         )
 

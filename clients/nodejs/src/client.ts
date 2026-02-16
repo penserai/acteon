@@ -69,6 +69,8 @@ import {
   updateRecurringActionToRequest,
   parseListChainsResponse,
   parseChainDetailResponse,
+  DagResponse,
+  parseDagResponse,
   parseDlqStatsResponse,
   parseDlqDrainResponse,
   CreateQuotaRequest,
@@ -1172,6 +1174,41 @@ export class ActeonClient {
       throw new HttpError(409, "Chain is not running");
     } else {
       throw new HttpError(response.status, "Failed to cancel chain");
+    }
+  }
+
+  /**
+   * Get the DAG representation for a running chain instance.
+   */
+  async getChainDag(chainId: string, namespace: string, tenant: string): Promise<DagResponse> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/chains/${chainId}/dag`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDagResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain not found: ${chainId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get chain DAG");
+    }
+  }
+
+  /**
+   * Get the DAG representation for a chain definition (config only).
+   */
+  async getChainDefinitionDag(name: string): Promise<DagResponse> {
+    const response = await this.request("GET", `/v1/chains/definitions/${name}/dag`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseDagResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain definition not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get chain definition DAG");
     }
   }
 

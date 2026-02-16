@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use acteon_core::ChainStatus;
+use acteon_core::{ChainStatus, DagResponse};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
@@ -18,7 +18,7 @@ pub struct ChainQueryParams {
     pub namespace: String,
     /// Tenant to filter by.
     pub tenant: String,
-    /// Optional status filter: `"running"`, `"completed"`, `"failed"`, `"cancelled"`, `"timed_out"`.
+    /// Optional status filter: `"running"`, `"completed"`, `"failed"`, `"cancelled"`, `"timed_out"`, `"waiting_sub_chain"`.
     pub status: Option<String>,
 }
 
@@ -63,6 +63,9 @@ pub struct ChainSummary {
     pub started_at: DateTime<Utc>,
     /// When the chain was last updated.
     pub updated_at: DateTime<Utc>,
+    /// Parent chain ID if this chain was spawned as a sub-chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_chain_id: Option<String>,
 }
 
 /// Response for listing chain executions.
@@ -79,7 +82,7 @@ pub struct ChainStepStatus {
     pub name: String,
     /// Provider used for this step.
     pub provider: String,
-    /// Step status: `"pending"`, `"completed"`, `"failed"`, `"skipped"`.
+    /// Step status: `"pending"`, `"completed"`, `"failed"`, `"skipped"`, `"waiting_sub_chain"`.
     pub status: String,
     /// Response body from the provider (if completed).
     #[schema(value_type = Option<Object>)]
@@ -88,6 +91,12 @@ pub struct ChainStepStatus {
     pub error: Option<String>,
     /// When this step completed.
     pub completed_at: Option<DateTime<Utc>>,
+    /// Sub-chain name if this step invokes a sub-chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub_chain: Option<String>,
+    /// Running child chain execution ID (if this sub-chain step has spawned a child).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_chain_id: Option<String>,
 }
 
 /// Full detail response for a chain execution.
@@ -121,6 +130,12 @@ pub struct ChainDetailResponse {
     /// Empty for chains that haven't started or for legacy chains without path tracking.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub execution_path: Vec<String>,
+    /// Parent chain ID if this chain was spawned as a sub-chain.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_chain_id: Option<String>,
+    /// IDs of child chains spawned by sub-chain steps in this chain.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub child_chain_ids: Vec<String>,
 }
 
 fn parse_status_filter(s: &str) -> Option<ChainStatus> {
@@ -130,6 +145,7 @@ fn parse_status_filter(s: &str) -> Option<ChainStatus> {
         "failed" => Some(ChainStatus::Failed),
         "cancelled" => Some(ChainStatus::Cancelled),
         "timed_out" => Some(ChainStatus::TimedOut),
+        "waiting_sub_chain" => Some(ChainStatus::WaitingSubChain),
         _ => None,
     }
 }
@@ -141,6 +157,7 @@ fn status_to_string(s: &ChainStatus) -> String {
         ChainStatus::Failed => "failed".into(),
         ChainStatus::Cancelled => "cancelled".into(),
         ChainStatus::TimedOut => "timed_out".into(),
+        ChainStatus::WaitingSubChain => "waiting_sub_chain".into(),
     }
 }
 
@@ -179,6 +196,7 @@ pub async fn list_chains(
                     total_steps: c.total_steps,
                     started_at: c.started_at,
                     updated_at: c.updated_at,
+                    parent_chain_id: c.parent_chain_id.clone(),
                 })
                 .collect();
             (
@@ -249,6 +267,8 @@ pub async fn get_chain(
                         response_body: resp_body,
                         error,
                         completed_at: completed,
+                        sub_chain: None,
+                        child_chain_id: None,
                     }
                 })
                 .collect();
@@ -266,6 +286,8 @@ pub async fn get_chain(
                 cancel_reason: chain_state.cancel_reason,
                 cancelled_by: chain_state.cancelled_by,
                 execution_path: chain_state.execution_path,
+                parent_chain_id: chain_state.parent_chain_id,
+                child_chain_ids: chain_state.child_chain_ids,
             };
             (StatusCode::OK, Json(detail)).into_response()
         }
@@ -331,6 +353,8 @@ pub async fn cancel_chain(
                 cancel_reason: chain_state.cancel_reason,
                 cancelled_by: chain_state.cancelled_by,
                 execution_path: chain_state.execution_path,
+                parent_chain_id: chain_state.parent_chain_id,
+                child_chain_ids: chain_state.child_chain_ids,
             };
             (StatusCode::OK, Json(detail)).into_response()
         }
@@ -348,5 +372,170 @@ pub async fn cancel_chain(
                     .into_response()
             }
         }
+    }
+}
+
+/// `GET /v1/chains/{chain_id}/dag` -- get DAG visualization for a chain instance.
+#[utoipa::path(
+    get,
+    path = "/v1/chains/{chain_id}/dag",
+    tag = "Chains",
+    summary = "Get chain DAG visualization",
+    description = "Returns a DAG representation of a running or completed chain instance for visualization.",
+    params(
+        ("chain_id" = String, Path, description = "Chain execution ID"),
+        ChainNamespaceParams,
+    ),
+    responses(
+        (status = 200, description = "Chain DAG", body = Object),
+        (status = 404, description = "Chain not found", body = ErrorResponse),
+    )
+)]
+pub async fn get_chain_dag(
+    State(state): State<AppState>,
+    Path(chain_id): Path<String>,
+    Query(params): Query<ChainNamespaceParams>,
+) -> impl IntoResponse {
+    let gw = state.gateway.read().await;
+
+    // Load the chain state to find the chain name and build the DAG.
+    match gw
+        .get_chain_status(&params.namespace, &params.tenant, &chain_id)
+        .await
+    {
+        Ok(Some(chain_state)) => {
+            if let Ok(dag) = gw
+                .build_chain_dag(&chain_state.chain_name, Some(&chain_state), 0)
+                .await
+            {
+                (StatusCode::OK, Json(dag)).into_response()
+            } else {
+                // Fallback to basic DAG from state if gateway method fails.
+                let dag = build_dag_from_state(&chain_state);
+                (StatusCode::OK, Json(dag)).into_response()
+            }
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("chain not found: {chain_id}"),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /v1/chains/definitions/{name}/dag` -- get DAG visualization for a chain definition.
+#[utoipa::path(
+    get,
+    path = "/v1/chains/definitions/{name}/dag",
+    tag = "Chains",
+    summary = "Get chain definition DAG",
+    description = "Returns a config-only DAG representation of a chain definition for visualization (no running instance).",
+    params(
+        ("name" = String, Path, description = "Chain definition name"),
+    ),
+    responses(
+        (status = 200, description = "Chain definition DAG", body = Object),
+        (status = 404, description = "Chain definition not found", body = ErrorResponse),
+    )
+)]
+pub async fn get_chain_definition_dag(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let gw = state.gateway.read().await;
+
+    match gw.build_chain_dag(&name, None, 0).await {
+        Ok(dag) => (StatusCode::OK, Json(dag)).into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("chain definition not found: {name}"),
+                    }),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error: msg }),
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// Build a basic DAG from chain runtime state.
+fn build_dag_from_state(state: &acteon_core::ChainState) -> DagResponse {
+    use acteon_core::{DagEdge, DagNode};
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+
+    for i in 0..state.total_steps {
+        let result = state.step_results.get(i).and_then(|r| r.as_ref());
+        let step_name = result.map_or_else(|| format!("step-{i}"), |r| r.step_name.clone());
+
+        let status = if let Some(r) = result {
+            Some(if r.success {
+                "completed".to_string()
+            } else {
+                "failed".to_string()
+            })
+        } else if i == state.current_step
+            && state.status == acteon_core::ChainStatus::WaitingSubChain
+        {
+            Some("waiting_sub_chain".to_string())
+        } else if i == state.current_step && state.status == acteon_core::ChainStatus::Running {
+            Some("running".to_string())
+        } else {
+            Some("pending".to_string())
+        };
+
+        let on_path = state.execution_path.contains(&step_name);
+
+        nodes.push(DagNode {
+            name: step_name.clone(),
+            node_type: "step".into(),
+            provider: None,
+            action_type: None,
+            sub_chain_name: None,
+            status,
+            child_chain_id: None,
+            children: None,
+        });
+
+        // Add edge to next step.
+        if i + 1 < state.total_steps {
+            let next_result = state.step_results.get(i + 1).and_then(|r| r.as_ref());
+            let next_name =
+                next_result.map_or_else(|| format!("step-{}", i + 1), |r| r.step_name.clone());
+            edges.push(DagEdge {
+                source: step_name,
+                target: next_name,
+                label: None,
+                on_execution_path: on_path,
+            });
+        }
+    }
+
+    DagResponse {
+        chain_name: state.chain_name.clone(),
+        chain_id: Some(state.chain_id.clone()),
+        status: Some(status_to_string(&state.status)),
+        nodes,
+        edges,
+        execution_path: state.execution_path.clone(),
     }
 }

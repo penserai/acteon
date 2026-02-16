@@ -57,6 +57,9 @@ from .models import (
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
+    DagNode,
+    DagEdge,
+    DagResponse,
     DlqStatsResponse,
     DlqDrainResponse,
     SseEvent,
@@ -1516,6 +1519,63 @@ class ActeonClient:
         else:
             raise HttpError(response.status_code, "Failed to cancel chain")
 
+    def get_chain_dag(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> DagResponse:
+        """Get the DAG representation for a running chain instance.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The DAG response with nodes, edges, and execution path.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the chain is not found (404) or server returns an error.
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/dag",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get chain DAG")
+
+    def get_chain_definition_dag(self, name: str) -> DagResponse:
+        """Get the DAG representation for a chain definition (config only).
+
+        Args:
+            name: The chain configuration name.
+
+        Returns:
+            The DAG response with nodes and edges (no runtime state).
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the definition is not found (404) or server returns an error.
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/definitions/{name}/dag",
+        )
+
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain definition not found: {name}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain definition DAG"
+            )
+
     # =========================================================================
     # DLQ (Dead-Letter Queue)
     # =========================================================================
@@ -2470,6 +2530,37 @@ class AsyncActeonClient:
             raise HttpError(409, "Chain is not running")
         else:
             raise HttpError(response.status_code, "Failed to cancel chain")
+
+    async def get_chain_dag(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> DagResponse:
+        """Get the DAG representation for a running chain instance."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/dag",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to get chain DAG")
+
+    async def get_chain_definition_dag(self, name: str) -> DagResponse:
+        """Get the DAG representation for a chain definition (config only)."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/definitions/{name}/dag",
+        )
+        if response.status_code == 200:
+            return DagResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain definition not found: {name}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain definition DAG"
+            )
 
     # =========================================================================
     # DLQ (Dead-Letter Queue)

@@ -123,6 +123,7 @@ nav:
     - State Machines: features/state-machines.md
     - Human Approvals: features/approvals.md
     - Task Chains: features/chains.md
+    - Sub-Chains: features/sub-chains.md
     - LLM Guardrails: features/llm-guardrails.md
     - Semantic Routing: features/semantic-routing.md
     - Audit Trail: features/audit-trail.md

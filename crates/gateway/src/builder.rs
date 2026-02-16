@@ -525,6 +525,7 @@ impl GatewayBuilder {
     ///
     /// Returns a [`GatewayError::Configuration`] if required fields
     /// (state store, distributed lock) have not been set.
+    #[allow(clippy::too_many_lines)]
     pub fn build(self) -> Result<Gateway, GatewayError> {
         let state = self
             .state
@@ -597,6 +598,15 @@ impl GatewayBuilder {
         )?;
 
         let quota_policies = Self::validate_and_wrap_quota_policies(self.quota_policies)?;
+
+        // Validate the sub-chain reference graph (dangling refs + cycles).
+        let chain_graph_errors = acteon_core::validate_chain_graph(&self.chains);
+        if !chain_graph_errors.is_empty() {
+            return Err(GatewayError::Configuration(format!(
+                "invalid chain graph: {}",
+                chain_graph_errors.join("; ")
+            )));
+        }
 
         // Pre-compute step-name → index maps for each chain config so we
         // don't rebuild them on every step completion during chain advancement.

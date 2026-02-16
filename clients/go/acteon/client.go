@@ -1554,6 +1554,56 @@ func (c *Client) CancelChain(ctx context.Context, chainID string, req *CancelCha
 	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
 }
 
+// GetChainDag returns the DAG representation for a running chain instance.
+func (c *Client) GetChainDag(ctx context.Context, chainID, namespace, tenant string) (*DagResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/chains/%s/dag?%s", chainID, params.Encode()), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain DAG"}
+	}
+
+	var dag DagResponse
+	if err := json.NewDecoder(resp.Body).Decode(&dag); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &dag, nil
+}
+
+// GetChainDefinitionDag returns the DAG representation for a chain definition (config only).
+func (c *Client) GetChainDefinitionDag(ctx context.Context, name string) (*DagResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/chains/definitions/%s/dag", name), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain definition not found: %s", name)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain definition DAG"}
+	}
+
+	var dag DagResponse
+	if err := json.NewDecoder(resp.Body).Decode(&dag); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &dag, nil
+}
+
 // =============================================================================
 // Dead Letter Queue (DLQ)
 // =============================================================================

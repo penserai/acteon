@@ -143,6 +143,8 @@ export interface ChainStepStatus {
   response_body?: Record<string, unknown>
   error?: string
   completed_at?: string
+  sub_chain?: string
+  child_chain_id?: string
 }
 
 export interface ChainDetailResponse {
@@ -158,6 +160,8 @@ export interface ChainDetailResponse {
   cancel_reason?: string
   cancelled_by?: string
   execution_path: string[]
+  parent_chain_id?: string
+  child_chain_ids?: string[]
 }
 
 export interface BranchCondition {
@@ -176,6 +180,35 @@ export interface ChainStepConfig {
   delay_seconds?: number
   branches: BranchCondition[]
   default_next?: string
+  sub_chain?: string
+}
+
+// ---- Chain DAG ----
+export interface DagNode {
+  name: string
+  node_type: 'step' | 'sub_chain'
+  provider?: string
+  action_type?: string
+  sub_chain_name?: string
+  status?: string
+  child_chain_id?: string
+  children?: DagResponse
+}
+
+export interface DagEdge {
+  source: string
+  target: string
+  label?: string
+  on_execution_path: boolean
+}
+
+export interface DagResponse {
+  chain_name: string
+  chain_id?: string
+  status?: string
+  nodes: DagNode[]
+  edges: DagEdge[]
+  execution_path: string[]
 }
 
 // ---- Approvals ----

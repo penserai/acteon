@@ -89,6 +89,7 @@ export function Chains() {
           options={[
             { value: '', label: 'All Statuses' },
             { value: 'running', label: 'Running' },
+            { value: 'waiting_sub_chain', label: 'Waiting Sub-Chain' },
             { value: 'completed', label: 'Completed' },
             { value: 'failed', label: 'Failed' },
             { value: 'cancelled', label: 'Cancelled' },
@@ -107,7 +108,7 @@ export function Chains() {
         data={chains ?? []}
         columns={columns}
         loading={isLoading}
-        onRowClick={(row) => navigate(`/chains/${row.chain_id}`)}
+        onRowClick={(row) => navigate(`/chains/${row.chain_id}?namespace=${encodeURIComponent(ns)}&tenant=${encodeURIComponent(tenant)}`)}
         emptyTitle="No chain executions"
         emptyDescription="Chain executions are created when a rule triggers a Chain action."
       />

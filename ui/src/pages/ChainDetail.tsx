@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
-import { XCircle } from 'lucide-react'
-import { useChainDetail, useCancelChain } from '../api/hooks/useChains'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { XCircle, ArrowUpRight, GitBranch } from 'lucide-react'
+import { useChainDetail, useCancelChain, useChainDag } from '../api/hooks/useChains'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
@@ -15,11 +15,18 @@ import styles from './ChainDetail.module.css'
 
 export function ChainDetail() {
   const { chainId } = useParams<{ chainId: string }>()
-  const { data: chain, isLoading } = useChainDetail(chainId)
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const ns = searchParams.get('namespace') ?? ''
+  const tenant = searchParams.get('tenant') ?? ''
+  const expandAll = searchParams.get('expand') === 'all'
+  const { data: chain, isLoading } = useChainDetail(chainId, { namespace: ns, tenant })
   const cancel = useCancelChain()
   const { toast } = useToast()
   const [cancelOpen, setCancelOpen] = useState(false)
   const [selectedStep, setSelectedStep] = useState<string | null>(null)
+
+  const { data: dag } = useChainDag(chainId, { namespace: ns, tenant })
 
   if (isLoading || !chain) {
     return (
@@ -34,7 +41,7 @@ export function ChainDetail() {
 
   const handleCancel = () => {
     cancel.mutate(
-      { chainId: chain.chain_id, namespace: '', tenant: '' },
+      { chainId: chain.chain_id, namespace: ns, tenant },
       {
         onSuccess: () => { toast('success', 'Chain cancelled'); setCancelOpen(false) },
         onError: (e) => toast('error', 'Cancel failed', (e as Error).message),
@@ -50,7 +57,7 @@ export function ChainDetail() {
         actions={
           <div className={styles.headerActions}>
             <Badge size="md">{chain.status}</Badge>
-            {chain.status === 'running' && (
+            {(chain.status === 'running' || chain.status === 'waiting_sub_chain') && (
               <Button
                 variant="danger"
                 size="sm"
@@ -63,6 +70,19 @@ export function ChainDetail() {
           </div>
         }
       />
+
+      {chain.parent_chain_id && (
+        <div className={styles.parentChainLink}>
+          <ArrowUpRight className="h-4 w-4 text-gray-500" />
+          <span className="text-sm text-gray-500">Parent Chain:</span>
+          <Link
+            to={`/chains/${chain.parent_chain_id}`}
+            className="text-sm text-primary-400 hover:underline"
+          >
+            {chain.parent_chain_id.slice(0, 12)}...
+          </Link>
+        </div>
+      )}
 
       {chain.execution_path.length > 0 && (
         <div className={styles.executionPath}>
@@ -80,7 +100,13 @@ export function ChainDetail() {
         <p className={styles.expiresMessage}>Expires: {formatCountdown(chain.expires_at)}</p>
       )}
 
-      <ChainDAG chain={chain} onSelectStep={setSelectedStep} />
+      <ChainDAG
+        chain={chain}
+        dag={dag}
+        onSelectStep={setSelectedStep}
+        onNavigateChain={(id) => navigate(`/chains/${id}`)}
+        defaultExpandAll={expandAll}
+      />
 
       {step && (
         <div className={styles.stepDetailCard}>
@@ -93,6 +119,21 @@ export function ChainDetail() {
             {step.completed_at && <div><span className="text-gray-500">Completed:</span> {absoluteTime(step.completed_at)}</div>}
             {step.error && <div className={styles.stepError}><span className="text-gray-500">Error:</span> {step.error}</div>}
           </div>
+          {step.sub_chain && (
+            <div className={styles.subChainInfo}>
+              <GitBranch className="h-4 w-4 text-primary-400" />
+              <span className="text-sm text-gray-500">Sub-chain:</span>
+              <span className="text-sm font-medium">{step.sub_chain}</span>
+              {step.child_chain_id && (
+                <Link
+                  to={`/chains/${step.child_chain_id}`}
+                  className="text-sm text-primary-400 hover:underline ml-2"
+                >
+                  View child chain
+                </Link>
+              )}
+            </div>
+          )}
           {step.response_body && (
             <div>
               <span className={styles.responseLabel}>Response:</span>

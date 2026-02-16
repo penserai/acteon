@@ -36,6 +36,7 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   failed: 'error',
   cancelled: 'warning',
   timed_out: 'warning',
+  waiting_sub_chain: 'info',
   pending: 'neutral',
   skipped: 'neutral',
   // Circuit states

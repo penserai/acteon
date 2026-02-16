@@ -132,6 +132,11 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chains", get(chains::list_chains))
         .route("/v1/chains/{chain_id}", get(chains::get_chain))
         .route("/v1/chains/{chain_id}/cancel", post(chains::cancel_chain))
+        .route("/v1/chains/{chain_id}/dag", get(chains::get_chain_dag))
+        .route(
+            "/v1/chains/definitions/{name}/dag",
+            get(chains::get_chain_definition_dag),
+        )
         // Recurring actions
         .route(
             "/v1/recurring",

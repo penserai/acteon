@@ -437,12 +437,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
         for step_toml in &chain_toml.steps {
-            let mut step = ChainStepConfig::new(
-                &step_toml.name,
-                &step_toml.provider,
-                &step_toml.action_type,
-                step_toml.payload_template.clone(),
-            );
+            let mut step = if let Some(ref sub_chain_name) = step_toml.sub_chain {
+                ChainStepConfig::new_sub_chain(&step_toml.name, sub_chain_name)
+            } else {
+                ChainStepConfig::new(
+                    &step_toml.name,
+                    step_toml.provider.as_deref().unwrap_or(""),
+                    step_toml.action_type.as_deref().unwrap_or(""),
+                    step_toml.payload_template.clone(),
+                )
+            };
             if let Some(ref policy) = step_toml.on_failure {
                 let step_policy = match policy.as_str() {
                     "skip" => StepFailurePolicy::Skip,
