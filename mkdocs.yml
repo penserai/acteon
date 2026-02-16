@@ -166,6 +166,9 @@ nav:
     - Basic Usage: examples/basic-usage.md
     - Advanced Patterns: examples/advanced-patterns.md
     - Simulation & Testing: examples/simulation.md
+  - Guides:
+    - guides/index.md
+    - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
   - Reference:
     - reference/index.md
     - Type Reference: reference/types.md
