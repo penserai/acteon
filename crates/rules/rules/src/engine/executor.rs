@@ -96,6 +96,7 @@ impl RuleEngine {
                     time_map_cache: std::sync::OnceLock::new(),
                     access_tracker: None,
                     wasm_runtime: ctx.wasm_runtime.clone(),
+                    wasm_counters: ctx.wasm_counters.clone(),
                 };
                 &eval_ctx
             } else {
@@ -186,6 +187,7 @@ impl RuleEngine {
             time_map_cache: std::sync::OnceLock::new(),
             access_tracker: Some(Arc::clone(&tracker)),
             wasm_runtime: ctx.wasm_runtime.clone(),
+            wasm_counters: ctx.wasm_counters.clone(),
         };
 
         for rule in &self.rules {
@@ -303,6 +305,7 @@ impl RuleEngine {
                 time_map_cache: std::sync::OnceLock::new(),
                 access_tracker: ctx.access_tracker.clone(),
                 wasm_runtime: ctx.wasm_runtime.clone(),
+                wasm_counters: ctx.wasm_counters.clone(),
             };
             &eval_ctx
         } else {

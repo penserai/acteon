@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
@@ -106,6 +107,40 @@ pub trait EmbeddingEvalSupport: Send + Sync + std::fmt::Debug {
     async fn similarity(&self, text: &str, topic: &str) -> Result<f64, RuleError>;
 }
 
+/// Lightweight counters for WASM plugin invocations during rule evaluation.
+///
+/// Shared via `Arc` so the gateway can read totals after evaluation completes
+/// and increment its own metrics accordingly.
+#[derive(Debug, Default)]
+pub struct WasmEvalCounters {
+    /// Total WASM plugin invocations (successful or not).
+    pub invocations: AtomicU64,
+    /// WASM plugin invocations that returned an error.
+    pub errors: AtomicU64,
+}
+
+impl WasmEvalCounters {
+    /// Record a successful WASM invocation.
+    pub fn record_invocation(&self) {
+        self.invocations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a WASM invocation error.
+    pub fn record_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Read the invocation count.
+    pub fn invocation_count(&self) -> u64 {
+        self.invocations.load(Ordering::Relaxed)
+    }
+
+    /// Read the error count.
+    pub fn error_count(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
+    }
+}
+
 /// The evaluation context supplied to the rule engine when evaluating expressions.
 ///
 /// It provides access to the action being evaluated, the state store for
@@ -139,6 +174,11 @@ pub struct EvalContext<'a> {
     ///
     /// Only populated in playground/trace mode to avoid overhead in the hot path.
     pub access_tracker: Option<Arc<AccessTracker>>,
+    /// Optional counters for WASM plugin invocations during evaluation.
+    ///
+    /// When set, `eval_wasm_call` increments these counters so the gateway
+    /// can propagate totals to its own metrics after evaluation completes.
+    pub wasm_counters: Option<Arc<WasmEvalCounters>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -158,6 +198,7 @@ impl<'a> EvalContext<'a> {
             time_map_cache: OnceLock::new(),
             wasm_runtime: None,
             access_tracker: None,
+            wasm_counters: None,
         }
     }
 
@@ -195,6 +236,13 @@ impl<'a> EvalContext<'a> {
     #[must_use]
     pub fn with_access_tracker(mut self, tracker: Arc<AccessTracker>) -> Self {
         self.access_tracker = Some(tracker);
+        self
+    }
+
+    /// Set the WASM evaluation counters for metrics propagation.
+    #[must_use]
+    pub fn with_wasm_counters(mut self, counters: Arc<WasmEvalCounters>) -> Self {
+        self.wasm_counters = Some(counters);
         self
     }
 }

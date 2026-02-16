@@ -138,10 +138,17 @@ async fn eval_wasm_call(
     let input = serde_json::to_value(ctx.action)
         .map_err(|e| RuleError::Evaluation(format!("failed to serialize action for WASM: {e}")))?;
 
-    let result = runtime
-        .invoke(plugin, function, &input)
-        .await
-        .map_err(|e| RuleError::Evaluation(format!("WASM plugin '{plugin}' error: {e}")))?;
+    // Record the invocation attempt.
+    if let Some(ref counters) = ctx.wasm_counters {
+        counters.record_invocation();
+    }
+
+    let result = runtime.invoke(plugin, function, &input).await.map_err(|e| {
+        if let Some(ref counters) = ctx.wasm_counters {
+            counters.record_error();
+        }
+        RuleError::Evaluation(format!("WASM plugin '{plugin}' error: {e}"))
+    })?;
 
     Ok(Value::Bool(result.verdict))
 }

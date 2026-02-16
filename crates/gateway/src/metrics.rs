@@ -228,9 +228,19 @@ impl GatewayMetrics {
         self.wasm_invocations.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Add `n` to the WASM invocations counter.
+    pub fn add_wasm_invocations(&self, n: u64) {
+        self.wasm_invocations.fetch_add(n, Ordering::Relaxed);
+    }
+
     /// Increment the WASM errors counter.
     pub fn increment_wasm_errors(&self) {
         self.wasm_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Add `n` to the WASM errors counter.
+    pub fn add_wasm_errors(&self, n: u64) {
+        self.wasm_errors.fetch_add(n, Ordering::Relaxed);
     }
 
     /// Take a consistent point-in-time snapshot of all counters.

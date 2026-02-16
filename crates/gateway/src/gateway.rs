@@ -354,6 +354,13 @@ impl Gateway {
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
         }
+        let wasm_counters = if self.wasm_runtime.is_some() {
+            let counters = Arc::new(acteon_rules::WasmEvalCounters::default());
+            eval_ctx = eval_ctx.with_wasm_counters(Arc::clone(&counters));
+            Some(counters)
+        } else {
+            None
+        };
         if let Some(ref wasm) = self.wasm_runtime {
             eval_ctx = eval_ctx.with_wasm_runtime(Arc::clone(wasm));
         }
@@ -361,6 +368,12 @@ impl Gateway {
             eval_ctx = eval_ctx.with_timezone(tz);
         }
         let verdict = self.engine.evaluate(&eval_ctx).await?;
+
+        // Propagate WASM counters to gateway metrics.
+        if let Some(ref counters) = wasm_counters {
+            self.metrics.add_wasm_invocations(counters.invocation_count());
+            self.metrics.add_wasm_errors(counters.error_count());
+        }
 
         info!(?verdict, "rule evaluation complete");
 
