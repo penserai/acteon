@@ -371,7 +371,8 @@ impl Gateway {
 
         // Propagate WASM counters to gateway metrics.
         if let Some(ref counters) = wasm_counters {
-            self.metrics.add_wasm_invocations(counters.invocation_count());
+            self.metrics
+                .add_wasm_invocations(counters.invocation_count());
             self.metrics.add_wasm_errors(counters.error_count());
         }
 

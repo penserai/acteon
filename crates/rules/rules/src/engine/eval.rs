@@ -143,12 +143,15 @@ async fn eval_wasm_call(
         counters.record_invocation();
     }
 
-    let result = runtime.invoke(plugin, function, &input).await.map_err(|e| {
-        if let Some(ref counters) = ctx.wasm_counters {
-            counters.record_error();
-        }
-        RuleError::Evaluation(format!("WASM plugin '{plugin}' error: {e}"))
-    })?;
+    let result = runtime
+        .invoke(plugin, function, &input)
+        .await
+        .map_err(|e| {
+            if let Some(ref counters) = ctx.wasm_counters {
+                counters.record_error();
+            }
+            RuleError::Evaluation(format!("WASM plugin '{plugin}' error: {e}"))
+        })?;
 
     Ok(Value::Bool(result.verdict))
 }
