@@ -5,15 +5,21 @@ import type { ChainSummary, ChainDetailResponse, DagResponse } from '../../types
 export function useChains(params: { namespace?: string; tenant?: string; status?: string }) {
   return useQuery({
     queryKey: ['chains', params],
-    queryFn: () => apiGet<ChainSummary[]>('/v1/chains', params),
+    queryFn: async () => {
+      const resp = await apiGet<{ chains: ChainSummary[] }>('/v1/chains', params)
+      return resp.chains
+    },
     enabled: !!params.namespace && !!params.tenant,
   })
 }
 
-export function useChainDetail(chainId: string | undefined) {
+export function useChainDetail(
+  chainId: string | undefined,
+  params?: { namespace: string; tenant: string },
+) {
   return useQuery({
-    queryKey: ['chain', chainId],
-    queryFn: () => apiGet<ChainDetailResponse>(`/v1/chains/${chainId}`),
+    queryKey: ['chain', chainId, params?.namespace, params?.tenant],
+    queryFn: () => apiGet<ChainDetailResponse>(`/v1/chains/${chainId}`, params),
     enabled: !!chainId,
     refetchInterval: (query) => {
       const data = query.state.data as ChainDetailResponse | undefined

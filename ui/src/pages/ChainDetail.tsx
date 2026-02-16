@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { XCircle, ArrowUpRight, GitBranch } from 'lucide-react'
 import { useChainDetail, useCancelChain, useChainDag } from '../api/hooks/useChains'
 import { PageHeader } from '../components/layout/PageHeader'
@@ -16,20 +16,16 @@ import styles from './ChainDetail.module.css'
 export function ChainDetail() {
   const { chainId } = useParams<{ chainId: string }>()
   const navigate = useNavigate()
-  const { data: chain, isLoading } = useChainDetail(chainId)
+  const [searchParams] = useSearchParams()
+  const ns = searchParams.get('namespace') ?? ''
+  const tenant = searchParams.get('tenant') ?? ''
+  const { data: chain, isLoading } = useChainDetail(chainId, { namespace: ns, tenant })
   const cancel = useCancelChain()
   const { toast } = useToast()
   const [cancelOpen, setCancelOpen] = useState(false)
   const [selectedStep, setSelectedStep] = useState<string | null>(null)
 
-  // Fetch the DAG representation if the chain has namespace/tenant context
-  // The DAG endpoint requires namespace+tenant; we attempt to extract from the first step
-  // or fall back to empty strings (the hook will be disabled if empty)
-  const dagParams = {
-    namespace: '',
-    tenant: '',
-  }
-  const { data: dag } = useChainDag(chainId, dagParams)
+  const { data: dag } = useChainDag(chainId, { namespace: ns, tenant })
 
   if (isLoading || !chain) {
     return (
@@ -44,7 +40,7 @@ export function ChainDetail() {
 
   const handleCancel = () => {
     cancel.mutate(
-      { chainId: chain.chain_id, namespace: '', tenant: '' },
+      { chainId: chain.chain_id, namespace: ns, tenant },
       {
         onSuccess: () => { toast('success', 'Chain cancelled'); setCancelOpen(false) },
         onError: (e) => toast('error', 'Cancel failed', (e as Error).message),
