@@ -71,6 +71,15 @@
   @apply text-sm text-gray-500;
 }
 
+.parentChainLink {
+  @apply flex items-center gap-2 mb-4;
+}
+
+.subChainInfo {
+  @apply flex items-center gap-2 mb-3 p-2 rounded-lg;
+  background: var(--bg-surface-secondary);
+}
+
 .modalContent {
   @apply mt-2 text-gray-500;
 }

@@ -769,13 +769,14 @@ type ListRetentionResponse struct {
 
 // ChainSummary is a summary of a chain execution for list responses.
 type ChainSummary struct {
-	ChainID     string `json:"chain_id"`
-	ChainName   string `json:"chain_name"`
-	Status      string `json:"status"`
-	CurrentStep int    `json:"current_step"`
-	TotalSteps  int    `json:"total_steps"`
-	StartedAt   string `json:"started_at"`
-	UpdatedAt   string `json:"updated_at"`
+	ChainID       string  `json:"chain_id"`
+	ChainName     string  `json:"chain_name"`
+	Status        string  `json:"status"`
+	CurrentStep   int     `json:"current_step"`
+	TotalSteps    int     `json:"total_steps"`
+	StartedAt     string  `json:"started_at"`
+	UpdatedAt     string  `json:"updated_at"`
+	ParentChainID *string `json:"parent_chain_id,omitempty"`
 }
 
 // ListChainsResponse is the response from listing chain executions.
@@ -791,6 +792,8 @@ type ChainStepStatus struct {
 	ResponseBody map[string]any `json:"response_body,omitempty"`
 	Error        *string        `json:"error,omitempty"`
 	CompletedAt  *string        `json:"completed_at,omitempty"`
+	SubChain     *string        `json:"sub_chain,omitempty"`
+	ChildChainID *string        `json:"child_chain_id,omitempty"`
 }
 
 // ChainDetailResponse is the full detail response for a chain execution.
@@ -807,6 +810,42 @@ type ChainDetailResponse struct {
 	CancelReason  *string           `json:"cancel_reason,omitempty"`
 	CancelledBy   *string           `json:"cancelled_by,omitempty"`
 	ExecutionPath []string          `json:"execution_path,omitempty"`
+	ParentChainID *string           `json:"parent_chain_id,omitempty"`
+	ChildChainIDs []string          `json:"child_chain_ids,omitempty"`
+}
+
+// =============================================================================
+// DAG Types (Chain Visualization)
+// =============================================================================
+
+// DagNode is a node in the chain DAG.
+type DagNode struct {
+	Name         string       `json:"name"`
+	NodeType     string       `json:"node_type"`
+	Provider     *string      `json:"provider,omitempty"`
+	ActionType   *string      `json:"action_type,omitempty"`
+	SubChainName *string      `json:"sub_chain_name,omitempty"`
+	Status       *string      `json:"status,omitempty"`
+	ChildChainID *string      `json:"child_chain_id,omitempty"`
+	Children     *DagResponse `json:"children,omitempty"`
+}
+
+// DagEdge is an edge in the chain DAG.
+type DagEdge struct {
+	Source          string  `json:"source"`
+	Target          string  `json:"target"`
+	Label           *string `json:"label,omitempty"`
+	OnExecutionPath bool    `json:"on_execution_path"`
+}
+
+// DagResponse is the DAG representation of a chain (config or instance).
+type DagResponse struct {
+	ChainName     string    `json:"chain_name"`
+	ChainID       *string   `json:"chain_id,omitempty"`
+	Status        *string   `json:"status,omitempty"`
+	Nodes         []DagNode `json:"nodes"`
+	Edges         []DagEdge `json:"edges"`
+	ExecutionPath []string  `json:"execution_path,omitempty"`
 }
 
 // CancelChainRequest is the request body for cancelling a chain.

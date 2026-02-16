@@ -20,6 +20,12 @@ public class ChainStepStatus {
     @JsonProperty("completed_at")
     private String completedAt;
 
+    @JsonProperty("sub_chain")
+    private String subChain;
+
+    @JsonProperty("child_chain_id")
+    private String childChainId;
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
@@ -37,4 +43,10 @@ public class ChainStepStatus {
 
     public String getCompletedAt() { return completedAt; }
     public void setCompletedAt(String completedAt) { this.completedAt = completedAt; }
+
+    public String getSubChain() { return subChain; }
+    public void setSubChain(String subChain) { this.subChain = subChain; }
+
+    public String getChildChainId() { return childChainId; }
+    public void setChildChainId(String childChainId) { this.childChainId = childChainId; }
 }

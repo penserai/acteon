@@ -175,6 +175,13 @@ pub struct ChainStepConfig {
     /// sequential step.
     #[serde(default)]
     pub default_next: Option<String>,
+    /// Optional sub-chain name to invoke instead of dispatching to a provider.
+    ///
+    /// When set, this step invokes another chain by name. The parent chain
+    /// pauses at this step until the sub-chain completes, then resumes with
+    /// the sub-chain's result. Mutually exclusive with `provider`.
+    #[serde(default)]
+    pub sub_chain: Option<String>,
 }
 
 impl ChainStepConfig {
@@ -195,7 +202,30 @@ impl ChainStepConfig {
             delay_seconds: None,
             branches: Vec::new(),
             default_next: None,
+            sub_chain: None,
         }
+    }
+
+    /// Create a new sub-chain step that invokes another chain by name.
+    #[must_use]
+    pub fn new_sub_chain(name: impl Into<String>, sub_chain_name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            provider: String::new(),
+            action_type: String::new(),
+            payload_template: serde_json::Value::Object(serde_json::Map::new()),
+            on_failure: None,
+            delay_seconds: None,
+            branches: Vec::new(),
+            default_next: None,
+            sub_chain: Some(sub_chain_name.into()),
+        }
+    }
+
+    /// Returns `true` if this step invokes a sub-chain.
+    #[must_use]
+    pub fn is_sub_chain(&self) -> bool {
+        self.sub_chain.is_some()
     }
 
     /// Set the per-step failure policy.
@@ -337,6 +367,16 @@ impl ChainConfig {
             }
         }
 
+        // Check that sub-chain steps don't also specify a provider.
+        for step in &self.steps {
+            if step.sub_chain.is_some() && !step.provider.is_empty() {
+                errors.push(format!(
+                    "step `{}` has both `sub_chain` and `provider` set; they are mutually exclusive",
+                    step.name
+                ));
+            }
+        }
+
         // Check that all branch targets reference existing steps.
         for step in &self.steps {
             for branch in &step.branches {
@@ -425,6 +465,8 @@ pub enum ChainStatus {
     Cancelled,
     /// The chain exceeded its timeout.
     TimedOut,
+    /// Chain is waiting for a sub-chain to complete.
+    WaitingSubChain,
 }
 
 /// Result of a single chain step execution.
@@ -481,6 +523,108 @@ pub struct ChainState {
     /// it records the branch path taken.
     #[serde(default)]
     pub execution_path: Vec<String>,
+    /// If this chain was spawned as a sub-chain, the parent chain's ID.
+    #[serde(default)]
+    pub parent_chain_id: Option<String>,
+    /// If this chain was spawned as a sub-chain, the step index in the parent
+    /// chain that triggered it.
+    #[serde(default)]
+    pub parent_step_index: Option<usize>,
+    /// IDs of child chains spawned by sub-chain steps in this chain.
+    #[serde(default)]
+    pub child_chain_ids: Vec<String>,
+}
+
+/// DFS coloring for cycle detection.
+#[derive(Clone, Copy, PartialEq)]
+enum DfsColor {
+    White,
+    Gray,
+    Black,
+}
+
+/// DFS cycle detection helper for `validate_chain_graph`.
+fn chain_graph_dfs<'a>(
+    node: &'a str,
+    adjacency: &HashMap<&str, Vec<&'a str>>,
+    colors: &mut HashMap<&'a str, DfsColor>,
+    path: &mut Vec<&'a str>,
+    errors: &mut Vec<String>,
+) {
+    colors.insert(node, DfsColor::Gray);
+    path.push(node);
+
+    if let Some(neighbors) = adjacency.get(node) {
+        for &neighbor in neighbors {
+            match colors.get(neighbor) {
+                Some(DfsColor::Gray) => {
+                    // Found a cycle — build the cycle path for the error message.
+                    let cycle_start = path.iter().position(|&n| n == neighbor).unwrap();
+                    let cycle: Vec<&str> = path[cycle_start..].to_vec();
+                    errors.push(format!(
+                        "sub-chain cycle detected: {} -> {neighbor}",
+                        cycle.join(" -> ")
+                    ));
+                }
+                Some(DfsColor::White) => {
+                    chain_graph_dfs(neighbor, adjacency, colors, path, errors);
+                }
+                _ => {} // Black — already fully explored
+            }
+        }
+    }
+
+    path.pop();
+    colors.insert(node, DfsColor::Black);
+}
+
+/// Validate the sub-chain reference graph across all chain configurations.
+///
+/// Checks that:
+/// - All `sub_chain` references point to known chain names
+/// - There are no cycles in the sub-chain graph (A -> B -> C -> A)
+///
+/// Returns a list of validation error messages. An empty list means valid.
+#[must_use]
+pub fn validate_chain_graph<S: std::hash::BuildHasher>(
+    chains: &HashMap<String, ChainConfig, S>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    // Build adjacency: chain_name -> set of sub-chain names it references.
+    let mut adjacency: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (name, config) in chains {
+        let refs: Vec<&str> = config
+            .steps
+            .iter()
+            .filter_map(|s| s.sub_chain.as_deref())
+            .collect();
+
+        // Check that all sub-chain references point to known chains.
+        for sub in &refs {
+            if !chains.contains_key(*sub) {
+                errors.push(format!(
+                    "chain `{name}` references unknown sub-chain `{sub}`"
+                ));
+            }
+        }
+
+        adjacency.insert(name.as_str(), refs);
+    }
+
+    let mut colors: HashMap<&str, DfsColor> = chains
+        .keys()
+        .map(|k| (k.as_str(), DfsColor::White))
+        .collect();
+
+    for &node in colors.clone().keys() {
+        if colors[node] == DfsColor::White {
+            let mut path = Vec::new();
+            chain_graph_dfs(node, &adjacency, &mut colors, &mut path, &mut errors);
+        }
+    }
+
+    errors
 }
 
 #[cfg(test)]
@@ -542,6 +686,7 @@ mod tests {
             ChainStatus::Failed,
             ChainStatus::Cancelled,
             ChainStatus::TimedOut,
+            ChainStatus::WaitingSubChain,
         ];
         for status in &statuses {
             let json = serde_json::to_string(status).unwrap();
@@ -965,7 +1110,7 @@ mod tests {
 
     #[test]
     fn backward_compatible_chain_state_deserialization() {
-        // Simulate old ChainState JSON without execution_path.
+        // Simulate old ChainState JSON without execution_path or sub-chain fields.
         let json = serde_json::json!({
             "chain_id": "abc",
             "chain_name": "test",
@@ -989,5 +1134,162 @@ mod tests {
         });
         let state: ChainState = serde_json::from_value(json).unwrap();
         assert!(state.execution_path.is_empty());
+        assert!(state.parent_chain_id.is_none());
+        assert!(state.parent_step_index.is_none());
+        assert!(state.child_chain_ids.is_empty());
+    }
+
+    #[test]
+    fn new_sub_chain_constructor() {
+        let step = ChainStepConfig::new_sub_chain("invoke-notify", "notify-chain");
+        assert_eq!(step.name, "invoke-notify");
+        assert_eq!(step.sub_chain.as_deref(), Some("notify-chain"));
+        assert!(step.provider.is_empty());
+        assert!(step.action_type.is_empty());
+        assert!(step.is_sub_chain());
+    }
+
+    #[test]
+    fn regular_step_is_not_sub_chain() {
+        let step = ChainStepConfig::new("do-thing", "provider-a", "action", serde_json::json!({}));
+        assert!(!step.is_sub_chain());
+    }
+
+    #[test]
+    fn sub_chain_step_with_branches() {
+        let step = ChainStepConfig::new_sub_chain("invoke", "child-chain")
+            .with_branch(BranchCondition::new(
+                "success",
+                BranchOperator::Eq,
+                Some(serde_json::Value::Bool(true)),
+                "next-step",
+            ))
+            .with_on_failure(StepFailurePolicy::Skip);
+        assert!(step.is_sub_chain());
+        assert!(step.has_branches());
+        assert_eq!(step.on_failure, Some(StepFailurePolicy::Skip));
+    }
+
+    #[test]
+    fn validate_rejects_sub_chain_with_provider() {
+        let config = ChainConfig::new("bad").with_step({
+            let mut step =
+                ChainStepConfig::new("s1", "provider-a", "action", serde_json::json!({}));
+            step.sub_chain = Some("other-chain".into());
+            step
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("mutually exclusive")));
+    }
+
+    #[test]
+    fn validate_chain_graph_no_cycles() {
+        let mut chains = HashMap::new();
+        chains.insert(
+            "parent".into(),
+            ChainConfig::new("parent")
+                .with_step(ChainStepConfig::new_sub_chain("s1", "child"))
+                .with_step(ChainStepConfig::new("s2", "p", "t", serde_json::json!({}))),
+        );
+        chains.insert(
+            "child".into(),
+            ChainConfig::new("child").with_step(ChainStepConfig::new(
+                "s1",
+                "p",
+                "t",
+                serde_json::json!({}),
+            )),
+        );
+        assert!(validate_chain_graph(&chains).is_empty());
+    }
+
+    #[test]
+    fn validate_chain_graph_direct_cycle() {
+        let mut chains = HashMap::new();
+        chains.insert(
+            "a".into(),
+            ChainConfig::new("a").with_step(ChainStepConfig::new_sub_chain("s1", "b")),
+        );
+        chains.insert(
+            "b".into(),
+            ChainConfig::new("b").with_step(ChainStepConfig::new_sub_chain("s1", "a")),
+        );
+        let errors = validate_chain_graph(&chains);
+        assert!(errors.iter().any(|e| e.contains("cycle")));
+    }
+
+    #[test]
+    fn validate_chain_graph_transitive_cycle() {
+        let mut chains = HashMap::new();
+        chains.insert(
+            "a".into(),
+            ChainConfig::new("a").with_step(ChainStepConfig::new_sub_chain("s1", "b")),
+        );
+        chains.insert(
+            "b".into(),
+            ChainConfig::new("b").with_step(ChainStepConfig::new_sub_chain("s1", "c")),
+        );
+        chains.insert(
+            "c".into(),
+            ChainConfig::new("c").with_step(ChainStepConfig::new_sub_chain("s1", "a")),
+        );
+        let errors = validate_chain_graph(&chains);
+        assert!(errors.iter().any(|e| e.contains("cycle")));
+    }
+
+    #[test]
+    fn validate_chain_graph_self_reference() {
+        let mut chains = HashMap::new();
+        chains.insert(
+            "self-ref".into(),
+            ChainConfig::new("self-ref")
+                .with_step(ChainStepConfig::new_sub_chain("s1", "self-ref")),
+        );
+        let errors = validate_chain_graph(&chains);
+        assert!(errors.iter().any(|e| e.contains("cycle")));
+    }
+
+    #[test]
+    fn validate_chain_graph_unknown_reference() {
+        let mut chains = HashMap::new();
+        chains.insert(
+            "parent".into(),
+            ChainConfig::new("parent")
+                .with_step(ChainStepConfig::new_sub_chain("s1", "nonexistent")),
+        );
+        let errors = validate_chain_graph(&chains);
+        assert!(errors.iter().any(|e| e.contains("unknown sub-chain")));
+    }
+
+    #[test]
+    fn waiting_sub_chain_status_serde() {
+        let json = serde_json::to_string(&ChainStatus::WaitingSubChain).unwrap();
+        assert_eq!(json, "\"waiting_sub_chain\"");
+        let back: ChainStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ChainStatus::WaitingSubChain);
+    }
+
+    #[test]
+    fn sub_chain_step_serde_roundtrip() {
+        let step = ChainStepConfig::new_sub_chain("invoke-notify", "notify-chain").with_delay(10);
+        let json = serde_json::to_string(&step).unwrap();
+        let back: ChainStepConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sub_chain.as_deref(), Some("notify-chain"));
+        assert!(back.is_sub_chain());
+        assert!(back.provider.is_empty());
+        assert_eq!(back.delay_seconds, Some(10));
+    }
+
+    #[test]
+    fn backward_compatible_step_deserialization_no_sub_chain() {
+        let json = r#"{
+            "name": "old-step",
+            "provider": "p",
+            "action_type": "t",
+            "payload_template": {}
+        }"#;
+        let step: ChainStepConfig = serde_json::from_str(json).unwrap();
+        assert!(step.sub_chain.is_none());
+        assert!(!step.is_sub_chain());
     }
 }

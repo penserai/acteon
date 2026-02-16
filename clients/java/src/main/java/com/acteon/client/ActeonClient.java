@@ -1724,6 +1724,70 @@ public class ActeonClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Gets the DAG representation for a running chain instance.
+     *
+     * @param chainId   chain execution ID
+     * @param namespace namespace the chain belongs to
+     * @param tenant    tenant the chain belongs to
+     */
+    public DagResponse getChainDag(String chainId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
+                + "/dag?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DagResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain not found: " + chainId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain DAG");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets the DAG representation for a chain definition (config only).
+     *
+     * @param name chain configuration name
+     */
+    public DagResponse getChainDefinitionDag(String name) throws ActeonException {
+        try {
+            String path = "/v1/chains/definitions/" + URLEncoder.encode(name, StandardCharsets.UTF_8) + "/dag";
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, DagResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain definition not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain definition DAG");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
     // =========================================================================
     // Dead-Letter Queue (DLQ)
     // =========================================================================

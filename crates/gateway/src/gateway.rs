@@ -673,6 +673,11 @@ impl Gateway {
         self.engine.rules()
     }
 
+    /// Return the registered chain configurations.
+    pub fn chain_configs(&self) -> Vec<&ChainConfig> {
+        self.chains.values().collect()
+    }
+
     /// Enable a rule by name. Returns `true` if the rule was found.
     pub fn enable_rule(&mut self, name: &str) -> bool {
         self.engine.enable_rule(name)
@@ -2033,6 +2038,9 @@ impl Gateway {
             cancel_reason: None,
             cancelled_by: None,
             execution_path: vec![first_step.clone()],
+            parent_chain_id: None,
+            parent_step_index: None,
+            child_chain_ids: Vec::new(),
         };
 
         // Persist chain state.
@@ -2120,8 +2128,10 @@ impl Gateway {
         let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
         self.state.remove_chain_ready_index(&pending_key).await?;
 
-        // Check if chain is still running.
-        if chain_state.status != ChainStatus::Running {
+        // Check if chain is still running (or waiting for a sub-chain).
+        if chain_state.status != ChainStatus::Running
+            && chain_state.status != ChainStatus::WaitingSubChain
+        {
             guard
                 .release()
                 .await
@@ -2178,6 +2188,217 @@ impl Gateway {
 
         let step_idx = chain_state.current_step;
         let step_config = &chain_config.steps[step_idx];
+
+        // --- Sub-chain step handling ---
+        if step_config.is_sub_chain() {
+            let sub_chain_name = step_config.sub_chain.as_deref().unwrap();
+
+            // Look for an existing child chain for this step.
+            let existing_child = self
+                .find_child_chain_for_step(&chain_state, sub_chain_name, step_idx)
+                .await?;
+
+            match existing_child {
+                None => {
+                    // No child chain yet — start one.
+                    let child_id = self
+                        .start_sub_chain(&mut chain_state, step_idx, sub_chain_name)
+                        .await?;
+
+                    chain_state.status = ChainStatus::WaitingSubChain;
+                    chain_state.updated_at = Utc::now();
+                    self.persist_chain_state(&chain_key, &chain_state, None)
+                        .await?;
+
+                    // Re-index to poll again in 5 seconds.
+                    let ready_at = Utc::now().timestamp_millis() + 5000;
+                    self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+                    debug!(
+                        chain_id = %chain_id,
+                        child_chain_id = %child_id,
+                        sub_chain = %sub_chain_name,
+                        "sub-chain started, parent waiting"
+                    );
+
+                    guard
+                        .release()
+                        .await
+                        .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                    return Ok(());
+                }
+                Some(child_state) => {
+                    match child_state.status {
+                        ChainStatus::Completed => {
+                            // Sub-chain completed — extract result and continue.
+                            let step_result =
+                                Self::extract_sub_chain_result(sub_chain_name, &child_state);
+                            chain_state.step_results[step_idx] = Some(step_result.clone());
+                            chain_state.status = ChainStatus::Running;
+                            chain_state.updated_at = Utc::now();
+
+                            let next_step_idx = Self::resolve_next_step(
+                                chain_config,
+                                step_idx,
+                                &step_result,
+                                step_index_map,
+                            );
+
+                            if let Some(next_idx) = next_step_idx {
+                                chain_state.current_step = next_idx;
+                                chain_state
+                                    .execution_path
+                                    .push(chain_config.steps[next_idx].name.clone());
+                                self.persist_chain_state(&chain_key, &chain_state, None)
+                                    .await?;
+                                let ready_at =
+                                    chain_config.steps[next_idx].delay_seconds.map_or(0, |d| {
+                                        Utc::now().timestamp_millis() + (d.cast_signed() * 1000)
+                                    });
+                                self.state.index_chain_ready(&pending_key, ready_at).await?;
+                            } else {
+                                chain_state.status = ChainStatus::Completed;
+                                self.persist_chain_state(
+                                    &chain_key,
+                                    &chain_state,
+                                    self.completed_chain_ttl,
+                                )
+                                .await?;
+                                self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                    .await?;
+                                self.metrics.increment_chains_completed();
+                                self.emit_chain_terminal_audit(&chain_state, "chain_completed");
+                                info!(chain_id = %chain_id, "chain completed successfully");
+                            }
+
+                            guard
+                                .release()
+                                .await
+                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                            return Ok(());
+                        }
+                        ChainStatus::Failed | ChainStatus::TimedOut | ChainStatus::Cancelled => {
+                            // Sub-chain failed — apply step on_failure policy.
+                            let error_msg =
+                                format!("sub-chain `{sub_chain_name}` {:?}", child_state.status);
+                            let step_result = StepResult {
+                                step_name: format!("sub_chain:{sub_chain_name}"),
+                                success: false,
+                                response_body: None,
+                                error: Some(error_msg.clone()),
+                                completed_at: Utc::now(),
+                            };
+                            chain_state.step_results[step_idx] = Some(step_result.clone());
+                            chain_state.status = ChainStatus::Running;
+
+                            let step_policy = step_config
+                                .on_failure
+                                .as_ref()
+                                .unwrap_or(&acteon_core::chain::StepFailurePolicy::Abort);
+
+                            match step_policy {
+                                acteon_core::chain::StepFailurePolicy::Abort => {
+                                    chain_state.status = ChainStatus::Failed;
+                                    chain_state.updated_at = Utc::now();
+                                    self.persist_chain_state(
+                                        &chain_key,
+                                        &chain_state,
+                                        self.completed_chain_ttl,
+                                    )
+                                    .await?;
+                                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                        .await?;
+                                    self.metrics.increment_chains_failed();
+                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                                    warn!(
+                                        chain_id = %chain_id,
+                                        sub_chain = %sub_chain_name,
+                                        "sub-chain failed, aborting parent chain"
+                                    );
+                                }
+                                acteon_core::chain::StepFailurePolicy::Skip => {
+                                    let next_step_idx = Self::resolve_next_step(
+                                        chain_config,
+                                        step_idx,
+                                        &step_result,
+                                        step_index_map,
+                                    );
+                                    if let Some(next_idx) = next_step_idx {
+                                        chain_state.current_step = next_idx;
+                                        chain_state.updated_at = Utc::now();
+                                        chain_state
+                                            .execution_path
+                                            .push(chain_config.steps[next_idx].name.clone());
+                                        self.persist_chain_state(&chain_key, &chain_state, None)
+                                            .await?;
+                                        let ready_at = chain_config.steps[next_idx]
+                                            .delay_seconds
+                                            .map_or(0, |d| {
+                                                Utc::now().timestamp_millis()
+                                                    + (d.cast_signed() * 1000)
+                                            });
+                                        self.state
+                                            .index_chain_ready(&pending_key, ready_at)
+                                            .await?;
+                                    } else {
+                                        chain_state.status = ChainStatus::Completed;
+                                        chain_state.updated_at = Utc::now();
+                                        self.persist_chain_state(
+                                            &chain_key,
+                                            &chain_state,
+                                            self.completed_chain_ttl,
+                                        )
+                                        .await?;
+                                        self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                            .await?;
+                                        self.metrics.increment_chains_completed();
+                                        self.emit_chain_terminal_audit(
+                                            &chain_state,
+                                            "chain_completed",
+                                        );
+                                    }
+                                }
+                                acteon_core::chain::StepFailurePolicy::Dlq => {
+                                    chain_state.status = ChainStatus::Failed;
+                                    chain_state.updated_at = Utc::now();
+                                    self.persist_chain_state(
+                                        &chain_key,
+                                        &chain_state,
+                                        self.completed_chain_ttl,
+                                    )
+                                    .await?;
+                                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                                        .await?;
+                                    self.metrics.increment_chains_failed();
+                                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                                }
+                            }
+
+                            guard
+                                .release()
+                                .await
+                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                            return Ok(());
+                        }
+                        ChainStatus::Running | ChainStatus::WaitingSubChain => {
+                            // Still running — re-schedule poll in 5 seconds.
+                            chain_state.status = ChainStatus::WaitingSubChain;
+                            chain_state.updated_at = Utc::now();
+                            self.persist_chain_state(&chain_key, &chain_state, None)
+                                .await?;
+                            let ready_at = Utc::now().timestamp_millis() + 5000;
+                            self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+                            guard
+                                .release()
+                                .await
+                                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
 
         // Resolve the payload template.
         let payload = crate::chain::resolve_template(
@@ -2816,6 +3037,365 @@ impl Gateway {
         }
     }
 
+    /// Find an existing child chain for a sub-chain step.
+    ///
+    /// Scans the parent's `child_chain_ids` to find a child chain whose
+    /// `chain_name` matches the sub-chain reference and whose
+    /// `parent_step_index` matches the current step.
+    async fn find_child_chain_for_step(
+        &self,
+        parent: &ChainState,
+        sub_chain_name: &str,
+        step_idx: usize,
+    ) -> Result<Option<ChainState>, GatewayError> {
+        for child_id in &parent.child_chain_ids {
+            let child_key = StateKey::new(
+                parent.namespace.as_str(),
+                parent.tenant.as_str(),
+                KeyKind::Chain,
+                child_id,
+            );
+            if let Some(raw) = self.state.get(&child_key).await? {
+                let json = self.decrypt_state_value(&raw)?;
+                if let Ok(child_state) = serde_json::from_str::<ChainState>(&json)
+                    && child_state.chain_name == sub_chain_name
+                    && child_state.parent_step_index == Some(step_idx)
+                {
+                    return Ok(Some(child_state));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Start a sub-chain as a child of the given parent chain.
+    ///
+    /// Creates a new `ChainState` for the child, links it to the parent, and
+    /// persists both. Returns the child chain ID.
+    async fn start_sub_chain(
+        &self,
+        parent: &mut ChainState,
+        step_idx: usize,
+        sub_chain_name: &str,
+    ) -> Result<String, GatewayError> {
+        let sub_config = self.chains.get(sub_chain_name).ok_or_else(|| {
+            GatewayError::ChainError(format!(
+                "sub-chain configuration not found: {sub_chain_name}"
+            ))
+        })?;
+
+        if sub_config.steps.is_empty() {
+            return Err(GatewayError::ChainError(format!(
+                "sub-chain '{sub_chain_name}' has no steps"
+            )));
+        }
+
+        let child_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let total_steps = sub_config.steps.len();
+        let first_step = sub_config.steps[0].name.clone();
+
+        // Child timeout: min(parent remaining, sub-chain own timeout).
+        #[allow(clippy::cast_possible_wrap)]
+        let child_timeout = sub_config
+            .timeout_seconds
+            .map(|secs| now + chrono::Duration::seconds(secs as i64));
+        let expires_at = match (parent.expires_at, child_timeout) {
+            (Some(p), Some(c)) => Some(p.min(c)),
+            (Some(p), None) => Some(p),
+            (None, Some(c)) => Some(c),
+            (None, None) => None,
+        };
+
+        let child_state = ChainState {
+            chain_id: child_id.clone(),
+            chain_name: sub_chain_name.to_owned(),
+            origin_action: parent.origin_action.clone(),
+            current_step: 0,
+            total_steps,
+            status: ChainStatus::Running,
+            step_results: vec![None; total_steps],
+            started_at: now,
+            updated_at: now,
+            expires_at,
+            namespace: parent.namespace.clone(),
+            tenant: parent.tenant.clone(),
+            cancel_reason: None,
+            cancelled_by: None,
+            execution_path: vec![first_step],
+            parent_chain_id: Some(parent.chain_id.clone()),
+            parent_step_index: Some(step_idx),
+            child_chain_ids: Vec::new(),
+        };
+
+        // Persist child chain state.
+        let child_key = StateKey::new(
+            parent.namespace.as_str(),
+            parent.tenant.as_str(),
+            KeyKind::Chain,
+            &child_id,
+        );
+        let child_json = serde_json::to_string(&child_state).map_err(|e| {
+            GatewayError::ChainError(format!("failed to serialize child chain state: {e}"))
+        })?;
+        let child_encrypted = self.encrypt_state_value(&child_json)?;
+        self.state.set(&child_key, &child_encrypted, None).await?;
+
+        // Index child chain for processing.
+        let child_pending_key = StateKey::new(
+            parent.namespace.as_str(),
+            parent.tenant.as_str(),
+            KeyKind::PendingChains,
+            &child_id,
+        );
+        let pending_val = serde_json::json!({
+            "chain_id": &child_id,
+            "chain_name": sub_chain_name,
+            "started_at": now.to_rfc3339(),
+            "parent_chain_id": parent.chain_id,
+        });
+        self.state
+            .set(&child_pending_key, &pending_val.to_string(), None)
+            .await?;
+        let ready_at = sub_config.steps[0]
+            .delay_seconds
+            .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+        self.state
+            .index_chain_ready(&child_pending_key, ready_at)
+            .await?;
+
+        // Link child to parent.
+        parent.child_chain_ids.push(child_id.clone());
+
+        self.metrics.increment_chains_started();
+
+        info!(
+            parent_chain_id = %parent.chain_id,
+            child_chain_id = %child_id,
+            sub_chain = %sub_chain_name,
+            total_steps = total_steps,
+            "sub-chain execution started"
+        );
+
+        Ok(child_id)
+    }
+
+    /// Extract the result from a completed sub-chain to use as the parent
+    /// step's result.
+    fn extract_sub_chain_result(sub_chain_name: &str, child: &ChainState) -> StepResult {
+        // Find the last completed step in the child's execution path.
+        let last_result = child
+            .execution_path
+            .iter()
+            .rev()
+            .find_map(|step_name| {
+                child
+                    .step_results
+                    .iter()
+                    .flatten()
+                    .find(|r| r.step_name == *step_name)
+            })
+            .or_else(|| child.step_results.iter().flatten().last());
+
+        match last_result {
+            Some(child_result) => StepResult {
+                step_name: format!("sub_chain:{sub_chain_name}"),
+                success: child_result.success,
+                response_body: child_result.response_body.clone(),
+                error: child_result.error.clone(),
+                completed_at: child_result.completed_at,
+            },
+            None => StepResult {
+                step_name: format!("sub_chain:{sub_chain_name}"),
+                success: true,
+                response_body: None,
+                error: None,
+                completed_at: Utc::now(),
+            },
+        }
+    }
+
+    /// Build a DAG visualization for a chain configuration, optionally enriched
+    /// with runtime state from a running or completed chain execution.
+    #[allow(clippy::too_many_lines)]
+    pub fn build_chain_dag<'a>(
+        &'a self,
+        chain_name: &'a str,
+        chain_state: Option<&'a ChainState>,
+        depth: usize,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<acteon_core::DagResponse, GatewayError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            const MAX_DEPTH: usize = 10;
+            if depth > MAX_DEPTH {
+                return Err(GatewayError::ChainError(format!(
+                    "sub-chain DAG depth exceeds maximum of {MAX_DEPTH}"
+                )));
+            }
+
+            let chain_config = self.chains.get(chain_name).ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "chain configuration not found for DAG: {chain_name}"
+                ))
+            })?;
+
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            let execution_path = chain_state
+                .map(|s| s.execution_path.clone())
+                .unwrap_or_default();
+            let execution_path_set: std::collections::HashSet<&str> =
+                execution_path.iter().map(String::as_str).collect();
+
+            for (i, step) in chain_config.steps.iter().enumerate() {
+                let step_status = chain_state.map(|s| {
+                    if let Some(ref result) = s.step_results[i] {
+                        if result.success {
+                            "completed".to_string()
+                        } else {
+                            "failed".to_string()
+                        }
+                    } else if s.current_step == i
+                        && (s.status == ChainStatus::Running
+                            || s.status == ChainStatus::WaitingSubChain)
+                    {
+                        if step.is_sub_chain() && s.status == ChainStatus::WaitingSubChain {
+                            "waiting_sub_chain".to_string()
+                        } else {
+                            "running".to_string()
+                        }
+                    } else {
+                        "pending".to_string()
+                    }
+                });
+
+                let (node_type, sub_chain_name) = if step.is_sub_chain() {
+                    ("sub_chain".to_string(), step.sub_chain.clone())
+                } else {
+                    ("step".to_string(), None)
+                };
+
+                // For sub-chain steps with runtime state, find and recurse into child.
+                let mut child_chain_id = None;
+                let mut children = None;
+                if step.is_sub_chain() {
+                    if let Some(state) = chain_state {
+                        let sub_name = step.sub_chain.as_deref().unwrap();
+                        if let Ok(Some(child_state)) =
+                            self.find_child_chain_for_step(state, sub_name, i).await
+                        {
+                            child_chain_id = Some(child_state.chain_id.clone());
+                            if let Ok(child_dag) = self
+                                .build_chain_dag(sub_name, Some(&child_state), depth + 1)
+                                .await
+                            {
+                                children = Some(Box::new(child_dag));
+                            }
+                        }
+                    } else if let Some(sub_name) = step.sub_chain.as_deref() {
+                        // Definition-only mode: build sub-chain DAG without runtime state.
+                        if let Ok(child_dag) = self.build_chain_dag(sub_name, None, depth + 1).await
+                        {
+                            children = Some(Box::new(child_dag));
+                        }
+                    }
+                }
+
+                nodes.push(acteon_core::DagNode {
+                    name: step.name.clone(),
+                    node_type,
+                    provider: if step.provider.is_empty() {
+                        None
+                    } else {
+                        Some(step.provider.clone())
+                    },
+                    action_type: if step.action_type.is_empty() {
+                        None
+                    } else {
+                        Some(step.action_type.clone())
+                    },
+                    sub_chain_name,
+                    status: step_status,
+                    child_chain_id,
+                    children,
+                });
+
+                // Build edges: sequential edge to next step.
+                if !step.has_branches() && i + 1 < chain_config.steps.len() {
+                    let source = &step.name;
+                    let target = &chain_config.steps[i + 1].name;
+                    let on_path = execution_path_set.contains(source.as_str())
+                        && execution_path_set.contains(target.as_str())
+                        && is_adjacent_in_path(&execution_path, source, target);
+                    edges.push(acteon_core::DagEdge {
+                        source: source.clone(),
+                        target: target.clone(),
+                        label: None,
+                        on_execution_path: on_path,
+                    });
+                }
+
+                // Build edges for branches.
+                for branch in &step.branches {
+                    let label = format!(
+                        "{} {:?} {}",
+                        branch.field,
+                        branch.operator,
+                        branch
+                            .value
+                            .as_ref()
+                            .map_or_else(String::new, std::string::ToString::to_string)
+                    );
+                    let on_path = execution_path_set.contains(step.name.as_str())
+                        && execution_path_set.contains(branch.target.as_str())
+                        && is_adjacent_in_path(&execution_path, &step.name, &branch.target);
+                    edges.push(acteon_core::DagEdge {
+                        source: step.name.clone(),
+                        target: branch.target.clone(),
+                        label: Some(label),
+                        on_execution_path: on_path,
+                    });
+                }
+
+                // Default next edge.
+                if let Some(ref default_next) = step.default_next {
+                    let on_path = execution_path_set.contains(step.name.as_str())
+                        && execution_path_set.contains(default_next.as_str())
+                        && is_adjacent_in_path(&execution_path, &step.name, default_next);
+                    edges.push(acteon_core::DagEdge {
+                        source: step.name.clone(),
+                        target: default_next.clone(),
+                        label: Some("default".to_string()),
+                        on_execution_path: on_path,
+                    });
+                }
+            }
+
+            let status_str = chain_state.map(|s| match s.status {
+                ChainStatus::Running => "running".to_string(),
+                ChainStatus::Completed => "completed".to_string(),
+                ChainStatus::Failed => "failed".to_string(),
+                ChainStatus::Cancelled => "cancelled".to_string(),
+                ChainStatus::TimedOut => "timed_out".to_string(),
+                ChainStatus::WaitingSubChain => "waiting_sub_chain".to_string(),
+            });
+
+            Ok(acteon_core::DagResponse {
+                chain_name: chain_name.to_string(),
+                chain_id: chain_state.map(|s| s.chain_id.clone()),
+                status: status_str,
+                nodes,
+                edges,
+                execution_path,
+            })
+        }) // end Box::pin(async move { ... })
+    }
+
     /// Persist chain state to the state store.
     ///
     /// When `ttl` is `Some`, the record will expire after the given duration.
@@ -2950,6 +3530,7 @@ impl Gateway {
                 ChainStatus::Failed => "failed",
                 ChainStatus::Cancelled => "cancelled",
                 ChainStatus::TimedOut => "timed_out",
+                ChainStatus::WaitingSubChain => "waiting_sub_chain",
             };
 
             let mut outcome_details = serde_json::json!({
@@ -3066,6 +3647,7 @@ impl Gateway {
     /// the gateway pipeline. The notification target is taken from the chain
     /// config's `on_cancel` field, falling back to provider `"webhook"` and
     /// action type `"chain_cancelled"`.
+    #[allow(clippy::too_many_lines)]
     pub async fn cancel_chain(
         &self,
         namespace: &str,
@@ -3093,7 +3675,9 @@ impl Gateway {
             GatewayError::ChainError(format!("failed to deserialize chain state: {e}"))
         })?;
 
-        if chain_state.status != ChainStatus::Running {
+        if chain_state.status != ChainStatus::Running
+            && chain_state.status != ChainStatus::WaitingSubChain
+        {
             guard
                 .release()
                 .await
@@ -3129,10 +3713,42 @@ impl Gateway {
             action_id: Some(chain_state.origin_action.id.to_string()),
         });
 
+        // Cascade cancellation to running child chains.
+        let child_ids = chain_state.child_chain_ids.clone();
+
         guard
             .release()
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+
+        for child_id in &child_ids {
+            match Box::pin(self.cancel_chain(
+                namespace,
+                tenant,
+                child_id,
+                Some(format!("parent chain {chain_id} cancelled")),
+                cancelled_by.clone(),
+            ))
+            .await
+            {
+                Ok(_) => {
+                    debug!(
+                        parent_chain_id = %chain_id,
+                        child_chain_id = %child_id,
+                        "child chain cancelled"
+                    );
+                }
+                Err(e) => {
+                    // Child may already be in a terminal state — that's okay.
+                    debug!(
+                        parent_chain_id = %chain_id,
+                        child_chain_id = %child_id,
+                        error = %e,
+                        "could not cancel child chain (may already be terminal)"
+                    );
+                }
+            }
+        }
 
         info!(chain_id = %chain_id, "chain cancelled");
 
@@ -3941,6 +4557,12 @@ fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
 }
 
 /// Enrich serialized action metadata with extra `Action` fields so that
+/// Check if `source` and `target` are adjacent in the execution path
+/// (i.e., `target` immediately follows `source`).
+fn is_adjacent_in_path(path: &[String], source: &str, target: &str) -> bool {
+    path.windows(2).any(|w| w[0] == source && w[1] == target)
+}
+
 /// replays can reconstruct the full action. System fields use a `__` prefix
 /// to distinguish them from user-supplied labels.
 fn enrich_audit_metadata(action: &Action) -> serde_json::Value {

@@ -901,6 +901,10 @@ fn default_max_concurrent_advances() -> usize {
     16
 }
 
+fn default_empty_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 fn default_completed_chain_ttl() -> u64 {
     604_800 // 7 days
 }
@@ -935,10 +939,15 @@ pub struct ChainStepConfigToml {
     /// Step name (used for `{{steps.NAME.*}}` template references).
     pub name: String,
     /// Provider to execute this step with.
-    pub provider: String,
+    /// Optional for sub-chain steps that invoke another chain instead of a provider.
+    #[serde(default)]
+    pub provider: Option<String>,
     /// Action type for the synthetic action.
-    pub action_type: String,
+    /// Optional for sub-chain steps.
+    #[serde(default)]
+    pub action_type: Option<String>,
     /// JSON payload template with `{{...}}` placeholders.
+    #[serde(default = "default_empty_object")]
     pub payload_template: serde_json::Value,
     /// Per-step failure policy override: `"abort"`, `"skip"`, or `"dlq"`.
     pub on_failure: Option<String>,
@@ -950,6 +959,10 @@ pub struct ChainStepConfigToml {
     /// Default next step name when no branch condition matches.
     #[serde(default)]
     pub default_next: Option<String>,
+    /// Name of another chain to invoke as a sub-chain.
+    /// Mutually exclusive with `provider`.
+    #[serde(default)]
+    pub sub_chain: Option<String>,
 }
 
 /// A branch condition in a chain step, loaded from TOML.
@@ -2127,5 +2140,91 @@ mod tests {
         assert!(snapshot.wasm.enabled);
         assert_eq!(snapshot.wasm.plugin_dir.as_deref(), Some("/plugins"));
         assert_eq!(snapshot.wasm.default_memory_limit_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn chain_step_sub_chain_parsed_from_toml() {
+        let toml = r#"
+            [[chains.definitions]]
+            name = "parent-chain"
+
+            [[chains.definitions.steps]]
+            name = "step1"
+            provider = "email"
+            action_type = "send_welcome"
+            payload_template = {}
+
+            [[chains.definitions.steps]]
+            name = "invoke-notify"
+            sub_chain = "notify-chain"
+
+            [[chains.definitions.steps]]
+            name = "step3"
+            provider = "slack"
+            action_type = "confirm"
+            payload_template = {}
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.chains.definitions.len(), 1);
+        let chain = &config.chains.definitions[0];
+        assert_eq!(chain.steps.len(), 3);
+
+        // Regular step
+        assert_eq!(chain.steps[0].provider.as_deref(), Some("email"));
+        assert_eq!(chain.steps[0].action_type.as_deref(), Some("send_welcome"));
+        assert!(chain.steps[0].sub_chain.is_none());
+
+        // Sub-chain step
+        assert!(chain.steps[1].provider.is_none());
+        assert!(chain.steps[1].action_type.is_none());
+        assert_eq!(chain.steps[1].sub_chain.as_deref(), Some("notify-chain"));
+
+        // Regular step after sub-chain
+        assert_eq!(chain.steps[2].provider.as_deref(), Some("slack"));
+        assert!(chain.steps[2].sub_chain.is_none());
+    }
+
+    #[test]
+    fn chain_step_sub_chain_with_delay_and_on_failure() {
+        let toml = r#"
+            [[chains.definitions]]
+            name = "with-options"
+
+            [[chains.definitions.steps]]
+            name = "invoke-child"
+            sub_chain = "child-chain"
+            delay_seconds = 30
+            on_failure = "skip"
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        let step = &config.chains.definitions[0].steps[0];
+        assert_eq!(step.sub_chain.as_deref(), Some("child-chain"));
+        assert_eq!(step.delay_seconds, Some(30));
+        assert_eq!(step.on_failure.as_deref(), Some("skip"));
+    }
+
+    #[test]
+    fn chain_step_backward_compat_no_sub_chain() {
+        // Existing TOML configs without sub_chain should still parse correctly.
+        let toml = r#"
+            [[chains.definitions]]
+            name = "legacy"
+
+            [[chains.definitions.steps]]
+            name = "step1"
+            provider = "email"
+            action_type = "send"
+
+            [chains.definitions.steps.payload_template]
+            msg = "hello"
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        let step = &config.chains.definitions[0].steps[0];
+        assert_eq!(step.provider.as_deref(), Some("email"));
+        assert_eq!(step.action_type.as_deref(), Some("send"));
+        assert!(step.sub_chain.is_none());
     }
 }

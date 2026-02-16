@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiGet, apiPost } from '../client'
-import type { ChainSummary, ChainDetailResponse } from '../../types'
+import type { ChainSummary, ChainDetailResponse, DagResponse } from '../../types'
 
 export function useChains(params: { namespace?: string; tenant?: string; status?: string }) {
   return useQuery({
@@ -17,8 +17,32 @@ export function useChainDetail(chainId: string | undefined) {
     enabled: !!chainId,
     refetchInterval: (query) => {
       const data = query.state.data as ChainDetailResponse | undefined
-      return data?.status === 'running' ? 2000 : false
+      return data?.status === 'running' || data?.status === 'waiting_sub_chain' ? 2000 : false
     },
+  })
+}
+
+export function useChainDag(
+  chainId: string | undefined,
+  params: { namespace: string; tenant: string },
+) {
+  return useQuery({
+    queryKey: ['chain-dag', chainId, params.namespace, params.tenant],
+    queryFn: () =>
+      apiGet<DagResponse>(`/v1/chains/${chainId}/dag`, {
+        namespace: params.namespace,
+        tenant: params.tenant,
+      }),
+    enabled: !!chainId && !!params.namespace && !!params.tenant,
+    refetchInterval: 5000,
+  })
+}
+
+export function useChainDefinitionDag(name: string | undefined) {
+  return useQuery({
+    queryKey: ['chain-definition-dag', name],
+    queryFn: () => apiGet<DagResponse>(`/v1/chains/definitions/${name}/dag`),
+    enabled: !!name,
   })
 }
 

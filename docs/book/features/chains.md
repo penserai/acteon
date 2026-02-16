@@ -156,6 +156,12 @@ Chains execute asynchronously via the background processor:
 }
 ```
 
+## Sub-Chains
+
+A chain step can invoke another chain by name instead of dispatching to a provider. This enables reusable workflow components — for example, a standard "escalate-and-notify" chain shared across multiple parent chains.
+
+See [Sub-Chains](sub-chains.md) for full documentation.
+
 ## Use Cases
 
 ### Research Pipeline

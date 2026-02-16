@@ -1284,6 +1284,8 @@ export interface ChainSummary {
   startedAt: string;
   /** When the chain was last updated. */
   updatedAt: string;
+  /** Parent chain ID if this is a sub-chain. */
+  parentChainId?: string;
 }
 
 /** Parse a ChainSummary from API response. */
@@ -1296,6 +1298,7 @@ export function parseChainSummary(data: Record<string, unknown>): ChainSummary {
     totalSteps: data.total_steps as number,
     startedAt: data.started_at as string,
     updatedAt: data.updated_at as string,
+    parentChainId: data.parent_chain_id as string | undefined,
   };
 }
 
@@ -1327,6 +1330,10 @@ export interface ChainStepStatus {
   error?: string;
   /** When this step completed. */
   completedAt?: string;
+  /** Name of the sub-chain this step triggers, if any. */
+  subChain?: string;
+  /** ID of the child chain instance spawned by this step, if any. */
+  childChainId?: string;
 }
 
 /** Parse a ChainStepStatus from API response. */
@@ -1338,6 +1345,8 @@ export function parseChainStepStatus(data: Record<string, unknown>): ChainStepSt
     responseBody: data.response_body as unknown | undefined,
     error: data.error as string | undefined,
     completedAt: data.completed_at as string | undefined,
+    subChain: data.sub_chain as string | undefined,
+    childChainId: data.child_chain_id as string | undefined,
   };
 }
 
@@ -1367,12 +1376,17 @@ export interface ChainDetailResponse {
   cancelledBy?: string;
   /** The ordered list of step names that were executed (the branch path taken). */
   executionPath?: string[];
+  /** Parent chain ID if this is a sub-chain. */
+  parentChainId?: string;
+  /** IDs of child chains spawned by sub-chain steps. */
+  childChainIds?: string[];
 }
 
 /** Parse a ChainDetailResponse from API response. */
 export function parseChainDetailResponse(data: Record<string, unknown>): ChainDetailResponse {
   const steps = (data.steps as Record<string, unknown>[]) ?? [];
   const executionPath = data.execution_path as string[] | undefined;
+  const childChainIds = data.child_chain_ids as string[] | undefined;
   return {
     chainId: data.chain_id as string,
     chainName: data.chain_name as string,
@@ -1386,6 +1400,99 @@ export function parseChainDetailResponse(data: Record<string, unknown>): ChainDe
     cancelReason: data.cancel_reason as string | undefined,
     cancelledBy: data.cancelled_by as string | undefined,
     executionPath: executionPath && executionPath.length > 0 ? executionPath : undefined,
+    parentChainId: data.parent_chain_id as string | undefined,
+    childChainIds: childChainIds && childChainIds.length > 0 ? childChainIds : undefined,
+  };
+}
+
+// =============================================================================
+// DAG Types (Chain Visualization)
+// =============================================================================
+
+/** A node in the chain DAG. */
+export interface DagNode {
+  /** Node name (step name or sub-chain name). */
+  name: string;
+  /** Node type: "step" or "sub_chain". */
+  nodeType: string;
+  /** Provider for this step, if applicable. */
+  provider?: string;
+  /** Action type for this step, if applicable. */
+  actionType?: string;
+  /** Name of the sub-chain, if this is a sub-chain node. */
+  subChainName?: string;
+  /** Current status of this node (for instance DAGs). */
+  status?: string;
+  /** ID of the child chain instance (for instance DAGs). */
+  childChainId?: string;
+  /** Nested DAG for sub-chain expansion. */
+  children?: DagResponse;
+}
+
+/** An edge in the chain DAG. */
+export interface DagEdge {
+  /** Source node name. */
+  source: string;
+  /** Target node name. */
+  target: string;
+  /** Edge label (e.g., branch condition). */
+  label?: string;
+  /** Whether this edge is on the execution path. */
+  onExecutionPath: boolean;
+}
+
+/** DAG representation of a chain (config or instance). */
+export interface DagResponse {
+  /** Chain configuration name. */
+  chainName: string;
+  /** Chain instance ID (only for instance DAGs). */
+  chainId?: string;
+  /** Chain status (only for instance DAGs). */
+  status?: string;
+  /** Nodes in the DAG. */
+  nodes: DagNode[];
+  /** Edges connecting the nodes. */
+  edges: DagEdge[];
+  /** Ordered list of step names on the execution path. */
+  executionPath: string[];
+}
+
+/** Parse a DagNode from API response. */
+export function parseDagNode(data: Record<string, unknown>): DagNode {
+  const children = data.children as Record<string, unknown> | undefined;
+  return {
+    name: data.name as string,
+    nodeType: data.node_type as string,
+    provider: data.provider as string | undefined,
+    actionType: data.action_type as string | undefined,
+    subChainName: data.sub_chain_name as string | undefined,
+    status: data.status as string | undefined,
+    childChainId: data.child_chain_id as string | undefined,
+    children: children ? parseDagResponse(children) : undefined,
+  };
+}
+
+/** Parse a DagEdge from API response. */
+export function parseDagEdge(data: Record<string, unknown>): DagEdge {
+  return {
+    source: data.source as string,
+    target: data.target as string,
+    label: data.label as string | undefined,
+    onExecutionPath: (data.on_execution_path as boolean) ?? false,
+  };
+}
+
+/** Parse a DagResponse from API response. */
+export function parseDagResponse(data: Record<string, unknown>): DagResponse {
+  const nodes = (data.nodes as Record<string, unknown>[]) ?? [];
+  const edges = (data.edges as Record<string, unknown>[]) ?? [];
+  return {
+    chainName: data.chain_name as string,
+    chainId: data.chain_id as string | undefined,
+    status: data.status as string | undefined,
+    nodes: nodes.map(parseDagNode),
+    edges: edges.map(parseDagEdge),
+    executionPath: (data.execution_path as string[]) ?? [],
   };
 }
 
