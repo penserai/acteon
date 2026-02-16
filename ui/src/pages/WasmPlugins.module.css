@@ -1,0 +1,142 @@
+@reference "../index.css";
+
+/* Plugin list table */
+.actionsCell {
+  @apply flex items-center gap-1;
+}
+
+.nameCell {
+  @apply font-mono text-sm;
+  color: var(--text-default);
+}
+
+.descCell {
+  @apply text-sm truncate max-w-xs;
+  color: var(--text-muted);
+}
+
+.monoCell {
+  @apply font-mono text-xs tabular-nums;
+  color: var(--text-default);
+}
+
+/* Filter bar */
+.headerActions {
+  @apply flex items-center gap-2;
+}
+
+/* Register modal */
+.formSection {
+  @apply space-y-4;
+}
+
+.formGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.fileInput {
+  @apply w-full text-sm border rounded-md px-3 py-2 cursor-pointer;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.fileLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textareaLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full h-40 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+/* Detail drawer */
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between py-1 border-b;
+  border-color: var(--border-default);
+}
+
+.detailLabel {
+  color: var(--text-muted);
+}
+
+.detailValue {
+  @apply font-mono text-xs;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2 mt-4;
+}
+
+.actionButtons {
+  @apply mt-6 flex gap-2;
+}
+
+/* Delete confirmation */
+.deleteWarning {
+  @apply text-sm mb-4;
+  color: var(--text-secondary);
+}
+
+.deleteName {
+  @apply font-semibold;
+  color: var(--text-primary);
+}
+
+/* Test panel */
+.testSection {
+  @apply mt-6 p-4 rounded-lg;
+  background: var(--bg-surface-secondary);
+}
+
+.testSectionTitle {
+  @apply text-sm font-medium mb-3;
+}
+
+.testResultCard {
+  @apply mt-4 p-3 rounded-md border;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.testResultRow {
+  @apply flex justify-between py-1 text-sm;
+}
+
+.verdictPass {
+  @apply font-semibold;
+  color: var(--color-green-500);
+}
+
+.verdictFail {
+  @apply font-semibold;
+  color: var(--color-red-500);
+}
+
+.testMessage {
+  @apply text-xs mt-2 p-2 rounded;
+  background: var(--bg-surface-secondary);
+  color: var(--text-muted);
+}
+
+.testMetadata {
+  @apply text-xs mt-2 font-mono p-2 rounded overflow-auto max-h-40;
+  background: var(--bg-surface-secondary);
+  color: var(--text-default);
+}

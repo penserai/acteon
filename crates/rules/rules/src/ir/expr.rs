@@ -126,6 +126,18 @@ pub enum Expr {
         state: String,
     },
 
+    // WASM plugin calls
+    /// Invoke a WASM plugin as a condition check.
+    ///
+    /// The plugin receives the action context as JSON and returns a boolean
+    /// verdict. Requires a `WasmPluginRuntime` in the evaluation context.
+    WasmCall {
+        /// Name of the registered WASM plugin.
+        plugin: String,
+        /// Exported function to call (defaults to `"evaluate"`).
+        function: String,
+    },
+
     // Semantic matching
     /// Check if a text field semantically matches a topic description.
     ///
@@ -253,6 +265,9 @@ impl Expr {
                 let fp_src = fingerprint.to_source();
                 format!("EventInState({fp_src}, \"{state}\")")
             }
+            Self::WasmCall { plugin, function } => {
+                format!("wasm(\"{plugin}\", \"{function}\")")
+            }
             Self::SemanticMatch {
                 topic,
                 threshold,
@@ -347,7 +362,8 @@ impl Expr {
             | Self::Ident(_)
             | Self::StateGet(_)
             | Self::StateCounter(_)
-            | Self::StateTimeSince(_) => {}
+            | Self::StateTimeSince(_)
+            | Self::WasmCall { .. } => {}
         }
     }
 }
@@ -549,5 +565,87 @@ mod tests {
             Box::new(Expr::Int(42)),
         );
         assert!(expr.semantic_topics().is_empty());
+    }
+
+    // --- WasmCall tests ---
+
+    #[test]
+    fn wasm_call_construction() {
+        let expr = Expr::WasmCall {
+            plugin: "fraud-detector".into(),
+            function: "evaluate".into(),
+        };
+        assert!(!expr.is_constant());
+    }
+
+    #[test]
+    fn wasm_call_serde_roundtrip() {
+        let expr = Expr::WasmCall {
+            plugin: "rate-limiter".into(),
+            function: "check".into(),
+        };
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn wasm_call_to_source() {
+        let expr = Expr::WasmCall {
+            plugin: "content-filter".into(),
+            function: "evaluate".into(),
+        };
+        assert_eq!(expr.to_source(), r#"wasm("content-filter", "evaluate")"#);
+    }
+
+    #[test]
+    fn wasm_call_to_source_custom_function() {
+        let expr = Expr::WasmCall {
+            plugin: "my-plugin".into(),
+            function: "check_payload".into(),
+        };
+        assert_eq!(expr.to_source(), r#"wasm("my-plugin", "check_payload")"#);
+    }
+
+    #[test]
+    fn wasm_call_semantic_topics_empty() {
+        let expr = Expr::WasmCall {
+            plugin: "test".into(),
+            function: "evaluate".into(),
+        };
+        assert!(expr.semantic_topics().is_empty());
+    }
+
+    #[test]
+    fn wasm_call_nested_in_binary() {
+        let expr = Expr::Binary(
+            BinaryOp::And,
+            Box::new(Expr::WasmCall {
+                plugin: "checker".into(),
+                function: "evaluate".into(),
+            }),
+            Box::new(Expr::Bool(true)),
+        );
+        let json = serde_json::to_string(&expr).unwrap();
+        let back: Expr = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{expr:?}"), format!("{back:?}"));
+    }
+
+    #[test]
+    fn wasm_call_in_all_expr() {
+        let expr = Expr::All(vec![
+            Expr::WasmCall {
+                plugin: "checker-a".into(),
+                function: "evaluate".into(),
+            },
+            Expr::WasmCall {
+                plugin: "checker-b".into(),
+                function: "evaluate".into(),
+            },
+        ]);
+        let source = expr.to_source();
+        assert!(source.contains("wasm("));
+        assert!(source.contains("checker-a"));
+        assert!(source.contains("checker-b"));
     }
 }

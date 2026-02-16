@@ -57,6 +57,7 @@ pub struct GatewayBuilder {
     quota_policies: HashMap<String, acteon_core::QuotaPolicy>,
     retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
+    wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
 }
 
 impl GatewayBuilder {
@@ -93,6 +94,7 @@ impl GatewayBuilder {
             quota_policies: HashMap::new(),
             retention_policies: HashMap::new(),
             payload_encryptor: None,
+            wasm_runtime: None,
         }
     }
 
@@ -392,6 +394,19 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the WASM plugin runtime for evaluating `WasmCall` expressions in rules.
+    ///
+    /// When set, rules containing `wasm()` conditions can invoke registered
+    /// WASM plugins as part of condition evaluation.
+    #[must_use]
+    pub fn wasm_runtime(
+        mut self,
+        runtime: Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>,
+    ) -> Self {
+        self.wasm_runtime = Some(runtime);
+        self
+    }
+
     /// Set all quota policies at once (replaces any previously added).
     #[must_use]
     pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
@@ -626,6 +641,7 @@ impl GatewayBuilder {
             retention_policies: parking_lot::RwLock::new(self.retention_policies),
             payload_encryptor: self.payload_encryptor,
             provider_metrics: Arc::new(crate::metrics::ProviderMetrics::default()),
+            wasm_runtime: self.wasm_runtime,
         })
     }
 }
@@ -894,5 +910,37 @@ mod tests {
             )
             .build();
         assert!(result.is_ok(), "A→B→C (no cycle) should be accepted");
+    }
+
+    #[test]
+    fn builder_wasm_runtime() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let wasm = Arc::new(MockWasmRuntime::new(true));
+
+        let gateway = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .wasm_runtime(wasm)
+            .build()
+            .unwrap();
+
+        assert!(gateway.wasm_runtime().is_some());
+    }
+
+    #[test]
+    fn builder_without_wasm_runtime() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let gateway = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .build()
+            .unwrap();
+
+        assert!(gateway.wasm_runtime().is_none());
     }
 }

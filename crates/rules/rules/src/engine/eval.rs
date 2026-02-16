@@ -112,12 +112,48 @@ pub async fn eval(expr: &Expr, ctx: &EvalContext<'_>) -> Result<Value, RuleError
             eval_event_in_state(fingerprint, state, ctx).await
         }
 
+        Expr::WasmCall { plugin, function } => eval_wasm_call(plugin, function, ctx).await,
+
         Expr::SemanticMatch {
             topic,
             threshold,
             text_field,
         } => eval_semantic_match(topic, *threshold, text_field.as_deref(), ctx).await,
     }
+}
+
+/// Evaluate a WASM plugin call as a boolean condition.
+async fn eval_wasm_call(
+    plugin: &str,
+    function: &str,
+    ctx: &EvalContext<'_>,
+) -> Result<Value, RuleError> {
+    let runtime = ctx.wasm_runtime.as_ref().ok_or_else(|| {
+        RuleError::Evaluation(format!(
+            "WASM plugin '{plugin}' called but no WASM runtime configured"
+        ))
+    })?;
+
+    // Serialize the action as the input payload for the plugin.
+    let input = serde_json::to_value(ctx.action)
+        .map_err(|e| RuleError::Evaluation(format!("failed to serialize action for WASM: {e}")))?;
+
+    // Record the invocation attempt.
+    if let Some(ref counters) = ctx.wasm_counters {
+        counters.record_invocation();
+    }
+
+    let result = runtime
+        .invoke(plugin, function, &input)
+        .await
+        .map_err(|e| {
+            if let Some(ref counters) = ctx.wasm_counters {
+                counters.record_error();
+            }
+            RuleError::Evaluation(format!("WASM plugin '{plugin}' error: {e}"))
+        })?;
+
+    Ok(Value::Bool(result.verdict))
 }
 
 /// Resolve a top-level identifier to a value from the evaluation context.

@@ -21,6 +21,7 @@ import { RecurringActions } from './pages/RecurringActions'
 import { Quotas } from './pages/Quotas'
 import { RetentionPolicies } from './pages/RetentionPolicies'
 import { RulePlayground } from './pages/RulePlayground'
+import { WasmPlugins } from './pages/WasmPlugins'
 import { Settings } from './pages/Settings'
 
 function App() {
@@ -48,6 +49,7 @@ function App() {
           <Route path="recurring" element={<RecurringActions />} />
           <Route path="quotas" element={<Quotas />} />
           <Route path="retention" element={<RetentionPolicies />} />
+          <Route path="wasm-plugins" element={<WasmPlugins />} />
           <Route path="settings/*" element={<Settings />} />
         </Route>
       </Routes>

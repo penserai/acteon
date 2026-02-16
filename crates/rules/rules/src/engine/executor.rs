@@ -95,6 +95,8 @@ impl RuleEngine {
                     timezone: Some(tz),
                     time_map_cache: std::sync::OnceLock::new(),
                     access_tracker: None,
+                    wasm_runtime: ctx.wasm_runtime.clone(),
+                    wasm_counters: ctx.wasm_counters.clone(),
                 };
                 &eval_ctx
             } else {
@@ -184,6 +186,8 @@ impl RuleEngine {
             timezone: ctx.timezone,
             time_map_cache: std::sync::OnceLock::new(),
             access_tracker: Some(Arc::clone(&tracker)),
+            wasm_runtime: ctx.wasm_runtime.clone(),
+            wasm_counters: ctx.wasm_counters.clone(),
         };
 
         for rule in &self.rules {
@@ -300,6 +304,8 @@ impl RuleEngine {
                 timezone: Some(tz),
                 time_map_cache: std::sync::OnceLock::new(),
                 access_tracker: ctx.access_tracker.clone(),
+                wasm_runtime: ctx.wasm_runtime.clone(),
+                wasm_counters: ctx.wasm_counters.clone(),
             };
             &eval_ctx
         } else {
@@ -2194,5 +2200,342 @@ mod tests {
         // Verify it's the same cached object by comparing pointers.
         let cached = ctx.time_map_cache.get().unwrap();
         assert!(std::ptr::eq(cached, ctx.time_map_cache.get().unwrap()));
+    }
+
+    // --- WASM plugin evaluation tests ---
+
+    #[tokio::test]
+    async fn eval_wasm_call_true_verdict() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(true));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let expr = Expr::WasmCall {
+            plugin: "fraud-detector".into(),
+            function: "evaluate".into(),
+        };
+        let result = eval(&expr, &ctx).await.unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn eval_wasm_call_false_verdict() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(false));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let expr = Expr::WasmCall {
+            plugin: "content-filter".into(),
+            function: "check".into(),
+        };
+        let result = eval(&expr, &ctx).await.unwrap();
+        assert_eq!(result, Value::Bool(false));
+    }
+
+    #[tokio::test]
+    async fn eval_wasm_call_no_runtime_errors() {
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // No wasm_runtime configured on context.
+        let ctx = test_context(&action, &store, &env);
+
+        let expr = Expr::WasmCall {
+            plugin: "test-plugin".into(),
+            function: "evaluate".into(),
+        };
+        let err = eval(&expr, &ctx).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no WASM runtime configured"),
+            "expected 'no WASM runtime configured', got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn eval_wasm_call_invocation_error() {
+        use acteon_wasm_runtime::FailingWasmRuntime;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(FailingWasmRuntime);
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let expr = Expr::WasmCall {
+            plugin: "broken-plugin".into(),
+            function: "evaluate".into(),
+        };
+        let err = eval(&expr, &ctx).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("broken-plugin"),
+            "expected error to mention plugin name, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_wasm_rule_matching() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        // A rule whose condition is a WASM call that returns true -> Deny.
+        let rule = Rule::new(
+            "wasm-deny",
+            Expr::WasmCall {
+                plugin: "policy-checker".into(),
+                function: "evaluate".into(),
+            },
+            RuleAction::Deny,
+        );
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(true));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Deny(_)));
+    }
+
+    #[tokio::test]
+    async fn engine_wasm_rule_not_matching() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        // A WASM call that returns false -> rule should not fire.
+        let rule = Rule::new(
+            "wasm-deny",
+            Expr::WasmCall {
+                plugin: "policy-checker".into(),
+                function: "evaluate".into(),
+            },
+            RuleAction::Deny,
+        );
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(false));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    #[tokio::test]
+    async fn engine_wasm_rule_mixed_with_static_rules() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        // Static rule: low priority, always true -> Allow.
+        let static_rule =
+            Rule::new("static-allow", Expr::Bool(true), RuleAction::Allow).with_priority(100);
+
+        // WASM rule: higher priority, returns true -> Deny.
+        let wasm_rule = Rule::new(
+            "wasm-deny",
+            Expr::WasmCall {
+                plugin: "guardrail".into(),
+                function: "evaluate".into(),
+            },
+            RuleAction::Deny,
+        )
+        .with_priority(1);
+
+        let engine = RuleEngine::new(vec![static_rule, wasm_rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(true));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        // WASM rule has higher priority (lower number), so it fires first.
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Deny(_)));
+    }
+
+    #[tokio::test]
+    async fn eval_wasm_call_combined_with_and() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(true));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        // wasm("plugin", "evaluate") && action.action_type == "send_email"
+        let expr = Expr::Binary(
+            BinaryOp::And,
+            Box::new(Expr::WasmCall {
+                plugin: "checker".into(),
+                function: "evaluate".into(),
+            }),
+            Box::new(Expr::Binary(
+                BinaryOp::Eq,
+                Box::new(Expr::Field(
+                    Box::new(Expr::Ident("action".into())),
+                    "action_type".into(),
+                )),
+                Box::new(Expr::String("send_email".into())),
+            )),
+        );
+        let result = eval(&expr, &ctx).await.unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn eval_wasm_call_combined_with_or_short_circuit() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        // WASM returns false, but OR with true literal should still be true.
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(false));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let expr = Expr::Binary(
+            BinaryOp::Or,
+            Box::new(Expr::WasmCall {
+                plugin: "checker".into(),
+                function: "evaluate".into(),
+            }),
+            Box::new(Expr::Bool(true)),
+        );
+        let result = eval(&expr, &ctx).await.unwrap();
+        assert_eq!(result, Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn engine_wasm_rule_disabled_skipped() {
+        use acteon_wasm_runtime::FailingWasmRuntime;
+
+        // Disabled WASM rule with failing runtime should not be evaluated.
+        let rule = Rule::new(
+            "disabled-wasm",
+            Expr::WasmCall {
+                plugin: "will-fail".into(),
+                function: "evaluate".into(),
+            },
+            RuleAction::Deny,
+        )
+        .with_enabled(false);
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(FailingWasmRuntime);
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        // Disabled rule should be skipped, no error from FailingWasmRuntime.
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Allow(_)));
+    }
+
+    #[tokio::test]
+    async fn engine_wasm_rule_suppress_verdict() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let rule = Rule::new(
+            "wasm-suppress",
+            Expr::WasmCall {
+                plugin: "dedup-checker".into(),
+                function: "evaluate".into(),
+            },
+            RuleAction::Suppress,
+        );
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(true));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let verdict = engine.evaluate(&ctx).await.unwrap();
+        assert!(matches!(verdict, RuleVerdict::Suppress(_)));
+    }
+
+    #[tokio::test]
+    async fn evaluate_with_trace_wasm_rule() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let rule = Rule::new(
+            "wasm-trace-test",
+            Expr::WasmCall {
+                plugin: "audit-plugin".into(),
+                function: "evaluate".into(),
+            },
+            RuleAction::Deny,
+        );
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(true));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let trace = engine
+            .evaluate_with_trace(&ctx, false, false)
+            .await
+            .unwrap();
+        assert_eq!(trace.verdict, "deny");
+        assert_eq!(trace.matched_rule.as_deref(), Some("wasm-trace-test"));
+        assert_eq!(trace.trace.len(), 1);
+
+        let entry = &trace.trace[0];
+        assert_eq!(entry.rule_name, "wasm-trace-test");
+        assert!(entry.condition_display.contains("wasm("));
+        assert!(matches!(entry.result, RuleTraceResult::Matched));
+    }
+
+    #[tokio::test]
+    async fn evaluate_with_trace_wasm_rule_not_matched() {
+        use acteon_wasm_runtime::MockWasmRuntime;
+
+        let rule = Rule::new(
+            "wasm-no-match",
+            Expr::WasmCall {
+                plugin: "checker".into(),
+                function: "evaluate".into(),
+            },
+            RuleAction::Deny,
+        );
+
+        let engine = RuleEngine::new(vec![rule]);
+        let action = test_action();
+        let store = MemoryStateStore::new();
+        let env = HashMap::new();
+        let runtime = std::sync::Arc::new(MockWasmRuntime::new(false));
+        let ctx = test_context(&action, &store, &env).with_wasm_runtime(runtime);
+
+        let trace = engine
+            .evaluate_with_trace(&ctx, false, false)
+            .await
+            .unwrap();
+        assert_eq!(trace.verdict, "allow");
+        assert!(trace.matched_rule.is_none());
+        // 2 entries: the evaluated rule + the synthetic "(default fallthrough)".
+        assert_eq!(trace.trace.len(), 2);
+
+        let entry = &trace.trace[0];
+        assert_eq!(entry.rule_name, "wasm-no-match");
+        assert!(matches!(entry.result, RuleTraceResult::NotMatched));
+
+        let fallthrough = &trace.trace[1];
+        assert_eq!(fallthrough.rule_name, "(default fallthrough)");
+        assert!(matches!(fallthrough.result, RuleTraceResult::Matched));
     }
 }

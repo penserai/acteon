@@ -427,7 +427,7 @@ Ranked by impact-to-effort ratio:
 | 28 | SOC2/HIPAA Audit Mode | Med-Large | Medium | Not started |
 | 29 | mTLS Support | Medium | Medium | Not started |
 | 30 | gRPC Ingress | Large | Low-Med | Not started |
-| 31 | WASM Rule Plugins | Large | Medium | Not started |
+| 31 | WASM Rule Plugins | Large | Medium | **DONE** |
 
 ---
 
@@ -537,8 +537,22 @@ Ranked by impact-to-effort ratio:
 - Coexists with REST on a separate port
 - Gateway dispatch pipeline is already transport-agnostic
 
-**31. WASM Rule Plugins**
-- Sandboxed Wasmtime/Wasmer runtime for user-supplied rule logic
-- Plugin interface: receives action JSON, returns verdict
-- Resource limits (memory, CPU time) per plugin invocation
-- Biggest effort on the roadmap; long-term extensibility play
+**31. WASM Rule Plugins** -- IMPLEMENTED
+
+**Implemented**: Sandboxed `Wasmtime`-based runtime for user-supplied WebAssembly
+rule plugins. Plugins receive action context as JSON and return a boolean verdict
+with optional message and metadata. Features include:
+- `acteon-wasm-runtime` crate with `WasmPluginRuntime` trait, `WasmPluginRegistry`,
+  `WasmPluginConfig`, and `WasmError` types
+- Per-plugin resource limits: memory (default 16 MB, max 256 MB) and CPU timeout
+  (default 100 ms, max 30 s)
+- `RuleSource::WasmPlugin` variant in rule engine with `wasm_plugin` and
+  `wasm_function` fields on `Rule`
+- YAML support (`source: wasm_plugin`) and CEL support (`wasm("name", "fn")`)
+- REST API at `/v1/wasm/plugins` (register, list, get, delete, test invocation)
+- Rule Playground trace integration showing WASM-specific details
+- Mock/test implementations (`MockWasmRuntime`, `FailingWasmRuntime`)
+- Admin UI page for plugin management
+- All 5 polyglot SDKs updated
+- Prometheus metrics: `wasm_invocations_total`, `wasm_invocation_errors`
+See [WASM Plugins](book/features/wasm-plugins.md) for full docs.

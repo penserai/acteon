@@ -409,6 +409,16 @@ export interface RuleTraceEntry {
   semantic_details?: SemanticMatchDetail
   modify_patch?: Record<string, unknown>
   modified_payload_preview?: Record<string, unknown>
+  wasm_details?: WasmTraceDetails
+}
+
+export interface WasmTraceDetails {
+  plugin: string
+  function: string
+  verdict: boolean
+  message?: string
+  duration_us: number
+  memory_used_bytes?: number
 }
 
 export interface EvaluateRulesResponse {
@@ -426,6 +436,36 @@ export interface EvaluateRulesResponse {
     effective_timezone?: string
   }
   modified_payload?: Record<string, unknown>
+}
+
+// ---- WASM Plugins ----
+
+export interface WasmPlugin {
+  name: string
+  description: string | null
+  enabled: boolean
+  memory_limit_bytes: number
+  timeout_ms: number
+  invocation_count: number
+  last_invoked_at: string | null
+  registered_at: string
+}
+
+export interface WasmPluginListResponse {
+  plugins: WasmPlugin[]
+  count: number
+}
+
+export interface WasmTestRequest {
+  function: string
+  input: Record<string, unknown>
+}
+
+export interface WasmTestResponse {
+  verdict: boolean
+  message: string | null
+  metadata: Record<string, unknown> | null
+  duration_us: number
 }
 
 // ---- Config ----

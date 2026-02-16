@@ -25,6 +25,8 @@ acteon-provider.workspace = true
 acteon-executor.workspace = true
 acteon-rules.workspace = true
 acteon-rules-yaml.workspace = true
+acteon-wasm-runtime.workspace = true
+acteon-llm.workspace = true
 acteon-client.workspace = true
 acteon-server.workspace = true
 
@@ -152,6 +154,10 @@ name = "provider_health_simulation"
 
 [[example]]
 name = "monitoring_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "wasm_plugin_simulation"
 # No required-features - uses in-memory backends
 
 [lints]

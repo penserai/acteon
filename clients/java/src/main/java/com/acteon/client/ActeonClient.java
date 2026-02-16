@@ -1472,6 +1472,152 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // WASM Plugins
+    // =========================================================================
+
+    /**
+     * Lists all registered WASM plugins.
+     */
+    public ListPluginsResponse listPlugins() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/plugins")
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
+                return ListPluginsResponse.fromMap(data);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list plugins");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Registers a new WASM plugin.
+     */
+    public WasmPlugin registerPlugin(RegisterPluginRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/plugins")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200 || response.statusCode() == 201) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
+                return WasmPlugin.fromMap(data);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets details of a registered WASM plugin by name.
+     */
+    public Optional<WasmPlugin> getPlugin(String name) throws ActeonException {
+        try {
+            String path = "/v1/plugins/" + URLEncoder.encode(name, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
+                return Optional.of(WasmPlugin.fromMap(data));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get plugin");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Unregisters (deletes) a WASM plugin by name.
+     */
+    public void deletePlugin(String name) throws ActeonException {
+        try {
+            String path = "/v1/plugins/" + URLEncoder.encode(name, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Plugin not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete plugin");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Test-invokes a WASM plugin.
+     */
+    public PluginInvocationResponse invokePlugin(String name, PluginInvocationRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            String path = "/v1/plugins/" + URLEncoder.encode(name, StandardCharsets.UTF_8) + "/invoke";
+            HttpRequest request = requestBuilder(path)
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
+                return PluginInvocationResponse.fromMap(data);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Plugin not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to invoke plugin: " + name);
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Chains (Task Chain Orchestration)
     // =========================================================================
 

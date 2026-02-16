@@ -48,6 +48,12 @@ from .models import (
     ListRetentionResponse,
     ProviderHealthStatus,
     ListProviderHealthResponse,
+    WasmPluginConfig,
+    WasmPlugin,
+    RegisterPluginRequest,
+    ListPluginsResponse,
+    PluginInvocationRequest,
+    PluginInvocationResponse,
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
@@ -1286,6 +1292,126 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to list provider health")
 
     # =========================================================================
+    # WASM Plugins
+    # =========================================================================
+
+    def list_plugins(self) -> "ListPluginsResponse":
+        """List all registered WASM plugins.
+
+        Returns:
+            List of registered plugins.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("GET", "/v1/plugins")
+
+        if response.status_code == 200:
+            return ListPluginsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list plugins")
+
+    def register_plugin(self, req: "RegisterPluginRequest") -> "WasmPlugin":
+        """Register a new WASM plugin.
+
+        Args:
+            req: The plugin registration request.
+
+        Returns:
+            The registered plugin.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/plugins", json=req.to_dict())
+
+        if response.status_code in (200, 201):
+            return WasmPlugin.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def get_plugin(self, name: str) -> Optional["WasmPlugin"]:
+        """Get details of a registered WASM plugin.
+
+        Args:
+            name: The plugin name.
+
+        Returns:
+            The plugin details, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/plugins/{name}")
+
+        if response.status_code == 200:
+            return WasmPlugin.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get plugin")
+
+    def delete_plugin(self, name: str) -> None:
+        """Unregister (delete) a WASM plugin.
+
+        Args:
+            name: The plugin name.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the plugin is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/plugins/{name}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete plugin")
+
+    def invoke_plugin(
+        self, name: str, req: "PluginInvocationRequest"
+    ) -> "PluginInvocationResponse":
+        """Test-invoke a WASM plugin.
+
+        Args:
+            name: The plugin name.
+            req: The invocation request with input data.
+
+        Returns:
+            The invocation response with verdict and optional metadata.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the plugin is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "POST", f"/v1/plugins/{name}/invoke", json=req.to_dict()
+        )
+
+        if response.status_code == 200:
+            return PluginInvocationResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
     # Chains
     # =========================================================================
 
@@ -2220,6 +2346,70 @@ class AsyncActeonClient:
             return ListProviderHealthResponse.from_dict(response.json())
         else:
             raise HttpError(response.status_code, "Failed to list provider health")
+
+    # =========================================================================
+    # WASM Plugins
+    # =========================================================================
+
+    async def list_plugins(self) -> "ListPluginsResponse":
+        """List all registered WASM plugins."""
+        response = await self._request("GET", "/v1/plugins")
+        if response.status_code == 200:
+            return ListPluginsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list plugins")
+
+    async def register_plugin(self, req: "RegisterPluginRequest") -> "WasmPlugin":
+        """Register a new WASM plugin."""
+        response = await self._request("POST", "/v1/plugins", json=req.to_dict())
+        if response.status_code in (200, 201):
+            return WasmPlugin.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def get_plugin(self, name: str) -> Optional["WasmPlugin"]:
+        """Get details of a registered WASM plugin."""
+        response = await self._request("GET", f"/v1/plugins/{name}")
+        if response.status_code == 200:
+            return WasmPlugin.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get plugin")
+
+    async def delete_plugin(self, name: str) -> None:
+        """Unregister (delete) a WASM plugin."""
+        response = await self._request("DELETE", f"/v1/plugins/{name}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete plugin")
+
+    async def invoke_plugin(
+        self, name: str, req: "PluginInvocationRequest"
+    ) -> "PluginInvocationResponse":
+        """Test-invoke a WASM plugin."""
+        response = await self._request(
+            "POST", f"/v1/plugins/{name}/invoke", json=req.to_dict()
+        )
+        if response.status_code == 200:
+            return PluginInvocationResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Plugin not found: {name}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
 
     # =========================================================================
     # Chains

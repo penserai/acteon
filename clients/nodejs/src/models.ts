@@ -1572,6 +1572,139 @@ export function parseListProviderHealthResponse(data: Record<string, unknown>): 
 }
 
 // =============================================================================
+// WASM Plugin Types
+// =============================================================================
+
+/** Configuration for a WASM plugin. */
+export interface WasmPluginConfig {
+  /** Maximum memory in bytes the plugin can use. */
+  memoryLimitBytes?: number;
+  /** Maximum execution time in milliseconds. */
+  timeoutMs?: number;
+  /** List of host functions the plugin is allowed to call. */
+  allowedHostFunctions?: string[];
+}
+
+/** Parse a WasmPluginConfig from API response. */
+export function parseWasmPluginConfig(data: Record<string, unknown>): WasmPluginConfig {
+  return {
+    memoryLimitBytes: data.memory_limit_bytes as number | undefined,
+    timeoutMs: data.timeout_ms as number | undefined,
+    allowedHostFunctions: data.allowed_host_functions as string[] | undefined,
+  };
+}
+
+/** A registered WASM plugin. */
+export interface WasmPlugin {
+  /** Plugin name (unique identifier). */
+  name: string;
+  /** Optional human-readable description. */
+  description?: string;
+  /** Plugin status (e.g., "active", "disabled"). */
+  status: string;
+  /** Whether the plugin is enabled. */
+  enabled: boolean;
+  /** Plugin resource configuration. */
+  config?: WasmPluginConfig;
+  /** When the plugin was registered. */
+  createdAt: string;
+  /** When the plugin was last updated. */
+  updatedAt: string;
+  /** Number of times the plugin has been invoked. */
+  invocationCount: number;
+}
+
+/** Parse a WasmPlugin from API response. */
+export function parseWasmPlugin(data: Record<string, unknown>): WasmPlugin {
+  const configData = data.config as Record<string, unknown> | undefined;
+  return {
+    name: data.name as string,
+    description: data.description as string | undefined,
+    status: data.status as string,
+    enabled: (data.enabled as boolean) ?? true,
+    config: configData ? parseWasmPluginConfig(configData) : undefined,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    invocationCount: (data.invocation_count as number) ?? 0,
+  };
+}
+
+/** Request to register a new WASM plugin. */
+export interface RegisterPluginRequest {
+  /** Plugin name (unique identifier). */
+  name: string;
+  /** Optional human-readable description. */
+  description?: string;
+  /** Base64-encoded WASM module bytes. */
+  wasmBytes?: string;
+  /** Path to the WASM file (server-side). */
+  wasmPath?: string;
+  /** Plugin resource configuration. */
+  config?: WasmPluginConfig;
+}
+
+/** Convert a RegisterPluginRequest to the API request format. */
+export function registerPluginRequestToApi(req: RegisterPluginRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = { name: req.name };
+  if (req.description !== undefined) result.description = req.description;
+  if (req.wasmBytes !== undefined) result.wasm_bytes = req.wasmBytes;
+  if (req.wasmPath !== undefined) result.wasm_path = req.wasmPath;
+  if (req.config !== undefined) {
+    const config: Record<string, unknown> = {};
+    if (req.config.memoryLimitBytes !== undefined) config.memory_limit_bytes = req.config.memoryLimitBytes;
+    if (req.config.timeoutMs !== undefined) config.timeout_ms = req.config.timeoutMs;
+    if (req.config.allowedHostFunctions !== undefined) config.allowed_host_functions = req.config.allowedHostFunctions;
+    result.config = config;
+  }
+  return result;
+}
+
+/** Response from listing WASM plugins. */
+export interface ListPluginsResponse {
+  plugins: WasmPlugin[];
+  count: number;
+}
+
+/** Parse a ListPluginsResponse from API response. */
+export function parseListPluginsResponse(data: Record<string, unknown>): ListPluginsResponse {
+  const items = data.plugins as Record<string, unknown>[];
+  return {
+    plugins: items.map(parseWasmPlugin),
+    count: data.count as number,
+  };
+}
+
+/** Request to test-invoke a WASM plugin. */
+export interface PluginInvocationRequest {
+  /** JSON input to pass to the plugin. */
+  input: Record<string, unknown>;
+  /** The function to invoke (default: "evaluate"). */
+  function?: string;
+}
+
+/** Response from test-invoking a WASM plugin. */
+export interface PluginInvocationResponse {
+  /** Whether the plugin evaluation returned true or false. */
+  verdict: boolean;
+  /** Optional message from the plugin. */
+  message?: string;
+  /** Optional structured metadata from the plugin. */
+  metadata?: Record<string, unknown>;
+  /** Execution time in milliseconds. */
+  durationMs?: number;
+}
+
+/** Parse a PluginInvocationResponse from API response. */
+export function parsePluginInvocationResponse(data: Record<string, unknown>): PluginInvocationResponse {
+  return {
+    verdict: data.verdict as boolean,
+    message: data.message as string | undefined,
+    metadata: data.metadata as Record<string, unknown> | undefined,
+    durationMs: data.duration_ms as number | undefined,
+  };
+}
+
+// =============================================================================
 // Provider Payload Helpers
 // =============================================================================
 

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
@@ -7,6 +8,7 @@ use chrono_tz::Tz;
 
 use acteon_core::Action;
 use acteon_state::StateStore;
+use acteon_wasm_runtime::WasmPluginRuntime;
 
 use crate::error::RuleError;
 
@@ -105,6 +107,40 @@ pub trait EmbeddingEvalSupport: Send + Sync + std::fmt::Debug {
     async fn similarity(&self, text: &str, topic: &str) -> Result<f64, RuleError>;
 }
 
+/// Lightweight counters for WASM plugin invocations during rule evaluation.
+///
+/// Shared via `Arc` so the gateway can read totals after evaluation completes
+/// and increment its own metrics accordingly.
+#[derive(Debug, Default)]
+pub struct WasmEvalCounters {
+    /// Total WASM plugin invocations (successful or not).
+    pub invocations: AtomicU64,
+    /// WASM plugin invocations that returned an error.
+    pub errors: AtomicU64,
+}
+
+impl WasmEvalCounters {
+    /// Record a successful WASM invocation.
+    pub fn record_invocation(&self) {
+        self.invocations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a WASM invocation error.
+    pub fn record_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Read the invocation count.
+    pub fn invocation_count(&self) -> u64 {
+        self.invocations.load(Ordering::Relaxed)
+    }
+
+    /// Read the error count.
+    pub fn error_count(&self) -> u64 {
+        self.errors.load(Ordering::Relaxed)
+    }
+}
+
 /// The evaluation context supplied to the rule engine when evaluating expressions.
 ///
 /// It provides access to the action being evaluated, the state store for
@@ -129,10 +165,20 @@ pub struct EvalContext<'a> {
     /// context only allocate one `HashMap`.  Uses `OnceLock` (not `OnceCell`)
     /// because `&EvalContext` is held across `.await` points, requiring `Sync`.
     pub(crate) time_map_cache: OnceLock<super::value::Value>,
+    /// Optional WASM plugin runtime for evaluating `WasmCall` expressions.
+    ///
+    /// When set, `Expr::WasmCall` nodes can invoke registered WASM plugins as
+    /// part of rule condition evaluation.
+    pub wasm_runtime: Option<Arc<dyn WasmPluginRuntime>>,
     /// Optional tracker for recording which keys are accessed during evaluation.
     ///
     /// Only populated in playground/trace mode to avoid overhead in the hot path.
     pub access_tracker: Option<Arc<AccessTracker>>,
+    /// Optional counters for WASM plugin invocations during evaluation.
+    ///
+    /// When set, `eval_wasm_call` increments these counters so the gateway
+    /// can propagate totals to its own metrics after evaluation completes.
+    pub wasm_counters: Option<Arc<WasmEvalCounters>>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -150,7 +196,9 @@ impl<'a> EvalContext<'a> {
             embedding: None,
             timezone: None,
             time_map_cache: OnceLock::new(),
+            wasm_runtime: None,
             access_tracker: None,
+            wasm_counters: None,
         }
     }
 
@@ -177,10 +225,24 @@ impl<'a> EvalContext<'a> {
         self
     }
 
+    /// Set the WASM plugin runtime for evaluating `WasmCall` expressions.
+    #[must_use]
+    pub fn with_wasm_runtime(mut self, runtime: Arc<dyn WasmPluginRuntime>) -> Self {
+        self.wasm_runtime = Some(runtime);
+        self
+    }
+
     /// Set the access tracker for recording key accesses.
     #[must_use]
     pub fn with_access_tracker(mut self, tracker: Arc<AccessTracker>) -> Self {
         self.access_tracker = Some(tracker);
+        self
+    }
+
+    /// Set the WASM evaluation counters for metrics propagation.
+    #[must_use]
+    pub fn with_wasm_counters(mut self, counters: Arc<WasmEvalCounters>) -> Self {
+        self.wasm_counters = Some(counters);
         self
     }
 }

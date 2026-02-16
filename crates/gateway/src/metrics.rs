@@ -70,6 +70,10 @@ pub struct GatewayMetrics {
     pub retention_skipped_compliance: AtomicU64,
     /// Retention reaper errors.
     pub retention_errors: AtomicU64,
+    /// WASM plugin invocations.
+    pub wasm_invocations: AtomicU64,
+    /// WASM plugin invocation errors.
+    pub wasm_errors: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -219,6 +223,26 @@ impl GatewayMetrics {
         self.retention_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the WASM invocations counter.
+    pub fn increment_wasm_invocations(&self) {
+        self.wasm_invocations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Add `n` to the WASM invocations counter.
+    pub fn add_wasm_invocations(&self, n: u64) {
+        self.wasm_invocations.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Increment the WASM errors counter.
+    pub fn increment_wasm_errors(&self) {
+        self.wasm_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Add `n` to the WASM errors counter.
+    pub fn add_wasm_errors(&self, n: u64) {
+        self.wasm_errors.fetch_add(n, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -251,6 +275,8 @@ impl GatewayMetrics {
             retention_deleted_state: self.retention_deleted_state.load(Ordering::Relaxed),
             retention_skipped_compliance: self.retention_skipped_compliance.load(Ordering::Relaxed),
             retention_errors: self.retention_errors.load(Ordering::Relaxed),
+            wasm_invocations: self.wasm_invocations.load(Ordering::Relaxed),
+            wasm_errors: self.wasm_errors.load(Ordering::Relaxed),
         }
     }
 }
@@ -316,6 +342,10 @@ pub struct MetricsSnapshot {
     pub retention_skipped_compliance: u64,
     /// Retention reaper errors.
     pub retention_errors: u64,
+    /// WASM plugin invocations.
+    pub wasm_invocations: u64,
+    /// WASM plugin invocation errors.
+    pub wasm_errors: u64,
 }
 
 /// Maximum number of latency samples retained per provider.
@@ -665,6 +695,8 @@ mod tests {
         assert_eq!(snap.retention_deleted_state, 0);
         assert_eq!(snap.retention_skipped_compliance, 0);
         assert_eq!(snap.retention_errors, 0);
+        assert_eq!(snap.wasm_invocations, 0);
+        assert_eq!(snap.wasm_errors, 0);
     }
 
     #[test]
@@ -700,6 +732,8 @@ mod tests {
         m.increment_retention_deleted_state();
         m.increment_retention_skipped_compliance();
         m.increment_retention_errors();
+        m.increment_wasm_invocations();
+        m.increment_wasm_errors();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -731,6 +765,8 @@ mod tests {
         assert_eq!(snap.retention_deleted_state, 1);
         assert_eq!(snap.retention_skipped_compliance, 1);
         assert_eq!(snap.retention_errors, 1);
+        assert_eq!(snap.wasm_invocations, 1);
+        assert_eq!(snap.wasm_errors, 1);
     }
 
     #[test]

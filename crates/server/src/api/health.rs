@@ -52,6 +52,8 @@ fn build_metrics_response(
         retention_deleted_state: snap.retention_deleted_state,
         retention_skipped_compliance: snap.retention_skipped_compliance,
         retention_errors: snap.retention_errors,
+        wasm_invocations: snap.wasm_invocations,
+        wasm_errors: snap.wasm_errors,
         embedding,
     }
 }

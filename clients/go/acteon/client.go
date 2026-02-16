@@ -1310,6 +1310,125 @@ func (c *Client) ListProviderHealth(ctx context.Context) (*ListProviderHealthRes
 }
 
 // =============================================================================
+// WASM Plugins
+// =============================================================================
+
+// ListPlugins lists all registered WASM plugins.
+func (c *Client) ListPlugins(ctx context.Context) (*ListPluginsResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/plugins", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list plugins"}
+	}
+
+	var result ListPluginsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// RegisterPlugin registers a new WASM plugin.
+func (c *Client) RegisterPlugin(ctx context.Context, req *RegisterPluginRequest) (*WasmPlugin, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/plugins", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+		var result WasmPlugin
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to register plugin"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// GetPlugin gets details of a registered WASM plugin by name.
+func (c *Client) GetPlugin(ctx context.Context, name string) (*WasmPlugin, error) {
+	path := fmt.Sprintf("/v1/plugins/%s", name)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get plugin"}
+	}
+
+	var result WasmPlugin
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// DeletePlugin unregisters (deletes) a WASM plugin by name.
+func (c *Client) DeletePlugin(ctx context.Context, name string) error {
+	path := fmt.Sprintf("/v1/plugins/%s", name)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Plugin not found: %s", name)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete plugin"}
+}
+
+// InvokePlugin test-invokes a WASM plugin.
+func (c *Client) InvokePlugin(ctx context.Context, name string, req *PluginInvocationRequest) (*PluginInvocationResponse, error) {
+	path := fmt.Sprintf("/v1/plugins/%s/invoke", name)
+
+	resp, err := c.doRequest(ctx, http.MethodPost, path, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK {
+		var result PluginInvocationResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Plugin not found: %s", name)}
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Failed to invoke plugin: %s", name)}
+}
+
+// =============================================================================
 // Rule Evaluation (Rule Playground)
 // =============================================================================
 

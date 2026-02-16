@@ -972,6 +972,58 @@ type ListProviderHealthResponse struct {
 }
 
 // =============================================================================
+// WASM Plugin Types
+// =============================================================================
+
+// WasmPluginConfig holds resource configuration for a WASM plugin.
+type WasmPluginConfig struct {
+	MemoryLimitBytes     *int64   `json:"memory_limit_bytes,omitempty"`
+	TimeoutMs            *int64   `json:"timeout_ms,omitempty"`
+	AllowedHostFunctions []string `json:"allowed_host_functions,omitempty"`
+}
+
+// WasmPlugin represents a registered WASM plugin.
+type WasmPlugin struct {
+	Name            string            `json:"name"`
+	Description     *string           `json:"description,omitempty"`
+	Status          string            `json:"status"`
+	Enabled         bool              `json:"enabled"`
+	Config          *WasmPluginConfig `json:"config,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
+	InvocationCount int64             `json:"invocation_count"`
+}
+
+// RegisterPluginRequest is the request to register a new WASM plugin.
+type RegisterPluginRequest struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	WasmBytes   string            `json:"wasm_bytes,omitempty"`
+	WasmPath    string            `json:"wasm_path,omitempty"`
+	Config      *WasmPluginConfig `json:"config,omitempty"`
+}
+
+// ListPluginsResponse is the response from listing WASM plugins.
+type ListPluginsResponse struct {
+	Plugins []WasmPlugin `json:"plugins"`
+	Count   int          `json:"count"`
+}
+
+// PluginInvocationRequest is the request to test-invoke a WASM plugin.
+type PluginInvocationRequest struct {
+	Function string         `json:"function,omitempty"`
+	Input    map[string]any `json:"input"`
+}
+
+// PluginInvocationResponse is the response from test-invoking a WASM plugin.
+type PluginInvocationResponse struct {
+	Verdict    bool           `json:"verdict"`
+	Message    *string        `json:"message,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	DurationMs *float64       `json:"duration_ms,omitempty"`
+}
+
+// =============================================================================
 // Provider Payload Helpers
 // =============================================================================
 

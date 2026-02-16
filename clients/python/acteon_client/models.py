@@ -1781,6 +1781,175 @@ def teams_adaptive_card_payload(card: dict[str, Any]) -> dict[str, Any]:
     return {"adaptive_card": card}
 
 
+# =============================================================================
+# WASM Plugin Types
+# =============================================================================
+
+
+@dataclass
+class WasmPluginConfig:
+    """Configuration for a WASM plugin.
+
+    Attributes:
+        memory_limit_bytes: Maximum memory in bytes the plugin can use.
+        timeout_ms: Maximum execution time in milliseconds.
+        allowed_host_functions: List of host functions the plugin may call.
+    """
+    memory_limit_bytes: Optional[int] = None
+    timeout_ms: Optional[int] = None
+    allowed_host_functions: Optional[List[str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WasmPluginConfig":
+        return cls(
+            memory_limit_bytes=data.get("memory_limit_bytes"),
+            timeout_ms=data.get("timeout_ms"),
+            allowed_host_functions=data.get("allowed_host_functions"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {}
+        if self.memory_limit_bytes is not None:
+            result["memory_limit_bytes"] = self.memory_limit_bytes
+        if self.timeout_ms is not None:
+            result["timeout_ms"] = self.timeout_ms
+        if self.allowed_host_functions is not None:
+            result["allowed_host_functions"] = self.allowed_host_functions
+        return result
+
+
+@dataclass
+class WasmPlugin:
+    """A registered WASM plugin.
+
+    Attributes:
+        name: Plugin name (unique identifier).
+        status: Plugin status (e.g., "active", "disabled").
+        enabled: Whether the plugin is enabled.
+        created_at: When the plugin was registered.
+        updated_at: When the plugin was last updated.
+        invocation_count: Number of times the plugin has been invoked.
+        description: Optional human-readable description.
+        config: Plugin resource configuration.
+    """
+    name: str
+    status: str
+    enabled: bool
+    created_at: str
+    updated_at: str
+    invocation_count: int = 0
+    description: Optional[str] = None
+    config: Optional[WasmPluginConfig] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WasmPlugin":
+        config_data = data.get("config")
+        return cls(
+            name=data["name"],
+            status=data["status"],
+            enabled=data.get("enabled", True),
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            invocation_count=data.get("invocation_count", 0),
+            description=data.get("description"),
+            config=(
+                WasmPluginConfig.from_dict(config_data)
+                if config_data is not None
+                else None
+            ),
+        )
+
+
+@dataclass
+class RegisterPluginRequest:
+    """Request to register a new WASM plugin.
+
+    Attributes:
+        name: Plugin name (unique identifier).
+        description: Optional human-readable description.
+        wasm_bytes: Base64-encoded WASM module bytes.
+        wasm_path: Path to the WASM file (server-side).
+        config: Plugin resource configuration.
+    """
+    name: str
+    description: Optional[str] = None
+    wasm_bytes: Optional[str] = None
+    wasm_path: Optional[str] = None
+    config: Optional[WasmPluginConfig] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {"name": self.name}
+        if self.description is not None:
+            result["description"] = self.description
+        if self.wasm_bytes is not None:
+            result["wasm_bytes"] = self.wasm_bytes
+        if self.wasm_path is not None:
+            result["wasm_path"] = self.wasm_path
+        if self.config is not None:
+            result["config"] = self.config.to_dict()
+        return result
+
+
+@dataclass
+class ListPluginsResponse:
+    """Response from listing WASM plugins."""
+    plugins: list[WasmPlugin]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListPluginsResponse":
+        return cls(
+            plugins=[WasmPlugin.from_dict(p) for p in data["plugins"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class PluginInvocationRequest:
+    """Request to test-invoke a WASM plugin.
+
+    Attributes:
+        input: JSON input to pass to the plugin.
+        function: The function to invoke (default: "evaluate").
+    """
+    input: Dict[str, Any]
+    function: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {"input": self.input}
+        if self.function is not None:
+            result["function"] = self.function
+        return result
+
+
+@dataclass
+class PluginInvocationResponse:
+    """Response from test-invoking a WASM plugin.
+
+    Attributes:
+        verdict: Whether the plugin evaluation returned true or false.
+        message: Optional message from the plugin.
+        metadata: Optional structured metadata from the plugin.
+        duration_ms: Execution time in milliseconds.
+    """
+    verdict: bool
+    message: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    duration_ms: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PluginInvocationResponse":
+        return cls(
+            verdict=data["verdict"],
+            message=data.get("message"),
+            metadata=data.get("metadata"),
+            duration_ms=data.get("duration_ms"),
+        )
+
+
 def discord_message_payload(
     *,
     content: Optional[str] = None,

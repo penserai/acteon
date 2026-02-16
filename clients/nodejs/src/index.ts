@@ -80,4 +80,10 @@ export {
   type SseEvent,
   type SubscribeOptions,
   type StreamOptions,
+  type WasmPluginConfig,
+  type WasmPlugin,
+  type RegisterPluginRequest,
+  type ListPluginsResponse,
+  type PluginInvocationRequest,
+  type PluginInvocationResponse,
 } from "./models.js";

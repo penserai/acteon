@@ -25,9 +25,10 @@ impl Role {
     /// Check whether this role has a given permission.
     pub fn has_permission(self, perm: Permission) -> bool {
         match perm {
-            Permission::Dispatch | Permission::RulesManage | Permission::CircuitBreakerManage => {
-                matches!(self, Self::Admin | Self::Operator)
-            }
+            Permission::Dispatch
+            | Permission::RulesManage
+            | Permission::CircuitBreakerManage
+            | Permission::PluginsManage => matches!(self, Self::Admin | Self::Operator),
             Permission::AuditRead
             | Permission::RulesRead
             | Permission::RulesTest
@@ -55,5 +56,6 @@ pub enum Permission {
     RulesRead,
     RulesTest,
     CircuitBreakerManage,
+    PluginsManage,
     StreamSubscribe,
 }

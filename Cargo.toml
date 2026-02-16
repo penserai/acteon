@@ -31,6 +31,9 @@ members = [
     "crates/rules/yaml",
     "crates/rules/cel",
 
+    # WASM runtime
+    "crates/wasm-runtime",
+
     # LLM
     "crates/llm",
 
@@ -89,6 +92,9 @@ acteon-audit-elasticsearch = { path = "crates/audit/elasticsearch" }
 acteon-rules = { path = "crates/rules/rules" }
 acteon-rules-yaml = { path = "crates/rules/yaml" }
 acteon-rules-cel = { path = "crates/rules/cel" }
+
+# WASM runtime
+acteon-wasm-runtime = { path = "crates/wasm-runtime" }
 
 # LLM
 acteon-llm = { path = "crates/llm" }
@@ -219,6 +225,9 @@ croner = "2"
 # MCP
 rmcp = { version = "0.15", features = ["server", "transport-io"] }
 schemars = "1"
+
+# WASM
+wasmtime = "29"
 
 # Benchmarking
 criterion = { version = "0.5", features = ["async_tokio"] }

@@ -62,7 +62,8 @@ use acteon_core::{
         (name = "Recurring Actions", description = "Cron-scheduled recurring action management"),
         (name = "Quotas", description = "Tenant quota policy management"),
         (name = "Retention", description = "Per-tenant data retention policy management"),
-        (name = "Provider Health", description = "Per-provider health and performance monitoring")
+        (name = "Provider Health", description = "Per-provider health and performance monitoring"),
+        (name = "Plugins", description = "WASM plugin management")
     ),
     paths(
         super::health::health,
@@ -116,6 +117,8 @@ use acteon_core::{
         super::retention::delete_retention,
         super::provider_health::list_provider_health,
         super::prometheus::prometheus_metrics,
+        super::plugins::list_plugins,
+        super::plugins::unregister_plugin,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -143,6 +146,7 @@ use acteon_core::{
         CreateRetentionRequest, UpdateRetentionRequest, RetentionResponse,
         ListRetentionResponse,
         ProviderHealthStatus, ListProviderHealthResponse,
+        super::plugins::PluginSummary, super::plugins::ListPluginsResponse,
     ))
 )]
 pub struct ApiDoc;

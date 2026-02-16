@@ -47,6 +47,7 @@ acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-embedding = { workspace = true }
 acteon-crypto = { workspace = true }
+acteon-wasm-runtime = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 futures = { workspace = true }

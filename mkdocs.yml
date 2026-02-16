@@ -128,6 +128,12 @@ nav:
     - Audit Trail: features/audit-trail.md
     - Circuit Breaker: features/circuit-breaker.md
     - Recurring Actions: features/recurring-actions.md
+    - Tenant Quotas: features/tenant-quotas.md
+    - Data Retention: features/data-retention.md
+    - Rule Playground: features/rule-playground.md
+    - Provider Health: features/provider-health.md
+    - Grafana Dashboards: features/grafana-dashboards.md
+    - WASM Plugins: features/wasm-plugins.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md

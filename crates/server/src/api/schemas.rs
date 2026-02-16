@@ -101,6 +101,12 @@ pub struct MetricsResponse {
     /// Retention reaper errors.
     #[schema(example = 0)]
     pub retention_errors: u64,
+    /// WASM plugin invocations.
+    #[schema(example = 0)]
+    pub wasm_invocations: u64,
+    /// WASM plugin invocation errors.
+    #[schema(example = 0)]
+    pub wasm_errors: u64,
     /// Embedding cache metrics (present when embedding provider is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingMetricsResponse>,
