@@ -4,9 +4,9 @@ Acteon ships with pre-built Grafana dashboards and a Prometheus scrape configura
 
 No external dependencies are required beyond Prometheus and Grafana. The gateway exposes a lightweight Prometheus text-format endpoint (`GET /metrics/prometheus`) with zero third-party crate overhead.
 
-![Acteon Overview Dashboard](../../images/grafana-overview.png)
+![Acteon Overview Dashboard](../images/grafana-overview.png)
 
-![Acteon Provider Health Dashboard](../../images/grafana-provider-health.png)
+![Acteon Provider Health Dashboard](../images/grafana-provider-health.png)
 
 ## Quick Start
 

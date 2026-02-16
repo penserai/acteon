@@ -215,5 +215,4 @@ Sub-chains can be nested (a sub-chain can itself contain sub-chain steps). The D
 
 ## See Also
 
-- [Task Chains](chains.md) — base chain concepts and configuration
-- [Conditional Branching](chains.md#conditional-branching) — branching works with sub-chain steps too
+- [Task Chains](chains.md) — base chain concepts, configuration, and failure policies
