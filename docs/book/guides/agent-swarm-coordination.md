@@ -267,26 +267,146 @@ cannot delete repositories.
 ## 3. Prompt Injection Prevention
 
 AI agents that process user input are vulnerable to prompt injection attacks
-where malicious instructions are embedded in data. Acteon provides **three
+where malicious instructions are embedded in data. Acteon provides **four
 layers of defense** that run in the dispatch pipeline before any action reaches
-a provider.
+a provider -- from fast deterministic checks to expensive semantic analysis.
 
 ```mermaid
 flowchart TD
-    A[Agent dispatches action] --> B{WASM Plugin}
-    B -->|Clean| C{LLM Guardrail}
-    B -->|Injection detected| D[Suppress]
-    C -->|Safe| E{Semantic Routing}
-    C -->|Suspicious| F[Route to review queue]
+    A[Agent dispatches action] --> B{Deterministic Rules}
+    B -->|Blocked| X[Suppress]
+    B -->|Clean| C{WASM Plugin}
+    C -->|Injection detected| X
+    C -->|Clean| D{LLM Guardrail}
+    D -->|Suspicious| F[Route to review queue]
+    D -->|Safe| E{Semantic Routing}
     E -->|Normal topic| G[Execute]
-    E -->|Anomalous topic| H[Flag for review]
+    E -->|Anomalous topic| F
 ```
 
-### Layer 1: WASM Plugin for Pattern Detection
+### Layer 0: Deterministic Rules
 
-A lightweight WASM plugin scans action payloads for common injection patterns
-(role switching, instruction overrides, encoded payloads) at near-native speed.
-This catches the obvious attacks before the more expensive LLM check.
+The fastest and cheapest defense layer. Simple field-matching rules use
+exact match, substring, regex, and list operators to block known-bad patterns
+with zero external dependencies -- no WASM runtime, no LLM API, no embedding
+service. These rules evaluate in microseconds and should catch the bulk of
+trivial attacks before more expensive layers run.
+
+```yaml title="rules/injection-defense.yaml"
+rules:
+  # ── Block known injection phrases ────────────────
+  - name: block-injection-phrases
+    priority: 1
+    description: "Block payloads containing common injection strings"
+    condition:
+      all:
+        - field: action.namespace
+          eq: "agent-swarm"
+        - any:
+            - field: action.payload.query
+              contains: "ignore previous instructions"
+            - field: action.payload.query
+              contains: "ignore all prior"
+            - field: action.payload.query
+              contains: "you are now"
+            - field: action.payload.query
+              contains: "system prompt:"
+            - field: action.payload.message
+              contains: "ignore previous instructions"
+            - field: action.payload.message
+              contains: "you are now"
+    action:
+      type: suppress
+      reason: "Known injection phrase detected"
+
+  # ── Block encoded payload attacks ────────────────
+  - name: block-encoded-injections
+    priority: 1
+    description: "Block base64-encoded or hex-encoded injection attempts"
+    condition:
+      all:
+        - field: action.namespace
+          eq: "agent-swarm"
+        - any:
+            - field: action.payload.query
+              regex: "base64[:\\.\\s]|\\\\x[0-9a-fA-F]{2}"
+            - field: action.payload.message
+              regex: "base64[:\\.\\s]|\\\\x[0-9a-fA-F]{2}"
+            - field: action.payload.command
+              regex: "base64[:\\.\\s]|\\\\x[0-9a-fA-F]{2}"
+    action:
+      type: suppress
+      reason: "Encoded payload injection attempt"
+
+  # ── Block dangerous shell patterns ───────────────
+  - name: block-shell-injection
+    priority: 1
+    description: "Block shell metacharacters and command chaining in payloads"
+    condition:
+      all:
+        - field: action.namespace
+          eq: "agent-swarm"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          regex: "(;|&&|\\|\\||\\$\\(|`).*(curl|wget|nc|ncat|bash|sh|python)"
+    action:
+      type: suppress
+      reason: "Shell injection pattern detected"
+
+  # ── Block sensitive path access ──────────────────
+  - name: block-sensitive-paths
+    priority: 1
+    description: "Prevent agents from accessing credential and config files"
+    condition:
+      all:
+        - field: action.namespace
+          eq: "agent-swarm"
+        - any:
+            - field: action.payload.file_path
+              regex: "(\\.env|\\.ssh/|credentials|\\bsecrets\\.)"
+            - field: action.payload.command
+              regex: "cat.*(\\. env|\\.ssh/|/etc/shadow|credentials)"
+    action:
+      type: suppress
+      reason: "Sensitive path access blocked"
+
+  # ── Block suspicious URL exfiltration ────────────
+  - name: block-data-exfiltration
+    priority: 1
+    description: "Block curl/wget to unknown external hosts"
+    condition:
+      all:
+        - field: action.namespace
+          eq: "agent-swarm"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          regex: "(curl|wget|fetch)\\s.*https?://"
+        - not:
+            field: action.payload.command
+            regex: "https?://(localhost|127\\.0\\.0\\.1|internal\\.|api\\.github\\.com)"
+    action:
+      type: suppress
+      reason: "Outbound HTTP to unknown host blocked"
+```
+
+!!! tip "Why Deterministic Rules Come First"
+    These rules cost nothing to evaluate -- no API calls, no WASM fuel, no
+    LLM tokens. By filtering known-bad patterns at priority 1, you avoid
+    paying for WASM or LLM evaluation on trivially malicious payloads. The
+    remaining layers handle the attacks that are too sophisticated for simple
+    string matching.
+
+See [YAML Rule Reference](../api/rule-reference.md) for the complete list of
+operators (`eq`, `contains`, `starts_with`, `regex`, `in`, `gt`, `lt`, etc.)
+and field paths.
+
+### Layer 1: WASM Plugin for Advanced Pattern Detection
+
+For patterns too complex for simple field matching -- multi-field correlation,
+stateful detection, or custom scoring models -- a WASM plugin provides
+near-native speed with full sandboxing.
 
 Critically, WASM plugins run inside a **strict sandbox** powered by Wasmtime.
 Each plugin invocation has no access to the filesystem, network, or host
@@ -374,8 +494,9 @@ guide, including resource limit configuration and module import validation.
 
 ### Layer 2: LLM Guardrail for Semantic Analysis
 
-For attacks that evade pattern matching (paraphrased instructions, multi-turn
-manipulation), an LLM guardrail provides semantic analysis:
+For attacks that evade both deterministic rules and WASM pattern matching
+(paraphrased instructions, multi-turn manipulation), an LLM guardrail provides
+deep semantic analysis:
 
 ```toml title="acteon.toml"
 [llm_guardrail]
@@ -402,14 +523,15 @@ max_tokens = 256
 ```
 
 !!! warning "Cost Considerations"
-    LLM guardrails add latency and cost per evaluation. Use the WASM plugin
-    layer to filter obvious attacks first, and only send surviving actions to
-    the LLM. The three-level [LLM policy resolution](../features/llm-guardrails.md)
-    lets you configure different policies per action type.
+    LLM guardrails add latency and cost per evaluation. Deterministic rules
+    and the WASM plugin layer filter the obvious attacks first, so only
+    surviving actions reach the LLM. The three-level
+    [LLM policy resolution](../features/llm-guardrails.md) lets you configure
+    different policies per action type.
 
 ### Layer 3: Semantic Routing for Anomaly Detection
 
-Semantic routing catches off-topic actions that slip through both layers. If a
+Semantic routing catches off-topic actions that slip through all previous layers. If a
 "researcher" agent suddenly starts dispatching actions that are semantically
 close to "infrastructure modification" or "credential access," the rule fires:
 
@@ -1500,7 +1622,7 @@ flowchart TB
 | **Agent runtime** | Single Node.js process, Agent SDK swarms | Cloud VMs, multi-agent planner/executor | Claude Code (local), Claude Agent SDK for swarms |
 | **Sandboxing** | Docker containers (opt-in via NanoClaw) | Cloud VM per session (no self-host) | Acteon WASM sandbox (in-process, no FS/network) + optional Docker |
 | **Permission model** | Layered policy: tool profiles, group policy, allowlists | Prompt-level guardrails, role-based page access | Acteon rule engine: deny-by-default capability matrix per agent |
-| **Prompt injection defense** | Application-level -- model-last security posture | Prompt-level ethical guardrails | Three layers: WASM pattern scan + LLM semantic analysis + semantic routing |
+| **Prompt injection defense** | Application-level -- model-last security posture | Prompt-level ethical guardrails | Four layers: deterministic rules + WASM scan + LLM analysis + semantic routing |
 | **Rate limiting** | No built-in per-agent quotas | No user-configurable rate limits | Per-tenant quotas + per-action-type throttle rules |
 | **Human approval gates** | No built-in approval workflow | No built-in approval workflow | HMAC-signed approve/reject URLs with configurable TTLs |
 | **Action audit trail** | Conversation logs, workspace files | Session history (cloud-only) | Structured audit with outcome tracking, payload storage, field redaction |
@@ -1841,6 +1963,87 @@ single deployment.
           type: suppress
           reason: "Operation is permanently forbidden for agents"
 
+      # ── Injection defense: deterministic rules ───────
+      - name: block-injection-phrases
+        priority: 1
+        condition:
+          all:
+            - field: action.namespace
+              eq: "agent-swarm"
+            - any:
+                - field: action.payload.query
+                  contains: "ignore previous instructions"
+                - field: action.payload.query
+                  contains: "you are now"
+                - field: action.payload.message
+                  contains: "ignore previous instructions"
+                - field: action.payload.message
+                  contains: "you are now"
+        action:
+          type: suppress
+          reason: "Known injection phrase detected"
+
+      - name: block-encoded-injections
+        priority: 1
+        condition:
+          all:
+            - field: action.namespace
+              eq: "agent-swarm"
+            - any:
+                - field: action.payload.query
+                  regex: "base64[:\\.\\s]|\\\\x[0-9a-fA-F]{2}"
+                - field: action.payload.message
+                  regex: "base64[:\\.\\s]|\\\\x[0-9a-fA-F]{2}"
+        action:
+          type: suppress
+          reason: "Encoded payload injection attempt"
+
+      - name: block-shell-injection
+        priority: 1
+        condition:
+          all:
+            - field: action.namespace
+              eq: "agent-swarm"
+            - field: action.action_type
+              eq: "execute_command"
+            - field: action.payload.command
+              regex: "(;|&&|\\|\\||\\$\\(|`).*(curl|wget|nc|bash|sh|python)"
+        action:
+          type: suppress
+          reason: "Shell injection pattern detected"
+
+      - name: block-sensitive-paths
+        priority: 1
+        condition:
+          all:
+            - field: action.namespace
+              eq: "agent-swarm"
+            - any:
+                - field: action.payload.file_path
+                  regex: "(\\.env|\\.ssh/|credentials|\\bsecrets\\.)"
+                - field: action.payload.command
+                  regex: "cat.*(\\. env|\\.ssh/|/etc/shadow|credentials)"
+        action:
+          type: suppress
+          reason: "Sensitive path access blocked"
+
+      - name: block-data-exfiltration
+        priority: 1
+        condition:
+          all:
+            - field: action.namespace
+              eq: "agent-swarm"
+            - field: action.action_type
+              eq: "execute_command"
+            - field: action.payload.command
+              regex: "(curl|wget|fetch)\\s.*https?://"
+            - not:
+                field: action.payload.command
+                regex: "https?://(localhost|127\\.0\\.0\\.1|internal\\.|api\\.github\\.com)"
+        action:
+          type: suppress
+          reason: "Outbound HTTP to unknown host blocked"
+
       # ── Injection defense: WASM ──────────────────────
       - name: wasm-injection-scan
         priority: 1
@@ -2018,9 +2221,11 @@ single deployment.
   own tenant. This gives you per-agent audit trails, quotas, and rules without
   additional configuration.
 
-- **Layer your defenses.** No single check catches everything. Combine WASM
-  pattern scanning (fast, cheap) with LLM semantic analysis (thorough,
-  expensive) and semantic routing (anomaly detection).
+- **Layer your defenses.** No single check catches everything. Start with
+  deterministic rules (free, microseconds) for known-bad patterns, then WASM
+  plugins (fast, sandboxed) for complex logic, then LLM guardrails (thorough,
+  expensive) for semantic analysis, and finally semantic routing for anomaly
+  detection.
 
 - **Set meaningful dedup keys.** Use `{agent_id}-{task_id}-{action_type}` to
   prevent duplicate actions from retries while allowing different agents or
