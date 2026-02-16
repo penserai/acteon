@@ -1,0 +1,83 @@
+# Agent Swarm Coordination example.
+#
+# In-memory state + Elasticsearch audit.
+# Discord webhook for agent completion notifications.
+#
+# Start Elasticsearch:
+#   docker compose --profile elasticsearch up -d
+#
+# Start Acteon:
+#   cargo run -p acteon-server -- -c examples/agent-swarm-coordination/acteon.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# HMAC secret for signing approval URLs (hex-encoded, 256-bit).
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# ─── State (in-memory, no external deps) ───────────────────────────────────
+[state]
+backend = "memory"
+
+# ─── Audit (Elasticsearch) ─────────────────────────────────────────────────
+[audit]
+enabled = true
+backend = "elasticsearch"
+url = "http://localhost:9200"
+prefix = "acteon_agent_"
+store_payload = true
+ttl_seconds = 604800   # 7 days
+
+[audit.redact]
+enabled = true
+fields = ["api_key", "authorization", "webhook_url"]
+placeholder = "[REDACTED]"
+
+# ─── Providers ──────────────────────────────────────────────────────────────
+
+# Claude Code tool execution (log provider -- mock, no real execution)
+[[providers]]
+name = "claude-code"
+type = "log"
+
+# Discord notifications (real webhook -- set DISCORD_WEBHOOK_URL env var)
+[[providers]]
+name = "discord"
+type = "discord"
+webhook_url = "${DISCORD_WEBHOOK_URL}"
+
+# Security review queue (log provider -- in production, route to a real queue)
+[[providers]]
+name = "security-review-queue"
+type = "log"
+
+# ─── Rules ──────────────────────────────────────────────────────────────────
+[rules]
+directory = "examples/agent-swarm-coordination/rules"
+
+# ─── Executor ───────────────────────────────────────────────────────────────
+[executor]
+max_retries = 2
+timeout_seconds = 15
+max_concurrent = 10
+
+# ─── Circuit Breaker ───────────────────────────────────────────────────────
+[circuit_breaker]
+enabled = true
+failure_threshold = 3
+success_threshold = 1
+recovery_timeout_seconds = 30
+
+# ─── Quotas ─────────────────────────────────────────────────────────────────
+
+# Claude Code agent: 200 tool calls per hour
+[[quotas]]
+id = "q-claude-code-hourly"
+namespace = "agent-swarm"
+tenant = "claude-code-agent"
+max_actions = 200
+window = "hourly"
+overage_behavior = "block"
+enabled = true
+description = "Claude Code agent hourly cap"
