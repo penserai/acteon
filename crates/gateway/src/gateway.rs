@@ -3280,12 +3280,14 @@ impl Gateway {
                     ("step".to_string(), None)
                 };
 
-                // For sub-chain steps with runtime state, find and recurse into child.
+                // For sub-chain steps, recurse into the sub-chain definition.
+                // If a child chain exists at runtime, use its state; otherwise show
+                // the definition-only structure so the hierarchy is always visible.
                 let mut child_chain_id = None;
                 let mut children = None;
                 if step.is_sub_chain() {
+                    let sub_name = step.sub_chain.as_deref().unwrap();
                     if let Some(state) = chain_state {
-                        let sub_name = step.sub_chain.as_deref().unwrap();
                         if let Ok(Some(child_state)) =
                             self.find_child_chain_for_step(state, sub_name, i).await
                         {
@@ -3296,13 +3298,16 @@ impl Gateway {
                             {
                                 children = Some(Box::new(child_dag));
                             }
-                        }
-                    } else if let Some(sub_name) = step.sub_chain.as_deref() {
-                        // Definition-only mode: build sub-chain DAG without runtime state.
-                        if let Ok(child_dag) = self.build_chain_dag(sub_name, None, depth + 1).await
+                        } else if let Ok(child_dag) =
+                            self.build_chain_dag(sub_name, None, depth + 1).await
                         {
+                            // No child chain spawned yet — show definition structure.
                             children = Some(Box::new(child_dag));
                         }
+                    } else if let Ok(child_dag) =
+                        self.build_chain_dag(sub_name, None, depth + 1).await
+                    {
+                        children = Some(Box::new(child_dag));
                     }
                 }
 

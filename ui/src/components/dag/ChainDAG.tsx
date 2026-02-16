@@ -20,12 +20,21 @@ interface ChainDAGProps {
   dag?: DagResponse
   onSelectStep?: (stepName: string) => void
   onNavigateChain?: (chainId: string) => void
+  defaultExpandAll?: boolean
 }
 
 const nodeTypes = { step: StepNode, sub_chain: SubChainNode }
 
-export function ChainDAG({ chain, stepConfigs, dag, onSelectStep, onNavigateChain }: ChainDAGProps) {
+export function ChainDAG({ chain, stepConfigs, dag, onSelectStep, onNavigateChain, defaultExpandAll }: ChainDAGProps) {
   const [expandedSubChains, setExpandedSubChains] = useState<Set<string>>(new Set())
+
+  // When defaultExpandAll is set, compute the full set of sub-chain IDs from the DAG
+  const effectiveExpanded = useMemo(() => {
+    if (defaultExpandAll && dag) {
+      return new Set(collectAllSubChainIds(dag))
+    }
+    return expandedSubChains
+  }, [defaultExpandAll, dag, expandedSubChains])
 
   const toggleExpand = useCallback((name: string) => {
     setExpandedSubChains((prev) => {
@@ -43,12 +52,12 @@ export function ChainDAG({ chain, stepConfigs, dag, onSelectStep, onNavigateChai
   const { nodes, edges } = useMemo(() => {
     // If a server-provided DAG is available, build from that
     if (dag) {
-      return buildFromDag(dag, expandedSubChains, toggleExpand, handleNavigateChild)
+      return buildFromDag(dag, effectiveExpanded, toggleExpand, handleNavigateChild)
     }
 
     // Otherwise fall back to the existing client-side logic
     return buildFromChain(chain, stepConfigs)
-  }, [chain, stepConfigs, dag, expandedSubChains, toggleExpand, handleNavigateChild])
+  }, [chain, stepConfigs, dag, effectiveExpanded, toggleExpand, handleNavigateChild])
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     onSelectStep?.(node.id)
@@ -71,6 +80,21 @@ export function ChainDAG({ chain, stepConfigs, dag, onSelectStep, onNavigateChai
       </ReactFlow>
     </div>
   )
+}
+
+/** Recursively collect all sub-chain node IDs (with prefix) for expand-all. */
+function collectAllSubChainIds(dag: DagResponse, prefix = ''): string[] {
+  const ids: string[] = []
+  for (const node of dag.nodes) {
+    const nodeId = prefix ? `${prefix}::${node.name}` : node.name
+    if (node.node_type === 'sub_chain') {
+      ids.push(nodeId)
+      if (node.children) {
+        ids.push(...collectAllSubChainIds(node.children, nodeId))
+      }
+    }
+  }
+  return ids
 }
 
 /** Build nodes/edges from the server-provided DagResponse. */

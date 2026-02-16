@@ -19,6 +19,7 @@ export function ChainDetail() {
   const [searchParams] = useSearchParams()
   const ns = searchParams.get('namespace') ?? ''
   const tenant = searchParams.get('tenant') ?? ''
+  const expandAll = searchParams.get('expand') === 'all'
   const { data: chain, isLoading } = useChainDetail(chainId, { namespace: ns, tenant })
   const cancel = useCancelChain()
   const { toast } = useToast()
@@ -104,6 +105,7 @@ export function ChainDetail() {
         dag={dag}
         onSelectStep={setSelectedStep}
         onNavigateChain={(id) => navigate(`/chains/${id}`)}
+        defaultExpandAll={expandAll}
       />
 
       {step && (
