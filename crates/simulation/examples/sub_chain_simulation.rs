@@ -12,7 +12,6 @@
 //! Run with: `cargo run -p acteon-simulation --example sub_chain_simulation`
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use acteon_core::chain::{ChainConfig, ChainStepConfig, StepFailurePolicy};
 use acteon_core::{Action, ActionOutcome, ChainStatus};
@@ -784,8 +783,8 @@ rules:
             "test",
             "tenant-1",
             &chain_id,
-            "simulation test",
-            "test-runner",
+            Some("simulation test".into()),
+            Some("test-runner".into()),
         )
         .await?;
     println!("  Parent chain cancelled");
