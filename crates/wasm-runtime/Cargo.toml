@@ -1,6 +1,6 @@
 [package]
-name = "acteon-rules"
-description = "Expression IR and async rule evaluation engine for Acteon"
+name = "acteon-wasm-runtime"
+description = "WASM plugin runtime for Acteon rule evaluation"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,25 +8,18 @@ rust-version.workspace = true
 
 [dependencies]
 acteon-core = { workspace = true }
-acteon-state = { workspace = true }
-acteon-wasm-runtime = { workspace = true }
 async-trait = { workspace = true }
-chrono = { workspace = true }
-chrono-tz = { workspace = true }
-regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tokio = { workspace = true }
+wasmtime = { workspace = true }
+parking_lot = "0.12"
 
 [dev-dependencies]
-acteon-state-memory = { workspace = true }
-criterion = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-
-[[bench]]
-name = "eval"
-harness = false
+wat = "1"
 
 [lints]
 workspace = true

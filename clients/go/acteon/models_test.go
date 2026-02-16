@@ -198,3 +198,206 @@ func TestListProviderHealthResponse(t *testing.T) {
 		t.Error("expected second provider to be unhealthy")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WASM Plugin types
+// ---------------------------------------------------------------------------
+
+func TestWasmPluginConfig(t *testing.T) {
+	memLimit := int64(16777216)
+	timeout := int64(100)
+	config := WasmPluginConfig{
+		MemoryLimitBytes:     &memLimit,
+		TimeoutMs:            &timeout,
+		AllowedHostFunctions: []string{"log", "time"},
+	}
+
+	if *config.MemoryLimitBytes != 16777216 {
+		t.Errorf("expected memory_limit_bytes 16777216, got %d", *config.MemoryLimitBytes)
+	}
+	if *config.TimeoutMs != 100 {
+		t.Errorf("expected timeout_ms 100, got %d", *config.TimeoutMs)
+	}
+	if len(config.AllowedHostFunctions) != 2 {
+		t.Errorf("expected 2 allowed host functions, got %d", len(config.AllowedHostFunctions))
+	}
+}
+
+func TestWasmPluginConfigEmpty(t *testing.T) {
+	config := WasmPluginConfig{}
+	if config.MemoryLimitBytes != nil {
+		t.Error("expected nil memory_limit_bytes")
+	}
+	if config.TimeoutMs != nil {
+		t.Error("expected nil timeout_ms")
+	}
+	if config.AllowedHostFunctions != nil {
+		t.Error("expected nil allowed_host_functions")
+	}
+}
+
+func TestWasmPlugin(t *testing.T) {
+	desc := "A test plugin"
+	memLimit := int64(16777216)
+	plugin := WasmPlugin{
+		Name:        "my-plugin",
+		Description: &desc,
+		Status:      "active",
+		Enabled:     true,
+		Config: &WasmPluginConfig{
+			MemoryLimitBytes: &memLimit,
+		},
+		CreatedAt:       "2026-02-15T00:00:00Z",
+		UpdatedAt:       "2026-02-15T01:00:00Z",
+		InvocationCount: 42,
+	}
+
+	if plugin.Name != "my-plugin" {
+		t.Errorf("expected name my-plugin, got %s", plugin.Name)
+	}
+	if *plugin.Description != "A test plugin" {
+		t.Errorf("expected description, got %s", *plugin.Description)
+	}
+	if plugin.Status != "active" {
+		t.Errorf("expected status active, got %s", plugin.Status)
+	}
+	if !plugin.Enabled {
+		t.Error("expected enabled to be true")
+	}
+	if plugin.Config == nil || *plugin.Config.MemoryLimitBytes != 16777216 {
+		t.Error("expected config with memory limit")
+	}
+	if plugin.InvocationCount != 42 {
+		t.Errorf("expected invocation count 42, got %d", plugin.InvocationCount)
+	}
+}
+
+func TestWasmPluginMinimal(t *testing.T) {
+	plugin := WasmPlugin{
+		Name:      "minimal-plugin",
+		Status:    "active",
+		CreatedAt: "2026-02-15T00:00:00Z",
+		UpdatedAt: "2026-02-15T00:00:00Z",
+	}
+
+	if plugin.Name != "minimal-plugin" {
+		t.Errorf("expected name minimal-plugin, got %s", plugin.Name)
+	}
+	if plugin.Description != nil {
+		t.Error("expected nil description")
+	}
+	if plugin.Config != nil {
+		t.Error("expected nil config")
+	}
+	if plugin.InvocationCount != 0 {
+		t.Errorf("expected invocation count 0, got %d", plugin.InvocationCount)
+	}
+}
+
+func TestRegisterPluginRequest(t *testing.T) {
+	memLimit := int64(1024)
+	req := RegisterPluginRequest{
+		Name:        "test-plugin",
+		Description: "A test",
+		WasmPath:    "/plugins/test.wasm",
+		Config: &WasmPluginConfig{
+			MemoryLimitBytes: &memLimit,
+		},
+	}
+
+	if req.Name != "test-plugin" {
+		t.Errorf("expected name test-plugin, got %s", req.Name)
+	}
+	if req.Description != "A test" {
+		t.Errorf("expected description, got %s", req.Description)
+	}
+	if req.WasmPath != "/plugins/test.wasm" {
+		t.Errorf("expected wasm_path, got %s", req.WasmPath)
+	}
+	if req.Config == nil || *req.Config.MemoryLimitBytes != 1024 {
+		t.Error("expected config with memory limit 1024")
+	}
+}
+
+func TestListPluginsResponse(t *testing.T) {
+	response := ListPluginsResponse{
+		Plugins: []WasmPlugin{
+			{Name: "plugin-a", Status: "active", Enabled: true, CreatedAt: "2026-02-15T00:00:00Z", UpdatedAt: "2026-02-15T00:00:00Z"},
+			{Name: "plugin-b", Status: "disabled", Enabled: false, CreatedAt: "2026-02-15T00:00:00Z", UpdatedAt: "2026-02-15T00:00:00Z"},
+		},
+		Count: 2,
+	}
+
+	if len(response.Plugins) != 2 {
+		t.Errorf("expected 2 plugins, got %d", len(response.Plugins))
+	}
+	if response.Count != 2 {
+		t.Errorf("expected count 2, got %d", response.Count)
+	}
+	if response.Plugins[0].Name != "plugin-a" {
+		t.Errorf("expected plugin-a, got %s", response.Plugins[0].Name)
+	}
+	if !response.Plugins[0].Enabled {
+		t.Error("expected plugin-a to be enabled")
+	}
+	if response.Plugins[1].Enabled {
+		t.Error("expected plugin-b to be disabled")
+	}
+}
+
+func TestPluginInvocationRequest(t *testing.T) {
+	req := PluginInvocationRequest{
+		Input:    map[string]any{"key": "value"},
+		Function: "custom_fn",
+	}
+
+	if req.Function != "custom_fn" {
+		t.Errorf("expected function custom_fn, got %s", req.Function)
+	}
+	if req.Input["key"] != "value" {
+		t.Errorf("expected input key=value, got %v", req.Input["key"])
+	}
+}
+
+func TestPluginInvocationResponse(t *testing.T) {
+	msg := "all good"
+	dur := 12.5
+	resp := PluginInvocationResponse{
+		Verdict:    true,
+		Message:    &msg,
+		Metadata:   map[string]any{"score": 0.95},
+		DurationMs: &dur,
+	}
+
+	if !resp.Verdict {
+		t.Error("expected verdict to be true")
+	}
+	if *resp.Message != "all good" {
+		t.Errorf("expected message, got %s", *resp.Message)
+	}
+	if resp.Metadata["score"] != 0.95 {
+		t.Errorf("expected score 0.95, got %v", resp.Metadata["score"])
+	}
+	if *resp.DurationMs != 12.5 {
+		t.Errorf("expected duration 12.5, got %f", *resp.DurationMs)
+	}
+}
+
+func TestPluginInvocationResponseMinimal(t *testing.T) {
+	resp := PluginInvocationResponse{
+		Verdict: false,
+	}
+
+	if resp.Verdict {
+		t.Error("expected verdict to be false")
+	}
+	if resp.Message != nil {
+		t.Error("expected nil message")
+	}
+	if resp.Metadata != nil {
+		t.Error("expected nil metadata")
+	}
+	if resp.DurationMs != nil {
+		t.Error("expected nil duration_ms")
+	}
+}

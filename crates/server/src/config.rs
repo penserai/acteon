@@ -53,6 +53,9 @@ pub struct ActeonConfig {
     /// Quota policy configuration.
     #[serde(default)]
     pub quotas: QuotaConfig,
+    /// WASM plugin runtime configuration.
+    #[serde(default)]
+    pub wasm: WasmServerConfig,
     /// Provider definitions.
     ///
     /// Each entry registers a named provider that actions can be routed to.
@@ -817,6 +820,56 @@ fn default_quotas_enabled() -> bool {
     true
 }
 
+/// Configuration for the WASM plugin runtime.
+///
+/// When enabled, Acteon loads `.wasm` plugin files from the configured
+/// directory and makes them available for use in rule conditions via the
+/// `wasm()` predicate.
+///
+/// # Example
+///
+/// ```toml
+/// [wasm]
+/// enabled = true
+/// plugin_dir = "/etc/acteon/plugins"
+/// default_memory_limit_bytes = 16777216
+/// default_timeout_ms = 100
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct WasmServerConfig {
+    /// Whether the WASM plugin runtime is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Directory to scan for `.wasm` plugin files on startup.
+    #[serde(default)]
+    pub plugin_dir: Option<String>,
+    /// Default memory limit for plugins in bytes (default: 16 MB).
+    #[serde(default = "default_wasm_memory_limit")]
+    pub default_memory_limit_bytes: u64,
+    /// Default execution timeout for plugins in milliseconds (default: 100 ms).
+    #[serde(default = "default_wasm_timeout_ms")]
+    pub default_timeout_ms: u64,
+}
+
+impl Default for WasmServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            plugin_dir: None,
+            default_memory_limit_bytes: default_wasm_memory_limit(),
+            default_timeout_ms: default_wasm_timeout_ms(),
+        }
+    }
+}
+
+fn default_wasm_memory_limit() -> u64 {
+    16 * 1024 * 1024 // 16 MB
+}
+
+fn default_wasm_timeout_ms() -> u64 {
+    100
+}
+
 /// Configuration for task chain definitions.
 #[derive(Debug, Deserialize)]
 pub struct ChainsConfig {
@@ -1038,6 +1091,8 @@ pub struct ConfigSnapshot {
     pub chains: ChainsSnapshot,
     /// Payload encryption configuration.
     pub encryption: EncryptionSnapshot,
+    /// WASM plugin runtime configuration.
+    pub wasm: WasmSnapshot,
     /// Registered provider summaries.
     pub providers: Vec<ProviderSnapshot>,
 }
@@ -1060,6 +1115,7 @@ impl From<&ActeonConfig> for ConfigSnapshot {
             telemetry: TelemetrySnapshot::from(&cfg.telemetry),
             chains: ChainsSnapshot::from(&cfg.chains),
             encryption: EncryptionSnapshot::from(&cfg.encryption),
+            wasm: WasmSnapshot::from(&cfg.wasm),
             providers: cfg.providers.iter().map(ProviderSnapshot::from).collect(),
         }
     }
@@ -1551,6 +1607,30 @@ impl From<&EncryptionConfig> for EncryptionSnapshot {
     }
 }
 
+/// Sanitized WASM plugin runtime configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct WasmSnapshot {
+    /// Whether the WASM runtime is enabled.
+    pub enabled: bool,
+    /// Plugin directory path.
+    pub plugin_dir: Option<String>,
+    /// Default memory limit in bytes.
+    pub default_memory_limit_bytes: u64,
+    /// Default timeout in milliseconds.
+    pub default_timeout_ms: u64,
+}
+
+impl From<&WasmServerConfig> for WasmSnapshot {
+    fn from(cfg: &WasmServerConfig) -> Self {
+        Self {
+            enabled: cfg.enabled,
+            plugin_dir: cfg.plugin_dir.clone(),
+            default_memory_limit_bytes: cfg.default_memory_limit_bytes,
+            default_timeout_ms: cfg.default_timeout_ms,
+        }
+    }
+}
+
 /// Sanitized provider configuration (headers/secrets removed).
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ProviderSnapshot {
@@ -1995,5 +2075,57 @@ mod tests {
         assert_eq!(snapshot.chains.definitions[0].name, "onboarding");
         assert_eq!(snapshot.chains.definitions[0].steps_count, 2);
         assert_eq!(snapshot.chains.definitions[0].timeout_seconds, Some(300));
+    }
+
+    #[test]
+    fn wasm_config_defaults() {
+        let config = WasmServerConfig::default();
+        assert!(!config.enabled);
+        assert!(config.plugin_dir.is_none());
+        assert_eq!(config.default_memory_limit_bytes, 16 * 1024 * 1024);
+        assert_eq!(config.default_timeout_ms, 100);
+    }
+
+    #[test]
+    fn wasm_config_from_toml() {
+        let toml = r#"
+            [wasm]
+            enabled = true
+            plugin_dir = "/etc/acteon/plugins"
+            default_memory_limit_bytes = 33554432
+            default_timeout_ms = 200
+        "#;
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert!(config.wasm.enabled);
+        assert_eq!(
+            config.wasm.plugin_dir.as_deref(),
+            Some("/etc/acteon/plugins")
+        );
+        assert_eq!(config.wasm.default_memory_limit_bytes, 33_554_432);
+        assert_eq!(config.wasm.default_timeout_ms, 200);
+    }
+
+    #[test]
+    fn wasm_config_omitted_uses_defaults() {
+        let toml = "";
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert!(!config.wasm.enabled);
+        assert!(config.wasm.plugin_dir.is_none());
+        assert_eq!(config.wasm.default_memory_limit_bytes, 16 * 1024 * 1024);
+        assert_eq!(config.wasm.default_timeout_ms, 100);
+    }
+
+    #[test]
+    fn wasm_snapshot_from_config() {
+        let toml = r#"
+            [wasm]
+            enabled = true
+            plugin_dir = "/plugins"
+        "#;
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        let snapshot = ConfigSnapshot::from(&config);
+        assert!(snapshot.wasm.enabled);
+        assert_eq!(snapshot.wasm.plugin_dir.as_deref(), Some("/plugins"));
+        assert_eq!(snapshot.wasm.default_memory_limit_bytes, 16 * 1024 * 1024);
     }
 }

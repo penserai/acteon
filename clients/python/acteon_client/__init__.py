@@ -56,6 +56,12 @@ from .models import (
     DlqEntry,
     DlqDrainResponse,
     SseEvent,
+    WasmPluginConfig,
+    WasmPlugin,
+    RegisterPluginRequest,
+    ListPluginsResponse,
+    PluginInvocationRequest,
+    PluginInvocationResponse,
 )
 
 __version__ = "0.1.0"
@@ -119,4 +125,10 @@ __all__ = [
     "DlqEntry",
     "DlqDrainResponse",
     "SseEvent",
+    "WasmPluginConfig",
+    "WasmPlugin",
+    "RegisterPluginRequest",
+    "ListPluginsResponse",
+    "PluginInvocationRequest",
+    "PluginInvocationResponse",
 ]

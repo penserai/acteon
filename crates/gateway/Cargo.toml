@@ -14,6 +14,7 @@ acteon-llm = { workspace = true }
 acteon-state = { workspace = true }
 acteon-state-memory = { workspace = true }
 acteon-rules = { workspace = true }
+acteon-wasm-runtime = { workspace = true }
 acteon-provider = { workspace = true }
 acteon-executor = { workspace = true }
 async-trait = { workspace = true }

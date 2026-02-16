@@ -95,6 +95,11 @@ pub enum RuleSource {
     Api,
     /// Defined inline in code.
     Inline,
+    /// Loaded from a WASM plugin.
+    Wasm {
+        /// The plugin name that provided this rule.
+        plugin: Option<String>,
+    },
 }
 
 /// A single rule combining a condition expression with an action.

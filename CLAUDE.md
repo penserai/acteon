@@ -11,22 +11,25 @@ cargo fmt --all
 # Lint with clippy (warnings as errors)
 cargo clippy --workspace --no-deps -- -D warnings
 
-# Run all tests
-cargo test --workspace
+# Run all tests (fast — skips doctests which are extremely slow to link)
+cargo test --workspace --lib --bins --tests
 
 # Frontend checks
 cd ui && npm run lint && npm run build && cd ..
-
-# Build to catch any remaining issues
-cargo build --workspace
 ```
 
 ## Quick Validation
 
 ```bash
 # One-liner to run all checks (Rust + Frontend)
-cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace && (cd ui && npm run lint && npm run build)
+cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && (cd ui && npm run lint && npm run build)
 ```
+
+## Testing Notes
+
+- **Default**: Use `--lib --bins --tests` to skip doctest compilation, which re-links the entire dependency tree per doctest and adds minutes of wall-clock time.
+- **Full suite** (CI only): `cargo test --workspace` includes doctests. Only run this before releases or in CI.
+- **Single crate**: `cargo test -p acteon-gateway --lib` for fast iteration on one crate.
 
 ## Running Examples
 
@@ -73,7 +76,7 @@ When implementing a new feature (provider, capability, etc.), follow this layere
 9. **Tests** – Add unit tests in the crate, SDK tests, and simulation framework tests
 10. **Documentation** – Update `docs/book/` pages (concepts, API reference, examples)
 11. **Simulation example** – Add a simulation example in `crates/simulation/examples/`
-12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace && (cd ui && npm run lint && npm run build)`
+12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && (cd ui && npm run lint && npm run build)`
 
 ## Common Clippy Fixes
 

@@ -7,6 +7,7 @@ use chrono_tz::Tz;
 
 use acteon_core::Action;
 use acteon_state::StateStore;
+use acteon_wasm_runtime::WasmPluginRuntime;
 
 use crate::error::RuleError;
 
@@ -129,6 +130,11 @@ pub struct EvalContext<'a> {
     /// context only allocate one `HashMap`.  Uses `OnceLock` (not `OnceCell`)
     /// because `&EvalContext` is held across `.await` points, requiring `Sync`.
     pub(crate) time_map_cache: OnceLock<super::value::Value>,
+    /// Optional WASM plugin runtime for evaluating `WasmCall` expressions.
+    ///
+    /// When set, `Expr::WasmCall` nodes can invoke registered WASM plugins as
+    /// part of rule condition evaluation.
+    pub wasm_runtime: Option<Arc<dyn WasmPluginRuntime>>,
     /// Optional tracker for recording which keys are accessed during evaluation.
     ///
     /// Only populated in playground/trace mode to avoid overhead in the hot path.
@@ -150,6 +156,7 @@ impl<'a> EvalContext<'a> {
             embedding: None,
             timezone: None,
             time_map_cache: OnceLock::new(),
+            wasm_runtime: None,
             access_tracker: None,
         }
     }
@@ -174,6 +181,13 @@ impl<'a> EvalContext<'a> {
     pub fn with_timezone(mut self, tz: Tz) -> Self {
         self.timezone = Some(tz);
         self.time_map_cache = OnceLock::new();
+        self
+    }
+
+    /// Set the WASM plugin runtime for evaluating `WasmCall` expressions.
+    #[must_use]
+    pub fn with_wasm_runtime(mut self, runtime: Arc<dyn WasmPluginRuntime>) -> Self {
+        self.wasm_runtime = Some(runtime);
         self
     }
 

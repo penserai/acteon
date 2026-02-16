@@ -186,6 +186,8 @@ pub struct Gateway {
         parking_lot::RwLock<HashMap<String, acteon_core::RetentionPolicy>>,
     /// Per-provider execution metrics (latency, success/failure counters).
     pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
+    /// Optional WASM plugin runtime for rule condition evaluation.
+    pub(crate) wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -198,6 +200,11 @@ impl std::fmt::Debug for Gateway {
 }
 
 impl Gateway {
+    /// Returns the WASM plugin runtime, if configured.
+    pub fn wasm_runtime(&self) -> Option<&dyn acteon_wasm_runtime::WasmPluginRuntime> {
+        self.wasm_runtime.as_deref()
+    }
+
     /// Returns a reference to the payload encryptor, if configured.
     pub fn payload_encryptor(&self) -> Option<&acteon_crypto::PayloadEncryptor> {
         self.payload_encryptor.as_deref()
@@ -346,6 +353,9 @@ impl Gateway {
         let mut eval_ctx = EvalContext::new(&action, self.state.as_ref(), &self.environment);
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(Arc::clone(wasm));
         }
         if let Some(tz) = self.default_timezone {
             eval_ctx = eval_ctx.with_timezone(tz);
@@ -815,6 +825,9 @@ impl Gateway {
         }
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(std::sync::Arc::clone(emb));
+        }
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(std::sync::Arc::clone(wasm));
         }
         if let Some(tz) = self.default_timezone {
             eval_ctx = eval_ctx.with_timezone(tz);
@@ -3269,6 +3282,9 @@ impl Gateway {
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
         }
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(Arc::clone(wasm));
+        }
         if let Some(tz) = self.default_timezone {
             eval_ctx = eval_ctx.with_timezone(tz);
         }
@@ -3466,6 +3482,9 @@ impl Gateway {
         let mut eval_ctx = EvalContext::new(&record.action, self.state.as_ref(), &self.environment);
         if let Some(ref emb) = self.embedding {
             eval_ctx = eval_ctx.with_embedding(Arc::clone(emb));
+        }
+        if let Some(ref wasm) = self.wasm_runtime {
+            eval_ctx = eval_ctx.with_wasm_runtime(Arc::clone(wasm));
         }
         if let Some(tz) = self.default_timezone {
             eval_ctx = eval_ctx.with_timezone(tz);

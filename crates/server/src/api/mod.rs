@@ -11,6 +11,7 @@ pub mod events;
 pub mod groups;
 pub mod health;
 pub mod openapi;
+pub mod plugins;
 pub mod prometheus;
 pub mod provider_health;
 pub mod quotas;
@@ -174,6 +175,9 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)
         .route("/v1/approvals", get(approvals::list_approvals))
+        // WASM plugins
+        .route("/v1/plugins", get(plugins::list_plugins))
+        .route("/v1/plugins/{name}", delete(plugins::unregister_plugin))
         // Provider health dashboard
         .route(
             "/v1/providers/health",

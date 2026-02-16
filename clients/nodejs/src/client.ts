@@ -92,6 +92,15 @@ import {
   ProviderHealthStatus,
   ListProviderHealthResponse,
   parseListProviderHealthResponse,
+  WasmPlugin,
+  RegisterPluginRequest,
+  registerPluginRequestToApi,
+  ListPluginsResponse,
+  parseListPluginsResponse,
+  parseWasmPlugin,
+  PluginInvocationRequest,
+  PluginInvocationResponse,
+  parsePluginInvocationResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -1000,6 +1009,95 @@ export class ActeonClient {
       return parseListProviderHealthResponse(data);
     } else {
       throw new HttpError(response.status, "Failed to list provider health");
+    }
+  }
+
+  // =========================================================================
+  // WASM Plugins
+  // =========================================================================
+
+  /**
+   * List all registered WASM plugins.
+   */
+  async listPlugins(): Promise<ListPluginsResponse> {
+    const response = await this.request("GET", "/v1/plugins");
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListPluginsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list plugins");
+    }
+  }
+
+  /**
+   * Register a new WASM plugin.
+   */
+  async registerPlugin(req: RegisterPluginRequest): Promise<WasmPlugin> {
+    const response = await this.request("POST", "/v1/plugins", {
+      body: registerPluginRequestToApi(req),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWasmPlugin(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Get details of a registered WASM plugin.
+   */
+  async getPlugin(name: string): Promise<WasmPlugin | null> {
+    const response = await this.request("GET", `/v1/plugins/${name}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseWasmPlugin(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get plugin");
+    }
+  }
+
+  /**
+   * Unregister (delete) a WASM plugin.
+   */
+  async deletePlugin(name: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/plugins/${name}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Plugin not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete plugin");
+    }
+  }
+
+  /**
+   * Test-invoke a WASM plugin.
+   */
+  async invokePlugin(name: string, req: PluginInvocationRequest): Promise<PluginInvocationResponse> {
+    const body: Record<string, unknown> = { input: req.input };
+    if (req.function !== undefined) body.function = req.function;
+
+    const response = await this.request("POST", `/v1/plugins/${name}/invoke`, { body });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parsePluginInvocationResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Plugin not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, `Failed to invoke plugin: ${name}`);
     }
   }
 

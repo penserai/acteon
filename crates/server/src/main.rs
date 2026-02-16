@@ -395,6 +395,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None
         };
 
+    // Wire WASM plugin runtime if enabled.
+    if config.wasm.enabled {
+        let wasm_runtime_config = acteon_wasm_runtime::config::WasmRuntimeConfig {
+            enabled: true,
+            plugin_dir: config.wasm.plugin_dir.clone(),
+            default_memory_limit_bytes: config.wasm.default_memory_limit_bytes,
+            default_timeout_ms: config.wasm.default_timeout_ms,
+        };
+        let registry = acteon_wasm_runtime::WasmPluginRegistry::new(wasm_runtime_config)
+            .map_err(|e| format!("failed to create WASM runtime: {e}"))?;
+
+        // Load plugins from the configured directory.
+        let loaded = registry
+            .load_plugin_dir()
+            .map_err(|e| format!("failed to load WASM plugins: {e}"))?;
+
+        let shared = acteon_wasm_runtime::SharedWasmRegistry::new(registry);
+        builder = builder.wasm_runtime(Arc::new(shared));
+        info!(
+            count = loaded,
+            dir = config.wasm.plugin_dir.as_deref().unwrap_or("(none)"),
+            "WASM plugin runtime enabled"
+        );
+    }
+
     // Wire task chain definitions.
     for chain_toml in &config.chains.definitions {
         let on_failure = match chain_toml.on_failure.as_deref() {

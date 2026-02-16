@@ -138,6 +138,13 @@ fn compile_predicate(pred: &YamlPredicate) -> Result<Expr, RuleError> {
                 text_field: text_field_expr,
             })
         }
+        YamlPredicate::WasmCall {
+            wasm_plugin,
+            wasm_function,
+        } => Ok(Expr::WasmCall {
+            plugin: wasm_plugin.clone(),
+            function: wasm_function.clone(),
+        }),
         YamlPredicate::Nested(inner_cond) => compile_condition(inner_cond.as_ref()),
     }
 }
@@ -1360,5 +1367,68 @@ rules:
             }
             other => panic!("expected Binary(Ge, ...), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn compile_wasm_call_default_function() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: wasm-check
+    condition:
+      wasm_plugin: fraud-detector
+    action:
+      type: deny
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].condition {
+            Expr::WasmCall { plugin, function } => {
+                assert_eq!(plugin, "fraud-detector");
+                assert_eq!(function, "evaluate"); // default
+            }
+            other => panic!("expected WasmCall, got {other:?}"),
+        }
+        assert!(matches!(rules[0].action, RuleAction::Deny));
+    }
+
+    #[test]
+    fn compile_wasm_call_custom_function() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: wasm-custom
+    condition:
+      wasm_plugin: rate-limiter
+      wasm_function: check_rate
+    action:
+      type: suppress
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].condition {
+            Expr::WasmCall { plugin, function } => {
+                assert_eq!(plugin, "rate-limiter");
+                assert_eq!(function, "check_rate");
+            }
+            other => panic!("expected WasmCall, got {other:?}"),
+        }
+        assert!(matches!(rules[0].action, RuleAction::Suppress));
+    }
+
+    #[test]
+    fn compile_wasm_call_to_source_roundtrip() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: wasm-source
+    condition:
+      wasm_plugin: content-filter
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        let source = rules[0].condition.to_source();
+        assert_eq!(source, r#"wasm("content-filter", "evaluate")"#);
     }
 }

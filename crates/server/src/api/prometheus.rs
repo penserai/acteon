@@ -309,6 +309,18 @@ fn render_snapshot(snap: &MetricsSnapshot) -> String {
         "Retention reaper processing errors.",
         snap.retention_errors,
     );
+    write_counter(
+        &mut buf,
+        "acteon_wasm_invocations_total",
+        "WASM plugin invocations.",
+        snap.wasm_invocations,
+    );
+    write_counter(
+        &mut buf,
+        "acteon_wasm_errors_total",
+        "WASM plugin invocation errors.",
+        snap.wasm_errors,
+    );
 
     buf
 }
@@ -520,6 +532,8 @@ mod tests {
             retention_deleted_state: 0,
             retention_skipped_compliance: 0,
             retention_errors: 0,
+            wasm_invocations: 0,
+            wasm_errors: 0,
         }
     }
 
@@ -554,6 +568,8 @@ mod tests {
             retention_deleted_state: 10,
             retention_skipped_compliance: 2,
             retention_errors: 1,
+            wasm_invocations: 6,
+            wasm_errors: 2,
         }
     }
 
@@ -722,7 +738,7 @@ mod tests {
 
     // -- render_snapshot tests --
 
-    /// All 28 gateway counter metric names that must appear in the output.
+    /// All 31 gateway counter metric names that must appear in the output.
     const EXPECTED_COUNTER_METRICS: &[&str] = &[
         "acteon_actions_dispatched_total",
         "acteon_actions_executed_total",
@@ -753,10 +769,12 @@ mod tests {
         "acteon_retention_deleted_state_total",
         "acteon_retention_skipped_compliance_total",
         "acteon_retention_errors_total",
+        "acteon_wasm_invocations_total",
+        "acteon_wasm_errors_total",
     ];
 
     #[test]
-    fn render_snapshot_contains_all_29_counter_metrics() {
+    fn render_snapshot_contains_all_31_counter_metrics() {
         let snap = zero_snapshot();
         let output = render_snapshot(&snap);
 
@@ -832,6 +850,8 @@ mod tests {
         assert!(output.contains("acteon_retention_deleted_state_total 10"));
         assert!(output.contains("acteon_retention_skipped_compliance_total 2"));
         assert!(output.contains("acteon_retention_errors_total 1"));
+        assert!(output.contains("acteon_wasm_invocations_total 6"));
+        assert!(output.contains("acteon_wasm_errors_total 2"));
     }
 
     #[test]
@@ -1057,7 +1077,7 @@ mod tests {
         providers.insert("email".to_string(), sample_provider_stats());
         render_provider_metrics(&mut output, &providers);
 
-        // 29 counter metrics from the snapshot
+        // 31 counter metrics from the snapshot
         for metric in EXPECTED_COUNTER_METRICS {
             assert!(output.contains(metric), "Missing snapshot metric: {metric}");
         }
@@ -1067,16 +1087,16 @@ mod tests {
             assert!(output.contains(name), "Missing provider metric: {name}");
         }
 
-        // Total: 29 + 8 = 37 unique metric families
+        // Total: 31 + 8 = 39 unique metric families
         let type_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.starts_with("# TYPE "))
             .collect();
-        assert_eq!(type_lines.len(), 37, "Expected 37 TYPE declarations");
+        assert_eq!(type_lines.len(), 39, "Expected 39 TYPE declarations");
     }
 
     #[test]
-    fn full_render_no_providers_has_29_type_lines() {
+    fn full_render_no_providers_has_31_type_lines() {
         let snap = zero_snapshot();
         let mut output = render_snapshot(&snap);
         let empty: HashMap<String, ProviderStatsSnapshot> = HashMap::new();
@@ -1088,8 +1108,8 @@ mod tests {
             .collect();
         assert_eq!(
             type_lines.len(),
-            29,
-            "Expected 29 TYPE declarations without providers"
+            31,
+            "Expected 31 TYPE declarations without providers"
         );
     }
 }

@@ -32,6 +32,11 @@ fn default_semantic_threshold() -> f64 {
     0.8
 }
 
+/// Default WASM function name.
+fn default_wasm_function() -> String {
+    "evaluate".to_owned()
+}
+
 /// Top-level YAML rule file containing a list of rules.
 #[derive(Debug, Deserialize)]
 pub struct YamlRuleFile {
@@ -119,6 +124,14 @@ pub enum YamlPredicate {
         /// Optional dot-separated field path for the text to match.
         /// When omitted, the entire action payload is used.
         text_field: Option<String>,
+    },
+    /// Invoke a WASM plugin as a boolean condition check.
+    WasmCall {
+        /// Name of the registered WASM plugin.
+        wasm_plugin: String,
+        /// Exported function to call. Defaults to `"evaluate"`.
+        #[serde(default = "default_wasm_function")]
+        wasm_function: String,
     },
     /// A nested condition (allows recursive `all` / `any` grouping).
     Nested(Box<YamlCondition>),
@@ -638,6 +651,60 @@ rules:
                 assert_eq!(*delay_seconds, 604_800);
             }
             other => panic!("expected Schedule, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wasm_call_predicate() {
+        let yaml = r#"
+rules:
+  - name: wasm-check
+    condition:
+      wasm_plugin: my-validator
+    action:
+      type: deny
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        match &file.rules[0].condition {
+            YamlCondition::Single(pred) => match pred.as_ref() {
+                YamlPredicate::WasmCall {
+                    wasm_plugin,
+                    wasm_function,
+                } => {
+                    assert_eq!(wasm_plugin, "my-validator");
+                    assert_eq!(wasm_function, "evaluate"); // default
+                }
+                other => panic!("expected WasmCall, got {other:?}"),
+            },
+            other => panic!("expected Single, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_wasm_call_with_custom_function() {
+        let yaml = r#"
+rules:
+  - name: wasm-check-custom
+    condition:
+      wasm_plugin: my-plugin
+      wasm_function: check_policy
+    action:
+      type: deny
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        match &file.rules[0].condition {
+            YamlCondition::Single(pred) => match pred.as_ref() {
+                YamlPredicate::WasmCall {
+                    wasm_plugin,
+                    wasm_function,
+                } => {
+                    assert_eq!(wasm_plugin, "my-plugin");
+                    assert_eq!(wasm_function, "check_policy");
+                }
+                other => panic!("expected WasmCall, got {other:?}"),
+            },
+            other => panic!("expected Single, got {other:?}"),
         }
     }
 

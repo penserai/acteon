@@ -475,6 +475,37 @@ function TraceRow({ entry, expanded, onToggle }: {
                   </div>
                 </div>
               )}
+              {entry.wasm_details && (
+                <div className={styles.semanticSection}>
+                  <div className={styles.semanticTitle}>WASM Plugin</div>
+                  <div className={styles.semanticGrid}>
+                    <span className={styles.traceDetailLabel}>Plugin</span>
+                    <span className={styles.semanticValue}>{entry.wasm_details.plugin}</span>
+                    <span className={styles.traceDetailLabel}>Function</span>
+                    <span className={styles.semanticValue}>{entry.wasm_details.function}</span>
+                    <span className={styles.traceDetailLabel}>Verdict</span>
+                    <span className={styles.semanticValue}>{entry.wasm_details.verdict ? 'true (pass)' : 'false (fail)'}</span>
+                    <span className={styles.traceDetailLabel}>Duration</span>
+                    <span className={styles.semanticValue}>{entry.wasm_details.duration_us}us</span>
+                    {entry.wasm_details.message && (
+                      <>
+                        <span className={styles.traceDetailLabel}>Message</span>
+                        <span className={styles.semanticValue}>{entry.wasm_details.message}</span>
+                      </>
+                    )}
+                    {entry.wasm_details.memory_used_bytes != null && (
+                      <>
+                        <span className={styles.traceDetailLabel}>Memory Used</span>
+                        <span className={styles.semanticValue}>
+                          {entry.wasm_details.memory_used_bytes >= 1_048_576
+                            ? `${(entry.wasm_details.memory_used_bytes / 1_048_576).toFixed(1)} MB`
+                            : `${(entry.wasm_details.memory_used_bytes / 1024).toFixed(0)} KB`}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
               {entry.modify_patch && (
                 <div className={styles.traceDetailJsonSection}>
                   <span className={styles.traceDetailJsonLabel}>Modify Patch</span>

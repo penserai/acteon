@@ -5,7 +5,7 @@ import { useUiStore } from '../../stores/ui'
 import {
   LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
-  PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart, Database, HeartPulse,
+  PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart, Database, HeartPulse, Puzzle,
 } from 'lucide-react'
 import logoPng from '../../assets/logo.png'
 import styles from './Sidebar.module.css'
@@ -28,6 +28,7 @@ const mainItems = [
   { to: '/recurring', icon: RefreshCw, label: 'Recurring Actions' },
   { to: '/quotas', icon: PieChart, label: 'Quotas' },
   { to: '/retention', icon: Database, label: 'Retention' },
+  { to: '/wasm-plugins', icon: Puzzle, label: 'WASM Plugins' },
   {
     to: 'https://penserai.github.io/acteon',
     icon: ExternalLink,
