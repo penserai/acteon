@@ -143,6 +143,16 @@ End-to-end testing framework with mock providers, failure injection, multi-node 
 
 </div>
 
+<div class="card" markdown>
+
+### Guides
+
+In-depth guides that combine multiple Acteon features to solve real-world problems, from AI agent swarm coordination to production deployment patterns.
+
+[Learn more](guides/index.md)
+
+</div>
+
 </div>
 
 ---
