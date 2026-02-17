@@ -1,0 +1,151 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+[state]
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+
+[audit]
+enabled = true
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+store_payload = true
+ttl_seconds = 1209600  # 14 days
+
+[audit.redact]
+enabled = true
+fields = ["card_last4", "billing_zip", "card_number"]
+placeholder = "[REDACTED]"
+
+[[providers]]
+name = "payment-gateway"
+type = "log"
+
+[[providers]]
+name = "warehouse"
+type = "log"
+
+[[providers]]
+name = "email-service"
+type = "log"
+
+[[providers]]
+name = "sms-service"
+type = "log"
+
+[[providers]]
+name = "fraud-analyzer"
+type = "log"
+
+[[providers]]
+name = "compliance-queue"
+type = "log"
+
+[rules]
+directory = "examples/ecommerce-order-pipeline/rules"
+default_timezone = "US/Eastern"
+
+[executor]
+max_retries = 2
+timeout_seconds = 15
+max_concurrent = 20
+
+[circuit_breaker]
+enabled = true
+failure_threshold = 3
+success_threshold = 1
+recovery_timeout_seconds = 30
+
+[circuit_breaker.providers.payment-gateway]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "compliance-queue"
+
+[chains]
+max_concurrent_advances = 10
+completed_chain_ttl_seconds = 3600
+
+# ── Order Processing Chain ────────────────────────────────────────────────
+# validate → charge → fulfill → notify-customer
+# With branching: fraud-review sub-chain for high-value orders
+
+[[chains.definitions]]
+name = "order-processing"
+timeout_seconds = 120
+
+  [[chains.definitions.steps]]
+  name = "validate"
+  provider = "payment-gateway"
+  action_type = "validate_order"
+  payload_template = { order_id = "{{origin.payload.order_id}}", total_cents = "{{origin.payload.total_cents}}", currency = "{{origin.payload.currency}}" }
+
+    [[chains.definitions.steps.branches]]
+    field = "body.logged"
+    operator = "eq"
+    value = true
+    target = "charge"
+
+  [[chains.definitions.steps]]
+  name = "fraud-review-step"
+  sub_chain = "fraud-review"
+
+  [[chains.definitions.steps]]
+  name = "charge"
+  provider = "payment-gateway"
+  action_type = "charge_card"
+  payload_template = { order_id = "{{origin.payload.order_id}}", total_cents = "{{origin.payload.total_cents}}", card_last4 = "{{origin.payload.card_last4}}" }
+
+  [[chains.definitions.steps]]
+  name = "fulfill"
+  provider = "warehouse"
+  action_type = "ship_order"
+  payload_template = { order_id = "{{origin.payload.order_id}}", shipping_country = "{{origin.payload.shipping_country}}", items = "{{origin.payload.items}}" }
+
+  [[chains.definitions.steps]]
+  name = "notify-customer"
+  provider = "email-service"
+  action_type = "order_confirmation"
+  payload_template = { order_id = "{{origin.payload.order_id}}", customer_email = "{{origin.payload.customer_email}}" }
+
+# ── Fraud Review Sub-Chain ────────────────────────────────────────────────
+
+[[chains.definitions]]
+name = "fraud-review"
+timeout_seconds = 60
+
+  [[chains.definitions.steps]]
+  name = "analyze"
+  provider = "fraud-analyzer"
+  action_type = "deep_scan"
+  payload_template = { order_id = "{{origin.payload.order_id}}", total_cents = "{{origin.payload.total_cents}}", shipping_country = "{{origin.payload.shipping_country}}" }
+
+  [[chains.definitions.steps]]
+  name = "flag-compliance"
+  provider = "compliance-queue"
+  action_type = "review_request"
+  payload_template = { order_id = "{{origin.payload.order_id}}", reason = "high_value" }
+
+  [[chains.definitions.steps]]
+  name = "notify-merchant"
+  provider = "email-service"
+  action_type = "fraud_alert"
+  payload_template = { order_id = "{{origin.payload.order_id}}", merchant = "{{origin.tenant}}" }
+
+[background]
+enabled = true
+group_flush_interval_seconds = 10
+timeout_check_interval_seconds = 10
+cleanup_interval_seconds = 60
+enable_group_flush = true
+enable_timeout_processing = true
+enable_scheduled_actions = true
+scheduled_check_interval_seconds = 2
+enable_retention_reaper = true
+retention_check_interval_seconds = 60
+namespace = "ecommerce"
+tenant = "acme-store"
+
+[quotas]
+enabled = true
