@@ -48,6 +48,8 @@ struct Cli {
 enum Commands {
     /// Encrypt a value for use in auth.toml. Reads plaintext from stdin.
     Encrypt,
+    /// Run database migrations for configured state and audit backends, then exit.
+    Migrate,
 }
 
 #[tokio::main]
@@ -73,6 +75,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         toml::from_str("")?
     };
+
+    // Handle the `migrate` subcommand before full tracing/OTel init.
+    if let Some(Commands::Migrate) = cli.command {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+        return run_migrate(&config).await;
+    }
 
     // Initialize tracing subscriber (with optional OpenTelemetry layer).
     // Must happen after config is loaded so we know whether OTel is enabled,
@@ -1390,6 +1403,24 @@ fn require_decrypt(
     } else {
         Ok(value.to_owned())
     }
+}
+
+/// Run the `migrate` subcommand: initialize database schemas for configured backends and exit.
+async fn run_migrate(config: &ActeonConfig) -> Result<(), Box<dyn std::error::Error>> {
+    info!(backend = %config.state.backend, "running state backend migrations...");
+    let (_store, _lock) = acteon_server::state_factory::create_state(&config.state).await?;
+    info!(backend = %config.state.backend, "state backend migrations complete");
+
+    if config.audit.enabled {
+        info!(backend = %config.audit.backend, "running audit backend migrations...");
+        let _audit = acteon_server::audit_factory::create_audit_store(&config.audit).await?;
+        info!(backend = %config.audit.backend, "audit backend migrations complete");
+    } else {
+        info!("audit disabled, skipping audit migrations");
+    }
+
+    info!("all migrations complete");
+    Ok(())
 }
 
 /// Run the `encrypt` subcommand: read plaintext from stdin, output ENC[...] to stdout.

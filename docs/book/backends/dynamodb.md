@@ -100,5 +100,6 @@ cargo build -p acteon-server --features dynamodb
 
 ```bash
 docker compose --profile dynamodb up -d
+scripts/migrate.sh -c examples/dynamodb.toml
 cargo run -p acteon-server --features dynamodb -- -c examples/dynamodb.toml
 ```

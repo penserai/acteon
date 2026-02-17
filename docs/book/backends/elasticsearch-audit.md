@@ -51,6 +51,7 @@ prefix = "acteon-"
 
 ```bash
 docker compose --profile elasticsearch up -d
+scripts/migrate.sh -c examples/elasticsearch-audit.toml
 cargo run -p acteon-server --features elasticsearch -- -c examples/elasticsearch-audit.toml
 ```
 
@@ -73,5 +74,6 @@ store_payload = true
 
 ```bash
 docker compose --profile elasticsearch up -d
+scripts/migrate.sh -c examples/elasticsearch-audit.toml
 cargo run -p acteon-server --features elasticsearch -- -c examples/elasticsearch-audit.toml
 ```

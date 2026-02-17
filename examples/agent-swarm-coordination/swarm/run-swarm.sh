@@ -59,7 +59,8 @@ echo ""
 # Check Acteon is reachable
 if ! curl -sf "$ACTEON_URL/healthz" > /dev/null 2>&1; then
   echo "ERROR: Acteon is not reachable at $ACTEON_URL"
-  echo "Start it with: cargo run -p acteon-server --features postgres -- -c $EXAMPLE_DIR/acteon.toml"
+  echo "Run migrations: scripts/migrate.sh -c $EXAMPLE_DIR/acteon.toml"
+  echo "Start it with:  cargo run -p acteon-server --features postgres -- -c $EXAMPLE_DIR/acteon.toml"
   exit 1
 fi
 echo "[ok] Acteon is running at $ACTEON_URL"

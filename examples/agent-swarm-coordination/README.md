@@ -52,20 +52,26 @@ cd /path/to/acteon
 docker compose --profile postgres up -d
 ```
 
-### 2. Build and Start Acteon
+### 2. Build and Run Migrations
 
 ```bash
 # Build the server and MCP server
 cargo build -p acteon-server --features postgres
 cargo build -p acteon-mcp-server --release
 
-# Start Acteon
+# Run database migrations (creates tables/indexes in PostgreSQL)
+scripts/migrate.sh -c examples/agent-swarm-coordination/acteon.toml
+```
+
+### 3. Start Acteon
+
+```bash
 cargo run -p acteon-server --features postgres -- -c examples/agent-swarm-coordination/acteon.toml
 ```
 
 Wait for `Listening on 127.0.0.1:8080`.
 
-### 3. Initialize the Dummy Project
+### 4. Initialize the Dummy Project
 
 ```bash
 cd examples/agent-swarm-coordination/dummy-project
@@ -74,7 +80,7 @@ git add .
 git commit -m "initial commit"
 ```
 
-### 4. Configure Environment
+### 5. Configure Environment
 
 ```bash
 # Point hooks at the running Acteon instance
@@ -88,13 +94,13 @@ export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/YOUR/WEBHOOK"
 export PATH="$PWD/target/release:$PATH"
 ```
 
-### 5. Make Hooks Executable
+### 6. Make Hooks Executable
 
 ```bash
 chmod +x examples/agent-swarm-coordination/hooks/*.sh
 ```
 
-### 6. Start Claude Code
+### 7. Start Claude Code
 
 ```bash
 cd examples/agent-swarm-coordination/dummy-project
@@ -104,7 +110,7 @@ claude
 Claude Code will load the `.claude/settings.json` hooks and `.mcp.json`
 MCP server configuration automatically.
 
-### 7. Try It Out
+### 8. Try It Out
 
 In the Claude Code session, try these prompts to see the different behaviors:
 
@@ -165,7 +171,7 @@ allowed again. Each throttle rule maintains its own counter scoped to the
 rule name, namespace, and tenant -- so different rules never interfere with
 each other.
 
-### 8. Query Acteon via MCP
+### 9. Query Acteon via MCP
 
 Within the same Claude Code session, the Acteon MCP server is connected.
 Ask Claude to query it:
@@ -183,7 +189,7 @@ Ask Claude to query it:
 Claude Code will use the `mcp__acteon__query_audit`, `mcp__acteon__list_rules`,
 and other MCP tools to fetch live data from the running Acteon instance.
 
-### 9. End the Session
+### 10. End the Session
 
 When you exit Claude Code (Ctrl+C or `/exit`), the `Stop` hook fires and
 sends a Discord notification via Acteon with a summary of the session.

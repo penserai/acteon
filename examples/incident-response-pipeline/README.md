@@ -25,33 +25,34 @@ An end-to-end example exercising 14 Acteon features through an ops incident resp
 
 - PostgreSQL (for durable state + audit)
 - `jq` (for script output formatting)
-- `psql` (for event seeding in `manage-incident.sh`)
 
 ## Quick Start
 
 ```bash
 # 1. Start PostgreSQL
 docker compose --profile postgres up -d
-# (or use a local PostgreSQL: createdb acteon)
 
-# 2. Build and start Acteon
+# 2. Run database migrations
+scripts/migrate.sh -c examples/incident-response-pipeline/acteon.toml
+
+# 3. Start Acteon
 cargo run -p acteon-server --features postgres -- \
   -c examples/incident-response-pipeline/acteon.toml
 
-# 3. Setup API resources (quotas, retention, recurring)
+# 4. Setup API resources (quotas, retention, recurring)
 cd examples/incident-response-pipeline
 bash scripts/setup.sh
 
-# 4. Fire 20 sample alerts
+# 5. Fire 20 sample alerts
 bash scripts/send-alerts.sh
 
-# 5. Manage incident lifecycle (event state transitions)
+# 6. Manage incident lifecycle (event state transitions)
 bash scripts/manage-incident.sh
 
-# 6. View comprehensive report
+# 7. View comprehensive report
 bash scripts/show-report.sh
 
-# 7. Cleanup API resources
+# 8. Cleanup API resources
 bash scripts/teardown.sh
 ```
 
@@ -145,6 +146,6 @@ python3 -m http.server 9999
 ## Notes
 
 - **Log providers** return `{"provider": "<name>", "logged": true}`. Chain branching uses `body.logged == true` as a condition field.
-- **Event seeding** in `manage-incident.sh` requires `psql` access to write initial state. If `psql` is unavailable, the script falls back to dispatching an alert.
+- **Event seeding** in `manage-incident.sh` dispatches an alert through the API to create initial event state.
 - **Quota window** uses `"hourly"` string format. Other options: `"daily"`, `"weekly"`, `"monthly"`.
 - All audit payloads containing `api_key`, `webhook_url`, or `pagerduty_key` fields are automatically redacted to `[REDACTED]`.

@@ -7,7 +7,9 @@
 #
 # Requires PostgreSQL for durable state + audit:
 #   docker compose --profile postgres up -d
-#   (or use a local PostgreSQL: createdb acteon)
+#
+# Run migrations:
+#   scripts/migrate.sh -c examples/incident-response-pipeline/acteon.toml
 #
 # Start Acteon:
 #   cargo run -p acteon-server --features postgres -- -c examples/incident-response-pipeline/acteon.toml
