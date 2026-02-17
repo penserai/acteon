@@ -87,6 +87,26 @@ pub enum YamlCondition {
     Single(Box<YamlPredicate>),
 }
 
+/// A nested condition group that can only be `all` or `any`.
+///
+/// This breaks the mutual recursion between `YamlPredicate::Nested` and
+/// `YamlCondition::Single` that would otherwise cause a stack overflow
+/// when `serde(untagged)` encounters an unrecognized key.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum YamlNestedCondition {
+    /// All sub-predicates must be true (logical AND).
+    All {
+        /// The list of predicates that must all hold.
+        all: Vec<YamlPredicate>,
+    },
+    /// Any sub-predicate must be true (logical OR).
+    Any {
+        /// The list of predicates where at least one must hold.
+        any: Vec<YamlPredicate>,
+    },
+}
+
 /// A single predicate within a condition.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -134,7 +154,10 @@ pub enum YamlPredicate {
         wasm_function: String,
     },
     /// A nested condition (allows recursive `all` / `any` grouping).
-    Nested(Box<YamlCondition>),
+    ///
+    /// Uses `YamlNestedCondition` instead of `YamlCondition` to prevent
+    /// infinite recursion during deserialization.
+    Nested(Box<YamlNestedCondition>),
 }
 
 /// Describes which comparison operator to apply to a field or counter value.
@@ -756,5 +779,49 @@ rules:
             }
             other => panic!("expected Group, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unrecognized_condition_key_produces_error_not_stack_overflow() {
+        // Before the `YamlNestedCondition` fix, `not:` would trigger
+        // infinite mutual recursion between `YamlPredicate::Nested` and
+        // `YamlCondition::Single`, causing a stack overflow.
+        let yaml = r#"
+rules:
+  - name: bad-key
+    condition:
+      not:
+        field: action.action_type
+        eq: spam
+    action:
+      type: suppress
+"#;
+        let result: Result<YamlRuleFile, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "unrecognized condition key should produce a parse error"
+        );
+    }
+
+    #[test]
+    fn nested_all_inside_any_parses() {
+        let yaml = r#"
+rules:
+  - name: nested-groups
+    condition:
+      any:
+        - all:
+            - field: action.action_type
+              eq: "send_email"
+            - field: action.payload.to
+              contains: "@example.com"
+        - field: action.action_type
+          eq: "sms"
+    action:
+      type: allow
+"#;
+        let file: YamlRuleFile = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert!(matches!(file.rules[0].condition, YamlCondition::Any { .. }));
     }
 }

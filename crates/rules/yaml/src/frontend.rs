@@ -5,7 +5,8 @@ use acteon_rules::ir::rule::{Rule, RuleAction, RuleSource};
 use acteon_rules::{RuleError, RuleFrontend};
 
 use crate::parser::{
-    YamlAction, YamlCondition, YamlFieldOp, YamlPredicate, YamlRule, YamlRuleFile,
+    YamlAction, YamlCondition, YamlFieldOp, YamlNestedCondition, YamlPredicate, YamlRule,
+    YamlRuleFile,
 };
 use crate::template::parse_field_path;
 
@@ -69,23 +70,72 @@ fn compile_rule(yaml: YamlRule, file: Option<&Path>) -> Result<Rule, RuleError> 
     Ok(rule)
 }
 
+/// Maximum allowed nesting depth for condition expressions.
+const MAX_CONDITION_DEPTH: usize = 16;
+
 /// Compile a `YamlCondition` into an `Expr`.
 fn compile_condition(cond: &YamlCondition) -> Result<Expr, RuleError> {
+    compile_condition_inner(cond, 0)
+}
+
+/// Depth-limited compilation of a `YamlCondition`.
+fn compile_condition_inner(cond: &YamlCondition, depth: usize) -> Result<Expr, RuleError> {
+    if depth > MAX_CONDITION_DEPTH {
+        return Err(RuleError::Parse(
+            "condition nesting depth exceeded maximum of 16".to_owned(),
+        ));
+    }
     match cond {
         YamlCondition::All { all } => {
-            let exprs: Result<Vec<Expr>, RuleError> = all.iter().map(compile_predicate).collect();
+            let exprs: Result<Vec<Expr>, RuleError> = all
+                .iter()
+                .map(|p| compile_predicate_inner(p, depth))
+                .collect();
             Ok(Expr::All(exprs?))
         }
         YamlCondition::Any { any } => {
-            let exprs: Result<Vec<Expr>, RuleError> = any.iter().map(compile_predicate).collect();
+            let exprs: Result<Vec<Expr>, RuleError> = any
+                .iter()
+                .map(|p| compile_predicate_inner(p, depth))
+                .collect();
             Ok(Expr::Any(exprs?))
         }
-        YamlCondition::Single(pred) => compile_predicate(pred.as_ref()),
+        YamlCondition::Single(pred) => compile_predicate_inner(pred.as_ref(), depth),
     }
 }
 
-/// Compile a `YamlPredicate` into an `Expr`.
-fn compile_predicate(pred: &YamlPredicate) -> Result<Expr, RuleError> {
+/// Compile a `YamlNestedCondition` (only `all`/`any`) into an `Expr`.
+fn compile_nested_condition(cond: &YamlNestedCondition, depth: usize) -> Result<Expr, RuleError> {
+    if depth > MAX_CONDITION_DEPTH {
+        return Err(RuleError::Parse(
+            "condition nesting depth exceeded maximum of 16".to_owned(),
+        ));
+    }
+    match cond {
+        YamlNestedCondition::All { all } => {
+            let exprs: Result<Vec<Expr>, RuleError> = all
+                .iter()
+                .map(|p| compile_predicate_inner(p, depth))
+                .collect();
+            Ok(Expr::All(exprs?))
+        }
+        YamlNestedCondition::Any { any } => {
+            let exprs: Result<Vec<Expr>, RuleError> = any
+                .iter()
+                .map(|p| compile_predicate_inner(p, depth))
+                .collect();
+            Ok(Expr::Any(exprs?))
+        }
+    }
+}
+
+/// Depth-limited compilation of a `YamlPredicate`.
+fn compile_predicate_inner(pred: &YamlPredicate, depth: usize) -> Result<Expr, RuleError> {
+    if depth > MAX_CONDITION_DEPTH {
+        return Err(RuleError::Parse(
+            "condition nesting depth exceeded maximum of 16".to_owned(),
+        ));
+    }
     match pred {
         YamlPredicate::FieldCheck { field, op } => {
             let field_expr = parse_field_path(field)?;
@@ -145,7 +195,9 @@ fn compile_predicate(pred: &YamlPredicate) -> Result<Expr, RuleError> {
             plugin: wasm_plugin.clone(),
             function: wasm_function.clone(),
         }),
-        YamlPredicate::Nested(inner_cond) => compile_condition(inner_cond.as_ref()),
+        YamlPredicate::Nested(inner_cond) => {
+            compile_nested_condition(inner_cond.as_ref(), depth + 1)
+        }
     }
 }
 
@@ -1430,5 +1482,96 @@ rules:
         let rules = fe.parse(yaml).unwrap();
         let source = rules[0].condition.to_source();
         assert_eq!(source, r#"wasm("content-filter", "evaluate")"#);
+    }
+
+    #[test]
+    fn deeply_nested_conditions_beyond_limit_produce_error() {
+        use crate::parser::{YamlFieldOp, YamlNestedCondition, YamlPredicate};
+
+        // Build a deeply nested predicate tree that exceeds MAX_CONDITION_DEPTH.
+        // Each level wraps the previous in a `Nested(All(...))`.
+        let leaf = YamlPredicate::FieldCheck {
+            field: "x".to_owned(),
+            op: YamlFieldOp {
+                eq: Some(serde_json::json!(1)),
+                ne: None,
+                gt: None,
+                lt: None,
+                gte: None,
+                lte: None,
+                contains: None,
+                starts_with: None,
+                ends_with: None,
+                matches: None,
+                in_list: None,
+            },
+        };
+
+        // Wrap the leaf in 20 levels of Nested(All(...))
+        let mut pred = leaf;
+        for _ in 0..20 {
+            pred = YamlPredicate::Nested(Box::new(YamlNestedCondition::All { all: vec![pred] }));
+        }
+
+        let cond = YamlCondition::Single(Box::new(pred));
+        let result = compile_condition(&cond);
+        assert!(
+            result.is_err(),
+            "nesting depth > 16 should produce an error"
+        );
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("nesting depth exceeded"),
+            "error should mention nesting depth, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn nested_all_inside_any_compiles() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: nested-logic
+    condition:
+      any:
+        - all:
+            - field: action.action_type
+              eq: "send_email"
+            - field: action.payload.to
+              contains: "@example.com"
+        - field: action.action_type
+          eq: "sms"
+    action:
+      type: allow
+"#;
+        let rules = fe.parse(yaml).unwrap();
+        assert_eq!(rules.len(), 1);
+        match &rules[0].condition {
+            Expr::Any(exprs) => {
+                assert_eq!(exprs.len(), 2);
+                assert!(matches!(&exprs[0], Expr::All(inner) if inner.len() == 2));
+            }
+            other => panic!("expected Any, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unrecognized_condition_key_produces_parse_error() {
+        let fe = YamlFrontend;
+        let yaml = r#"
+rules:
+  - name: bad-key
+    condition:
+      not:
+        field: action.action_type
+        eq: spam
+    action:
+      type: suppress
+"#;
+        let result = fe.parse(yaml);
+        assert!(
+            result.is_err(),
+            "unrecognized condition key should produce a parse error"
+        );
     }
 }
