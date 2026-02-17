@@ -1,0 +1,12 @@
+# Safety rules: deny-by-default catch-all.
+
+rules:
+  # ── Catch-all: suppress anything not explicitly allowed ────────────────────
+  - name: deny-unmatched
+    priority: 100
+    description: "Block any action not matched by a higher-priority rule"
+    condition:
+      field: action.tenant
+      eq: "ops-team"
+    action:
+      type: suppress
