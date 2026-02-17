@@ -411,14 +411,12 @@ impl Gateway {
                 target_provider,
             } => self.handle_reroute(&action, target_provider).await?,
             RuleVerdict::Throttle {
-                rule: _,
-                max_count: _,
+                rule,
+                max_count,
                 window_seconds,
             } => {
-                self.metrics.increment_throttled();
-                ActionOutcome::Throttled {
-                    retry_after: Duration::from_secs(*window_seconds),
-                }
+                self.handle_throttle(&action, rule, *max_count, *window_seconds)
+                    .await?
             }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
@@ -1404,6 +1402,50 @@ impl Gateway {
                 Ok(result)
             }
             _ => Ok(result),
+        }
+    }
+
+    /// Handle the throttle verdict: counter-based rate limiting.
+    ///
+    /// Uses the state store to maintain a sliding-window counter per rule name
+    /// (scoped to namespace+tenant via [`StateKey`]). If the counter is within
+    /// `max_count`, the action executes; otherwise it is throttled. On state
+    /// store errors the method **fails open** (warns and executes).
+    #[instrument(name = "gateway.handle_throttle", skip(self, action), fields(%rule, %max_count, %window_seconds))]
+    async fn handle_throttle(
+        &self,
+        action: &Action,
+        rule: &str,
+        max_count: u64,
+        window_seconds: u64,
+    ) -> Result<ActionOutcome, GatewayError> {
+        let key = StateKey::new(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            KeyKind::RateLimit,
+            rule,
+        );
+        let ttl = Some(Duration::from_secs(window_seconds));
+
+        // Atomic increment; fail-open on state store errors.
+        let new_count = match self.state.increment(&key, 1, ttl).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(error = %e, "throttle increment failed (fail-open)");
+                return Ok(self.execute_action(action).await);
+            }
+        };
+
+        #[allow(clippy::cast_sign_loss)]
+        let used = new_count as u64;
+
+        if used <= max_count {
+            Ok(self.execute_action(action).await)
+        } else {
+            self.metrics.increment_throttled();
+            Ok(ActionOutcome::Throttled {
+                retry_after: Duration::from_secs(window_seconds),
+            })
         }
     }
 
@@ -3940,12 +3982,13 @@ impl Gateway {
                 target_provider,
             } => self.handle_reroute(action, target_provider).await,
             RuleVerdict::Throttle {
-                rule: _,
-                max_count: _,
+                rule,
+                max_count,
                 window_seconds,
-            } => Ok(ActionOutcome::Throttled {
-                retry_after: Duration::from_secs(*window_seconds),
-            }),
+            } => {
+                self.handle_throttle(action, rule, *max_count, *window_seconds)
+                    .await
+            }
             RuleVerdict::Modify { rule: _, changes } => {
                 let mut modified = action.clone();
                 json_patch::merge(&mut modified.payload, changes);
@@ -4996,16 +5039,27 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_throttle() {
+        let max = 5;
         let rules = vec![Rule::new(
             "rate-limit",
             Expr::Bool(true),
             RuleAction::Throttle {
-                max_count: 100,
+                max_count: max,
                 window_seconds: 60,
             },
         )];
         let gw = build_gateway(rules);
 
+        // First `max` dispatches should execute.
+        for i in 0..max {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "dispatch {i} should execute, got {outcome:?}"
+            );
+        }
+
+        // Next dispatch should be throttled.
         let outcome = gw.dispatch(test_action(), None).await.unwrap();
         match outcome {
             ActionOutcome::Throttled { retry_after } => {
@@ -5015,7 +5069,96 @@ mod tests {
         }
 
         let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, max);
         assert_eq!(snap.throttled, 1);
+    }
+
+    #[tokio::test]
+    async fn throttle_allows_up_to_max_count() {
+        let max = 3;
+        let rules = vec![Rule::new(
+            "exact-limit",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: max,
+                window_seconds: 120,
+            },
+        )];
+        let gw = build_gateway(rules);
+
+        for _ in 0..max {
+            let outcome = gw.dispatch(test_action(), None).await.unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, max);
+        assert_eq!(snap.throttled, 0);
+    }
+
+    #[tokio::test]
+    async fn throttle_different_rules_have_separate_counters() {
+        let rules_a = vec![Rule::new(
+            "limit-a",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: 1,
+                window_seconds: 60,
+            },
+        )];
+        let rules_b = vec![Rule::new(
+            "limit-b",
+            Expr::Bool(true),
+            RuleAction::Throttle {
+                max_count: 1,
+                window_seconds: 60,
+            },
+        )];
+
+        // Two gateways sharing the same state store but with different rule names.
+        let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
+        let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
+
+        let gw_a = GatewayBuilder::new()
+            .state(Arc::clone(&state))
+            .lock(Arc::clone(&lock))
+            .provider(Arc::new(MockProvider::new("email")))
+            .rules(rules_a)
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway a should build");
+        let gw_b = GatewayBuilder::new()
+            .state(Arc::clone(&state))
+            .lock(Arc::clone(&lock))
+            .provider(Arc::new(MockProvider::new("email")))
+            .rules(rules_b)
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway b should build");
+
+        // Both should allow their first dispatch.
+        let out_a = gw_a.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_a, ActionOutcome::Executed(_)));
+
+        let out_b = gw_b.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_b, ActionOutcome::Executed(_)));
+
+        // Both should throttle the second.
+        let out_a2 = gw_a.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_a2, ActionOutcome::Throttled { .. }));
+
+        let out_b2 = gw_b.dispatch(test_action(), None).await.unwrap();
+        assert!(matches!(out_b2, ActionOutcome::Throttled { .. }));
     }
 
     #[tokio::test]
@@ -6735,7 +6878,7 @@ mod tests {
             "rate-limit",
             Expr::Bool(true),
             RuleAction::Throttle {
-                max_count: 100,
+                max_count: 0,
                 window_seconds: 60,
             },
         )];

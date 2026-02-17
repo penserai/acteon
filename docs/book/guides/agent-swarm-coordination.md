@@ -6,6 +6,7 @@ pipeline, you gain centralized permission control, prompt injection defense, rat
 limiting, approval gates, failure isolation, and full observability -- without
 modifying the agents themselves.
 
+<<<<<<< HEAD
 !!! tip "Runnable Examples"
     The [`examples/agent-swarm-coordination/`](https://github.com/penserai/acteon/tree/main/examples/agent-swarm-coordination)
     directory contains a complete, runnable setup with Claude Code hooks, a
@@ -23,6 +24,15 @@ modifying the agents themselves.
     cd examples/agent-swarm-coordination/swarm
     ./run-swarm.sh
     ```
+=======
+!!! tip "Runnable Example"
+    Want to try this hands-on? The
+    [`examples/agent-swarm-coordination/`](https://github.com/penserai/acteon/tree/main/examples/agent-swarm-coordination)
+    directory contains a complete, runnable setup with Claude Code hooks, a
+    PostgreSQL-backed Acteon server, deterministic safety rules, rate limiting,
+    approval gates, and Discord notifications. Follow the README there to have a
+    governed agent session running in minutes.
+>>>>>>> 23ba3c9 (fix: implement counter-based throttle enforcement and link guide to example)
 
 ```mermaid
 flowchart LR
@@ -2074,7 +2084,11 @@ single deployment.
 
 ## 15. See Also
 
+<<<<<<< HEAD
 - [**Runnable Example**](https://github.com/penserai/acteon/tree/main/examples/agent-swarm-coordination) -- Single-agent and 3-agent swarm demos with hooks, rules, and PostgreSQL
+=======
+- [**Runnable Example**](https://github.com/penserai/acteon/tree/main/examples/agent-swarm-coordination) -- Complete working setup with hooks, rules, and PostgreSQL
+>>>>>>> 23ba3c9 (fix: implement counter-based throttle enforcement and link guide to example)
 - [Rule System](../concepts/rules.md) -- How rules are evaluated and matched
 - [The Dispatch Pipeline](../concepts/pipeline.md) -- Full pipeline stages
 - [Authentication](../api/authentication.md) -- API key and JWT configuration
