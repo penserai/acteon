@@ -6,6 +6,24 @@ pipeline, you gain centralized permission control, prompt injection defense, rat
 limiting, approval gates, failure isolation, and full observability -- without
 modifying the agents themselves.
 
+!!! tip "Runnable Examples"
+    The [`examples/agent-swarm-coordination/`](https://github.com/penserai/acteon/tree/main/examples/agent-swarm-coordination)
+    directory contains a complete, runnable setup with Claude Code hooks, a
+    PostgreSQL-backed Acteon server, safety rules, rate limiting, approval gates,
+    and Discord notifications. Follow the README there to have a governed agent
+    session running in minutes.
+
+    For a multi-agent demo, the `swarm/` subdirectory launches **three concurrent
+    headless Claude Code sessions** (api-builder, test-writer, security-auditor)
+    that share the same Acteon tenant. They collide through throttle counters,
+    dedup keys, quotas, suppress rules, and approval gates -- with a post-run
+    collision report showing the outcome breakdown. Run it with:
+
+    ```bash
+    cd examples/agent-swarm-coordination/swarm
+    ./run-swarm.sh
+    ```
+
 ```mermaid
 flowchart LR
     subgraph Agents
@@ -2056,6 +2074,7 @@ single deployment.
 
 ## 15. See Also
 
+- [**Runnable Example**](https://github.com/penserai/acteon/tree/main/examples/agent-swarm-coordination) -- Single-agent and 3-agent swarm demos with hooks, rules, and PostgreSQL
 - [Rule System](../concepts/rules.md) -- How rules are evaluated and matched
 - [The Dispatch Pipeline](../concepts/pipeline.md) -- Full pipeline stages
 - [Authentication](../api/authentication.md) -- API key and JWT configuration
