@@ -17,6 +17,7 @@ ACTEON_URL="${ACTEON_URL:-http://localhost:8080}"
 AGENTS=("api-builder" "test-writer" "security-auditor")
 PIDS=()
 QUOTA_ID="q-swarm-demo"
+QUOTA_CREATED=false
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -37,10 +38,13 @@ cleanup() {
     rm -rf "$SCRIPT_DIR/workspaces/$agent"
   done
 
-  # Delete the demo quota
-  curl -s -X DELETE "$ACTEON_URL/v1/quotas/$QUOTA_ID" \
-    ${ACTEON_AGENT_KEY:+-H "Authorization: Bearer $ACTEON_AGENT_KEY"} \
-    > /dev/null 2>&1 || true
+  # Only delete the quota if this script created it
+  if [ "$QUOTA_CREATED" = true ]; then
+    curl -s -X DELETE "$ACTEON_URL/v1/quotas/$QUOTA_ID" \
+      ${ACTEON_AGENT_KEY:+-H "Authorization: Bearer $ACTEON_AGENT_KEY"} \
+      > /dev/null 2>&1 || true
+    echo "  Removed demo quota ($QUOTA_ID)"
+  fi
 
   echo "Done."
 }
@@ -80,7 +84,7 @@ echo "[ok] jq found"
 
 echo ""
 echo "Creating tenant-wide quota: 30 actions / 2 minutes..."
-curl -sf -X POST "$ACTEON_URL/v1/quotas" \
+QUOTA_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$ACTEON_URL/v1/quotas" \
   -H "Content-Type: application/json" \
   ${ACTEON_AGENT_KEY:+-H "Authorization: Bearer $ACTEON_AGENT_KEY"} \
   -d "{
@@ -92,9 +96,16 @@ curl -sf -X POST "$ACTEON_URL/v1/quotas" \
     \"overage_behavior\": \"block\",
     \"enabled\": true,
     \"description\": \"Swarm demo: 30 actions per 2 minutes across all agents\"
-  }" > /dev/null 2>&1 || echo "(quota may already exist, continuing)"
+  }" 2>/dev/null) || true
 
-echo "[ok] Quota policy created"
+if [ "$QUOTA_HTTP" = "200" ] || [ "$QUOTA_HTTP" = "201" ]; then
+  QUOTA_CREATED=true
+  echo "[ok] Quota policy created (will be removed on exit)"
+elif [ "$QUOTA_HTTP" = "409" ]; then
+  echo "[ok] Quota $QUOTA_ID already exists (will NOT be removed on exit)"
+else
+  echo "[warn] Quota creation returned HTTP $QUOTA_HTTP -- continuing without quota"
+fi
 
 # ── Prepare workspaces ──────────────────────────────────────────────────────
 
@@ -146,7 +157,10 @@ done
 
 echo ""
 echo "Waiting for all agents to finish..."
-echo "  (monitor progress: tail -f $SCRIPT_DIR/workspaces/*.stderr.log)"
+echo ""
+echo "  Watch collisions in real-time (in another terminal):"
+echo "    curl -N '$ACTEON_URL/v1/events/stream?namespace=agent-swarm&tenant=claude-code-agent'"
+echo "  Or open the Acteon Dashboard at $ACTEON_URL/ui"
 echo ""
 
 FAILED=0
