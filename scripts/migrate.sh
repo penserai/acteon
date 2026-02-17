@@ -97,7 +97,7 @@ fi
 # ── Auto-detect backend from config if not specified ─────────────────────────
 if [[ -z "$BACKEND" ]]; then
   # Extract state.backend from TOML (simple grep — works for flat config)
-  BACKEND=$(grep -E '^\s*backend\s*=' "$CONFIG_FILE" | head -1 | sed 's/.*=\s*"\([^"]*\)".*/\1/' || true)
+  BACKEND=$(grep -E '^[[:space:]]*backend[[:space:]]*=' "$CONFIG_FILE" | head -1 | sed 's/.*=[[:space:]]*"\([^"]*\)".*/\1/' || true)
   if [[ -z "$BACKEND" ]]; then
     BACKEND="memory"
   fi
