@@ -10,10 +10,11 @@ approval, and a Discord notification fires when the session completes.
 
 1. **Acteon hooks** intercept every Claude Code tool call via `PreToolUse`
 2. **Deterministic rules** block dangerous commands and sensitive file access
-3. **Human-in-the-loop** approval gate for `git push` and deploy operations
-4. **Discord notification** when the agent run completes (via `Stop` hook)
-5. **PostgreSQL state + audit** provides durable storage for dedup state, approval state, and full audit trail -- shared across multiple agents
-6. **MCP integration** lets you query Acteon audit/rules/events from within the Claude Code session
+3. **Rate limiting** throttles command execution to 20/minute to prevent runaway loops
+4. **Human-in-the-loop** approval gate for `git push` and deploy operations
+5. **Discord notification** when the agent run completes (via `Stop` hook)
+6. **PostgreSQL state + audit** provides durable storage for dedup state, approval state, and full audit trail -- shared across multiple agents
+7. **MCP integration** lets you query Acteon audit/rules/events from within the Claude Code session
 
 ## Architecture
 
@@ -127,6 +128,43 @@ In the Claude Code session, try these prompts to see the different behaviors:
 When the rule requires approval, check the Acteon server logs for the
 approval URL. Open it in your browser to approve or reject.
 
+#### Testing Rate Limiting
+
+The `throttle-commands` rule limits `execute_command` actions to 20 per
+minute. To see it in action, ask Claude Code to run many commands in quick
+succession:
+
+```
+> Run these commands one by one: echo 1, echo 2, echo 3, ... up to echo 25
+```
+
+The first 20 commands will execute normally. Starting from the 21st, Claude
+Code will see `Blocked by Acteon: throttle-commands` until the 60-second
+window resets. You can also test this directly with `curl`:
+
+```bash
+# Dispatch 21 actions rapidly -- the 21st should be throttled
+for i in $(seq 1 21); do
+  curl -s -X POST http://localhost:8080/v1/dispatch \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $ACTEON_AGENT_KEY" \
+    -d "{
+      \"namespace\": \"agent-swarm\",
+      \"tenant\": \"claude-code-agent\",
+      \"provider\": \"claude-code\",
+      \"action_type\": \"execute_command\",
+      \"payload\": {\"command\": \"echo $i\"}
+    }" | jq -r ".outcome"
+done
+```
+
+Expected output: 20 lines of `executed`, then `throttled`.
+
+After the window expires (60 seconds), the counter resets and commands are
+allowed again. Each throttle rule maintains its own counter scoped to the
+rule name, namespace, and tenant -- so different rules never interfere with
+each other.
+
 ### 8. Query Acteon via MCP
 
 Within the same Claude Code session, the Acteon MCP server is connected.
@@ -175,6 +213,8 @@ agent-swarm-coordination/
 
 - **Add your own rules**: Edit `rules/agent-safety.yaml` to allow/block
   different operations
+- **Tune rate limits**: Adjust `max_count` and `window_seconds` on the
+  `throttle-commands` rule, or add per-action-type throttle rules
 - **Change the Discord webhook**: Update `DISCORD_WEBHOOK_URL` in your
   environment
 - **Switch to a real project**: Copy the `.claude/` directory and `.mcp.json`

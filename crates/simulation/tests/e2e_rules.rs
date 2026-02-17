@@ -311,10 +311,15 @@ mod throttling {
             serde_json::json!({"count": 1000}),
         );
 
-        let outcome = harness.dispatch(&action).await.expect("dispatch");
+        // First 10 dispatches should execute (max_count=10).
+        for _ in 0..10 {
+            let outcome = harness.dispatch(&action).await.expect("dispatch");
+            outcome.assert_executed();
+        }
 
+        // The 11th dispatch should be throttled.
+        let outcome = harness.dispatch(&action).await.expect("dispatch");
         outcome.assert_throttled();
-        harness.provider("email").unwrap().assert_not_called();
 
         harness.teardown().await.unwrap();
     }
