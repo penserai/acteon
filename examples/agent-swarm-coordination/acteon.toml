@@ -1,13 +1,15 @@
 # Agent Swarm Coordination example.
 #
-# In-memory state + Elasticsearch audit.
+# PostgreSQL for both state and audit (durable across restarts).
+# Supports multiple agents sharing a single Acteon instance.
 # Discord webhook for agent completion notifications.
 #
-# Start Elasticsearch:
-#   docker compose --profile elasticsearch up -d
+# Start PostgreSQL:
+#   docker compose --profile postgres up -d
+#   (or use a local PostgreSQL: createdb acteon)
 #
 # Start Acteon:
-#   cargo run -p acteon-server -- -c examples/agent-swarm-coordination/acteon.toml
+#   cargo run -p acteon-server --features postgres -- -c examples/agent-swarm-coordination/acteon.toml
 
 [server]
 host = "127.0.0.1"
@@ -16,16 +18,16 @@ port = 8080
 # HMAC secret for signing approval URLs (hex-encoded, 256-bit).
 approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
-# ─── State (in-memory, no external deps) ───────────────────────────────────
+# ─── State (PostgreSQL -- shared across agents, durable) ──────────────────
 [state]
-backend = "memory"
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
 
-# ─── Audit (Elasticsearch) ─────────────────────────────────────────────────
+# ─── Audit (PostgreSQL -- durable across restarts) ────────────────────────
 [audit]
 enabled = true
-backend = "elasticsearch"
-url = "http://localhost:9200"
-prefix = "acteon_agent_"
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
 store_payload = true
 ttl_seconds = 604800   # 7 days
 
@@ -70,14 +72,7 @@ success_threshold = 1
 recovery_timeout_seconds = 30
 
 # ─── Quotas ─────────────────────────────────────────────────────────────────
-
-# Claude Code agent: 200 tool calls per hour
-[[quotas]]
-id = "q-claude-code-hourly"
-namespace = "agent-swarm"
-tenant = "claude-code-agent"
-max_actions = 200
-window = "hourly"
-overage_behavior = "block"
+# Quota enforcement is enabled; actual policies are created via the API:
+#   POST /v1/quotas { "namespace": "agent-swarm", "tenant": "claude-code-agent", ... }
+[quotas]
 enabled = true
-description = "Claude Code agent hourly cap"

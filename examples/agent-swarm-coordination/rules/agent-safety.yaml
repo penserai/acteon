@@ -18,27 +18,39 @@ rules:
         - field: action.action_type
           eq: "execute_command"
         - field: action.payload.command
-          regex: "(rm\\s+-rf|rm\\s+-r\\s+/|mkfs|dd\\s+if=|:\\(\\)\\{|chmod\\s+-R\\s+777)"
+          matches: "(rm\\s+-rf|rm\\s+-r\\s+/|mkfs|dd\\s+if=|:\\(\\)\\{|chmod\\s+-R\\s+777)"
     action:
       type: suppress
-      reason: "Destructive shell command blocked"
 
-  # ── Block sensitive file access ──────────────────────────────────────────
-  - name: block-sensitive-file-reads
+  # ── Block sensitive file reads via commands ─────────────────────────────
+  - name: block-sensitive-command-reads
     priority: 1
-    description: "Block reading .env, .ssh, credentials, and shadow files"
+    description: "Block commands that read .env, .ssh, credentials, or shadow files"
     condition:
       all:
         - field: action.tenant
           eq: "claude-code-agent"
-        - any:
-            - field: action.payload.command
-              regex: "(cat|head|tail|less|more|bat)\\s.*(\\. env|\\.ssh/|/etc/shadow|credentials)"
-            - field: action.payload.file_path
-              regex: "(\\.env|\\.ssh/|credentials|/etc/shadow)"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          matches: "(cat|head|tail|less|more|bat)\\s.*(\\.env|\\.ssh/|/etc/shadow|credentials)"
     action:
       type: suppress
-      reason: "Sensitive file access blocked"
+
+  # ── Block sensitive file path reads (write_file actions) ────────────────
+  - name: block-sensitive-file-reads
+    priority: 1
+    description: "Block reading sensitive file paths"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "claude-code-agent"
+        - field: action.action_type
+          eq: "write_file"
+        - field: action.payload.file_path
+          matches: "(\\.env|\\.ssh/|credentials|/etc/shadow)"
+    action:
+      type: suppress
 
   # ── Block writes to sensitive paths ──────────────────────────────────────
   - name: block-sensitive-file-writes
@@ -51,15 +63,16 @@ rules:
         - field: action.action_type
           eq: "write_file"
         - field: action.payload.file_path
-          regex: "(\\.env|\\.ssh|credentials|\\bci/|\\.github/workflows|\\.gitconfig|\\.bashrc|\\.zshrc)"
+          matches: "(\\.env|\\.ssh|credentials|\\bci/|\\.github/workflows|\\.gitconfig|\\.bashrc|\\.zshrc)"
     action:
       type: suppress
-      reason: "Write to sensitive path blocked"
 
   # ── Block data exfiltration ──────────────────────────────────────────────
+  # Blocks curl/wget/nc to any external URL. In an agent context, all outbound
+  # HTTP should be routed through approved providers, not raw shell commands.
   - name: block-data-exfiltration
     priority: 1
-    description: "Block curl/wget to unknown external hosts"
+    description: "Block curl/wget/nc to any external URL"
     condition:
       all:
         - field: action.tenant
@@ -67,13 +80,9 @@ rules:
         - field: action.action_type
           eq: "execute_command"
         - field: action.payload.command
-          regex: "(curl|wget|fetch|nc|ncat)\\s.*https?://"
-        - not:
-            field: action.payload.command
-            regex: "https?://(localhost|127\\.0\\.0\\.1|internal\\.|api\\.github\\.com|pypi\\.org|npmjs\\.com)"
+          matches: "(curl|wget|fetch|nc|ncat)\\s.*https?://"
     action:
       type: suppress
-      reason: "Outbound HTTP to unknown host blocked"
 
   # ── Block shell injection patterns ───────────────────────────────────────
   - name: block-shell-injection
@@ -86,33 +95,24 @@ rules:
         - field: action.action_type
           eq: "execute_command"
         - field: action.payload.command
-          regex: "(;|&&|\\|\\||\\$\\(|`).*(curl|wget|nc|ncat|bash\\s+-c|python\\s+-c)"
+          matches: "(;|&&|\\|\\||\\$\\(|`).*(curl|wget|nc|ncat|bash\\s+-c|python\\s+-c)"
     action:
       type: suppress
-      reason: "Shell injection pattern detected"
 
-  # ── Block known injection phrases in payloads ────────────────────────────
+  # ── Block known injection phrases in commands ──────────────────────────
   - name: block-injection-phrases
     priority: 1
-    description: "Block payloads containing prompt injection patterns"
+    description: "Block commands containing prompt injection patterns"
     condition:
       all:
         - field: action.tenant
           eq: "claude-code-agent"
-        - any:
-            - field: action.payload.content
-              contains: "ignore previous instructions"
-            - field: action.payload.content
-              contains: "ignore all prior"
-            - field: action.payload.content
-              contains: "you are now"
-            - field: action.payload.content
-              contains: "system prompt:"
-            - field: action.payload.command
-              contains: "ignore previous instructions"
+        - field: action.action_type
+          eq: "execute_command"
+        - field: action.payload.command
+          contains: "ignore previous instructions"
     action:
       type: suppress
-      reason: "Prompt injection phrase detected"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # HUMAN-IN-THE-LOOP: Approval gates for high-risk operations
@@ -129,11 +129,12 @@ rules:
         - field: action.action_type
           eq: "execute_command"
         - field: action.payload.command
-          regex: "git\\s+push"
+          matches: "git\\s+push"
     action:
-      type: require_approval
+      type: request_approval
+      notify_provider: "claude-code"
+      timeout_seconds: 600
       message: "Claude Code wants to push to a remote repository. Review and approve."
-      ttl_seconds: 600
 
   # ── Deploy commands require human approval ───────────────────────────────
   - name: approve-deploy-commands
@@ -146,11 +147,12 @@ rules:
         - field: action.action_type
           eq: "execute_command"
         - field: action.payload.command
-          regex: "(kubectl\\s+apply|terraform\\s+apply|docker\\s+push|deploy)"
+          matches: "(kubectl\\s+apply|terraform\\s+apply|docker\\s+push|deploy)"
     action:
-      type: require_approval
+      type: request_approval
+      notify_provider: "claude-code"
+      timeout_seconds: 600
       message: "Claude Code wants to run a deploy command. Review and approve."
-      ttl_seconds: 600
 
   # ── Package install requires human approval ──────────────────────────────
   - name: approve-package-install
@@ -163,11 +165,12 @@ rules:
         - field: action.action_type
           eq: "execute_command"
         - field: action.payload.command
-          regex: "(pip\\s+install|npm\\s+install|cargo\\s+add|brew\\s+install)"
+          matches: "(pip\\s+install|npm\\s+install|cargo\\s+add|brew\\s+install)"
     action:
-      type: require_approval
+      type: request_approval
+      notify_provider: "claude-code"
+      timeout_seconds: 300
       message: "Claude Code wants to install packages. Verify the packages are safe."
-      ttl_seconds: 300
 
   # ═══════════════════════════════════════════════════════════════════════════
   # THROTTLE: Rate limits per action type
@@ -187,7 +190,6 @@ rules:
       type: throttle
       max_count: 20
       window_seconds: 60
-      message: "Command execution rate limit exceeded"
 
   # ═══════════════════════════════════════════════════════════════════════════
   # ALLOW: Permitted operations
@@ -202,7 +204,7 @@ rules:
         - field: action.tenant
           eq: "claude-code-agent"
         - field: action.action_type
-          in: ["write_file", "execute_command", "web_access", "spawn_agent"]
+          in_list: ["write_file", "execute_command", "web_access", "spawn_agent"]
     action:
       type: allow
 
@@ -218,4 +220,3 @@ rules:
       eq: "claude-code-agent"
     action:
       type: suppress
-      reason: "No matching permission rule for this action"

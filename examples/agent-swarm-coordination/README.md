@@ -12,7 +12,7 @@ approval, and a Discord notification fires when the session completes.
 2. **Deterministic rules** block dangerous commands and sensitive file access
 3. **Human-in-the-loop** approval gate for `git push` and deploy operations
 4. **Discord notification** when the agent run completes (via `Stop` hook)
-5. **Elasticsearch audit** records every action for compliance querying
+5. **PostgreSQL state + audit** provides durable storage for throttle counters, dedup state, and full audit trail -- shared across multiple agents
 6. **MCP integration** lets you query Acteon audit/rules/events from within the Claude Code session
 
 ## Architecture
@@ -25,7 +25,7 @@ Claude Code (in dummy-project/)
     |                                         Rule Engine
     |                                         (deterministic + approval)
     |                                              |
-    |                                         Elasticsearch audit
+    |                                         PostgreSQL (state + audit)
     |
     |-- Stop hook ---------> notify-complete.sh -> POST /v1/dispatch (Acteon)
     |                                              |
@@ -37,23 +37,23 @@ Claude Code (in dummy-project/)
 ## Prerequisites
 
 - Rust 1.88+ and Cargo
-- Docker and Docker Compose (for Elasticsearch)
+- Docker and Docker Compose (for PostgreSQL audit backend)
 - Claude Code CLI (`claude`)
 - A Discord webhook URL (create one in Discord > Server Settings > Integrations > Webhooks)
 
 ## Quick Start
 
-### 1. Start Elasticsearch
+### 1. Start PostgreSQL
 
 ```bash
 cd /path/to/acteon
-docker compose --profile elasticsearch up -d
+docker compose --profile postgres up -d
 ```
 
 ### 2. Start Acteon
 
 ```bash
-cargo run -p acteon-server -- -c examples/agent-swarm-coordination/acteon.toml
+cargo run -p acteon-server --features postgres -- -c examples/agent-swarm-coordination/acteon.toml
 ```
 
 Wait for `Listening on 127.0.0.1:8080`.
@@ -146,7 +146,7 @@ sends a Discord notification via Acteon with a summary of the session.
 ```
 agent-swarm-coordination/
   README.md                          # This file
-  acteon.toml                        # Acteon server config (memory state + ES audit)
+  acteon.toml                        # Acteon server config (PG state + PG audit)
   rules/
     agent-safety.yaml                # Deterministic + approval + throttle rules
     session-events.yaml              # Discord notification + dedup rules
