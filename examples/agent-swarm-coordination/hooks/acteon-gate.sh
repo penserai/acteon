@@ -5,10 +5,12 @@
 #
 # Environment:
 #   ACTEON_URL       - Acteon gateway URL (default: http://localhost:8080)
-#   ACTEON_AGENT_KEY - API key for the claude-code-agent tenant
+#   ACTEON_AGENT_KEY  - API key for the claude-code-agent tenant
+#   ACTEON_AGENT_ROLE - Agent role identifier (default: "coding")
 set -e
 
 ACTEON_URL="${ACTEON_URL:-http://localhost:8080}"
+AGENT_ROLE="${ACTEON_AGENT_ROLE:-coding}"
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name')
@@ -39,8 +41,21 @@ case "$TOOL_NAME" in
 esac
 
 # ── Build dedup key ────────────────────────────────────────────────────────
-DEDUP_HASH=$(echo -n "$TOOL_INPUT" | md5sum 2>/dev/null | cut -d' ' -f1 || echo -n "$TOOL_INPUT" | md5 2>/dev/null)
-DEDUP_KEY="$SESSION_ID-$ACTION_TYPE-${DEDUP_HASH:-none}"
+# For write_file actions, use a file-path-based key so cross-session writes
+# to the same file are deduplicated. Other actions use session-scoped keys.
+if [ "$ACTION_TYPE" = "write_file" ]; then
+  FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // .path // ""')
+  if [ -n "$FILE_PATH" ]; then
+    FILE_PATH_HASH=$(echo -n "$FILE_PATH" | md5sum 2>/dev/null | cut -d' ' -f1 || echo -n "$FILE_PATH" | md5 2>/dev/null)
+    DEDUP_KEY="write-${FILE_PATH_HASH:-none}"
+  else
+    DEDUP_HASH=$(echo -n "$TOOL_INPUT" | md5sum 2>/dev/null | cut -d' ' -f1 || echo -n "$TOOL_INPUT" | md5 2>/dev/null)
+    DEDUP_KEY="$SESSION_ID-$ACTION_TYPE-${DEDUP_HASH:-none}"
+  fi
+else
+  DEDUP_HASH=$(echo -n "$TOOL_INPUT" | md5sum 2>/dev/null | cut -d' ' -f1 || echo -n "$TOOL_INPUT" | md5 2>/dev/null)
+  DEDUP_KEY="$SESSION_ID-$ACTION_TYPE-${DEDUP_HASH:-none}"
+fi
 
 # ── Generate action ID and timestamp ─────────────────────────────────────
 ACTION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
@@ -60,7 +75,7 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$ACTEON_URL/v1/dispatch" \
     \"metadata\": {
       \"tool_name\": \"$TOOL_NAME\",
       \"session_id\": \"$SESSION_ID\",
-      \"agent_role\": \"coding\"
+      \"agent_role\": \"$AGENT_ROLE\"
     },
     \"created_at\": \"$CREATED_AT\",
     \"dedup_key\": \"$DEDUP_KEY\"
@@ -106,6 +121,15 @@ case "$OUTCOME" in
   Throttled)
     RETRY=$(echo "$BODY" | jq -r '.Throttled.retry_after.secs // "unknown"')
     echo "Rate limited -- retry after ${RETRY}s" >&2
+    exit 2
+    ;;
+  Rerouted)
+    TARGET=$(echo "$BODY" | jq -r '.Rerouted.target_provider // "unknown"')
+    echo "Action rerouted to '$TARGET'" >&2
+    exit 0
+    ;;
+  QuotaExceeded)
+    echo "Tenant quota exceeded -- action blocked" >&2
     exit 2
     ;;
   *)

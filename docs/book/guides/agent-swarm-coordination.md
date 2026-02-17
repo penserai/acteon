@@ -14,6 +14,17 @@ modifying the agents themselves.
     approval gates, and Discord notifications. Follow the README there to have a
     governed agent session running in minutes.
 
+    For a multi-agent demo, the `swarm/` subdirectory launches **three concurrent
+    headless Claude Code sessions** (api-builder, test-writer, security-auditor)
+    that share the same Acteon tenant. They collide through throttle counters,
+    dedup keys, quotas, suppress rules, and approval gates -- with a post-run
+    collision report showing the outcome breakdown. Run it with:
+
+    ```bash
+    cd examples/agent-swarm-coordination/swarm
+    ./run-swarm.sh
+    ```
+
 ```mermaid
 flowchart LR
     subgraph Agents

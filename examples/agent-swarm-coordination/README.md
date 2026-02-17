@@ -10,7 +10,7 @@ approval, and a Discord notification fires when the session completes.
 
 1. **Acteon hooks** intercept every Claude Code tool call via `PreToolUse`
 2. **Deterministic rules** block dangerous commands and sensitive file access
-3. **Rate limiting** throttles command execution to 20/minute to prevent runaway loops
+3. **Rate limiting** throttles command execution to 12/minute to prevent runaway loops
 4. **Human-in-the-loop** approval gate for `git push` and deploy operations
 5. **Discord notification** when the agent run completes (via `Stop` hook)
 6. **PostgreSQL state + audit** provides durable storage for dedup state, approval state, and full audit trail -- shared across multiple agents
@@ -130,21 +130,21 @@ approval URL. Open it in your browser to approve or reject.
 
 #### Testing Rate Limiting
 
-The `throttle-commands` rule limits `execute_command` actions to 20 per
+The `throttle-commands` rule limits `execute_command` actions to 12 per
 minute. To see it in action, ask Claude Code to run many commands in quick
 succession:
 
 ```
-> Run these commands one by one: echo 1, echo 2, echo 3, ... up to echo 25
+> Run these commands one by one: echo 1, echo 2, echo 3, ... up to echo 15
 ```
 
-The first 20 commands will execute normally. Starting from the 21st, Claude
+The first 12 commands will execute normally. Starting from the 13th, Claude
 Code will see `Blocked by Acteon: throttle-commands` until the 60-second
 window resets. You can also test this directly with `curl`:
 
 ```bash
-# Dispatch 21 actions rapidly -- the 21st should be throttled
-for i in $(seq 1 21); do
+# Dispatch 15 actions rapidly -- the 13th should be throttled
+for i in $(seq 1 15); do
   curl -s -X POST http://localhost:8080/v1/dispatch \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $ACTEON_AGENT_KEY" \
@@ -158,7 +158,7 @@ for i in $(seq 1 21); do
 done
 ```
 
-Expected output: 20 lines of `executed`, then `throttled`.
+Expected output: 12 lines of `executed`, then `throttled`.
 
 After the window expires (60 seconds), the counter resets and commands are
 allowed again. Each throttle rule maintains its own counter scoped to the
@@ -197,9 +197,18 @@ agent-swarm-coordination/
   rules/
     agent-safety.yaml                # Deterministic block + approval gate rules
     session-events.yaml              # Discord notification + dedup rules
+    swarm-collisions.yaml            # Cross-agent collision rules (dedup, throttle, reroute)
   hooks/
     acteon-gate.sh                   # PreToolUse hook: dispatches to Acteon
     notify-complete.sh               # Stop hook: sends Discord notification
+  swarm/
+    run-swarm.sh                     # Orchestrator: launches 3 headless sessions
+    show-collisions.sh               # Post-run audit analysis and collision report
+    prompts/
+      api-builder.md                 # Prompt for Agent 1 (REST endpoint builder)
+      test-writer.md                 # Prompt for Agent 2 (pytest test writer)
+      security-auditor.md            # Prompt for Agent 3 (security auditor)
+    workspaces/                      # Created at runtime (one per agent)
   dummy-project/
     server.py                        # Starter Python file for vibe coding
     requirements.txt                 # Python dependencies
@@ -207,6 +216,100 @@ agent-swarm-coordination/
       settings.json                  # Claude Code hooks configuration
     .mcp.json                        # MCP server configuration (Acteon)
     CLAUDE.md                        # Agent behavioral constraints
+```
+
+## Multi-Agent Swarm Demo
+
+The `swarm/` directory contains a 3-agent demo that runs concurrent headless
+Claude Code sessions against the same Acteon instance. All three agents share
+the same tenant (`claude-code-agent`), so they compete for throttle counters,
+dedup state, and quota budgets -- creating observable collisions.
+
+### The Three Agents
+
+| Agent | Role | Task | Expected Collisions |
+|-------|------|------|---------------------|
+| api-builder | Add REST endpoints | Adds `/health`, `/users` endpoints, tests with curl | Throttle (burns command budget), allow |
+| test-writer | Write pytest tests | Installs pytest, writes tests, runs them | Approval (pip install), throttle, dedup |
+| security-auditor | Audit for vulnerabilities | Reads .env, runs scanning tools, checks permissions | Suppress (blocked patterns), reroute (security tools) |
+
+### Running the Swarm
+
+```bash
+# Make sure Acteon is running first (see Quick Start above)
+cd examples/agent-swarm-coordination/swarm
+chmod +x run-swarm.sh show-collisions.sh
+./run-swarm.sh
+```
+
+The orchestrator will:
+1. Create a tenant-wide quota (30 actions / 2 minutes)
+2. Copy `dummy-project/` into 3 isolated workspaces
+3. Launch 3 headless Claude Code sessions in parallel
+4. Wait for all sessions to finish
+5. Query the Acteon audit trail and display a collision report
+
+### What to Expect
+
+With 3 agents generating ~35-40 total dispatches against a 12/min command
+throttle and 25/min swarm-wide throttle:
+
+- **Throttle collisions**: Around dispatch #12, command execution starts
+  getting rate-limited. The swarm-wide throttle kicks in around #25.
+- **Dedup collisions**: If two agents write to the same file (e.g., both
+  modify `server.py`), the second write is deduplicated.
+- **Suppress events**: The security-auditor's `.env` reads and curl commands
+  hit block rules.
+- **Reroute events**: Security scanning tools (`bandit`, `pip-audit`) are
+  rerouted to a review queue.
+- **Approval gates**: `pip install` triggers an approval requirement.
+- **Quota exceeded**: Late-phase actions may hit the 30-action tenant quota.
+
+### Collision Report
+
+After the agents finish, the collision report shows:
+
+```
+Total dispatches: 38
+
+Outcome breakdown:
+  executed: 22
+  throttled: 7
+  suppressed: 5
+  rerouted: 2
+  deduplicated: 1
+  pending_approval: 1
+
+Per-agent breakdown:
+  api-builder (14 actions): executed=10, throttled=4
+  test-writer (12 actions): executed=8, throttled=2, pending_approval=1, deduplicated=1
+  security-auditor (12 actions): executed=4, suppressed=5, rerouted=2, throttled=1
+```
+
+(Exact numbers vary based on timing and agent behavior.)
+
+### Running Without Claude Code
+
+You can test the collision mechanics without Claude Code sessions by
+dispatching actions directly with curl:
+
+```bash
+# Rapid-fire 15 commands to see throttle and quota collisions
+for i in $(seq 1 15); do
+  curl -s http://localhost:8080/v1/dispatch \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"namespace\":\"agent-swarm\",
+      \"tenant\":\"claude-code-agent\",
+      \"provider\":\"claude-code\",
+      \"action_type\":\"execute_command\",
+      \"payload\":{\"command\":\"echo $i\"},
+      \"metadata\":{\"agent_role\":\"manual-test\"}
+    }" | jq -r 'keys[0]'
+done
+
+# Then check the audit
+./show-collisions.sh
 ```
 
 ## Customization

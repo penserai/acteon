@@ -4,10 +4,12 @@
 #
 # Environment:
 #   ACTEON_URL       - Acteon gateway URL (default: http://localhost:8080)
-#   ACTEON_AGENT_KEY - API key for the claude-code-agent tenant
+#   ACTEON_AGENT_KEY  - API key for the claude-code-agent tenant
+#   ACTEON_AGENT_ROLE - Agent role identifier (default: "coding")
 set -e
 
 ACTEON_URL="${ACTEON_URL:-http://localhost:8080}"
+AGENT_ROLE="${ACTEON_AGENT_ROLE:-coding}"
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
@@ -33,13 +35,15 @@ curl -s -X POST "$ACTEON_URL/v1/dispatch" \
         \"fields\": [
           {\"name\": \"Session\", \"value\": \"$SESSION_ID\", \"inline\": true},
           {\"name\": \"Timestamp\", \"value\": \"$TIMESTAMP\", \"inline\": true},
-          {\"name\": \"Agent\", \"value\": \"claude-code-agent\", \"inline\": true}
+          {\"name\": \"Agent\", \"value\": \"claude-code-agent\", \"inline\": true},
+          {\"name\": \"Role\", \"value\": \"$AGENT_ROLE\", \"inline\": true}
         ],
         \"footer\": {\"text\": \"Acteon Agent Swarm\"}
       }]
     },
     \"metadata\": {
       \"session_id\": \"$SESSION_ID\",
+      \"agent_role\": \"$AGENT_ROLE\",
       \"event\": \"session_complete\"
     },
     \"dedup_key\": \"session-complete-$SESSION_ID\"

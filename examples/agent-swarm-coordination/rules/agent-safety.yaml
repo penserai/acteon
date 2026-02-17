@@ -179,7 +179,7 @@ rules:
   # ── Rate-limit command execution ───────────────────────────────────────
   - name: throttle-commands
     priority: 5
-    description: "Allow at most 20 commands per minute to prevent runaway loops"
+    description: "Allow at most 12 commands per minute to prevent runaway loops"
     condition:
       all:
         - field: action.tenant
@@ -188,7 +188,7 @@ rules:
           eq: "execute_command"
     action:
       type: throttle
-      max_count: 20
+      max_count: 12
       window_seconds: 60
 
   # ═══════════════════════════════════════════════════════════════════════════
