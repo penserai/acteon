@@ -92,7 +92,7 @@ QUOTA_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$ACTEON_URL/v1/quot
     \"namespace\": \"agent-swarm\",
     \"tenant\": \"claude-code-agent\",
     \"max_actions\": 30,
-    \"window\": \"custom_120\",
+    \"window\": {\"custom\": {\"seconds\": 120}},
     \"overage_behavior\": \"block\",
     \"enabled\": true,
     \"description\": \"Swarm demo: 30 actions per 2 minutes across all agents\"

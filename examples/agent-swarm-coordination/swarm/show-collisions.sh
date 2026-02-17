@@ -68,9 +68,9 @@ COLLISION_COUNT=$(echo "$COLLISIONS" | jq 'length')
 echo "Collision events ($COLLISION_COUNT total):"
 if [ "$COLLISION_COUNT" -gt 0 ]; then
   echo "$COLLISIONS" | jq -r '
-    sort_by(.created_at) |
+    sort_by(.dispatched_at) |
     .[] |
-    "  [\(.created_at // "?")] \(.outcome) | agent=\(.metadata.agent_role // "?") | rule=\(.matched_rule // "n/a") | type=\(.action_type // "?")"
+    "  [\(.dispatched_at // "?")] \(.outcome) | agent=\(.metadata.agent_role // "?") | rule=\(.matched_rule // "n/a") | type=\(.action_type // "?")"
   '
 else
   echo "  (none -- try running more agents or lowering throttle limits)"
