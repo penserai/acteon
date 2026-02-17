@@ -133,12 +133,16 @@ The server starts on `http://127.0.0.1:8080` with the in-memory state backend an
 ### CLI options
 
 ```
-cargo run -p acteon-server -- [OPTIONS]
+cargo run -p acteon-server -- [OPTIONS] [COMMAND]
 
 Options:
   -c, --config <PATH>   Path to TOML config file [default: acteon.toml]
       --host <HOST>      Override bind host
       --port <PORT>      Override bind port
+
+Commands:
+  encrypt   Encrypt a value for use in auth.toml (reads from stdin)
+  migrate   Run database migrations for configured backends, then exit
 ```
 
 Examples:
@@ -149,6 +153,9 @@ cargo run -p acteon-server -- --port 3000
 
 # With a config file
 cargo run -p acteon-server -- -c my-config.toml
+
+# Run database migrations before first start
+scripts/migrate.sh -c my-config.toml
 ```
 
 ### Configuration
@@ -247,19 +254,23 @@ cargo run -p acteon-server -- -c examples/redis.toml
 
 # PostgreSQL state + audit
 docker compose --profile postgres up -d
-cargo run -p acteon-server -- -c examples/postgres.toml
+scripts/migrate.sh -c examples/postgres.toml
+cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 
 # ClickHouse state + audit
 docker compose --profile clickhouse up -d
-cargo run -p acteon-server -- -c examples/clickhouse.toml
+scripts/migrate.sh -c examples/clickhouse.toml
+cargo run -p acteon-server --features clickhouse -- -c examples/clickhouse.toml
 
 # Redis state + Elasticsearch audit
 docker compose --profile elasticsearch up -d
+scripts/migrate.sh -c examples/elasticsearch-audit.toml
 cargo run -p acteon-server -- -c examples/elasticsearch-audit.toml
 
 # DynamoDB Local state
 docker compose --profile dynamodb up -d
-cargo run -p acteon-server -- -c examples/dynamodb.toml
+scripts/migrate.sh -c examples/dynamodb.toml
+cargo run -p acteon-server --features dynamodb -- -c examples/dynamodb.toml
 ```
 
 ### Combining backends
@@ -280,6 +291,7 @@ url = "postgres://acteon:acteon@localhost:5432/acteon"
 
 ```sh
 docker compose --profile postgres up -d
+scripts/migrate.sh -c acteon.toml
 cargo run -p acteon-server -- -c acteon.toml
 ```
 

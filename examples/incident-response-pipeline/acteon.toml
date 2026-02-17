@@ -1,0 +1,187 @@
+# Incident Response Pipeline example.
+#
+# Exercises 14 Acteon features: chains, sub-chains, conditional branching,
+# event state management, circuit breakers with fallback, recurring actions,
+# data retention, event grouping, quotas, throttle, dedup, suppress, modify,
+# and audit with redaction.
+#
+# Requires PostgreSQL for durable state + audit:
+#   docker compose --profile postgres up -d
+#
+# Run migrations:
+#   scripts/migrate.sh -c examples/incident-response-pipeline/acteon.toml
+#
+# Start Acteon:
+#   cargo run -p acteon-server --features postgres -- -c examples/incident-response-pipeline/acteon.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# HMAC secret for signing approval URLs (hex-encoded, 256-bit).
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# ─── State (PostgreSQL) ───────────────────────────────────────────────────────
+[state]
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+
+# ─── Audit (PostgreSQL, 7-day TTL, payload stored, redaction enabled) ─────────
+[audit]
+enabled = true
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+store_payload = true
+ttl_seconds = 604800
+
+[audit.redact]
+enabled = true
+fields = ["api_key", "webhook_url", "pagerduty_key"]
+placeholder = "[REDACTED]"
+
+# ─── Providers ────────────────────────────────────────────────────────────────
+# Log providers simulate real integrations; webhook-fallback intentionally
+# targets a non-existent server to demonstrate circuit breaker tripping.
+
+[[providers]]
+name = "pagerduty"
+type = "log"
+
+[[providers]]
+name = "slack-alerts"
+type = "log"
+
+[[providers]]
+name = "email-alerts"
+type = "log"
+
+# This webhook targets a server that likely isn't running -- the circuit
+# breaker will trip after 2 failures, demonstrating fallback routing.
+# Optionally run: python3 -m http.server 9999
+[[providers]]
+name = "webhook-fallback"
+type = "webhook"
+url = "http://localhost:9999/fallback"
+
+[[providers]]
+name = "ticket-system"
+type = "log"
+
+# ─── Rules ────────────────────────────────────────────────────────────────────
+[rules]
+directory = "examples/incident-response-pipeline/rules"
+
+# ─── Executor ─────────────────────────────────────────────────────────────────
+[executor]
+max_retries = 2
+timeout_seconds = 15
+max_concurrent = 16
+
+# ─── Circuit Breaker ─────────────────────────────────────────────────────────
+[circuit_breaker]
+enabled = true
+failure_threshold = 3
+success_threshold = 1
+recovery_timeout_seconds = 30
+
+# PagerDuty trips after 2 failures, falls back to webhook-fallback
+[circuit_breaker.providers.pagerduty]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "webhook-fallback"
+
+# email-alerts trips after 2 failures, falls back to slack-alerts
+[circuit_breaker.providers.email-alerts]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "slack-alerts"
+
+# ─── Chains ──────────────────────────────────────────────────────────────────
+[chains]
+max_concurrent_advances = 8
+completed_chain_ttl_seconds = 3600
+
+# Main chain: classify → (branch) → escalate → (branch) → war-room | ticket
+[[chains.definitions]]
+name = "incident-triage"
+timeout_seconds = 300
+
+[[chains.definitions.steps]]
+name = "classify"
+provider = "slack-alerts"
+action_type = "classify_alert"
+payload_template = { alert_id = "{{origin.payload.alert_id}}", severity = "{{origin.payload.severity}}" }
+
+  [[chains.definitions.steps.branches]]
+  field = "body.logged"
+  operator = "eq"
+  value = true
+  target = "escalate"
+
+[[chains.definitions.steps]]
+name = "escalate"
+provider = "pagerduty"
+action_type = "create_incident"
+payload_template = { service = "{{origin.payload.service}}", severity = "{{origin.payload.severity}}" }
+
+  [[chains.definitions.steps.branches]]
+  field = "success"
+  operator = "eq"
+  value = true
+  target = "war-room"
+
+  default_next = "create-ticket"
+
+[[chains.definitions.steps]]
+name = "war-room"
+sub_chain = "war-room-setup"
+
+[[chains.definitions.steps]]
+name = "create-ticket"
+provider = "ticket-system"
+action_type = "create_ticket"
+payload_template = { alert_id = "{{origin.payload.alert_id}}", service = "{{origin.payload.service}}" }
+
+# Sub-chain: war room setup (3 steps)
+[[chains.definitions]]
+name = "war-room-setup"
+timeout_seconds = 120
+
+[[chains.definitions.steps]]
+name = "create-channel"
+provider = "slack-alerts"
+action_type = "create_channel"
+payload_template = { name = "inc-{{origin.payload.alert_id}}" }
+
+[[chains.definitions.steps]]
+name = "page-oncall"
+provider = "pagerduty"
+action_type = "page_oncall"
+payload_template = { urgency = "high", service = "{{origin.payload.service}}" }
+
+[[chains.definitions.steps]]
+name = "open-ticket"
+provider = "ticket-system"
+action_type = "create_ticket"
+payload_template = { alert_id = "{{origin.payload.alert_id}}", type = "war-room" }
+
+# ─── Background Processing ───────────────────────────────────────────────────
+[background]
+enabled = true
+group_flush_interval_seconds = 10
+timeout_check_interval_seconds = 10
+cleanup_interval_seconds = 60
+enable_group_flush = true
+enable_timeout_processing = true
+enable_recurring_actions = true
+recurring_check_interval_seconds = 30
+max_recurring_actions_per_tenant = 10
+enable_retention_reaper = true
+retention_check_interval_seconds = 60
+namespace = "incidents"
+tenant = "ops-team"
+
+# ─── Quotas ──────────────────────────────────────────────────────────────────
+# Quota enforcement enabled; policies created via the API in scripts/setup.sh.
+[quotas]
+enabled = true

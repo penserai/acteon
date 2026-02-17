@@ -5,15 +5,33 @@ Acteon is configured via a TOML file (default: `acteon.toml`). Every section is 
 ## CLI Options
 
 ```
-cargo run -p acteon-server -- [OPTIONS]
+cargo run -p acteon-server -- [OPTIONS] [COMMAND]
 
 Options:
   -c, --config <PATH>   Path to TOML config file [default: acteon.toml]
       --host <HOST>      Override bind host
       --port <PORT>      Override bind port
+
+Commands:
+  encrypt   Encrypt a value for use in auth.toml (reads from stdin)
+  migrate   Run database migrations for configured backends, then exit
 ```
 
 CLI flags override values in the config file.
+
+### Database Migrations
+
+Before starting the server for the first time (or after upgrading), run migrations to create or update database schemas:
+
+```bash
+# Using the wrapper script (auto-detects backend from config)
+scripts/migrate.sh -c acteon.toml
+
+# Or directly via cargo
+cargo run -p acteon-server --features postgres -- -c acteon.toml migrate
+```
+
+Migrations are idempotent and safe to run multiple times. They use `CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ADD COLUMN IF NOT EXISTS` patterns. Backends that don't require schemas (memory, Redis) are no-ops.
 
 ## Full Configuration
 
@@ -358,5 +376,6 @@ cargo run -p acteon-server -- -c examples/redis.toml
 
 # Start with PostgreSQL
 docker compose --profile postgres up -d
-cargo run -p acteon-server -- -c examples/postgres.toml
+scripts/migrate.sh -c examples/postgres.toml
+cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 ```

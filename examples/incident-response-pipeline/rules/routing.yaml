@@ -1,0 +1,56 @@
+# Routing rules: dedup, enrich metadata, group low-severity, allow ops actions.
+
+rules:
+  # ── Deduplicate alerts with the same fingerprint ───────────────────────────
+  - name: dedup-alerts
+    priority: 3
+    description: "Deduplicate alerts sharing the same dedup_key within 5 minutes"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "ops-team"
+        - field: action.action_type
+          eq: "alert"
+    action:
+      type: deduplicate
+      ttl_seconds: 300
+
+  # ── Enrich all ops-team actions with pipeline version ──────────────────────
+  - name: enrich-alert-metadata
+    priority: 4
+    description: "Add pipeline_version metadata to all ops-team actions"
+    condition:
+      field: action.tenant
+      eq: "ops-team"
+    action:
+      type: modify
+      changes:
+        pipeline_version: "1.0.0"
+
+  # ── Group low-severity alerts into batches ─────────────────────────────────
+  - name: group-low-severity
+    priority: 6
+    description: "Batch low-severity alerts by service, flush every 30 seconds"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "ops-team"
+        - field: action.action_type
+          eq: "alert"
+        - field: action.payload.severity
+          eq: "low"
+    action:
+      type: group
+      group_by:
+        - payload.service
+      group_wait_seconds: 30
+
+  # ── Allow all remaining ops-team actions ───────────────────────────────────
+  - name: allow-ops-actions
+    priority: 10
+    description: "Allow any ops-team action that passed prior rules"
+    condition:
+      field: action.tenant
+      eq: "ops-team"
+    action:
+      type: allow

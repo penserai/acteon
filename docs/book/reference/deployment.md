@@ -1,5 +1,24 @@
 # Deployment
 
+## Database Migrations
+
+Before starting the server for the first time (or after upgrading), run migrations to initialize database schemas:
+
+```bash
+# Using the wrapper script (auto-detects backend from config)
+scripts/migrate.sh -c acteon.toml
+
+# Or directly via the server binary
+cargo run -p acteon-server --features postgres -- -c acteon.toml migrate
+
+# In Docker
+docker run --rm \
+  -v $(pwd)/acteon.toml:/app/acteon.toml \
+  acteon -c /app/acteon.toml migrate
+```
+
+Migrations are idempotent — they use `IF NOT EXISTS` patterns and are safe to run on every deploy. Backends that don't require schemas (memory, Redis) are no-ops.
+
 ## Docker
 
 ### Building
@@ -14,7 +33,11 @@ docker build -t acteon .
 # With in-memory backend
 docker run -p 8080:8080 acteon
 
-# With config file
+# With config file (run migrations first, then start)
+docker run --rm \
+  -v $(pwd)/acteon.toml:/app/acteon.toml \
+  acteon -c /app/acteon.toml migrate
+
 docker run -p 8080:8080 \
   -v $(pwd)/acteon.toml:/app/acteon.toml \
   -v $(pwd)/rules:/app/rules \

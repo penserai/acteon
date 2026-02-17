@@ -42,5 +42,6 @@ prefix = "acteon_"
 
 ```bash
 docker compose --profile clickhouse up -d
+scripts/migrate.sh -c examples/clickhouse.toml
 cargo run -p acteon-server --features clickhouse -- -c examples/clickhouse.toml
 ```

@@ -56,5 +56,6 @@ url = "postgres://acteon:acteon@localhost:5432/acteon"
 ```bash
 # Start both backends
 docker compose --profile postgres up -d
+scripts/migrate.sh -c acteon.toml
 cargo run -p acteon-server -- -c acteon.toml
 ```

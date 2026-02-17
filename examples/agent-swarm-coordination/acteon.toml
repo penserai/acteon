@@ -6,7 +6,9 @@
 #
 # Start PostgreSQL:
 #   docker compose --profile postgres up -d
-#   (or use a local PostgreSQL: createdb acteon)
+#
+# Run migrations:
+#   scripts/migrate.sh -c examples/agent-swarm-coordination/acteon.toml
 #
 # Start Acteon:
 #   cargo run -p acteon-server --features postgres -- -c examples/agent-swarm-coordination/acteon.toml
