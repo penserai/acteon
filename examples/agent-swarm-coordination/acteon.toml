@@ -1,0 +1,78 @@
+# Agent Swarm Coordination example.
+#
+# PostgreSQL for both state and audit (durable across restarts).
+# Supports multiple agents sharing a single Acteon instance.
+# Discord webhook for agent completion notifications.
+#
+# Start PostgreSQL:
+#   docker compose --profile postgres up -d
+#   (or use a local PostgreSQL: createdb acteon)
+#
+# Start Acteon:
+#   cargo run -p acteon-server --features postgres -- -c examples/agent-swarm-coordination/acteon.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# HMAC secret for signing approval URLs (hex-encoded, 256-bit).
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# ─── State (PostgreSQL -- shared across agents, durable) ──────────────────
+[state]
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+
+# ─── Audit (PostgreSQL -- durable across restarts) ────────────────────────
+[audit]
+enabled = true
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+store_payload = true
+ttl_seconds = 604800   # 7 days
+
+[audit.redact]
+enabled = true
+fields = ["api_key", "authorization", "webhook_url"]
+placeholder = "[REDACTED]"
+
+# ─── Providers ──────────────────────────────────────────────────────────────
+
+# Claude Code tool execution (log provider -- mock, no real execution)
+[[providers]]
+name = "claude-code"
+type = "log"
+
+# Discord notifications (real webhook -- set DISCORD_WEBHOOK_URL env var)
+[[providers]]
+name = "discord"
+type = "discord"
+webhook_url = "${DISCORD_WEBHOOK_URL}"
+
+# Security review queue (log provider -- in production, route to a real queue)
+[[providers]]
+name = "security-review-queue"
+type = "log"
+
+# ─── Rules ──────────────────────────────────────────────────────────────────
+[rules]
+directory = "examples/agent-swarm-coordination/rules"
+
+# ─── Executor ───────────────────────────────────────────────────────────────
+[executor]
+max_retries = 2
+timeout_seconds = 15
+max_concurrent = 10
+
+# ─── Circuit Breaker ───────────────────────────────────────────────────────
+[circuit_breaker]
+enabled = true
+failure_threshold = 3
+success_threshold = 1
+recovery_timeout_seconds = 30
+
+# ─── Quotas ─────────────────────────────────────────────────────────────────
+# Quota enforcement is enabled; actual policies are created via the API:
+#   POST /v1/quotas { "namespace": "agent-swarm", "tenant": "claude-code-agent", ... }
+[quotas]
+enabled = true
