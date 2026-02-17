@@ -10,11 +10,7 @@ approval, and a Discord notification fires when the session completes.
 
 1. **Acteon hooks** intercept every Claude Code tool call via `PreToolUse`
 2. **Deterministic rules** block dangerous commands and sensitive file access
-<<<<<<< HEAD
 3. **Rate limiting** throttles command execution to 12/minute to prevent runaway loops
-=======
-3. **Rate limiting** throttles command execution to 20/minute to prevent runaway loops
->>>>>>> 23ba3c9 (fix: implement counter-based throttle enforcement and link guide to example)
 4. **Human-in-the-loop** approval gate for `git push` and deploy operations
 5. **Discord notification** when the agent run completes (via `Stop` hook)
 6. **PostgreSQL state + audit** provides durable storage for dedup state, approval state, and full audit trail -- shared across multiple agents
@@ -134,37 +130,21 @@ approval URL. Open it in your browser to approve or reject.
 
 #### Testing Rate Limiting
 
-<<<<<<< HEAD
 The `throttle-commands` rule limits `execute_command` actions to 12 per
-=======
-The `throttle-commands` rule limits `execute_command` actions to 20 per
->>>>>>> 23ba3c9 (fix: implement counter-based throttle enforcement and link guide to example)
 minute. To see it in action, ask Claude Code to run many commands in quick
 succession:
 
 ```
-<<<<<<< HEAD
 > Run these commands one by one: echo 1, echo 2, echo 3, ... up to echo 15
 ```
 
 The first 12 commands will execute normally. Starting from the 13th, Claude
-=======
-> Run these commands one by one: echo 1, echo 2, echo 3, ... up to echo 25
-```
-
-The first 20 commands will execute normally. Starting from the 21st, Claude
->>>>>>> 23ba3c9 (fix: implement counter-based throttle enforcement and link guide to example)
 Code will see `Blocked by Acteon: throttle-commands` until the 60-second
 window resets. You can also test this directly with `curl`:
 
 ```bash
-<<<<<<< HEAD
 # Dispatch 15 actions rapidly -- the 13th should be throttled
 for i in $(seq 1 15); do
-=======
-# Dispatch 21 actions rapidly -- the 21st should be throttled
-for i in $(seq 1 21); do
->>>>>>> 23ba3c9 (fix: implement counter-based throttle enforcement and link guide to example)
   curl -s -X POST http://localhost:8080/v1/dispatch \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $ACTEON_AGENT_KEY" \
@@ -178,11 +158,7 @@ for i in $(seq 1 21); do
 done
 ```
 
-<<<<<<< HEAD
 Expected output: 12 lines of `executed`, then `throttled`.
-=======
-Expected output: 20 lines of `executed`, then `throttled`.
->>>>>>> 23ba3c9 (fix: implement counter-based throttle enforcement and link guide to example)
 
 After the window expires (60 seconds), the counter resets and commands are
 allowed again. Each throttle rule maintains its own counter scoped to the
