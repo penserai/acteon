@@ -12,7 +12,7 @@ approval, and a Discord notification fires when the session completes.
 2. **Deterministic rules** block dangerous commands and sensitive file access
 3. **Human-in-the-loop** approval gate for `git push` and deploy operations
 4. **Discord notification** when the agent run completes (via `Stop` hook)
-5. **PostgreSQL state + audit** provides durable storage for throttle counters, dedup state, and full audit trail -- shared across multiple agents
+5. **PostgreSQL state + audit** provides durable storage for dedup state, approval state, and full audit trail -- shared across multiple agents
 6. **MCP integration** lets you query Acteon audit/rules/events from within the Claude Code session
 
 ## Architecture
@@ -37,8 +37,9 @@ Claude Code (in dummy-project/)
 ## Prerequisites
 
 - Rust 1.88+ and Cargo
-- Docker and Docker Compose (for PostgreSQL audit backend)
+- PostgreSQL (local or via Docker Compose)
 - Claude Code CLI (`claude`)
+- `jq` for JSON parsing in hooks
 - A Discord webhook URL (create one in Discord > Server Settings > Integrations > Webhooks)
 
 ## Quick Start
@@ -50,9 +51,14 @@ cd /path/to/acteon
 docker compose --profile postgres up -d
 ```
 
-### 2. Start Acteon
+### 2. Build and Start Acteon
 
 ```bash
+# Build the server and MCP server
+cargo build -p acteon-server --features postgres
+cargo build -p acteon-mcp-server --release
+
+# Start Acteon
 cargo run -p acteon-server --features postgres -- -c examples/agent-swarm-coordination/acteon.toml
 ```
 
@@ -76,6 +82,9 @@ export ACTEON_URL="http://localhost:8080"
 
 # Discord webhook for completion notifications
 export DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/YOUR/WEBHOOK"
+
+# Add the MCP server binary to PATH (or symlink into ~/bin)
+export PATH="$PWD/target/release:$PATH"
 ```
 
 ### 5. Make Hooks Executable
@@ -148,7 +157,7 @@ agent-swarm-coordination/
   README.md                          # This file
   acteon.toml                        # Acteon server config (PG state + PG audit)
   rules/
-    agent-safety.yaml                # Deterministic + approval + throttle rules
+    agent-safety.yaml                # Deterministic block + approval gate rules
     session-events.yaml              # Discord notification + dedup rules
   hooks/
     acteon-gate.sh                   # PreToolUse hook: dispatches to Acteon

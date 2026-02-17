@@ -173,25 +173,6 @@ rules:
       message: "Claude Code wants to install packages. Verify the packages are safe."
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # THROTTLE: Rate limits per action type
-  # ═══════════════════════════════════════════════════════════════════════════
-
-  # ── Limit command execution rate ─────────────────────────────────────────
-  - name: throttle-commands
-    priority: 8
-    description: "Limit shell commands to 20 per minute"
-    condition:
-      all:
-        - field: action.tenant
-          eq: "claude-code-agent"
-        - field: action.action_type
-          eq: "execute_command"
-    action:
-      type: throttle
-      max_count: 20
-      window_seconds: 60
-
-  # ═══════════════════════════════════════════════════════════════════════════
   # ALLOW: Permitted operations
   # ═══════════════════════════════════════════════════════════════════════════
 

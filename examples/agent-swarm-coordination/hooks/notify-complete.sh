@@ -12,16 +12,19 @@ ACTEON_URL="${ACTEON_URL:-http://localhost:8080}"
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id')
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+ACTION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 
 # ── Send completion notification via Acteon (Discord provider) ─────────────
 curl -s -X POST "$ACTEON_URL/v1/dispatch" \
   -H "Content-Type: application/json" \
   ${ACTEON_AGENT_KEY:+-H "Authorization: Bearer $ACTEON_AGENT_KEY"} \
   -d "{
+    \"id\": \"$ACTION_ID\",
     \"namespace\": \"agent-swarm\",
     \"tenant\": \"claude-code-agent\",
     \"provider\": \"discord\",
     \"action_type\": \"session_complete\",
+    \"created_at\": \"$TIMESTAMP\",
     \"payload\": {
       \"content\": \"Claude Code session completed.\",
       \"embeds\": [{

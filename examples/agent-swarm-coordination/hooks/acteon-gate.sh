@@ -42,11 +42,16 @@ esac
 DEDUP_HASH=$(echo -n "$TOOL_INPUT" | md5sum 2>/dev/null | cut -d' ' -f1 || echo -n "$TOOL_INPUT" | md5 2>/dev/null)
 DEDUP_KEY="$SESSION_ID-$ACTION_TYPE-${DEDUP_HASH:-none}"
 
+# ── Generate action ID and timestamp ─────────────────────────────────────
+ACTION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+CREATED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
 # ── Dispatch to Acteon ─────────────────────────────────────────────────────
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$ACTEON_URL/v1/dispatch" \
   -H "Content-Type: application/json" \
   ${ACTEON_AGENT_KEY:+-H "Authorization: Bearer $ACTEON_AGENT_KEY"} \
   -d "{
+    \"id\": \"$ACTION_ID\",
     \"namespace\": \"agent-swarm\",
     \"tenant\": \"claude-code-agent\",
     \"provider\": \"claude-code\",
@@ -57,6 +62,7 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$ACTEON_URL/v1/dispatch" \
       \"session_id\": \"$SESSION_ID\",
       \"agent_role\": \"coding\"
     },
+    \"created_at\": \"$CREATED_AT\",
     \"dedup_key\": \"$DEDUP_KEY\"
   }" 2>/dev/null) || {
     # Fail closed: if Acteon is unreachable, block the action
@@ -74,31 +80,31 @@ if [[ "$HTTP_CODE" -lt 200 || "$HTTP_CODE" -ge 300 ]]; then
   exit 2
 fi
 
-OUTCOME=$(echo "$BODY" | jq -r '.outcome // "unknown"')
+# Response is a Rust enum: {"Executed":{...}}, {"Suppressed":{...}}, etc.
+OUTCOME=$(echo "$BODY" | jq -r 'keys[0]')
 
 case "$OUTCOME" in
-  executed|deduplicated)
+  Executed|Deduplicated)
     # Action permitted
     exit 0
     ;;
-  pending_approval)
-    APPROVAL_ID=$(echo "$BODY" | jq -r '.approval_id // "unknown"')
-    APPROVE_URL=$(echo "$BODY" | jq -r '.approve_url // ""')
+  PendingApproval)
+    APPROVAL_ID=$(echo "$BODY" | jq -r '.PendingApproval.approval_id // "unknown"')
+    APPROVE_URL=$(echo "$BODY" | jq -r '.PendingApproval.approve_url // ""')
     echo "Action held for human approval (ID: $APPROVAL_ID)" >&2
     if [ -n "$APPROVE_URL" ]; then
-      echo "Approve: $ACTEON_URL$APPROVE_URL" >&2
+      echo "Approve: $APPROVE_URL" >&2
     fi
     echo "Waiting for approval -- the action has been paused." >&2
     exit 2
     ;;
-  suppressed)
-    RULE=$(echo "$BODY" | jq -r '.rule_name // "unknown rule"')
-    REASON=$(echo "$BODY" | jq -r '.reason // "policy violation"')
-    echo "BLOCKED by Acteon rule '$RULE': $REASON" >&2
+  Suppressed)
+    RULE=$(echo "$BODY" | jq -r '.Suppressed.rule // "unknown rule"')
+    echo "BLOCKED by Acteon rule '$RULE'" >&2
     exit 2
     ;;
-  throttled)
-    RETRY=$(echo "$BODY" | jq -r '.retry_after // "unknown"')
+  Throttled)
+    RETRY=$(echo "$BODY" | jq -r '.Throttled.retry_after.secs // "unknown"')
     echo "Rate limited -- retry after ${RETRY}s" >&2
     exit 2
     ;;
