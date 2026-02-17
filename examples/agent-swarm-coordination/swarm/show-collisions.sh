@@ -49,9 +49,9 @@ echo "Per-agent breakdown:"
 echo "$RECORDS" | jq -r '
   group_by(.metadata.agent_role // "unknown") |
   map({
-    agent: .[0].metadata.agent_role // "unknown",
+    agent: (.[0].metadata.agent_role // "unknown"),
     total: length,
-    outcomes: (group_by(.outcome) | map({outcome: .[0].outcome, count: length}) | from_entries)
+    outcomes: (group_by(.outcome) | map({key: .[0].outcome, value: length}) | from_entries)
   }) |
   sort_by(.agent) |
   .[] |

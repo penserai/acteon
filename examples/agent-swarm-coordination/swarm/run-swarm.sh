@@ -26,7 +26,7 @@ cleanup() {
   echo "Cleaning up..."
 
   # Kill any still-running agent sessions
-  for pid in "${PIDS[@]}"; do
+  for pid in "${PIDS[@]+"${PIDS[@]}"}"; do
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -92,7 +92,7 @@ QUOTA_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$ACTEON_URL/v1/quot
     \"namespace\": \"agent-swarm\",
     \"tenant\": \"claude-code-agent\",
     \"max_actions\": 30,
-    \"window\": {\"custom\": {\"seconds\": 120}},
+    \"window\": \"120\",
     \"overage_behavior\": \"block\",
     \"enabled\": true,
     \"description\": \"Swarm demo: 30 actions per 2 minutes across all agents\"
@@ -115,6 +115,41 @@ for agent in "${AGENTS[@]}"; do
   WORKSPACE="$SCRIPT_DIR/workspaces/$agent"
   rm -rf "$WORKSPACE"
   cp -r "$EXAMPLE_DIR/dummy-project" "$WORKSPACE"
+
+  # Rewrite hook paths to use absolute paths (workspaces are nested deeper)
+  HOOKS_DIR="$EXAMPLE_DIR/hooks"
+  cat > "$WORKSPACE/.claude/settings.json" <<HOOKEOF
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOOKS_DIR/acteon-gate.sh",
+            "timeout": 10,
+            "statusMessage": "Checking Acteon policy..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOOKS_DIR/notify-complete.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}
+HOOKEOF
 
   # Initialize a fresh git repo in each workspace
   (cd "$WORKSPACE" && git init -q && git add . && git commit -q -m "initial commit") 2>/dev/null
@@ -142,6 +177,7 @@ for agent in "${AGENTS[@]}"; do
   echo "  Starting $agent..."
   (
     cd "$WORKSPACE"
+    unset CLAUDECODE 2>/dev/null || true
     ACTEON_AGENT_ROLE="$agent" \
     ACTEON_URL="$ACTEON_URL" \
     ${ACTEON_AGENT_KEY:+ACTEON_AGENT_KEY="$ACTEON_AGENT_KEY"} \
@@ -150,7 +186,7 @@ for agent in "${AGENTS[@]}"; do
       2>"$SCRIPT_DIR/workspaces/$agent.stderr.log"
   ) > "$SCRIPT_DIR/workspaces/$agent.stdout.log" 2>&1 &
   PIDS+=($!)
-  echo "    PID: ${PIDS[-1]}"
+  echo "    PID: $!"
 done
 
 # ── Wait for completion ─────────────────────────────────────────────────────
