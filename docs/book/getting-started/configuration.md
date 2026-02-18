@@ -77,6 +77,26 @@ max_retries = 3                      # Max retry attempts per action
 timeout_seconds = 30                 # Per-action execution timeout
 max_concurrent = 10                  # Max concurrent executions
 
+# ─── Providers ───────────────────────────────────────────
+# [[providers]]
+# name = "email"
+# type = "email"
+# from_address = "noreply@example.com"
+
+# [[providers]]
+# name = "alert-fanout"
+# type = "aws-sns"
+# aws_region = "us-east-1"
+# topic_arn = "arn:aws:sns:us-east-1:123:alerts"
+# aws_endpoint_url = "http://localhost:4566"  # LocalStack
+
+# [[providers]]
+# name = "archive"
+# type = "aws-s3"
+# aws_region = "us-east-1"
+# bucket_name = "my-bucket"
+# object_prefix = "acteon/"
+
 # ─── Authentication ───────────────────────────────────────
 [auth]
 enabled = false                      # Enable authentication
@@ -348,6 +368,45 @@ Arbitrary key-value pairs added to every exported span as OpenTelemetry resource
 
 See [Distributed Tracing](../features/distributed-tracing.md) for feature documentation.
 
+### `[[providers]]`
+
+Provider configuration. Multiple providers can be defined.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | Unique provider name used in action dispatch |
+| `type` | string | Yes | Provider type (see below) |
+
+**Built-in provider types:**
+
+| Type | Description | Extra Fields |
+|------|-------------|-------------|
+| `"log"` | Logs actions (no external calls) | — |
+| `"webhook"` | HTTP webhook | `url` |
+| `"slack"` | Slack webhook | `webhook_url` |
+| `"email"` | Email (SMTP or SES) | `backend`, `from_address`, `smtp_host`, `aws_region`, ... |
+| `"twilio"` | Twilio SMS | `account_sid`, `auth_token`, `from_number` |
+| `"teams"` | Microsoft Teams | `webhook_url` |
+| `"discord"` | Discord webhook | `webhook_url` |
+| `"pagerduty"` | PagerDuty events | `routing_key` |
+| `"aws-sns"` | AWS SNS | `aws_region`, `topic_arn` |
+| `"aws-lambda"` | AWS Lambda | `aws_region`, `function_name` |
+| `"aws-eventbridge"` | AWS EventBridge | `aws_region`, `event_bus_name` |
+| `"aws-sqs"` | AWS SQS | `aws_region`, `queue_url` |
+| `"aws-s3"` | AWS S3 | `aws_region`, `bucket_name`, `object_prefix` |
+
+**Common AWS fields** (all optional, shared across all `aws-*` types and `email` with `backend = "ses"`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `aws_region` | string | AWS region (required for AWS types) |
+| `aws_endpoint_url` | string | Endpoint URL override (for LocalStack) |
+| `aws_role_arn` | string | IAM role ARN to assume via STS |
+| `aws_session_name` | string | STS session name (default: `"acteon-aws-provider"`) |
+| `aws_external_id` | string | External ID for cross-account trust policies |
+
+See [AWS Providers](../features/aws-providers.md) and [Native Providers](../features/native-providers.md) for full payload format documentation.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -368,6 +427,8 @@ Ready-to-use configs are in the `examples/` directory:
 | `examples/elasticsearch-audit.toml` | Redis state + Elasticsearch audit |
 | `examples/dynamodb.toml` | DynamoDB state backend |
 | `examples/full.toml` | All options documented |
+| `examples/aws-event-pipeline/acteon.toml` | AWS providers (SNS, Lambda, EventBridge, SQS) + DynamoDB |
+| `examples/agent-swarm-coordination/acteon.toml` | Claude Code agent governance with PostgreSQL |
 
 ```bash
 # Start with Redis

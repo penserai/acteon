@@ -36,7 +36,7 @@ flowchart LR
     C -->|Suppress| F[Block Action]
     C -->|Throttle| G[Rate Limit]
     C -->|Reroute| H[Different Provider]
-    D --> I[Email / Twilio / Slack / Teams / Discord / Webhook]
+    D --> I[Email / Twilio / Slack / Teams / Discord / Webhook / SNS / Lambda / SQS / S3]
 ```
 
 ---
@@ -110,6 +110,16 @@ Use LLM-based evaluation to gate actions through AI-powered guardrails. Block or
 Route actions by meaning, not just field values. Use vector embeddings and cosine similarity to match actions against topic descriptions in natural language.
 
 [Learn more](features/semantic-routing.md)
+
+</div>
+
+<div class="card" markdown>
+
+### AWS Providers
+
+Native integrations for SNS, Lambda, EventBridge, SQS, S3, and SES with automatic STS credential refresh, cross-account role assumption, and LocalStack support for local development.
+
+[Learn more](features/aws-providers.md)
 
 </div>
 
@@ -247,12 +257,13 @@ graph TB
     RE --> LLM
     RE --> EX
     EX --> PROV
-    PROV --> Email[Email SMTP]
+    PROV --> Email[Email SMTP/SES]
     PROV --> Slack[Slack]
     PROV --> Twilio[Twilio SMS]
     PROV --> Teams[Teams]
     PROV --> Discord[Discord]
     PROV --> WH[Webhooks]
+    PROV --> AWS[AWS SNS/Lambda/SQS/S3]
     RE -.-> MEM & RED & PG & DDB & CH
     EX -.-> AUD_PG & AUD_CH & AUD_ES
 ```

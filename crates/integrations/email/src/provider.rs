@@ -22,7 +22,7 @@ use crate::types::EmailPayload;
 ///
 /// let config = EmailConfig::new("smtp.example.com", "noreply@example.com")
 ///     .with_credentials("user", "pass");
-/// let provider = EmailProvider::new(config).unwrap();
+/// let provider = EmailProvider::new(&config).unwrap();
 /// assert_eq!(acteon_provider::Provider::name(&provider), "email");
 /// ```
 pub struct EmailProvider {

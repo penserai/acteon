@@ -9,7 +9,7 @@
 //! - **SES** (`ses` feature) — Send emails via SES v2
 //! - **S3** (`s3` feature) — Put/get/delete objects in S3 buckets
 //!
-//! All providers share a common [`AwsBaseConfig`](config::AwsBaseConfig) for
+//! All providers share a common [`AwsBaseConfig`] for
 //! region, endpoint override, and optional STS assume-role credentials.
 
 pub mod auth;
