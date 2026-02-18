@@ -196,7 +196,7 @@ impl AuditStore for HashChainAuditStore {
     /// 2. Compute `previous_hash`, `record_hash`, and `sequence_number`.
     /// 3. Attempt to write. If the inner store rejects the write due to a
     ///    duplicate `sequence_number` (another replica won the race), re-fetch
-    ///    the tip and retry up to [`MAX_CHAIN_RETRIES`] times.
+    ///    the tip and retry up to `MAX_CHAIN_RETRIES` times.
     async fn record(&self, entry: AuditRecord) -> Result<(), AuditError> {
         let mut last_err = None;
 
