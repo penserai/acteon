@@ -157,8 +157,13 @@ impl AuditStore for PostgresAuditStore {
         // Data query.
         let limit_idx = bind_idx;
         let offset_idx = bind_idx + 1;
+        let order_clause = if query.sort_by_sequence_asc {
+            "ORDER BY sequence_number ASC NULLS LAST"
+        } else {
+            "ORDER BY dispatched_at DESC"
+        };
         let data_sql = format!(
-            "SELECT * FROM {} {where_clause} ORDER BY dispatched_at DESC LIMIT ${limit_idx} OFFSET ${offset_idx}",
+            "SELECT * FROM {} {where_clause} {order_clause} LIMIT ${limit_idx} OFFSET ${offset_idx}",
             self.table
         );
 

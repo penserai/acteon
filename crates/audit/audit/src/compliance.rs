@@ -4,18 +4,18 @@
 //!
 //! - [`HashChainAuditStore`] — computes `SHA-256` hash chains across audit records
 //!   within each `(namespace, tenant)` pair, enabling tamper-evident logging.
+//!   Uses optimistic concurrency control (retry on sequence conflict) to support
+//!   multi-replica deployments.
 //! - [`ComplianceAuditStore`] — enforces compliance rules such as immutable audit
 //!   (blocking deletions when enabled).
 //!
 //! Wrapping order should be:
 //! `ComplianceAuditStore(HashChainAuditStore(EncryptingAuditStore(RedactingAuditStore(Inner))))`
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tracing::warn;
 
 use acteon_core::compliance::{ComplianceConfig, HashChainVerification};
@@ -24,17 +24,8 @@ use crate::error::AuditError;
 use crate::record::{AuditPage, AuditQuery, AuditRecord};
 use crate::store::AuditStore;
 
-/// Key for tracking the last hash and sequence number per `(namespace, tenant)`.
-type ChainKey = (String, String);
-
-/// Cached state for the most recent record in a `(namespace, tenant)` chain.
-#[derive(Clone, Debug)]
-struct ChainTip {
-    /// Hash of the most recent record.
-    record_hash: String,
-    /// Sequence number of the most recent record.
-    sequence_number: u64,
-}
+/// Maximum number of CAS retries before giving up on a hash chain write.
+const MAX_CHAIN_RETRIES: u32 = 5;
 
 /// An audit store decorator that computes `SHA-256` hash chains.
 ///
@@ -44,22 +35,19 @@ struct ChainTip {
 /// - `record_hash` — `SHA-256` hex digest of canonicalized record fields.
 /// - `sequence_number` — monotonically increasing counter within the pair.
 ///
-/// The chain tip is cached in memory. On first write for a pair, the decorator
-/// queries the inner store to discover the current tip.
+/// Chain tips are always fetched from the inner store (the DB) on each write,
+/// ensuring correctness in multi-replica deployments. Writes use optimistic
+/// concurrency: if two replicas race for the same `sequence_number`, the inner
+/// store rejects the duplicate (via a `UNIQUE` constraint on `(namespace,
+/// tenant, sequence_number)`) and the decorator retries with the updated tip.
 pub struct HashChainAuditStore {
     inner: Arc<dyn AuditStore>,
-    /// Per-(namespace, tenant) chain tip cache, protected by async mutex
-    /// to ensure sequential hash chain computation.
-    tips: Mutex<HashMap<ChainKey, Option<ChainTip>>>,
 }
 
 impl HashChainAuditStore {
     /// Create a new `HashChainAuditStore` wrapping the given inner store.
     pub fn new(inner: Arc<dyn AuditStore>) -> Self {
-        Self {
-            inner,
-            tips: Mutex::new(HashMap::new()),
-        }
+        Self { inner }
     }
 
     /// Compute the canonical `SHA-256` hash of an audit record.
@@ -85,20 +73,15 @@ impl HashChainAuditStore {
         format!("{:x}", hasher.finalize())
     }
 
-    /// Look up the chain tip for a `(namespace, tenant)` pair by querying the
-    /// inner store if not cached.
-    async fn get_or_fetch_tip(
+    /// Fetch the current chain tip from the inner store (DB).
+    ///
+    /// Always queries fresh — no local caching — so multiple replicas see a
+    /// consistent view of the chain state.
+    async fn fetch_tip(
         &self,
         namespace: &str,
         tenant: &str,
-        tips: &mut HashMap<ChainKey, Option<ChainTip>>,
-    ) -> Result<Option<ChainTip>, AuditError> {
-        let key = (namespace.to_string(), tenant.to_string());
-        if let Some(tip) = tips.get(&key) {
-            return Ok(tip.clone());
-        }
-
-        // Query the inner store for the most recent record in this pair.
+    ) -> Result<Option<(String, u64)>, AuditError> {
         let query = AuditQuery {
             namespace: Some(namespace.to_string()),
             tenant: Some(tenant.to_string()),
@@ -107,21 +90,17 @@ impl HashChainAuditStore {
         };
 
         let page = self.inner.query(&query).await?;
-        let tip = page.records.into_iter().next().and_then(|r| {
-            r.record_hash.map(|hash| ChainTip {
-                record_hash: hash,
-                sequence_number: r.sequence_number.unwrap_or(0),
-            })
-        });
-
-        tips.insert(key, tip.clone());
-        Ok(tip)
+        Ok(page.records.into_iter().next().and_then(|r| {
+            r.record_hash
+                .map(|hash| (hash, r.sequence_number.unwrap_or(0)))
+        }))
     }
 
     /// Verify the integrity of the hash chain for a `(namespace, tenant)` pair.
     ///
-    /// Queries all records in the pair (paginated), re-computes each hash, and
-    /// verifies that `previous_hash` links form an unbroken chain.
+    /// Uses streaming verification with constant memory: fetches one page at a
+    /// time, verifies it, then drops it before fetching the next. Only the
+    /// previous record's hash is carried across pages.
     pub async fn verify_chain(
         &self,
         namespace: &str,
@@ -129,11 +108,13 @@ impl HashChainAuditStore {
         from: Option<chrono::DateTime<chrono::Utc>>,
         to: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<HashChainVerification, AuditError> {
-        let mut all_records = Vec::new();
+        let page_size: u32 = 500;
         let mut offset = 0u32;
-        let page_size: u32 = 1000;
+        let mut records_checked: u64 = 0;
+        let mut previous_hash: Option<String> = None;
+        let mut first_record_id: Option<String> = None;
+        let mut last_record_id: Option<String> = None;
 
-        // Fetch all records in the range, paginated.
         loop {
             let query = AuditQuery {
                 namespace: Some(namespace.to_string()),
@@ -142,100 +123,129 @@ impl HashChainAuditStore {
                 to,
                 limit: Some(page_size),
                 offset: Some(offset),
+                sort_by_sequence_asc: true,
                 ..AuditQuery::default()
             };
 
             let page = self.inner.query(&query).await?;
-            let fetched = page.records.len();
-            all_records.extend(page.records);
+            if page.records.is_empty() {
+                break;
+            }
 
+            let fetched = page.records.len();
+            let records = page.records;
+
+            for record in &records {
+                if first_record_id.is_none() {
+                    first_record_id = Some(record.id.clone());
+                }
+                last_record_id = Some(record.id.clone());
+                records_checked += 1;
+
+                // Verify previous_hash linkage.
+                if record.previous_hash != previous_hash {
+                    return Ok(HashChainVerification {
+                        valid: false,
+                        records_checked,
+                        first_broken_at: Some(record.id.clone()),
+                        first_record_id,
+                        last_record_id,
+                    });
+                }
+
+                // Re-compute the hash and verify it matches.
+                let expected_hash = Self::compute_record_hash(record);
+                match &record.record_hash {
+                    Some(hash) if *hash == expected_hash => {
+                        previous_hash = Some(hash.clone());
+                    }
+                    _ => {
+                        return Ok(HashChainVerification {
+                            valid: false,
+                            records_checked,
+                            first_broken_at: Some(record.id.clone()),
+                            first_record_id,
+                            last_record_id,
+                        });
+                    }
+                }
+            }
+
+            // Drop `records` here — only `previous_hash` carries forward.
             if fetched < usize::try_from(page_size).unwrap_or(usize::MAX) {
                 break;
             }
             offset = offset.saturating_add(page_size);
         }
 
-        if all_records.is_empty() {
-            return Ok(HashChainVerification {
-                valid: true,
-                records_checked: 0,
-                first_broken_at: None,
-                first_record_id: None,
-                last_record_id: None,
-            });
-        }
-
-        // Sort by sequence number ascending (first record first).
-        all_records.sort_by_key(|r| r.sequence_number.unwrap_or(0));
-
-        let first_id = Some(all_records.first().unwrap().id.clone());
-        let last_id = Some(all_records.last().unwrap().id.clone());
-
-        let mut previous_hash: Option<String> = None;
-        let mut first_broken_at: Option<String> = None;
-
-        for record in &all_records {
-            // Verify previous_hash linkage.
-            if record.previous_hash != previous_hash {
-                first_broken_at = Some(record.id.clone());
-                break;
-            }
-
-            // Re-compute the hash and verify it matches.
-            let expected_hash = Self::compute_record_hash(record);
-            match &record.record_hash {
-                Some(hash) if *hash == expected_hash => {
-                    previous_hash = Some(hash.clone());
-                }
-                _ => {
-                    first_broken_at = Some(record.id.clone());
-                    break;
-                }
-            }
-        }
-
         Ok(HashChainVerification {
-            valid: first_broken_at.is_none(),
-            records_checked: all_records.len() as u64,
-            first_broken_at,
-            first_record_id: first_id,
-            last_record_id: last_id,
+            valid: true,
+            records_checked,
+            first_broken_at: None,
+            first_record_id,
+            last_record_id,
         })
     }
 }
 
 #[async_trait]
 impl AuditStore for HashChainAuditStore {
+    /// Write a hash-chained audit record using optimistic concurrency.
+    ///
+    /// 1. Fetch the current chain tip from the DB (no local cache).
+    /// 2. Compute `previous_hash`, `record_hash`, and `sequence_number`.
+    /// 3. Attempt to write. If the inner store rejects the write due to a
+    ///    duplicate `sequence_number` (another replica won the race), re-fetch
+    ///    the tip and retry up to [`MAX_CHAIN_RETRIES`] times.
     async fn record(&self, entry: AuditRecord) -> Result<(), AuditError> {
-        let mut tips = self.tips.lock().await;
-        let tip = self
-            .get_or_fetch_tip(&entry.namespace, &entry.tenant, &mut tips)
-            .await?;
+        let mut last_err = None;
 
-        let mut chained = entry;
-        let (prev_hash, seq) = match tip {
-            Some(t) => (Some(t.record_hash), t.sequence_number + 1),
-            None => (None, 0),
-        };
+        for attempt in 0..MAX_CHAIN_RETRIES {
+            let tip = self.fetch_tip(&entry.namespace, &entry.tenant).await?;
 
-        chained.previous_hash = prev_hash;
-        chained.sequence_number = Some(seq);
-        chained.record_hash = Some(Self::compute_record_hash(&chained));
+            let mut chained = entry.clone();
+            let (prev_hash, seq) = match &tip {
+                Some((hash, seq_num)) => (Some(hash.clone()), seq_num + 1),
+                None => (None, 0),
+            };
 
-        // Update the cached tip.
-        let key = (chained.namespace.clone(), chained.tenant.clone());
-        tips.insert(
-            key,
-            Some(ChainTip {
-                record_hash: chained.record_hash.clone().unwrap(),
-                sequence_number: seq,
-            }),
-        );
+            chained.previous_hash = prev_hash;
+            chained.sequence_number = Some(seq);
+            chained.record_hash = Some(Self::compute_record_hash(&chained));
 
-        // Release the lock before the async inner write.
-        drop(tips);
+            match self.inner.record(chained).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    // Check if this is a unique constraint violation (sequence
+                    // conflict from a concurrent replica). The error message
+                    // from Postgres/ClickHouse/etc. will contain "unique" or
+                    // "duplicate" for constraint violations.
+                    let msg = e.to_string().to_lowercase();
+                    if msg.contains("unique") || msg.contains("duplicate") {
+                        warn!(
+                            attempt = attempt + 1,
+                            sequence_number = seq,
+                            namespace = %entry.namespace,
+                            tenant = %entry.tenant,
+                            "hash chain sequence conflict, retrying"
+                        );
+                        last_err = Some(e);
+                        continue;
+                    }
+                    // Not a conflict — propagate immediately.
+                    return Err(e);
+                }
+            }
+        }
 
-        self.inner.record(chained).await
+        Err(AuditError::Storage(format!(
+            "hash chain write failed after {MAX_CHAIN_RETRIES} retries for ({}, {}): {}",
+            entry.namespace,
+            entry.tenant,
+            last_err
+                .as_ref()
+                .map_or("unknown".to_string(), ToString::to_string),
+        )))
     }
 
     async fn get_by_action_id(&self, action_id: &str) -> Result<Option<AuditRecord>, AuditError> {
@@ -312,10 +322,14 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex as StdMutex;
 
-    /// In-memory audit store for testing.
+    /// In-memory audit store for testing that enforces a `UNIQUE` constraint on
+    /// `(namespace, tenant, sequence_number)` to simulate the Postgres behavior
+    /// required for optimistic concurrency.
     struct MemoryAudit {
         records: StdMutex<Vec<AuditRecord>>,
         cleanup_count: StdMutex<u64>,
+        /// When true, enforce unique `(namespace, tenant, sequence_number)`.
+        enforce_unique_sequence: bool,
     }
 
     impl MemoryAudit {
@@ -323,6 +337,16 @@ mod tests {
             Self {
                 records: StdMutex::new(Vec::new()),
                 cleanup_count: StdMutex::new(0),
+                enforce_unique_sequence: false,
+            }
+        }
+
+        /// Create a store that rejects duplicate `(namespace, tenant, sequence_number)`.
+        fn with_unique_constraint() -> Self {
+            Self {
+                records: StdMutex::new(Vec::new()),
+                cleanup_count: StdMutex::new(0),
+                enforce_unique_sequence: true,
             }
         }
 
@@ -334,7 +358,22 @@ mod tests {
     #[async_trait]
     impl AuditStore for MemoryAudit {
         async fn record(&self, entry: AuditRecord) -> Result<(), AuditError> {
-            self.records.lock().unwrap().push(entry);
+            let mut records = self.records.lock().unwrap();
+            if self.enforce_unique_sequence {
+                if let Some(seq) = entry.sequence_number {
+                    let conflict = records.iter().any(|r| {
+                        r.namespace == entry.namespace
+                            && r.tenant == entry.tenant
+                            && r.sequence_number == Some(seq)
+                    });
+                    if conflict {
+                        return Err(AuditError::Storage(
+                            "unique constraint violation: duplicate sequence_number".to_string(),
+                        ));
+                    }
+                }
+            }
+            records.push(entry);
             Ok(())
         }
 
@@ -374,8 +413,13 @@ mod tests {
                 })
                 .collect();
 
-            // Sort by sequence number ascending for chain verification.
-            filtered.sort_by_key(|r| r.sequence_number.unwrap_or(0));
+            if query.sort_by_sequence_asc {
+                // Ascending sequence order (used by chain verification).
+                filtered.sort_by_key(|r| r.sequence_number.unwrap_or(0));
+            } else {
+                // Default: descending by sequence (mimics Postgres dispatched_at DESC).
+                filtered.sort_by(|a, b| b.sequence_number.cmp(&a.sequence_number));
+            }
 
             let total = filtered.len() as u64;
             let offset = query.effective_offset() as usize;
@@ -890,5 +934,193 @@ mod tests {
         // SOC2 does not set immutable_audit, so cleanup should pass through.
         let count = store.cleanup_expired().await.unwrap();
         assert_eq!(count, 1);
+    }
+
+    // ---- CAS / optimistic concurrency tests ----
+
+    #[tokio::test]
+    async fn hash_chain_works_with_unique_constraint() {
+        // This test uses a store that enforces the same UNIQUE constraint
+        // as the Postgres migration: (namespace, tenant, sequence_number).
+        let inner = Arc::new(MemoryAudit::with_unique_constraint());
+        let store = HashChainAuditStore::new(Arc::clone(&inner) as Arc<dyn AuditStore>);
+
+        store.record(make_record("r1", "ns", "t1")).await.unwrap();
+        store.record(make_record("r2", "ns", "t1")).await.unwrap();
+        store.record(make_record("r3", "ns", "t1")).await.unwrap();
+
+        let records = inner.raw_records();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].sequence_number, Some(0));
+        assert_eq!(records[1].sequence_number, Some(1));
+        assert_eq!(records[2].sequence_number, Some(2));
+        assert_eq!(records[1].previous_hash, records[0].record_hash);
+        assert_eq!(records[2].previous_hash, records[1].record_hash);
+    }
+
+    #[tokio::test]
+    async fn hash_chain_retries_on_sequence_conflict() {
+        // Simulate a conflict: pre-insert a record with sequence 0, then
+        // attempt to write via the HashChainAuditStore. The first attempt
+        // will see an empty tip (no records via query with matching hash
+        // fields) and try seq=0, which conflicts. On retry it should fetch
+        // the updated tip and succeed with seq=1.
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        /// A store that fails the first N writes with a unique constraint
+        /// error, then succeeds.
+        struct ConflictingAudit {
+            inner: MemoryAudit,
+            failures_remaining: AtomicU32,
+        }
+
+        #[async_trait]
+        impl AuditStore for ConflictingAudit {
+            async fn record(&self, entry: AuditRecord) -> Result<(), AuditError> {
+                let remaining = self.failures_remaining.load(Ordering::SeqCst);
+                if remaining > 0 {
+                    self.failures_remaining.fetch_sub(1, Ordering::SeqCst);
+                    // Simulate: another replica already wrote this sequence.
+                    // Still insert the record so the next tip fetch sees it.
+                    self.inner.record(entry).await?;
+                    return Err(AuditError::Storage(
+                        "unique constraint violation: duplicate sequence_number".to_string(),
+                    ));
+                }
+                self.inner.record(entry).await
+            }
+
+            async fn get_by_action_id(
+                &self,
+                action_id: &str,
+            ) -> Result<Option<AuditRecord>, AuditError> {
+                self.inner.get_by_action_id(action_id).await
+            }
+
+            async fn get_by_id(&self, id: &str) -> Result<Option<AuditRecord>, AuditError> {
+                self.inner.get_by_id(id).await
+            }
+
+            async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
+                self.inner.query(query).await
+            }
+
+            async fn cleanup_expired(&self) -> Result<u64, AuditError> {
+                self.inner.cleanup_expired().await
+            }
+        }
+
+        let conflicting = Arc::new(ConflictingAudit {
+            inner: MemoryAudit::new(),
+            failures_remaining: AtomicU32::new(2), // Fail twice, then succeed.
+        });
+
+        let store = HashChainAuditStore::new(Arc::clone(&conflicting) as Arc<dyn AuditStore>);
+        // This should succeed after retrying through the conflicts.
+        store.record(make_record("r1", "ns", "t1")).await.unwrap();
+
+        // The record should have been written (the "winning" write from the
+        // retry that succeeded).
+        let records = conflicting.inner.raw_records();
+        assert!(!records.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hash_chain_fails_after_max_retries() {
+        /// A store that always fails with a unique constraint error but
+        /// does NOT persist the record (simulating the DB rejecting the write).
+        struct AlwaysConflictingAudit;
+
+        #[async_trait]
+        impl AuditStore for AlwaysConflictingAudit {
+            async fn record(&self, _entry: AuditRecord) -> Result<(), AuditError> {
+                Err(AuditError::Storage(
+                    "unique constraint violation: duplicate".to_string(),
+                ))
+            }
+
+            async fn get_by_action_id(
+                &self,
+                _action_id: &str,
+            ) -> Result<Option<AuditRecord>, AuditError> {
+                Ok(None)
+            }
+
+            async fn get_by_id(&self, _id: &str) -> Result<Option<AuditRecord>, AuditError> {
+                Ok(None)
+            }
+
+            async fn query(&self, _query: &AuditQuery) -> Result<AuditPage, AuditError> {
+                Ok(AuditPage {
+                    records: vec![],
+                    total: 0,
+                    limit: 50,
+                    offset: 0,
+                })
+            }
+
+            async fn cleanup_expired(&self) -> Result<u64, AuditError> {
+                Ok(0)
+            }
+        }
+
+        let store =
+            HashChainAuditStore::new(Arc::new(AlwaysConflictingAudit) as Arc<dyn AuditStore>);
+
+        let result = store.record(make_record("r1", "ns", "t1")).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("retries"),
+            "expected 'retries' in error, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hash_chain_non_conflict_error_propagates_immediately() {
+        /// A store that fails with a non-conflict error.
+        struct BrokenAudit;
+
+        #[async_trait]
+        impl AuditStore for BrokenAudit {
+            async fn record(&self, _entry: AuditRecord) -> Result<(), AuditError> {
+                Err(AuditError::Storage("connection refused".to_string()))
+            }
+
+            async fn get_by_action_id(
+                &self,
+                _action_id: &str,
+            ) -> Result<Option<AuditRecord>, AuditError> {
+                Ok(None)
+            }
+
+            async fn get_by_id(&self, _id: &str) -> Result<Option<AuditRecord>, AuditError> {
+                Ok(None)
+            }
+
+            async fn query(&self, _query: &AuditQuery) -> Result<AuditPage, AuditError> {
+                Ok(AuditPage {
+                    records: vec![],
+                    total: 0,
+                    limit: 50,
+                    offset: 0,
+                })
+            }
+
+            async fn cleanup_expired(&self) -> Result<u64, AuditError> {
+                Ok(0)
+            }
+        }
+
+        let store = HashChainAuditStore::new(Arc::new(BrokenAudit) as Arc<dyn AuditStore>);
+        let result = store.record(make_record("r1", "ns", "t1")).await;
+        assert!(result.is_err());
+        // Should fail immediately (not retry), so the error is "connection refused".
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("connection refused")
+        );
     }
 }

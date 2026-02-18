@@ -79,12 +79,15 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
     }
 
     // Add hash chain columns for compliance mode (idempotent).
+    // The UNIQUE index on (namespace, tenant, sequence_number) enforces
+    // optimistic concurrency: if two gateway replicas race for the same
+    // sequence number, one will get a unique constraint violation and retry.
     let hash_chain_stmts = [
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS record_hash TEXT"),
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS previous_hash TEXT"),
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS sequence_number BIGINT"),
         format!(
-            "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_hash_chain ON {table} (namespace, tenant, sequence_number) WHERE sequence_number IS NOT NULL"
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_{prefix}audit_hash_chain ON {table} (namespace, tenant, sequence_number) WHERE sequence_number IS NOT NULL"
         ),
     ];
     for stmt in &hash_chain_stmts {

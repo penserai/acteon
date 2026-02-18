@@ -104,6 +104,11 @@ pub struct AuditQuery {
     pub limit: Option<u32>,
     /// Number of records to skip for pagination.
     pub offset: Option<u32>,
+    /// When true, sort by `sequence_number ASC` instead of the default
+    /// `dispatched_at DESC`. Used by hash chain verification to iterate
+    /// records in chain order with bounded memory.
+    #[serde(default)]
+    pub sort_by_sequence_asc: bool,
 }
 
 impl AuditQuery {
