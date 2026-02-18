@@ -279,10 +279,11 @@ pub struct AuditConfig {
     /// Whether audit recording is enabled.
     #[serde(default)]
     pub enabled: bool,
-    /// Which backend to use: `"memory"`, `"postgres"`, `"clickhouse"`, or `"elasticsearch"`.
+    /// Which backend to use: `"memory"`, `"postgres"`, `"clickhouse"`, `"dynamodb"`,
+    /// or `"elasticsearch"`.
     #[serde(default = "default_audit_backend")]
     pub backend: String,
-    /// Connection URL for the audit backend (used by postgres).
+    /// Connection URL for the audit backend (used by `postgres`, `clickhouse`, `elasticsearch`).
     pub url: Option<String>,
     /// Table prefix for the audit backend.
     #[serde(default = "default_audit_prefix")]
@@ -299,6 +300,12 @@ pub struct AuditConfig {
     /// Field redaction configuration.
     #[serde(default)]
     pub redact: AuditRedactConfig,
+    /// AWS region for the `DynamoDB` audit backend.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// `DynamoDB` table name for the audit backend.
+    #[serde(default)]
+    pub table_name: Option<String>,
 }
 
 /// Configuration for redacting sensitive fields from audit payloads.
@@ -342,6 +349,8 @@ impl Default for AuditConfig {
             cleanup_interval_seconds: default_cleanup_interval(),
             store_payload: true,
             redact: AuditRedactConfig::default(),
+            region: None,
+            table_name: None,
         }
     }
 }

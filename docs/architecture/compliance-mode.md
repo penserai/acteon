@@ -11,9 +11,9 @@ The design follows the decorator pattern: each compliance feature is a separate
 layer that wraps the inner store, so features compose independently and the
 underlying backend remains unaware of compliance logic.
 
-**Important**: Hash chaining (`hash_chain = true`) requires the `postgres` audit
-backend for production deployments. See [Backend Requirements](#10-backend-requirements)
-for details.
+**Important**: Hash chaining (`hash_chain = true`) requires the `postgres` or
+`dynamodb` audit backend for production deployments. See
+[Backend Requirements](#10-backend-requirements) for details.
 
 ---
 
@@ -400,7 +400,7 @@ crates/server/src/api/audit.rs    -- POST /v1/audit/verify handler
 | Runtime changes | Not supported (restart required) | Compliance config changes should be deliberate |
 | Verification | On-demand API endpoint | Avoids background overhead; callable on schedule |
 | Canonicalization | Deterministic sorted JSON | Reproducible across implementations and languages |
-| Backend requirement | Postgres for hash chaining | UNIQUE constraints needed for CAS correctness |
+| Backend requirement | Postgres or DynamoDB for hash chaining | Atomic uniqueness enforcement needed for CAS correctness |
 | Concurrency model | Optimistic (CAS) with jittered backoff | No distributed coordination; scales horizontally |
 
 ---
@@ -413,9 +413,10 @@ Hash chain correctness depends on **exactly-once sequence number assignment**
 across concurrent writers. This requires a database that can atomically reject
 a duplicate `(namespace, tenant, sequence_number)` tuple at write time.
 
-| Backend | Synchronous UNIQUE enforcement | Hash chain support |
-|---------|-------------------------------|-------------------|
+| Backend | Synchronous uniqueness enforcement | Hash chain support |
+|---------|-----------------------------------|-------------------|
 | `postgres` | Yes (`UNIQUE INDEX`) | Full support |
+| `dynamodb` | Yes (`TransactWriteItems` + `attribute_not_exists`) | Full support |
 | `memory` | Yes (in-process `HashMap`) | Testing/development only |
 | `clickhouse` | No (mutations are async) | Not supported |
 | `elasticsearch` | No (no UNIQUE constraint) | Not supported |
@@ -423,15 +424,17 @@ a duplicate `(namespace, tenant, sequence_number)` tuple at write time.
 ### Startup Validation
 
 The server validates the backend at startup. If `hash_chain = true` and the
-configured audit backend is not `postgres` or `memory`, the server exits
-immediately with an error message explaining the incompatibility. This
+configured audit backend is not `postgres`, `dynamodb`, or `memory`, the server
+exits immediately with an error message explaining the incompatibility. This
 fail-fast approach prevents silent data integrity issues that would be
 difficult to diagnose in production.
 
 ### Concurrency Model
 
+**Postgres** uses UNIQUE constraint violations:
+
 ```
-Replica A                    Database                    Replica B
+Replica A                    Postgres                    Replica B
     |                           |                           |
     |-- fetch tip (seq=41) ---->|                           |
     |                           |<-- fetch tip (seq=41) ----|
@@ -443,6 +446,29 @@ Replica A                    Database                    Replica B
     |                           |                           |
     |                           |<-- fetch tip (seq=42) ----|
     |                           |<-- INSERT seq=43 ---------|
+    |                           |--- OK ------------------->|
+```
+
+**DynamoDB** uses `TransactWriteItems` with a fence item:
+
+```
+Replica A                    DynamoDB                    Replica B
+    |                           |                           |
+    |-- query tip (seq=41) ---->|                           |
+    |                           |<-- query tip (seq=41) ----|
+    |                           |                           |
+    |-- TransactWrite           |                           |
+    |   (fence SEQ#42 +         |                           |
+    |    audit record) -------->|                           |
+    |<-- OK                     |                           |
+    |                           |<-- TransactWrite ---------|
+    |                           |    (fence SEQ#42 +        |
+    |                           |     audit record)         |
+    |                           |--- ConditionalCheckFailed>|
+    |                           |                           |
+    |                           |<-- query tip (seq=42) ----|
+    |                           |<-- TransactWrite ---------|
+    |                           |    (fence SEQ#43 + record)|
     |                           |--- OK ------------------->|
 ```
 

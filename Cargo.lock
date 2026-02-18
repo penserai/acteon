@@ -34,6 +34,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-audit-dynamodb"
+version = "0.1.0"
+dependencies = [
+ "acteon-audit",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "chrono",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "acteon-audit-elasticsearch"
 version = "0.1.0"
 dependencies = [
@@ -360,6 +374,7 @@ version = "0.1.0"
 dependencies = [
  "acteon-audit",
  "acteon-audit-clickhouse",
+ "acteon-audit-dynamodb",
  "acteon-audit-elasticsearch",
  "acteon-audit-memory",
  "acteon-audit-postgres",

@@ -30,7 +30,7 @@ cargo build -p acteon-server --features "postgres,elasticsearch"
 | `redis` | Redis state backend (default) |
 | `postgres` | PostgreSQL state and audit backends |
 | `clickhouse` | ClickHouse state and audit backends |
-| `dynamodb` | AWS DynamoDB state backend |
+| `dynamodb` | AWS DynamoDB state and audit backends |
 | `elasticsearch` | Elasticsearch audit backend |
 | `all-backends` | All backends enabled |
 

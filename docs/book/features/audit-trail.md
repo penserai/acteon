@@ -27,7 +27,7 @@ flowchart LR
 ```toml title="acteon.toml"
 [audit]
 enabled = true
-backend = "postgres"                 # "memory" | "postgres" | "clickhouse" | "elasticsearch"
+backend = "postgres"                 # "memory" | "postgres" | "clickhouse" | "dynamodb" | "elasticsearch"
 url = "postgres://acteon:acteon@localhost:5432/acteon"
 prefix = "acteon_"
 ttl_seconds = 2592000                # 30 days
@@ -153,6 +153,7 @@ curl "http://localhost:8080/v1/audit/{action_id}"
 |---------|----------|----------|
 | **Memory** | Testing | Fast, no persistence |
 | **PostgreSQL** | Production | ACID, indexed queries, TTL cleanup |
+| **DynamoDB** | AWS-native | Managed, hash chain support, native TTL |
 | **ClickHouse** | Analytics | Columnar storage, fast aggregations |
 | **Elasticsearch** | Search | Full-text search, index lifecycle |
 

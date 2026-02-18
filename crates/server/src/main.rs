@@ -438,22 +438,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let compliance = config.compliance.to_compliance_config();
 
         // Validate backend compatibility: hash chaining requires a backend
-        // that supports UNIQUE constraints on (namespace, tenant,
-        // sequence_number) for optimistic concurrency in multi-replica
-        // deployments. Postgres and memory (dev/test) are supported;
-        // ClickHouse and Elasticsearch lack synchronous unique constraints.
+        // that supports atomic sequence number uniqueness for optimistic
+        // concurrency in multi-replica deployments. Postgres (UNIQUE
+        // constraint), DynamoDB (conditional writes), and memory (dev/test)
+        // are supported; ClickHouse and Elasticsearch lack synchronous
+        // unique constraints.
         if compliance.hash_chain {
             let backend = config.audit.backend.as_str();
             match backend {
-                "postgres" | "memory" => {}
+                "postgres" | "memory" | "dynamodb" => {}
                 other => {
                     return Err(format!(
-                        "compliance hash_chain requires the 'postgres' audit backend \
-                         for multi-replica correctness, but the configured backend \
-                         is '{other}'. ClickHouse and Elasticsearch do not support \
-                         synchronous unique constraints needed for hash chain \
-                         integrity. Either switch to 'postgres' or disable \
-                         hash_chain in [compliance]."
+                        "compliance hash_chain requires the 'postgres' or 'dynamodb' \
+                         audit backend for multi-replica correctness, but the \
+                         configured backend is '{other}'. ClickHouse and Elasticsearch \
+                         do not support synchronous unique constraints needed for \
+                         hash chain integrity. Either switch to 'postgres'/'dynamodb' \
+                         or disable hash_chain in [compliance]."
                     )
                     .into());
                 }
