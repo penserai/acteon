@@ -424,7 +424,7 @@ Ranked by impact-to-effort ratio:
 | 25 | Kafka/RabbitMQ Producers | Medium | Medium | Not started |
 | 26 | Cost-Aware Routing | Medium | Medium | Not started |
 | 27 | Action Analytics API | Med-Large | Medium | Not started |
-| 28 | SOC2/HIPAA Audit Mode | Med-Large | Medium | Not started |
+| 28 | SOC2/HIPAA Audit Mode | Med-Large | Medium | **DONE** |
 | 29 | mTLS Support | Medium | Medium | Not started |
 | 30 | gRPC Ingress | Large | Low-Med | Not started |
 | 31 | WASM Rule Plugins | Large | Medium | **DONE** |
@@ -520,10 +520,13 @@ Ranked by impact-to-effort ratio:
 - Leverages ClickHouse audit backend for efficient aggregation
 - Endpoints: top actions, suppression rates, chain completion times, provider error trends
 
-**28. SOC2/HIPAA Audit Mode**
+**28. SOC2/HIPAA Audit Mode** -- IMPLEMENTED
 - Config toggle: `compliance_mode = "soc2"` or `"hipaa"`
-- Synchronous audit writes, immutable records, hash-chaining
-- Disables data retention deletion for covered records
+- Synchronous audit writes, immutable records, SHA-256 hash-chaining
+- `HashChainAuditStore` + `ComplianceAuditStore` decorators
+- Chain verification API at `POST /v1/audit/verify`
+- DB migrations for all 3 audit backends, UI compliance status page
+- All 5 polyglot SDKs updated
 
 **29. mTLS Support**
 - Mutual TLS for Postgres, Redis, and provider egress connections
