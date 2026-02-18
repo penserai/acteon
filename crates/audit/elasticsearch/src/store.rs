@@ -248,9 +248,15 @@ impl AuditStore for ElasticsearchAuditStore {
 
         let es_query = build_es_query(query);
 
+        let sort_clause = if query.sort_by_sequence_asc {
+            serde_json::json!([{ "sequence_number": { "order": "asc", "missing": "_last" } }])
+        } else {
+            serde_json::json!([{ "dispatched_at": "desc" }])
+        };
+
         let body = serde_json::json!({
             "query": es_query,
-            "sort": [{ "dispatched_at": "desc" }],
+            "sort": sort_clause,
             "size": limit,
             "from": offset,
             "track_total_hits": true

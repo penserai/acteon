@@ -436,6 +436,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wire compliance configuration.
     if config.compliance.is_active() {
         let compliance = config.compliance.to_compliance_config();
+
+        // Validate backend compatibility: hash chaining requires a backend
+        // that supports UNIQUE constraints on (namespace, tenant,
+        // sequence_number) for optimistic concurrency in multi-replica
+        // deployments. Postgres and memory (dev/test) are supported;
+        // ClickHouse and Elasticsearch lack synchronous unique constraints.
+        if compliance.hash_chain {
+            let backend = config.audit.backend.as_str();
+            match backend {
+                "postgres" | "memory" => {}
+                other => {
+                    return Err(format!(
+                        "compliance hash_chain requires the 'postgres' audit backend \
+                         for multi-replica correctness, but the configured backend \
+                         is '{other}'. ClickHouse and Elasticsearch do not support \
+                         synchronous unique constraints needed for hash chain \
+                         integrity. Either switch to 'postgres' or disable \
+                         hash_chain in [compliance]."
+                    )
+                    .into());
+                }
+            }
+        }
+
         info!(
             mode = %compliance.mode,
             sync_audit_writes = compliance.sync_audit_writes,

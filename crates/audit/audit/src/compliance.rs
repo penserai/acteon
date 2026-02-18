@@ -227,9 +227,23 @@ impl AuditStore for HashChainAuditStore {
                             sequence_number = seq,
                             namespace = %entry.namespace,
                             tenant = %entry.tenant,
-                            "hash chain sequence conflict, retrying"
+                            "hash chain sequence conflict, retrying with backoff"
                         );
                         last_err = Some(e);
+                        // Jittered exponential backoff: 10ms, 20ms, 40ms, 80ms
+                        // plus pseudo-random jitter derived from the system
+                        // clock nanosecond component. Prevents thundering herd
+                        // when many replicas contend on the same chain.
+                        let base_ms = 10u64 * (1u64 << attempt.min(6));
+                        let nanos = u64::from(
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .subsec_nanos(),
+                        );
+                        let jitter_ms = nanos % (base_ms + 1);
+                        tokio::time::sleep(std::time::Duration::from_millis(base_ms + jitter_ms))
+                            .await;
                         continue;
                     }
                     // Not a conflict — propagate immediately.

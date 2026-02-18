@@ -328,8 +328,13 @@ impl AuditStore for ClickHouseAuditStore {
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
         // Data query.
+        let order_clause = if query.sort_by_sequence_asc {
+            "ORDER BY sequence_number ASC"
+        } else {
+            "ORDER BY dispatched_at DESC"
+        };
         let data_sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} ORDER BY dispatched_at DESC LIMIT {limit} OFFSET {offset}",
+            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}",
             self.table,
         );
 
