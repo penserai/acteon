@@ -704,6 +704,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ref set) = provider_cfg.ses_configuration_set {
                             email_config = email_config.with_ses_configuration_set(set);
                         }
+                        if let Some(ref name) = provider_cfg.aws_session_name {
+                            email_config = email_config.with_aws_session_name(name);
+                        }
+                        if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                            email_config = email_config.with_aws_external_id(ext_id);
+                        }
                         std::sync::Arc::new(acteon_email::EmailProvider::ses(&email_config).await)
                     }
                     other => {
@@ -727,6 +733,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref arn) = provider_cfg.aws_role_arn {
                     sns_config = sns_config.with_role_arn(arn);
                 }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    sns_config = sns_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    sns_config = sns_config.with_external_id(ext_id);
+                }
                 std::sync::Arc::new(acteon_aws::SnsProvider::new(sns_config).await)
             }
             "aws-lambda" => {
@@ -744,6 +756,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref arn) = provider_cfg.aws_role_arn {
                     lambda_config = lambda_config.with_role_arn(arn);
                 }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    lambda_config = lambda_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    lambda_config = lambda_config.with_external_id(ext_id);
+                }
                 std::sync::Arc::new(acteon_aws::LambdaProvider::new(lambda_config).await)
             }
             "aws-eventbridge" => {
@@ -757,6 +775,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 if let Some(ref arn) = provider_cfg.aws_role_arn {
                     eb_config = eb_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    eb_config = eb_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    eb_config = eb_config.with_external_id(ext_id);
                 }
                 std::sync::Arc::new(acteon_aws::EventBridgeProvider::new(eb_config).await)
             }
@@ -772,11 +796,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref arn) = provider_cfg.aws_role_arn {
                     sqs_config = sqs_config.with_role_arn(arn);
                 }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    sqs_config = sqs_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    sqs_config = sqs_config.with_external_id(ext_id);
+                }
                 std::sync::Arc::new(acteon_aws::SqsProvider::new(sqs_config).await)
+            }
+            "aws-s3" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut s3_config = acteon_aws::S3Config::new(region);
+                if let Some(ref bucket) = provider_cfg.bucket_name {
+                    s3_config = s3_config.with_bucket(bucket);
+                }
+                if let Some(ref prefix) = provider_cfg.object_prefix {
+                    s3_config = s3_config.with_prefix(prefix);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    s3_config = s3_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    s3_config = s3_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    s3_config = s3_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    s3_config = s3_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::S3Provider::new(s3_config).await)
             }
             other => {
                 return Err(format!(
-                        "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', 'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', or 'aws-sqs')",
+                        "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', 'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', 'aws-sqs', or 'aws-s3')",
                         provider_cfg.name
                     )
                     .into());

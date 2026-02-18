@@ -6,7 +6,8 @@ use crate::config::AwsBaseConfig;
 ///
 /// Uses the standard AWS SDK environment credential chain and optionally:
 /// - Overrides the endpoint URL for local development (e.g. `LocalStack`)
-/// - Assumes an IAM role via STS if `role_arn` is configured
+/// - Assumes an IAM role via STS if `role_arn` is configured, with automatic
+///   credential refresh before expiry
 ///
 /// # Examples
 ///
@@ -28,47 +29,43 @@ pub async fn build_sdk_config(config: &AwsBaseConfig) -> aws_config::SdkConfig {
         loader = loader.endpoint_url(endpoint);
     }
 
-    // If a role ARN is specified, assume it via STS. We first load the base
-    // config to create an STS client, then use the assumed-role credentials
-    // to build the final config.
+    // If a role ARN is specified, assume it via STS with automatic credential
+    // refresh. The SDK's `AssumeRoleProvider` handles refreshing credentials
+    // before they expire, eliminating the previous issue where static
+    // credentials would expire after ~1 hour.
     if let Some(role_arn) = &config.role_arn {
-        info!(role_arn = %role_arn, "assuming IAM role via STS");
+        let session_name = config
+            .session_name
+            .as_deref()
+            .unwrap_or("acteon-aws-provider");
+
+        info!(role_arn = %role_arn, session_name = %session_name, "assuming IAM role via STS (auto-refresh)");
+
+        // Load the base config first so the assume-role provider inherits
+        // the endpoint override and base credentials for STS calls.
         let base_config = loader.load().await;
-        let sts_client = aws_sdk_sts::Client::new(&base_config);
 
-        match sts_client
-            .assume_role()
-            .role_arn(role_arn)
-            .role_session_name("acteon-aws-provider")
-            .send()
-            .await
-        {
-            Ok(response) => {
-                if let Some(creds) = response.credentials() {
-                    let static_creds = aws_credential_types::Credentials::from_keys(
-                        creds.access_key_id(),
-                        creds.secret_access_key(),
-                        Some(creds.session_token().to_owned()),
-                    );
+        let mut provider_builder = aws_config::sts::AssumeRoleProvider::builder(role_arn)
+            .session_name(session_name)
+            .region(aws_config::Region::new(config.region.clone()));
 
-                    let mut assumed_loader = aws_config::from_env()
-                        .region(aws_config::Region::new(config.region.clone()))
-                        .credentials_provider(static_creds);
-
-                    if let Some(endpoint) = &config.endpoint_url {
-                        assumed_loader = assumed_loader.endpoint_url(endpoint);
-                    }
-
-                    info!("STS assume-role succeeded");
-                    return assumed_loader.load().await;
-                }
-                tracing::warn!("STS response had no credentials, falling back to base config");
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "STS assume-role failed, falling back to base config");
-            }
+        if let Some(ref external_id) = config.external_id {
+            provider_builder = provider_builder.external_id(external_id);
         }
-        return base_config;
+
+        let assume_role_provider = provider_builder.configure(&base_config).build().await;
+
+        // Build the final config with the auto-refreshing credential provider.
+        let mut final_loader = aws_config::from_env()
+            .region(aws_config::Region::new(config.region.clone()))
+            .credentials_provider(assume_role_provider);
+
+        if let Some(endpoint) = &config.endpoint_url {
+            final_loader = final_loader.endpoint_url(endpoint);
+        }
+
+        info!("STS assume-role configured (credentials will auto-refresh)");
+        return final_loader.load().await;
     }
 
     loader.load().await
@@ -97,5 +94,12 @@ mod integration_tests {
         let config = AwsBaseConfig::new("us-west-2").with_endpoint_url("http://localhost:4566");
         let sdk_config = build_sdk_config(&config).await;
         assert_eq!(sdk_config.region().map(|r| r.as_ref()), Some("us-west-2"));
+    }
+
+    #[tokio::test]
+    async fn build_sdk_config_with_session_name() {
+        let config = AwsBaseConfig::new("us-east-1").with_session_name("my-custom-session");
+        let sdk_config = build_sdk_config(&config).await;
+        assert_eq!(sdk_config.region().map(|r| r.as_ref()), Some("us-east-1"));
     }
 }

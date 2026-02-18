@@ -104,6 +104,14 @@ pub struct EmailConfig {
     /// Optional SES configuration set name for email tracking.
     #[serde(default)]
     pub ses_configuration_set: Option<String>,
+
+    /// Optional STS session name for SES assume-role.
+    #[serde(default)]
+    pub aws_session_name: Option<String>,
+
+    /// Optional external ID for SES cross-account trust policies.
+    #[serde(default)]
+    pub aws_external_id: Option<String>,
 }
 
 fn default_backend() -> String {
@@ -135,6 +143,8 @@ impl std::fmt::Debug for EmailConfig {
             )
             .field("aws_endpoint_url", &self.aws_endpoint_url)
             .field("ses_configuration_set", &self.ses_configuration_set)
+            .field("aws_session_name", &self.aws_session_name)
+            .field("aws_external_id", &self.aws_external_id)
             .finish()
     }
 }
@@ -166,6 +176,8 @@ impl EmailConfig {
             aws_role_arn: None,
             aws_endpoint_url: None,
             ses_configuration_set: None,
+            aws_session_name: None,
+            aws_external_id: None,
         }
     }
 
@@ -183,6 +195,8 @@ impl EmailConfig {
             aws_role_arn: None,
             aws_endpoint_url: None,
             ses_configuration_set: None,
+            aws_session_name: None,
+            aws_external_id: None,
         }
     }
 
@@ -233,6 +247,20 @@ impl EmailConfig {
         self
     }
 
+    /// Set the STS session name for SES assume-role.
+    #[must_use]
+    pub fn with_aws_session_name(mut self, session_name: impl Into<String>) -> Self {
+        self.aws_session_name = Some(session_name.into());
+        self
+    }
+
+    /// Set the external ID for SES cross-account trust policies.
+    #[must_use]
+    pub fn with_aws_external_id(mut self, external_id: impl Into<String>) -> Self {
+        self.aws_external_id = Some(external_id.into());
+        self
+    }
+
     /// Returns `true` if this config uses the SMTP backend.
     pub fn is_smtp(&self) -> bool {
         self.backend == "smtp"
@@ -268,6 +296,12 @@ impl EmailConfig {
         if let Some(ref arn) = self.aws_role_arn {
             config = config.with_role_arn(arn);
         }
+        if let Some(ref name) = self.aws_session_name {
+            config = config.with_session_name(name);
+        }
+        if let Some(ref ext_id) = self.aws_external_id {
+            config = config.with_external_id(ext_id);
+        }
         config
     }
 
@@ -302,6 +336,8 @@ impl Default for EmailConfig {
             aws_role_arn: None,
             aws_endpoint_url: None,
             ses_configuration_set: None,
+            aws_session_name: None,
+            aws_external_id: None,
         }
     }
 }

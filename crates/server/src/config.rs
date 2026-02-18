@@ -87,7 +87,8 @@ pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
-    /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, or `"aws-sqs"`.
+    /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
+    /// or `"aws-s3"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -146,6 +147,14 @@ pub struct ProviderConfig {
     pub queue_url: Option<String>,
     /// SES configuration set name (used by `"email"` with SES backend).
     pub ses_configuration_set: Option<String>,
+    /// STS session name for assume-role (used by `"aws-*"` types).
+    pub aws_session_name: Option<String>,
+    /// STS external ID for cross-account trust policies (used by `"aws-*"` types).
+    pub aws_external_id: Option<String>,
+    /// S3 bucket name (used by `"aws-s3"` type).
+    pub bucket_name: Option<String>,
+    /// S3 object key prefix (used by `"aws-s3"` type).
+    pub object_prefix: Option<String>,
 }
 
 /// Configuration for the state store backend.

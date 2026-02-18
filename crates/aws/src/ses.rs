@@ -57,6 +57,20 @@ impl SesConfig {
         self.aws.role_arn = Some(role_arn.into());
         self
     }
+
+    /// Set the STS session name for assume-role.
+    #[must_use]
+    pub fn with_session_name(mut self, session_name: impl Into<String>) -> Self {
+        self.aws.session_name = Some(session_name.into());
+        self
+    }
+
+    /// Set the external ID for cross-account trust policies.
+    #[must_use]
+    pub fn with_external_id(mut self, external_id: impl Into<String>) -> Self {
+        self.aws.external_id = Some(external_id.into());
+        self
+    }
 }
 
 /// AWS `SESv2` client wrapper for sending emails.

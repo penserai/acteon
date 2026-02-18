@@ -15,6 +15,14 @@ pub struct AwsBaseConfig {
 
     /// Optional endpoint URL override for local development (e.g. `LocalStack`).
     pub endpoint_url: Option<String>,
+
+    /// Optional STS session name (defaults to `"acteon-aws-provider"`).
+    #[serde(default)]
+    pub session_name: Option<String>,
+
+    /// Optional external ID for cross-account trust policies.
+    #[serde(default)]
+    pub external_id: Option<String>,
 }
 
 impl std::fmt::Debug for AwsBaseConfig {
@@ -23,6 +31,8 @@ impl std::fmt::Debug for AwsBaseConfig {
             .field("region", &self.region)
             .field("role_arn", &self.role_arn.as_ref().map(|_| "[REDACTED]"))
             .field("endpoint_url", &self.endpoint_url)
+            .field("session_name", &self.session_name)
+            .field("external_id", &self.external_id)
             .finish()
     }
 }
@@ -34,6 +44,8 @@ impl AwsBaseConfig {
             region: region.into(),
             role_arn: None,
             endpoint_url: None,
+            session_name: None,
+            external_id: None,
         }
     }
 
@@ -50,6 +62,20 @@ impl AwsBaseConfig {
         self.endpoint_url = Some(endpoint_url.into());
         self
     }
+
+    /// Set the STS session name for assume-role.
+    #[must_use]
+    pub fn with_session_name(mut self, session_name: impl Into<String>) -> Self {
+        self.session_name = Some(session_name.into());
+        self
+    }
+
+    /// Set the external ID for cross-account trust policies.
+    #[must_use]
+    pub fn with_external_id(mut self, external_id: impl Into<String>) -> Self {
+        self.external_id = Some(external_id.into());
+        self
+    }
 }
 
 impl Default for AwsBaseConfig {
@@ -58,6 +84,8 @@ impl Default for AwsBaseConfig {
             region: "us-east-1".to_owned(),
             role_arn: None,
             endpoint_url: None,
+            session_name: None,
+            external_id: None,
         }
     }
 }

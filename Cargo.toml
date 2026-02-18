@@ -171,8 +171,7 @@ aws-sdk-lambda = "1"
 aws-sdk-eventbridge = "1"
 aws-sdk-sqs = "1"
 aws-sdk-sesv2 = "1"
-aws-sdk-sts = "1"
-aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
+aws-sdk-s3 = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 # PostgreSQL
