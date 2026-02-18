@@ -42,6 +42,9 @@ struct AuditInsertRow {
     expires_at: Option<i64>,
     caller_id: String,
     auth_method: String,
+    record_hash: Option<String>,
+    previous_hash: Option<String>,
+    sequence_number: Option<u64>,
 }
 
 /// Row layout used when reading audit records from `ClickHouse`.
@@ -67,6 +70,9 @@ struct AuditSelectRow {
     expires_at: Option<i64>,
     caller_id: String,
     auth_method: String,
+    record_hash: Option<String>,
+    previous_hash: Option<String>,
+    sequence_number: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +104,9 @@ impl From<AuditRecord> for AuditInsertRow {
             expires_at: r.expires_at.map(|dt| dt.timestamp_millis()),
             caller_id: r.caller_id,
             auth_method: r.auth_method,
+            record_hash: r.record_hash,
+            previous_hash: r.previous_hash,
+            sequence_number: r.sequence_number,
         }
     }
 }
@@ -129,6 +138,9 @@ impl From<AuditSelectRow> for AuditRecord {
             expires_at: row.expires_at.map(millis_to_datetime),
             caller_id: row.caller_id,
             auth_method: row.auth_method,
+            record_hash: row.record_hash,
+            previous_hash: row.previous_hash,
+            sequence_number: row.sequence_number,
         }
     }
 }
@@ -148,7 +160,7 @@ const SELECT_COLUMNS: &str = "\
     id, action_id, chain_id, namespace, tenant, provider, action_type, verdict, \
     matched_rule, outcome, action_payload, verdict_details, outcome_details, \
     metadata, dispatched_at, completed_at, duration_ms, expires_at, \
-    caller_id, auth_method";
+    caller_id, auth_method, record_hash, previous_hash, sequence_number";
 
 /// Escape a string value for safe interpolation inside a `ClickHouse` SQL
 /// single-quoted literal.  `ClickHouse` uses backslash escaping by default.
@@ -316,8 +328,13 @@ impl AuditStore for ClickHouseAuditStore {
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
         // Data query.
+        let order_clause = if query.sort_by_sequence_asc {
+            "ORDER BY sequence_number ASC"
+        } else {
+            "ORDER BY dispatched_at DESC"
+        };
         let data_sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} ORDER BY dispatched_at DESC LIMIT {limit} OFFSET {offset}",
+            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}",
             self.table,
         );
 

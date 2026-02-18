@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Command } from 'cmdk'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  LayoutDashboard, Send, BookOpen, ScrollText, Link2, ShieldCheck, Rss,
+  LayoutDashboard, Send, BookOpen, ScrollText, Link2, ShieldCheck, ShieldAlert, Rss,
   Sun, Search, RefreshCw,
 } from 'lucide-react'
 import { useUiStore } from '../../stores/ui'
@@ -19,6 +19,7 @@ const navItems = [
   { label: 'Event Stream', to: '/stream', icon: Rss },
   { label: 'Recurring Actions', to: '/recurring', icon: RefreshCw },
   { label: 'Dispatch Action', to: '/dispatch', icon: Send },
+  { label: 'Compliance', to: '/compliance', icon: ShieldAlert },
 ]
 
 export function CommandPalette() {

@@ -58,6 +58,7 @@ pub struct GatewayBuilder {
     retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
     wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
+    compliance_config: Option<acteon_core::ComplianceConfig>,
 }
 
 impl GatewayBuilder {
@@ -95,6 +96,7 @@ impl GatewayBuilder {
             retention_policies: HashMap::new(),
             payload_encryptor: None,
             wasm_runtime: None,
+            compliance_config: None,
         }
     }
 
@@ -407,6 +409,16 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the compliance configuration for the gateway.
+    ///
+    /// When set, enables compliance features such as synchronous audit writes,
+    /// immutable audit records, and `SHA-256` hash chaining.
+    #[must_use]
+    pub fn compliance_config(mut self, config: acteon_core::ComplianceConfig) -> Self {
+        self.compliance_config = Some(config);
+        self
+    }
+
     /// Set all quota policies at once (replaces any previously added).
     #[must_use]
     pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
@@ -619,6 +631,33 @@ impl GatewayBuilder {
         // Create the broadcast channel for SSE event streaming.
         let (stream_tx, _) = tokio::sync::broadcast::channel(self.stream_buffer_size);
 
+        // Wrap the audit store with compliance decorators when configured.
+        let mut hash_chain_store: Option<Arc<acteon_audit::HashChainAuditStore>> = None;
+        let audit: Option<Arc<dyn AuditStore>> = if let Some(audit_store) = self.audit {
+            if let Some(ref compliance) = self.compliance_config {
+                let store: Arc<dyn AuditStore> = if compliance.hash_chain {
+                    let hcs = Arc::new(acteon_audit::HashChainAuditStore::new(audit_store));
+                    hash_chain_store = Some(Arc::clone(&hcs));
+                    hcs
+                } else {
+                    audit_store
+                };
+                let store: Arc<dyn AuditStore> = if compliance.immutable_audit {
+                    Arc::new(acteon_audit::ComplianceAuditStore::new(
+                        store,
+                        compliance.clone(),
+                    ))
+                } else {
+                    store
+                };
+                Some(store)
+            } else {
+                Some(audit_store)
+            }
+        } else {
+            None
+        };
+
         Ok(Gateway {
             state,
             lock,
@@ -627,7 +666,7 @@ impl GatewayBuilder {
             executor,
             environment: self.environment,
             metrics: Arc::new(GatewayMetrics::default()),
-            audit: self.audit,
+            audit,
             audit_ttl_seconds: self.audit_ttl_seconds,
             audit_store_payload: self.audit_store_payload,
             audit_tracker: TaskTracker::new(),
@@ -652,6 +691,8 @@ impl GatewayBuilder {
             payload_encryptor: self.payload_encryptor,
             provider_metrics: Arc::new(crate::metrics::ProviderMetrics::default()),
             wasm_runtime: self.wasm_runtime,
+            compliance_config: self.compliance_config,
+            hash_chain_store,
         })
     }
 }

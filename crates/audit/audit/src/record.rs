@@ -62,6 +62,17 @@ pub struct AuditRecord {
     /// Authentication method used (`"jwt"`, `"api_key"`, `"anonymous"`).
     #[serde(default)]
     pub auth_method: String,
+
+    // -- Hash chain (compliance mode) --
+    /// `SHA-256` hex digest of the canonicalized record content.
+    #[serde(default)]
+    pub record_hash: Option<String>,
+    /// Hash of the previous record in the chain (for hash-chain integrity).
+    #[serde(default)]
+    pub previous_hash: Option<String>,
+    /// Monotonic sequence number within the `(namespace, tenant)` pair.
+    #[serde(default)]
+    pub sequence_number: Option<u64>,
 }
 
 /// Query parameters for searching audit records.
@@ -93,6 +104,11 @@ pub struct AuditQuery {
     pub limit: Option<u32>,
     /// Number of records to skip for pagination.
     pub offset: Option<u32>,
+    /// When true, sort by `sequence_number ASC` instead of the default
+    /// `dispatched_at DESC`. Used by hash chain verification to iterate
+    /// records in chain order with bounded memory.
+    #[serde(default)]
+    pub sort_by_sequence_asc: bool,
 }
 
 impl AuditQuery {

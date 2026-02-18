@@ -60,5 +60,15 @@ pub async fn run_migrations(
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS chain_id Nullable(String)");
     client.query(&chain_id_stmt).execute().await?;
 
+    // Add hash chain columns for compliance mode (idempotent).
+    let hash_chain_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS record_hash Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS previous_hash Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS sequence_number Nullable(UInt64)"),
+    ];
+    for stmt in &hash_chain_stmts {
+        client.query(stmt).execute().await?;
+    }
+
     Ok(())
 }

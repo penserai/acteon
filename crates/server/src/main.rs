@@ -433,6 +433,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Wire compliance configuration.
+    if config.compliance.is_active() {
+        let compliance = config.compliance.to_compliance_config();
+
+        // Validate backend compatibility: hash chaining requires a backend
+        // that supports atomic sequence number uniqueness for optimistic
+        // concurrency in multi-replica deployments. Postgres (UNIQUE
+        // constraint), DynamoDB (conditional writes), and memory (dev/test)
+        // are supported; ClickHouse and Elasticsearch lack synchronous
+        // unique constraints.
+        if compliance.hash_chain {
+            let backend = config.audit.backend.as_str();
+            match backend {
+                "postgres" | "memory" | "dynamodb" => {}
+                other => {
+                    return Err(format!(
+                        "compliance hash_chain requires the 'postgres' or 'dynamodb' \
+                         audit backend for multi-replica correctness, but the \
+                         configured backend is '{other}'. ClickHouse and Elasticsearch \
+                         do not support synchronous unique constraints needed for \
+                         hash chain integrity. Either switch to 'postgres'/'dynamodb' \
+                         or disable hash_chain in [compliance]."
+                    )
+                    .into());
+                }
+            }
+        }
+
+        info!(
+            mode = %compliance.mode,
+            sync_audit_writes = compliance.sync_audit_writes,
+            immutable_audit = compliance.immutable_audit,
+            hash_chain = compliance.hash_chain,
+            "compliance mode enabled"
+        );
+        builder = builder.compliance_config(compliance);
+    }
+
     // Wire task chain definitions.
     for chain_toml in &config.chains.definitions {
         let on_failure = match chain_toml.on_failure.as_deref() {

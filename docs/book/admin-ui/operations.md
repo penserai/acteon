@@ -128,6 +128,33 @@ Click **Create** to open the creation dialog. Fill in the namespace, tenant, cro
 
 Click any row to open the detail drawer. The **Overview** tab shows all fields including schedule, timezone, provider, execution count, and timestamps. The **Action Template** tab displays the JSON payload and metadata. Use the **Pause/Resume** and **Delete** buttons to manage the action lifecycle.
 
+## Compliance Status
+
+![Compliance Status — SOC2](assets/compliance-soc2.png)
+
+View the current [compliance mode](../features/compliance-mode.md) and feature status. The page shows:
+
+- **Mode badge** -- the active compliance mode (SOC2, HIPAA, or None)
+- **Feature cards** -- status of synchronous audit writes, immutable audit records, and hash chain integrity
+
+In HIPAA mode, all three features are enabled:
+
+![Compliance Status — HIPAA](assets/compliance-hipaa.png)
+
+### Verifying Hash Chain Integrity
+
+When hash chaining is enabled, the verification panel lets you check the integrity of the audit chain for any namespace/tenant pair.
+
+A valid chain:
+
+![Chain Verification — Valid](assets/compliance-verify-valid.png)
+
+A broken chain highlights the first record where integrity was lost:
+
+![Chain Verification — Broken](assets/compliance-verify-broken.png)
+
+See [Compliance Mode](../features/compliance-mode.md) for full documentation.
+
 ## Event Stream
 
 ![Event Stream](assets/stream.png)

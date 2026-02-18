@@ -8,4 +8,8 @@ pub enum AuditError {
     /// A serialization or deserialization error.
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    /// Attempted to delete or modify records when immutable audit is enabled.
+    #[error("immutable audit violation: {0}")]
+    ImmutableViolation(String),
 }

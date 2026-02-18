@@ -19,7 +19,7 @@ default = ["redis"]
 redis = ["dep:acteon-state-redis"]
 postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
 clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
-dynamodb = ["dep:acteon-state-dynamodb"]
+dynamodb = ["dep:acteon-state-dynamodb", "dep:acteon-audit-dynamodb"]
 elasticsearch = ["dep:acteon-audit-elasticsearch"]
 all-backends = ["redis", "postgres", "clickhouse", "dynamodb", "elasticsearch"]
 
@@ -28,6 +28,7 @@ acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
 acteon-audit-postgres = { workspace = true, optional = true }
 acteon-audit-clickhouse = { workspace = true, optional = true }
+acteon-audit-dynamodb = { workspace = true, optional = true }
 acteon-audit-elasticsearch = { workspace = true, optional = true }
 acteon-core = { workspace = true, features = ["openapi"] }
 acteon-state = { workspace = true }

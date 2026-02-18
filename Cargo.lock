@@ -6,13 +6,16 @@ version = 4
 name = "acteon-audit"
 version = "0.1.0"
 dependencies = [
+ "acteon-core",
  "acteon-crypto",
  "async-trait",
  "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "utoipa",
 ]
 
@@ -25,6 +28,20 @@ dependencies = [
  "chrono",
  "clickhouse",
  "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "acteon-audit-dynamodb"
+version = "0.1.0"
+dependencies = [
+ "acteon-audit",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "chrono",
  "serde_json",
  "tokio",
  "tracing",
@@ -357,6 +374,7 @@ version = "0.1.0"
 dependencies = [
  "acteon-audit",
  "acteon-audit-clickhouse",
+ "acteon-audit-dynamodb",
  "acteon-audit-elasticsearch",
  "acteon-audit-memory",
  "acteon-audit-postgres",

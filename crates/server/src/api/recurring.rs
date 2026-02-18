@@ -441,6 +441,9 @@ fn build_audit_record(
         expires_at: None, // Use default TTL from config if needed, or let backend handle it
         caller_id: caller_id.to_string(),
         auth_method: "unknown".to_string(),
+        record_hash: None,
+        previous_hash: None,
+        sequence_number: None,
     }
 }
 

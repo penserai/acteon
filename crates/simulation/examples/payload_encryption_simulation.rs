@@ -202,6 +202,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expires_at: None,
         caller_id: String::new(),
         auth_method: String::new(),
+        record_hash: None,
+        previous_hash: None,
+        sequence_number: None,
     };
 
     encrypting_audit.record(record).await?;
@@ -254,6 +257,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expires_at: None,
         caller_id: String::new(),
         auth_method: String::new(),
+        record_hash: None,
+        previous_hash: None,
+        sequence_number: None,
     };
     encrypting_audit.record(no_payload).await?;
     let fetched_none = encrypting_audit
@@ -288,6 +294,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         expires_at: None,
         caller_id: String::new(),
         auth_method: String::new(),
+        record_hash: None,
+        previous_hash: None,
+        sequence_number: None,
     };
     // Insert directly into inner store (bypass encryption).
     inner_audit.record(plain_record).await?;

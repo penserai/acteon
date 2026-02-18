@@ -4,6 +4,8 @@ use acteon_audit::store::AuditStore;
 use acteon_audit::{RedactConfig, RedactingAuditStore};
 #[cfg(feature = "clickhouse")]
 use acteon_audit_clickhouse::{ClickHouseAuditConfig, ClickHouseAuditStore};
+#[cfg(feature = "dynamodb")]
+use acteon_audit_dynamodb::{DynamoDbAuditConfig, DynamoDbAuditStore};
 #[cfg(feature = "elasticsearch")]
 use acteon_audit_elasticsearch::{ElasticsearchAuditConfig, ElasticsearchAuditStore};
 use acteon_audit_memory::MemoryAuditStore;
@@ -49,6 +51,33 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
                 .map_err(|e| ServerError::Config(format!("audit clickhouse: {e}")))?;
 
             Arc::new(store)
+        }
+        #[cfg(feature = "dynamodb")]
+        "dynamodb" => {
+            let dynamo_config = DynamoDbAuditConfig {
+                table_name: config
+                    .table_name
+                    .clone()
+                    .unwrap_or_else(|| "acteon_audit".to_owned()),
+                region: config
+                    .region
+                    .clone()
+                    .unwrap_or_else(|| "us-east-1".to_owned()),
+                endpoint_url: config.url.clone(),
+                key_prefix: config.prefix.clone(),
+            };
+
+            // Auto-create table in dev mode (when endpoint_url is set).
+            if dynamo_config.endpoint_url.is_some() {
+                let client = acteon_audit_dynamodb::build_client(&dynamo_config).await;
+                acteon_audit_dynamodb::create_audit_table(&client, &dynamo_config.table_name)
+                    .await
+                    .map_err(|e| {
+                        ServerError::Config(format!("audit dynamodb table creation: {e}"))
+                    })?;
+            }
+
+            Arc::new(DynamoDbAuditStore::new(&dynamo_config).await)
         }
         #[cfg(feature = "elasticsearch")]
         "elasticsearch" => {

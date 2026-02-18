@@ -27,7 +27,7 @@ flowchart LR
 ```toml title="acteon.toml"
 [audit]
 enabled = true
-backend = "postgres"                 # "memory" | "postgres" | "clickhouse" | "elasticsearch"
+backend = "postgres"                 # "memory" | "postgres" | "clickhouse" | "dynamodb" | "elasticsearch"
 url = "postgres://acteon:acteon@localhost:5432/acteon"
 prefix = "acteon_"
 ttl_seconds = 2592000                # 30 days
@@ -153,6 +153,7 @@ curl "http://localhost:8080/v1/audit/{action_id}"
 |---------|----------|----------|
 | **Memory** | Testing | Fast, no persistence |
 | **PostgreSQL** | Production | ACID, indexed queries, TTL cleanup |
+| **DynamoDB** | AWS-native | Managed, hash chain support, native TTL |
 | **ClickHouse** | Analytics | Columnar storage, fast aggregations |
 | **Elasticsearch** | Search | Full-text search, index lifecycle |
 
@@ -195,3 +196,9 @@ cleanup_interval_seconds = 3600    # Check every hour
 
 !!! note "Elasticsearch"
     The Elasticsearch backend doesn't use TTL-based cleanup. Instead, use Elasticsearch's built-in [Index Lifecycle Management (ILM)](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-lifecycle-management.html) for retention policies.
+
+## Related Features
+
+- **[Compliance Mode](compliance-mode.md)**: Adds SHA-256 hash chaining (`record_hash`, `previous_hash`, `sequence_number` fields), synchronous audit writes, and optional record immutability for SOC2/HIPAA requirements.
+- **[Data Retention](data-retention.md)**: Per-tenant audit TTL resolution and background reaper for automatic cleanup.
+- **[Payload Encryption](payload-encryption.md)**: Encrypts payloads at rest; hash chaining operates on the ciphertext.

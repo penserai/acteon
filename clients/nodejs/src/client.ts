@@ -103,6 +103,11 @@ import {
   PluginInvocationRequest,
   PluginInvocationResponse,
   parsePluginInvocationResponse,
+  ComplianceStatus,
+  parseComplianceStatus,
+  HashChainVerification,
+  parseHashChainVerification,
+  VerifyHashChainRequest,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -1101,6 +1106,41 @@ export class ActeonClient {
     } else {
       throw new HttpError(response.status, `Failed to invoke plugin: ${name}`);
     }
+  }
+
+  // =========================================================================
+  // Compliance (SOC2/HIPAA)
+  // =========================================================================
+
+  /**
+   * Get the current compliance configuration status.
+   */
+  async getComplianceStatus(): Promise<ComplianceStatus> {
+    const response = await this.request("GET", "/v1/compliance/status");
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseComplianceStatus(data);
+    }
+    throw new HttpError(response.status, "Failed to get compliance status");
+  }
+
+  /**
+   * Verify the integrity of the audit hash chain for a namespace/tenant pair.
+   */
+  async verifyAuditChain(req: VerifyHashChainRequest): Promise<HashChainVerification> {
+    const body: Record<string, unknown> = {
+      namespace: req.namespace,
+      tenant: req.tenant,
+    };
+    if (req.from !== undefined) body.from = req.from;
+    if (req.to !== undefined) body.to = req.to;
+
+    const response = await this.request("POST", "/v1/audit/verify", { body });
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseHashChainVerification(data);
+    }
+    throw new HttpError(response.status, "Failed to verify audit chain");
   }
 
   // =========================================================================

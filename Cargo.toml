@@ -24,6 +24,7 @@ members = [
     "crates/audit/memory",
     "crates/audit/postgres",
     "crates/audit/clickhouse",
+    "crates/audit/dynamodb",
     "crates/audit/elasticsearch",
 
     # Rules frontends
@@ -86,6 +87,7 @@ acteon-audit = { path = "crates/audit/audit" }
 acteon-audit-memory = { path = "crates/audit/memory" }
 acteon-audit-postgres = { path = "crates/audit/postgres" }
 acteon-audit-clickhouse = { path = "crates/audit/clickhouse" }
+acteon-audit-dynamodb = { path = "crates/audit/dynamodb" }
 acteon-audit-elasticsearch = { path = "crates/audit/elasticsearch" }
 
 # Rules frontends

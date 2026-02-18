@@ -89,4 +89,8 @@ export {
   type ListPluginsResponse,
   type PluginInvocationRequest,
   type PluginInvocationResponse,
+  type ComplianceMode,
+  type ComplianceStatus,
+  type HashChainVerification,
+  type VerifyHashChainRequest,
 } from "./models.js";

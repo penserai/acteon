@@ -65,6 +65,9 @@ from .models import (
     ListPluginsResponse,
     PluginInvocationRequest,
     PluginInvocationResponse,
+    ComplianceStatus,
+    HashChainVerification,
+    VerifyHashChainRequest,
 )
 
 __version__ = "0.1.0"
@@ -137,4 +140,7 @@ __all__ = [
     "ListPluginsResponse",
     "PluginInvocationRequest",
     "PluginInvocationResponse",
+    "ComplianceStatus",
+    "HashChainVerification",
+    "VerifyHashChainRequest",
 ]

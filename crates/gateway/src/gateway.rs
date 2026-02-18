@@ -188,6 +188,10 @@ pub struct Gateway {
     pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
     /// Optional WASM plugin runtime for rule condition evaluation.
     pub(crate) wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
+    /// Optional compliance configuration for `SOC2`/`HIPAA` audit mode.
+    pub(crate) compliance_config: Option<acteon_core::ComplianceConfig>,
+    /// Typed reference to the hash chain audit store for chain verification.
+    pub(crate) hash_chain_store: Option<Arc<acteon_audit::HashChainAuditStore>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -205,9 +209,64 @@ impl Gateway {
         self.wasm_runtime.as_deref()
     }
 
+    /// Returns the compliance configuration, if set.
+    pub fn compliance_config(&self) -> Option<&acteon_core::ComplianceConfig> {
+        self.compliance_config.as_ref()
+    }
+
+    /// Verify the integrity of the audit hash chain for a `(namespace, tenant)` pair.
+    ///
+    /// Returns `None` if hash chaining is not enabled.
+    pub async fn verify_audit_chain(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        from: Option<chrono::DateTime<Utc>>,
+        to: Option<chrono::DateTime<Utc>>,
+    ) -> Result<Option<acteon_core::HashChainVerification>, GatewayError> {
+        match &self.hash_chain_store {
+            Some(store) => {
+                let result = store
+                    .verify_chain(namespace, tenant, from, to)
+                    .await
+                    .map_err(|e| {
+                        GatewayError::Configuration(format!("chain verification failed: {e}"))
+                    })?;
+                Ok(Some(result))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Returns a reference to the payload encryptor, if configured.
     pub fn payload_encryptor(&self) -> Option<&acteon_crypto::PayloadEncryptor> {
         self.payload_encryptor.as_deref()
+    }
+
+    /// Record an audit entry, either synchronously (blocking the pipeline) or
+    /// asynchronously (fire-and-forget), depending on the compliance configuration.
+    ///
+    /// When `sync_audit_writes` is enabled, the caller awaits the write inline
+    /// so the audit record is guaranteed to be persisted before the dispatch
+    /// pipeline returns.
+    async fn emit_audit_record(&self, audit: &Arc<dyn AuditStore>, record: AuditRecord) {
+        let sync = self
+            .compliance_config
+            .as_ref()
+            .is_some_and(|c| c.sync_audit_writes);
+
+        if sync {
+            if let Err(e) = audit.record(record).await {
+                warn!(error = %e, "audit recording failed (sync)");
+            }
+        } else {
+            let audit = Arc::clone(audit);
+            self.audit_tracker.spawn(async move {
+                if let Err(e) = audit.record(record).await {
+                    warn!(error = %e, "audit recording failed");
+                }
+            });
+        }
     }
 
     /// Encrypt a state value if a payload encryptor is configured, otherwise passthrough.
@@ -323,12 +382,7 @@ impl Gateway {
                     self.audit_store_payload,
                     caller,
                 );
-                let audit = Arc::clone(audit);
-                self.audit_tracker.spawn(async move {
-                    if let Err(e) = audit.record(record).await {
-                        warn!(error = %e, "audit recording failed");
-                    }
-                });
+                self.emit_audit_record(audit, record).await;
             }
             let stream_event = StreamEvent {
                 id: event_id,
@@ -470,7 +524,7 @@ impl Gateway {
             } => self.handle_schedule(&action, *delay_seconds).await?,
         };
 
-        // 5. Emit audit record (tracked async task for graceful shutdown).
+        // 5. Emit audit record (sync when compliance requires it, async otherwise).
         if let Some(ref audit) = self.audit {
             let record = build_audit_record(
                 event_id.clone(),
@@ -483,12 +537,7 @@ impl Gateway {
                 self.audit_store_payload,
                 caller,
             );
-            let audit = Arc::clone(audit);
-            self.audit_tracker.spawn(async move {
-                if let Err(e) = audit.record(record).await {
-                    warn!(error = %e, "audit recording failed");
-                }
-            });
+            self.emit_audit_record(audit, record).await;
         }
 
         // 6. Emit SSE stream event (fire-and-forget; no-op if no subscribers).
@@ -3536,6 +3585,9 @@ impl Gateway {
                 expires_at,
                 caller_id: String::new(),
                 auth_method: String::new(),
+                record_hash: None,
+                previous_hash: None,
+                sequence_number: None,
             };
 
             let audit = Arc::clone(audit);
@@ -3630,6 +3682,9 @@ impl Gateway {
                 expires_at,
                 caller_id: String::new(),
                 auth_method: String::new(),
+                record_hash: None,
+                previous_hash: None,
+                sequence_number: None,
             };
 
             let audit = Arc::clone(audit);
@@ -4794,6 +4849,9 @@ fn build_audit_record(
         expires_at,
         caller_id: caller.map_or_else(String::new, |c| c.id.clone()),
         auth_method: caller.map_or_else(String::new, |c| c.auth_method.clone()),
+        record_hash: None,
+        previous_hash: None,
+        sequence_number: None,
     }
 }
 

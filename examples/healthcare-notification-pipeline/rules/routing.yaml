@@ -1,0 +1,73 @@
+# Routing rules: deduplication, enrichment, grouping, chain trigger, and allow.
+
+rules:
+  # ── Deduplicate notifications ────────────────────────────────────────────
+  - name: dedup-notifications
+    priority: 5
+    description: "Deduplicate identical notifications within 5 minutes"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "metro-hospital"
+        - field: action.action_type
+          eq: "notification"
+    action:
+      type: deduplicate
+      ttl_seconds: 300
+
+  # ── Group routine lab results by patient ─────────────────────────────────
+  - name: group-routine-labs
+    priority: 6
+    description: "Batch routine lab results by patient, flush every 60 seconds"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "metro-hospital"
+        - field: action.action_type
+          eq: "lab_result"
+        - field: action.payload.priority
+          eq: "routine"
+    action:
+      type: group
+      group_by:
+        - payload.patient_id
+      group_wait_seconds: 60
+
+  # ── Trigger discharge workflow chain ─────────────────────────────────────
+  - name: chain-discharge
+    priority: 7
+    description: "Start discharge workflow chain for discharge summaries"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "metro-hospital"
+        - field: action.action_type
+          eq: "discharge_summary"
+    action:
+      type: chain
+      chain: "discharge-workflow"
+
+  # ── Enrich all actions with HIPAA headers ────────────────────────────────
+  # NOTE: modify is a terminal action (applies changes + executes), so it must
+  # come AFTER group/chain rules to avoid short-circuiting them.
+  - name: enrich-hipaa-headers
+    priority: 9
+    description: "Add HIPAA compliance metadata to all metro-hospital actions"
+    condition:
+      field: action.tenant
+      eq: "metro-hospital"
+    action:
+      type: modify
+      changes:
+        hipaa_compliant: true
+        audit_required: true
+
+  # ── Allow all remaining clinical actions ─────────────────────────────────
+  - name: allow-clinical
+    priority: 10
+    description: "Allow any metro-hospital action that passed prior rules"
+    condition:
+      field: action.tenant
+      eq: "metro-hospital"
+    action:
+      type: allow

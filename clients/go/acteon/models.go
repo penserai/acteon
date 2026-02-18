@@ -330,17 +330,20 @@ type AuditQuery struct {
 
 // AuditRecord represents an audit record.
 type AuditRecord struct {
-	ID           string  `json:"id"`
-	ActionID     string  `json:"action_id"`
-	Namespace    string  `json:"namespace"`
-	Tenant       string  `json:"tenant"`
-	Provider     string  `json:"provider"`
-	ActionType   string  `json:"action_type"`
-	Verdict      string  `json:"verdict"`
-	Outcome      string  `json:"outcome"`
-	MatchedRule  *string `json:"matched_rule,omitempty"`
-	DurationMs   int64   `json:"duration_ms"`
-	DispatchedAt string  `json:"dispatched_at"`
+	ID             string  `json:"id"`
+	ActionID       string  `json:"action_id"`
+	Namespace      string  `json:"namespace"`
+	Tenant         string  `json:"tenant"`
+	Provider       string  `json:"provider"`
+	ActionType     string  `json:"action_type"`
+	Verdict        string  `json:"verdict"`
+	Outcome        string  `json:"outcome"`
+	MatchedRule    *string `json:"matched_rule,omitempty"`
+	DurationMs     int64   `json:"duration_ms"`
+	DispatchedAt   string  `json:"dispatched_at"`
+	RecordHash     *string `json:"record_hash,omitempty"`
+	PreviousHash   *string `json:"previous_hash,omitempty"`
+	SequenceNumber *uint64 `json:"sequence_number,omitempty"`
 }
 
 // AuditPage represents paginated audit results.
@@ -1060,6 +1063,35 @@ type PluginInvocationResponse struct {
 	Message    *string        `json:"message,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 	DurationMs *float64       `json:"duration_ms,omitempty"`
+}
+
+// =============================================================================
+// Compliance Types (SOC2/HIPAA)
+// =============================================================================
+
+// ComplianceStatus represents the current compliance configuration.
+type ComplianceStatus struct {
+	Mode            string `json:"mode"`
+	SyncAuditWrites bool   `json:"sync_audit_writes"`
+	ImmutableAudit  bool   `json:"immutable_audit"`
+	HashChain       bool   `json:"hash_chain"`
+}
+
+// HashChainVerification is the result of verifying an audit hash chain.
+type HashChainVerification struct {
+	Valid          bool    `json:"valid"`
+	RecordsChecked uint64  `json:"records_checked"`
+	FirstBrokenAt  *string `json:"first_broken_at,omitempty"`
+	FirstRecordID  *string `json:"first_record_id,omitempty"`
+	LastRecordID   *string `json:"last_record_id,omitempty"`
+}
+
+// VerifyHashChainRequest is the request body for hash chain verification.
+type VerifyHashChainRequest struct {
+	Namespace string  `json:"namespace"`
+	Tenant    string  `json:"tenant"`
+	From      *string `json:"from,omitempty"`
+	To        *string `json:"to,omitempty"`
 }
 
 // =============================================================================
