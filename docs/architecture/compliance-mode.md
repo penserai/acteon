@@ -9,8 +9,11 @@ controls synchronous vs. asynchronous audit writes.
 
 The design follows the decorator pattern: each compliance feature is a separate
 layer that wraps the inner store, so features compose independently and the
-underlying backend (memory, PostgreSQL, ClickHouse) remains unaware of
-compliance logic.
+underlying backend remains unaware of compliance logic.
+
+**Important**: Hash chaining (`hash_chain = true`) requires the `postgres` audit
+backend for production deployments. See [Backend Requirements](#10-backend-requirements)
+for details.
 
 ---
 
@@ -158,11 +161,19 @@ The `HashChainAuditStore` maintains a per-chain state keyed by
 6. Set fields on the AuditRecord and forward to inner store
 ```
 
-### Chain State Storage
+### Chain State Storage (Optimistic Concurrency)
 
-The hash chain decorator maintains its state in memory (a `HashMap` protected
-by a `RwLock`). On startup, it can optionally scan the audit store to recover
-the last hash and sequence number for each `(namespace, tenant)` pair.
+The hash chain decorator does **not** maintain local state. Each write fetches
+the current chain tip (latest `record_hash` and `sequence_number`) from the
+database via a descending query limited to 1 row. This design is correct
+across multiple gateway replicas.
+
+A UNIQUE index on `(namespace, tenant, sequence_number)` in the database
+enforces that no two records can share the same sequence number. If two
+replicas race on the same chain, one write succeeds and the other receives a
+unique constraint violation. The losing replica retries with jittered
+exponential backoff (10ms base, doubling per attempt, up to 5 attempts),
+re-fetching the tip on each retry.
 
 ### Verification Algorithm
 
@@ -389,3 +400,52 @@ crates/server/src/api/audit.rs    -- POST /v1/audit/verify handler
 | Runtime changes | Not supported (restart required) | Compliance config changes should be deliberate |
 | Verification | On-demand API endpoint | Avoids background overhead; callable on schedule |
 | Canonicalization | Deterministic sorted JSON | Reproducible across implementations and languages |
+| Backend requirement | Postgres for hash chaining | UNIQUE constraints needed for CAS correctness |
+| Concurrency model | Optimistic (CAS) with jittered backoff | No distributed coordination; scales horizontally |
+
+---
+
+## 10. Backend Requirements
+
+### Why Postgres Is Required for Hash Chaining
+
+Hash chain correctness depends on **exactly-once sequence number assignment**
+across concurrent writers. This requires a database that can atomically reject
+a duplicate `(namespace, tenant, sequence_number)` tuple at write time.
+
+| Backend | Synchronous UNIQUE enforcement | Hash chain support |
+|---------|-------------------------------|-------------------|
+| `postgres` | Yes (`UNIQUE INDEX`) | Full support |
+| `memory` | Yes (in-process `HashMap`) | Testing/development only |
+| `clickhouse` | No (mutations are async) | Not supported |
+| `elasticsearch` | No (no UNIQUE constraint) | Not supported |
+
+### Startup Validation
+
+The server validates the backend at startup. If `hash_chain = true` and the
+configured audit backend is not `postgres` or `memory`, the server exits
+immediately with an error message explaining the incompatibility. This
+fail-fast approach prevents silent data integrity issues that would be
+difficult to diagnose in production.
+
+### Concurrency Model
+
+```
+Replica A                    Database                    Replica B
+    |                           |                           |
+    |-- fetch tip (seq=41) ---->|                           |
+    |                           |<-- fetch tip (seq=41) ----|
+    |                           |                           |
+    |-- INSERT seq=42 --------->|                           |
+    |<-- OK                     |                           |
+    |                           |<-- INSERT seq=42 ---------|
+    |                           |--- UNIQUE violation ----->|
+    |                           |                           |
+    |                           |<-- fetch tip (seq=42) ----|
+    |                           |<-- INSERT seq=43 ---------|
+    |                           |--- OK ------------------->|
+```
+
+The jittered exponential backoff prevents thundering herd effects when many
+replicas contend on the same chain simultaneously. The jitter is derived from
+`SystemTime` nanoseconds to avoid deterministic collision patterns.

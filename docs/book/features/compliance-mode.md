@@ -103,6 +103,23 @@ Response:
 
 Each setting can be individually overridden after selecting a mode using the `with_*` builder methods or the TOML override fields.
 
+## Backend Requirements
+
+Hash chaining relies on database-level UNIQUE constraints to guarantee correctness across multiple gateway replicas. **The `postgres` audit backend is required for production use of `hash_chain = true`.**
+
+| Audit Backend | Hash Chain Support | Notes |
+|---------------|--------------------|-------|
+| `postgres` | Full | UNIQUE constraint on `(namespace, tenant, sequence_number)` ensures exactly-once sequencing via optimistic concurrency control. |
+| `memory` | Testing only | Suitable for development and tests. Not persisted across restarts. |
+| `elasticsearch` | Not supported | No synchronous unique constraint enforcement. Server will refuse to start. |
+| `clickhouse` | Not supported | Asynchronous mutations cannot guarantee sequencing. Server will refuse to start. |
+
+Acteon validates the backend at startup: if `hash_chain = true` and the audit backend is not `postgres` or `memory`, the server exits with an error. This fail-fast behavior prevents silent data integrity issues.
+
+### Multi-Replica Correctness
+
+When running multiple gateway replicas, each replica fetches the current chain tip from the database before writing a new record. If two replicas race on the same `(namespace, tenant)` pair, the UNIQUE constraint on `sequence_number` causes one write to fail. The losing replica retries with jittered exponential backoff (up to 5 attempts), re-fetching the tip each time. This optimistic concurrency control (CAS) pattern ensures the chain remains consistent without distributed coordination.
+
 ## Hash Chain
 
 When `hash_chain = true`, each audit record receives three additional fields:
@@ -278,6 +295,7 @@ curl -X POST http://localhost:8080/v1/audit/verify \
 
 ## Best Practices
 
+- **Use Postgres for compliance**: Hash chaining requires the `postgres` audit backend. Plan your deployment accordingly before enabling SOC2 or HIPAA mode.
 - **Choose the right mode**: Use SOC2 for financial/operational audit trails. Use HIPAA for healthcare or any scenario requiring immutable records.
 - **Start with SOC2**: If unsure, SOC2 provides strong audit guarantees without the operational constraints of full immutability.
 - **Monitor dispatch latency**: Sync audit writes add latency. Use the provider health dashboard to track p95/p99 impact.
@@ -286,7 +304,8 @@ curl -X POST http://localhost:8080/v1/audit/verify \
 
 ## Limitations
 
+- **Postgres required for hash chaining**: Hash chain integrity relies on the `postgres` audit backend's UNIQUE constraints. See [Backend Requirements](#backend-requirements) above.
 - **Gateway-wide setting**: Compliance mode applies to all tenants on the gateway. Per-tenant compliance modes are not currently supported.
 - **Write-time only**: Enabling hash chaining does not retroactively hash existing records. Only new records participate in the chain.
-- **Performance impact**: Synchronous audit writes increase dispatch latency. Hash computation adds a small overhead per record.
+- **Performance impact**: Synchronous audit writes increase dispatch latency. Hash computation and CAS retries add overhead per record.
 - **No key rotation**: The hash chain does not support key rotation. If the hashing algorithm needs to change, a new chain must be started.
