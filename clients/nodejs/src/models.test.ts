@@ -9,6 +9,18 @@ import {
   parseListPluginsResponse,
   parsePluginInvocationResponse,
   registerPluginRequestToApi,
+  createEc2StartInstancesPayload,
+  createEc2StopInstancesPayload,
+  createEc2RebootInstancesPayload,
+  createEc2TerminateInstancesPayload,
+  createEc2HibernateInstancesPayload,
+  createEc2RunInstancesPayload,
+  createEc2AttachVolumePayload,
+  createEc2DetachVolumePayload,
+  createEc2DescribeInstancesPayload,
+  createAsgDescribeGroupsPayload,
+  createAsgSetDesiredCapacityPayload,
+  createAsgUpdateGroupPayload,
 } from "./models.js";
 
 describe("createWebhookAction", () => {
@@ -367,5 +379,196 @@ describe("parsePluginInvocationResponse", () => {
     assert.equal(resp.message, undefined);
     assert.equal(resp.metadata, undefined);
     assert.equal(resp.durationMs, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AWS EC2 Provider Payload Helpers
+// ---------------------------------------------------------------------------
+
+describe("createEc2StartInstancesPayload", () => {
+  it("creates payload with instance IDs", () => {
+    const payload = createEc2StartInstancesPayload(["i-abc123", "i-def456"]);
+    assert.deepStrictEqual(payload, { instance_ids: ["i-abc123", "i-def456"] });
+  });
+});
+
+describe("createEc2StopInstancesPayload", () => {
+  it("creates basic payload", () => {
+    const payload = createEc2StopInstancesPayload(["i-abc123"]);
+    assert.deepStrictEqual(payload.instance_ids, ["i-abc123"]);
+    assert.equal("hibernate" in payload, false);
+    assert.equal("force" in payload, false);
+  });
+
+  it("includes hibernate and force options", () => {
+    const payload = createEc2StopInstancesPayload(["i-abc123"], {
+      hibernate: true,
+      force: true,
+    });
+    assert.deepStrictEqual(payload.instance_ids, ["i-abc123"]);
+    assert.equal(payload.hibernate, true);
+    assert.equal(payload.force, true);
+  });
+});
+
+describe("createEc2RebootInstancesPayload", () => {
+  it("creates payload with instance IDs", () => {
+    const payload = createEc2RebootInstancesPayload(["i-abc123"]);
+    assert.deepStrictEqual(payload, { instance_ids: ["i-abc123"] });
+  });
+});
+
+describe("createEc2TerminateInstancesPayload", () => {
+  it("creates payload with instance IDs", () => {
+    const payload = createEc2TerminateInstancesPayload(["i-abc123", "i-def456"]);
+    assert.deepStrictEqual(payload, { instance_ids: ["i-abc123", "i-def456"] });
+  });
+});
+
+describe("createEc2HibernateInstancesPayload", () => {
+  it("creates payload with instance IDs", () => {
+    const payload = createEc2HibernateInstancesPayload(["i-abc123"]);
+    assert.deepStrictEqual(payload, { instance_ids: ["i-abc123"] });
+  });
+});
+
+describe("createEc2RunInstancesPayload", () => {
+  it("creates basic payload", () => {
+    const payload = createEc2RunInstancesPayload("ami-12345678", "t3.micro");
+    assert.equal(payload.image_id, "ami-12345678");
+    assert.equal(payload.instance_type, "t3.micro");
+    assert.equal(payload.min_count, undefined);
+    assert.equal(payload.key_name, undefined);
+  });
+
+  it("includes all options", () => {
+    const payload = createEc2RunInstancesPayload("ami-12345678", "t3.large", {
+      minCount: 2,
+      maxCount: 5,
+      keyName: "my-keypair",
+      securityGroupIds: ["sg-111", "sg-222"],
+      subnetId: "subnet-abc",
+      userData: "IyEvYmluL2Jhc2g=",
+      tags: { Name: "web-server", env: "staging" },
+      iamInstanceProfile: "arn:aws:iam::123456789012:instance-profile/role",
+    });
+    assert.equal(payload.image_id, "ami-12345678");
+    assert.equal(payload.instance_type, "t3.large");
+    assert.equal(payload.min_count, 2);
+    assert.equal(payload.max_count, 5);
+    assert.equal(payload.key_name, "my-keypair");
+    assert.deepStrictEqual(payload.security_group_ids, ["sg-111", "sg-222"]);
+    assert.equal(payload.subnet_id, "subnet-abc");
+    assert.equal(payload.user_data, "IyEvYmluL2Jhc2g=");
+    assert.deepStrictEqual(payload.tags, { Name: "web-server", env: "staging" });
+    assert.equal(payload.iam_instance_profile, "arn:aws:iam::123456789012:instance-profile/role");
+  });
+});
+
+describe("createEc2AttachVolumePayload", () => {
+  it("creates payload with required fields", () => {
+    const payload = createEc2AttachVolumePayload("vol-abc123", "i-def456", "/dev/sdf");
+    assert.deepStrictEqual(payload, {
+      volume_id: "vol-abc123",
+      instance_id: "i-def456",
+      device: "/dev/sdf",
+    });
+  });
+});
+
+describe("createEc2DetachVolumePayload", () => {
+  it("creates basic payload", () => {
+    const payload = createEc2DetachVolumePayload("vol-abc123");
+    assert.deepStrictEqual(payload, { volume_id: "vol-abc123" });
+  });
+
+  it("includes all options", () => {
+    const payload = createEc2DetachVolumePayload("vol-abc123", {
+      instanceId: "i-def456",
+      device: "/dev/sdf",
+      force: true,
+    });
+    assert.equal(payload.volume_id, "vol-abc123");
+    assert.equal(payload.instance_id, "i-def456");
+    assert.equal(payload.device, "/dev/sdf");
+    assert.equal(payload.force, true);
+  });
+});
+
+describe("createEc2DescribeInstancesPayload", () => {
+  it("creates empty payload", () => {
+    const payload = createEc2DescribeInstancesPayload();
+    assert.deepStrictEqual(payload, {});
+  });
+
+  it("includes instance IDs", () => {
+    const payload = createEc2DescribeInstancesPayload({
+      instanceIds: ["i-abc123", "i-def456"],
+    });
+    assert.deepStrictEqual(payload, { instance_ids: ["i-abc123", "i-def456"] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AWS Auto Scaling Provider Payload Helpers
+// ---------------------------------------------------------------------------
+
+describe("createAsgDescribeGroupsPayload", () => {
+  it("creates empty payload", () => {
+    const payload = createAsgDescribeGroupsPayload();
+    assert.deepStrictEqual(payload, {});
+  });
+
+  it("includes group names", () => {
+    const payload = createAsgDescribeGroupsPayload({
+      groupNames: ["my-asg-1", "my-asg-2"],
+    });
+    assert.deepStrictEqual(payload, {
+      auto_scaling_group_names: ["my-asg-1", "my-asg-2"],
+    });
+  });
+});
+
+describe("createAsgSetDesiredCapacityPayload", () => {
+  it("creates basic payload", () => {
+    const payload = createAsgSetDesiredCapacityPayload("my-asg", 5);
+    assert.equal(payload.auto_scaling_group_name, "my-asg");
+    assert.equal(payload.desired_capacity, 5);
+    assert.equal(payload.honor_cooldown, undefined);
+  });
+
+  it("includes honor cooldown", () => {
+    const payload = createAsgSetDesiredCapacityPayload("my-asg", 10, {
+      honorCooldown: true,
+    });
+    assert.equal(payload.auto_scaling_group_name, "my-asg");
+    assert.equal(payload.desired_capacity, 10);
+    assert.equal(payload.honor_cooldown, true);
+  });
+});
+
+describe("createAsgUpdateGroupPayload", () => {
+  it("creates basic payload", () => {
+    const payload = createAsgUpdateGroupPayload("my-asg");
+    assert.deepStrictEqual(payload, { auto_scaling_group_name: "my-asg" });
+  });
+
+  it("includes all options", () => {
+    const payload = createAsgUpdateGroupPayload("my-asg", {
+      minSize: 1,
+      maxSize: 10,
+      desiredCapacity: 5,
+      defaultCooldown: 300,
+      healthCheckType: "ELB",
+      healthCheckGracePeriod: 120,
+    });
+    assert.equal(payload.auto_scaling_group_name, "my-asg");
+    assert.equal(payload.min_size, 1);
+    assert.equal(payload.max_size, 10);
+    assert.equal(payload.desired_capacity, 5);
+    assert.equal(payload.default_cooldown, 300);
+    assert.equal(payload.health_check_type, "ELB");
+    assert.equal(payload.health_check_grace_period, 120);
   });
 });

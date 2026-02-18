@@ -11,18 +11,20 @@ breaking, health checks, metrics, and audit.
 
 ```
 crates/aws/
-├── Cargo.toml          # Feature-gated deps: sns, lambda, eventbridge, sqs, s3, ses
+├── Cargo.toml              # Feature-gated deps: sns, lambda, eventbridge, sqs, s3, ses, ec2, autoscaling
 ├── src/
-│   ├── lib.rs          # Module declarations + re-exports
-│   ├── auth.rs         # Shared AWS authentication (STS auto-refresh)
-│   ├── config.rs       # AwsBaseConfig (region, role_arn, endpoint_url, ...)
-│   ├── error.rs        # AWS SDK error → ProviderError classification
-│   ├── sns.rs          # SnsConfig, SnsProvider
-│   ├── lambda.rs       # LambdaConfig, LambdaProvider
-│   ├── eventbridge.rs  # EventBridgeConfig, EventBridgeProvider
-│   ├── sqs.rs          # SqsConfig, SqsProvider
-│   ├── s3.rs           # S3Config, S3Provider
-│   └── ses.rs          # SesConfig, SesClient (used by email provider)
+│   ├── lib.rs              # Module declarations + re-exports
+│   ├── auth.rs             # Shared AWS authentication (STS auto-refresh)
+│   ├── config.rs           # AwsBaseConfig (region, role_arn, endpoint_url, ...)
+│   ├── error.rs            # AWS SDK error → ProviderError classification
+│   ├── sns.rs              # SnsConfig, SnsProvider
+│   ├── lambda.rs           # LambdaConfig, LambdaProvider
+│   ├── eventbridge.rs      # EventBridgeConfig, EventBridgeProvider
+│   ├── sqs.rs              # SqsConfig, SqsProvider
+│   ├── s3.rs               # S3Config, S3Provider
+│   ├── ses.rs              # SesConfig, SesClient (used by email provider)
+│   ├── ec2.rs              # Ec2Config, Ec2Provider
+│   └── autoscaling.rs      # AutoScalingConfig, AutoScalingProvider
 ```
 
 Each provider module is feature-gated:
@@ -35,6 +37,8 @@ Each provider module is feature-gated:
 | `sqs` | `sqs.rs` | `aws-sdk-sqs` |
 | `s3` | `s3.rs` | `aws-sdk-s3` |
 | `ses` | `ses.rs` | `aws-sdk-sesv2` |
+| `ec2` | `ec2.rs` | `aws-sdk-ec2` |
+| `autoscaling` | `autoscaling.rs` | `aws-sdk-autoscaling` |
 | `full` | All of the above | All |
 
 ## Authentication Layer
@@ -173,6 +177,62 @@ When `"ses"`, it constructs an `SesConfig` and creates an `SesClient` internally
 The `SesClient` wraps `aws_sdk_sesv2::Client` and implements `send_email()` and
 `health_check()` methods directly, rather than implementing the `Provider` trait.
 
+### EC2 Provider
+
+The EC2 provider (`Ec2Provider`) manages instance lifecycle and EBS volume operations.
+It follows the standard provider pattern with additional config-defaults resolution:
+
+**Config defaults resolution** -- `Ec2Config` carries three optional default fields
+(`default_security_group_ids`, `default_subnet_id`, `default_key_name`) that are
+applied to `run_instances` calls when the corresponding payload field is absent:
+
+```
+payload field > config default > omitted
+```
+
+This follows the same pattern as `S3Config.bucket_name` -- the payload always wins,
+falling back to the config-level default. The resolution methods are:
+
+```rust
+fn resolve_key_name(&self, payload_key_name: Option<&str>) -> Option<&str>
+fn resolve_subnet_id(&self, payload_subnet_id: Option<&str>) -> Option<&str>
+fn resolve_security_group_ids(&self, payload_sg_ids: Option<&[String]>) -> Option<&[String]>
+```
+
+**`hibernate_instances` sugar** -- The `hibernate_instances` action type is syntactic
+sugar. It re-parses the payload as `Ec2StartPayload` (which only has `instance_ids`),
+constructs a new payload with `hibernate: true`, and internally delegates to
+`stop_instances`. This avoids duplicating the stop logic while providing a cleaner
+API surface for callers who always want hibernation.
+
+**Health check** -- EC2 uses `DescribeInstances` with `dry_run(true)`. The AWS API
+returns a `DryRunOperation` error when the caller has permission to make the call
+but the dry-run flag prevented it. This error is treated as a healthy signal. Any
+other error (e.g. credential failure) is classified as unhealthy. This pattern avoids
+listing actual instances and verifies IAM permissions at the same time.
+
+**Error classification** -- All SDK errors pass through `classify_sdk_error()` in
+`error.rs`, producing the standard `ProviderError` variants. EC2-specific errors
+like `InvalidInstanceID.NotFound` map to `ExecutionFailed` and count toward
+circuit breaker thresholds.
+
+### Auto Scaling Provider
+
+The Auto Scaling provider (`AutoScalingProvider`) manages Auto Scaling Groups via
+three action types: `describe_auto_scaling_groups`, `set_desired_capacity`, and
+`update_auto_scaling_group`.
+
+**Config** -- `AutoScalingConfig` has no provider-specific defaults beyond
+`AwsBaseConfig`. All configuration is per-action via the payload.
+
+**Health check** -- Uses `DescribeAutoScalingGroups` with `max_records(1)`, which is
+a lightweight read-only call. Unlike EC2's dry-run approach, Auto Scaling does not
+support dry-run flags, so the provider issues a real (but minimal) describe call.
+
+**Error classification** -- Errors pass through the same `classify_sdk_error()`
+function. Auto Scaling throttling errors (common during rapid scaling events)
+map to `ProviderError::RateLimited` and trigger circuit breaker backoff.
+
 ## Server Integration
 
 ### Config (`crates/server/src/config.rs`)
@@ -194,6 +254,9 @@ event_bus_name = "..."    # EventBridge-specific
 queue_url = "..."         # SQS-specific
 bucket_name = "..."       # S3-specific
 object_prefix = "..."     # S3-specific
+default_security_group_ids = ["..."]  # EC2-specific
+default_subnet_id = "..."             # EC2-specific
+default_key_name = "..."              # EC2-specific
 ```
 
 ### Wiring (`crates/server/src/main.rs`)
@@ -206,6 +269,8 @@ Provider construction in `main.rs` matches on `type`:
 "aws-eventbridge" => EventBridgeProvider::new(EventBridgeConfig::new(region)...),
 "aws-sqs" => SqsProvider::new(SqsConfig::new(region)...),
 "aws-s3" => S3Provider::new(S3Config::new(region).with_bucket(...)...),
+"aws-ec2" => Ec2Provider::new(Ec2Config::new(region).with_default_subnet_id(...)...),
+"aws-autoscaling" => AutoScalingProvider::new(AutoScalingConfig::new(region)...),
 ```
 
 All AWS types share the same pattern for wiring `aws_endpoint_url`, `aws_role_arn`,

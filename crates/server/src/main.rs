@@ -827,12 +827,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_aws::S3Provider::new(s3_config).await)
             }
+            "aws-ec2" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut ec2_config = acteon_aws::Ec2Config::new(region);
+                if let Some(ref ids) = provider_cfg.default_security_group_ids {
+                    ec2_config = ec2_config.with_default_security_group_ids(ids.clone());
+                }
+                if let Some(ref sid) = provider_cfg.default_subnet_id {
+                    ec2_config = ec2_config.with_default_subnet_id(sid);
+                }
+                if let Some(ref kn) = provider_cfg.default_key_name {
+                    ec2_config = ec2_config.with_default_key_name(kn);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    ec2_config = ec2_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    ec2_config = ec2_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    ec2_config = ec2_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    ec2_config = ec2_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::Ec2Provider::new(ec2_config).await)
+            }
+            "aws-autoscaling" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut asg_config = acteon_aws::AutoScalingConfig::new(region);
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    asg_config = asg_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    asg_config = asg_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    asg_config = asg_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    asg_config = asg_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::AutoScalingProvider::new(asg_config).await)
+            }
             other => {
                 return Err(format!(
-                        "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', 'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', 'aws-sqs', or 'aws-s3')",
-                        provider_cfg.name
-                    )
-                    .into());
+                    "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', \
+                         'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', \
+                         'aws-sqs', 'aws-s3', 'aws-ec2', or 'aws-autoscaling')",
+                    provider_cfg.name
+                )
+                .into());
             }
         };
         builder = builder.provider(provider);

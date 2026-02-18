@@ -88,7 +88,7 @@ pub struct ProviderConfig {
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
     /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
-    /// or `"aws-s3"`.
+    /// `"aws-s3"`, `"aws-ec2"`, or `"aws-autoscaling"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -155,6 +155,13 @@ pub struct ProviderConfig {
     pub bucket_name: Option<String>,
     /// S3 object key prefix (used by `"aws-s3"` type).
     pub object_prefix: Option<String>,
+    /// Default security group IDs (used by `"aws-ec2"` type).
+    #[serde(default)]
+    pub default_security_group_ids: Option<Vec<String>>,
+    /// Default subnet ID (used by `"aws-ec2"` type).
+    pub default_subnet_id: Option<String>,
+    /// Default key-pair name (used by `"aws-ec2"` type).
+    pub default_key_name: Option<String>,
 }
 
 /// Configuration for the state store backend.
