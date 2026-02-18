@@ -1,0 +1,152 @@
+# Healthcare Notification Pipeline example.
+#
+# Exercises 15 Acteon features: HIPAA compliance mode, hash chain integrity,
+# immutable audit, synchronous audit writes, field redaction, suppress, reroute,
+# request_approval, chains, deduplication, grouping, quotas, retention with
+# compliance hold, circuit breaker with fallback, and modify/enrich.
+#
+# Requires PostgreSQL for durable state + audit:
+#   docker compose --profile postgres up -d
+#
+# Run migrations:
+#   scripts/migrate.sh -c examples/healthcare-notification-pipeline/acteon.toml
+#
+# Start Acteon:
+#   cargo run -p acteon-server --features postgres -- -c examples/healthcare-notification-pipeline/acteon.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# HMAC secret for signing approval URLs (hex-encoded, 256-bit).
+approval_secret = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# ─── Compliance ─────────────────────────────────────────────────────────────
+# HIPAA mode enables: sync_audit_writes + immutable_audit + hash_chain
+[compliance]
+mode = "hipaa"
+
+# ─── State (PostgreSQL) ────────────────────────────────────────────────────
+[state]
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+
+# ─── Audit (PostgreSQL, 90-day TTL, payload stored, PHI redaction) ──────────
+[audit]
+enabled = true
+backend = "postgres"
+url = "postgres://localhost:5432/acteon"
+store_payload = true
+ttl_seconds = 7776000   # 90 days
+
+[audit.redact]
+enabled = true
+fields = ["mrn", "ssn", "date_of_birth", "diagnosis", "medication", "insurance_id"]
+placeholder = "[PHI_REDACTED]"
+
+# ─── Providers ──────────────────────────────────────────────────────────────
+# Log providers simulate real integrations for demo purposes.
+
+[[providers]]
+name = "secure-email"
+type = "log"
+
+[[providers]]
+name = "patient-portal"
+type = "log"
+
+[[providers]]
+name = "sms-service"
+type = "log"
+
+[[providers]]
+name = "pager-service"
+type = "log"
+
+[[providers]]
+name = "compliance-log"
+type = "log"
+
+# ─── Rules ──────────────────────────────────────────────────────────────────
+[rules]
+directory = "examples/healthcare-notification-pipeline/rules"
+
+# ─── Executor ───────────────────────────────────────────────────────────────
+[executor]
+max_retries = 2
+timeout_seconds = 15
+max_concurrent = 16
+
+# ─── Circuit Breaker ───────────────────────────────────────────────────────
+[circuit_breaker]
+enabled = true
+failure_threshold = 3
+success_threshold = 1
+recovery_timeout_seconds = 30
+
+# secure-email trips after 2 failures, falls back to compliance-log
+[circuit_breaker.providers.secure-email]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "compliance-log"
+
+# ─── Chains ─────────────────────────────────────────────────────────────────
+[chains]
+max_concurrent_advances = 8
+completed_chain_ttl_seconds = 3600
+
+# Discharge workflow: notify-patient → notify-pcp → schedule-followup
+[[chains.definitions]]
+name = "discharge-workflow"
+timeout_seconds = 300
+
+[[chains.definitions.steps]]
+name = "notify-patient"
+provider = "patient-portal"
+action_type = "discharge_notification"
+payload_template = { patient_id = "{{origin.payload.patient_id}}", discharge_date = "{{origin.payload.discharge_date}}", instructions = "Please review your discharge summary in the patient portal." }
+
+  [[chains.definitions.steps.branches]]
+  field = "body.logged"
+  operator = "eq"
+  value = true
+  target = "notify-pcp"
+
+[[chains.definitions.steps]]
+name = "notify-pcp"
+provider = "secure-email"
+action_type = "pcp_notification"
+payload_template = { patient_id = "{{origin.payload.patient_id}}", pcp_name = "{{origin.payload.pcp_name}}", summary = "Patient discharged — see portal for details.", encrypted = true }
+
+  [[chains.definitions.steps.branches]]
+  field = "body.logged"
+  operator = "eq"
+  value = true
+  target = "schedule-followup"
+
+[[chains.definitions.steps]]
+name = "schedule-followup"
+provider = "sms-service"
+action_type = "followup_reminder"
+payload_template = { patient_id = "{{origin.payload.patient_id}}", message = "Your follow-up appointment has been scheduled. Check your patient portal for details." }
+
+# ─── Background Processing ─────────────────────────────────────────────────
+[background]
+enabled = true
+group_flush_interval_seconds = 10
+timeout_check_interval_seconds = 10
+cleanup_interval_seconds = 60
+enable_group_flush = true
+enable_timeout_processing = true
+enable_recurring_actions = true
+recurring_check_interval_seconds = 30
+max_recurring_actions_per_tenant = 10
+enable_retention_reaper = true
+retention_check_interval_seconds = 60
+namespace = "healthcare"
+tenant = "metro-hospital"
+
+# ─── Quotas ─────────────────────────────────────────────────────────────────
+# Quota enforcement enabled; policies created via the API in scripts/setup.sh.
+[quotas]
+enabled = true
