@@ -2193,3 +2193,213 @@ def discord_message_payload(
     if tts is not None:
         payload["tts"] = tts
     return payload
+
+
+# =============================================================================
+# AWS Provider Payload Helpers
+# =============================================================================
+
+
+def sns_publish_payload(
+    message: str,
+    *,
+    subject: Optional[str] = None,
+    topic_arn: Optional[str] = None,
+    message_group_id: Optional[str] = None,
+    message_dedup_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS SNS provider.
+
+    Args:
+        message: Message body to publish.
+        subject: Subject for email-protocol subscriptions.
+        topic_arn: Override the topic ARN configured on the provider.
+        message_group_id: Message group ID (for FIFO topics).
+        message_dedup_id: Message deduplication ID (for FIFO topics).
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-sns`` provider.
+    """
+    payload: dict[str, Any] = {"message": message}
+    if subject is not None:
+        payload["subject"] = subject
+    if topic_arn is not None:
+        payload["topic_arn"] = topic_arn
+    if message_group_id is not None:
+        payload["message_group_id"] = message_group_id
+    if message_dedup_id is not None:
+        payload["message_dedup_id"] = message_dedup_id
+    return payload
+
+
+def lambda_invoke_payload(
+    payload_data: Any = None,
+    *,
+    function_name: Optional[str] = None,
+    invocation_type: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Lambda provider.
+
+    Args:
+        payload_data: JSON-serializable data to pass to the Lambda function.
+        function_name: Override the function name configured on the provider.
+        invocation_type: ``"RequestResponse"``, ``"Event"``, or ``"DryRun"``.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-lambda`` provider.
+    """
+    payload: dict[str, Any] = {}
+    if payload_data is not None:
+        payload["payload"] = payload_data
+    if function_name is not None:
+        payload["function_name"] = function_name
+    if invocation_type is not None:
+        payload["invocation_type"] = invocation_type
+    return payload
+
+
+def eventbridge_put_event_payload(
+    source: str,
+    detail_type: str,
+    detail: Any,
+    *,
+    event_bus_name: Optional[str] = None,
+    resources: Optional[List[str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS ``EventBridge`` provider.
+
+    Args:
+        source: Event source (e.g., ``"com.myapp.orders"``).
+        detail_type: Event detail type (e.g., ``"OrderCreated"``).
+        detail: Event detail as a JSON-serializable value.
+        event_bus_name: Override the event bus name configured on the provider.
+        resources: List of resource ARNs associated with the event.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-eventbridge`` provider.
+    """
+    payload: dict[str, Any] = {
+        "source": source,
+        "detail_type": detail_type,
+        "detail": detail,
+    }
+    if event_bus_name is not None:
+        payload["event_bus_name"] = event_bus_name
+    if resources is not None:
+        payload["resources"] = resources
+    return payload
+
+
+def sqs_send_message_payload(
+    message_body: str,
+    *,
+    queue_url: Optional[str] = None,
+    delay_seconds: Optional[int] = None,
+    message_group_id: Optional[str] = None,
+    message_dedup_id: Optional[str] = None,
+    message_attributes: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS SQS provider.
+
+    Args:
+        message_body: Message body text.
+        queue_url: Override the queue URL configured on the provider.
+        delay_seconds: Delivery delay in seconds (0-900).
+        message_group_id: Message group ID (for FIFO queues).
+        message_dedup_id: Message deduplication ID (for FIFO queues).
+        message_attributes: Message attributes as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-sqs`` provider.
+    """
+    payload: dict[str, Any] = {"message_body": message_body}
+    if queue_url is not None:
+        payload["queue_url"] = queue_url
+    if delay_seconds is not None:
+        payload["delay_seconds"] = delay_seconds
+    if message_group_id is not None:
+        payload["message_group_id"] = message_group_id
+    if message_dedup_id is not None:
+        payload["message_dedup_id"] = message_dedup_id
+    if message_attributes is not None:
+        payload["message_attributes"] = message_attributes
+    return payload
+
+
+def s3_put_object_payload(
+    key: str,
+    *,
+    bucket: Optional[str] = None,
+    body: Optional[str] = None,
+    body_base64: Optional[str] = None,
+    content_type: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS S3 put-object action.
+
+    Args:
+        key: S3 object key.
+        bucket: Override the bucket name configured on the provider.
+        body: Object body as a UTF-8 string.
+        body_base64: Object body as base64-encoded bytes.
+        content_type: Content type (e.g., ``"application/json"``).
+        metadata: Object metadata as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-s3`` provider
+        with action type ``put_object``.
+    """
+    payload: dict[str, Any] = {"key": key}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    if body is not None:
+        payload["body"] = body
+    if body_base64 is not None:
+        payload["body_base64"] = body_base64
+    if content_type is not None:
+        payload["content_type"] = content_type
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
+
+
+def s3_get_object_payload(
+    key: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS S3 get-object action.
+
+    Args:
+        key: S3 object key.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-s3`` provider
+        with action type ``get_object``.
+    """
+    payload: dict[str, Any] = {"key": key}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
+
+
+def s3_delete_object_payload(
+    key: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS S3 delete-object action.
+
+    Args:
+        key: S3 object key.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-s3`` provider
+        with action type ``delete_object``.
+    """
+    payload: dict[str, Any] = {"key": key}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
