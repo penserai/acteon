@@ -41,6 +41,9 @@ members = [
     # Embedding
     "crates/embedding",
 
+    # AWS providers
+    "crates/aws",
+
     # Integrations
     "crates/integrations/email",
     "crates/integrations/slack",
@@ -104,6 +107,9 @@ acteon-llm = { path = "crates/llm" }
 # Embedding
 acteon-embedding = { path = "crates/embedding" }
 
+# AWS providers
+acteon-aws = { path = "crates/aws" }
+
 # Integrations
 acteon-email = { path = "crates/integrations/email" }
 acteon-slack = { path = "crates/integrations/slack" }
@@ -158,8 +164,15 @@ moka = { version = "0.12", features = ["future"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 deadpool-redis = "0.18"
 
-# DynamoDB
+# AWS
 aws-sdk-dynamodb = "1"
+aws-sdk-sns = "1"
+aws-sdk-lambda = "1"
+aws-sdk-eventbridge = "1"
+aws-sdk-sqs = "1"
+aws-sdk-sesv2 = "1"
+aws-sdk-sts = "1"
+aws-credential-types = { version = "1", features = ["hardcoded-credentials"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 # PostgreSQL

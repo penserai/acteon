@@ -86,7 +86,8 @@ pub struct ActeonConfig {
 pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
-    /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, or `"discord"`.
+    /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
+    /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, or `"aws-sqs"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -106,6 +107,45 @@ pub struct ProviderConfig {
     pub token: Option<String>,
     /// Default channel or recipient.
     pub default_channel: Option<String>,
+    /// SMTP username for email authentication.
+    pub username: Option<String>,
+    /// SMTP authentication credential. Supports `ENC[...]`.
+    #[serde(alias = "smtp_password")]
+    pub password: Option<String>,
+
+    // ---- Email provider fields ----
+    /// Email backend: `"smtp"` (default) or `"ses"`.
+    #[serde(default)]
+    pub email_backend: Option<String>,
+    /// SMTP server hostname (used by `"email"` type with SMTP backend).
+    pub smtp_host: Option<String>,
+    /// SMTP server port (used by `"email"` type with SMTP backend).
+    pub smtp_port: Option<u16>,
+    /// Sender email address (used by `"email"` type).
+    pub from_address: Option<String>,
+    /// Whether to use TLS for SMTP.
+    #[serde(default)]
+    pub tls: Option<bool>,
+
+    // ---- AWS provider fields ----
+    /// AWS region (used by all `"aws-*"` types and `"email"` with SES backend).
+    pub aws_region: Option<String>,
+    /// AWS IAM role ARN for STS assume-role (used by `"aws-*"` types).
+    pub aws_role_arn: Option<String>,
+    /// AWS endpoint URL override for `LocalStack` (used by `"aws-*"` types).
+    pub aws_endpoint_url: Option<String>,
+    /// SNS topic ARN (used by `"aws-sns"` type).
+    pub topic_arn: Option<String>,
+    /// Lambda function name or ARN (used by `"aws-lambda"` type).
+    pub function_name: Option<String>,
+    /// Lambda function qualifier (used by `"aws-lambda"` type).
+    pub qualifier: Option<String>,
+    /// `EventBridge` event bus name (used by `"aws-eventbridge"` type).
+    pub event_bus_name: Option<String>,
+    /// SQS queue URL (used by `"aws-sqs"` type).
+    pub queue_url: Option<String>,
+    /// SES configuration set name (used by `"email"` with SES backend).
+    pub ses_configuration_set: Option<String>,
 }
 
 /// Configuration for the state store backend.
@@ -1766,6 +1806,10 @@ pub struct ProviderSnapshot {
     pub has_auth_token: bool,
     /// Whether a webhook URL is configured (Teams, Discord).
     pub has_webhook_url: bool,
+    /// Email backend type (if configured).
+    pub email_backend: Option<String>,
+    /// AWS region (if configured).
+    pub aws_region: Option<String>,
 }
 
 impl From<&ProviderConfig> for ProviderSnapshot {
@@ -1778,6 +1822,8 @@ impl From<&ProviderConfig> for ProviderSnapshot {
             has_token: cfg.token.is_some(),
             has_auth_token: cfg.auth_token.is_some(),
             has_webhook_url: cfg.webhook_url.is_some(),
+            email_backend: cfg.email_backend.clone(),
+            aws_region: cfg.aws_region.clone(),
         }
     }
 }
