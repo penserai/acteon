@@ -1,0 +1,41 @@
+[package]
+name = "acteon-aws"
+description = "AWS service providers for Acteon (SNS, Lambda, EventBridge, SQS, SES)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+integration = []
+sns = ["dep:aws-sdk-sns"]
+lambda = ["dep:aws-sdk-lambda"]
+eventbridge = ["dep:aws-sdk-eventbridge"]
+sqs = ["dep:aws-sdk-sqs"]
+ses = ["dep:aws-sdk-sesv2"]
+s3 = ["dep:aws-sdk-s3"]
+full = ["sns", "lambda", "eventbridge", "sqs", "ses", "s3"]
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-provider = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-sns = { workspace = true, optional = true }
+aws-sdk-lambda = { workspace = true, optional = true }
+aws-sdk-eventbridge = { workspace = true, optional = true }
+aws-sdk-sqs = { workspace = true, optional = true }
+aws-sdk-sesv2 = { workspace = true, optional = true }
+aws-sdk-s3 = { workspace = true, optional = true }
+base64 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

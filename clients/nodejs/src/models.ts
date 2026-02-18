@@ -1962,3 +1962,181 @@ export function createDiscordMessagePayload(
   if (options.tts !== undefined) payload.tts = options.tts;
   return payload;
 }
+
+// =============================================================================
+// AWS Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the AWS SNS publish action. */
+export interface SnsPublishPayload {
+  message: string;
+  subject?: string;
+  topic_arn?: string;
+  message_group_id?: string;
+  message_dedup_id?: string;
+}
+
+/** Create a payload for the AWS SNS provider. */
+export function createSnsPublishPayload(
+  message: string,
+  options?: {
+    subject?: string;
+    topicArn?: string;
+    messageGroupId?: string;
+    messageDedupId?: string;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { message };
+  if (options?.subject) payload.subject = options.subject;
+  if (options?.topicArn) payload.topic_arn = options.topicArn;
+  if (options?.messageGroupId)
+    payload.message_group_id = options.messageGroupId;
+  if (options?.messageDedupId)
+    payload.message_dedup_id = options.messageDedupId;
+  return payload;
+}
+
+/** Payload for the AWS Lambda invoke action. */
+export interface LambdaInvokePayload {
+  payload?: unknown;
+  function_name?: string;
+  invocation_type?: "RequestResponse" | "Event" | "DryRun";
+}
+
+/** Create a payload for the AWS Lambda provider. */
+export function createLambdaInvokePayload(
+  payloadData?: unknown,
+  options?: {
+    functionName?: string;
+    invocationType?: "RequestResponse" | "Event" | "DryRun";
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (payloadData !== undefined) payload.payload = payloadData;
+  if (options?.functionName) payload.function_name = options.functionName;
+  if (options?.invocationType)
+    payload.invocation_type = options.invocationType;
+  return payload;
+}
+
+/** Payload for the AWS EventBridge put-event action. */
+export interface EventBridgePutEventPayload {
+  source: string;
+  detail_type: string;
+  detail: unknown;
+  event_bus_name?: string;
+  resources?: string[];
+}
+
+/** Create a payload for the AWS EventBridge provider. */
+export function createEventBridgePutEventPayload(
+  source: string,
+  detailType: string,
+  detail: unknown,
+  options?: { eventBusName?: string; resources?: string[] }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    source,
+    detail_type: detailType,
+    detail,
+  };
+  if (options?.eventBusName) payload.event_bus_name = options.eventBusName;
+  if (options?.resources) payload.resources = options.resources;
+  return payload;
+}
+
+/** Payload for the AWS SQS send-message action. */
+export interface SqsSendMessagePayload {
+  message_body: string;
+  queue_url?: string;
+  delay_seconds?: number;
+  message_group_id?: string;
+  message_dedup_id?: string;
+  message_attributes?: Record<string, string>;
+}
+
+/** Create a payload for the AWS SQS provider. */
+export function createSqsSendMessagePayload(
+  messageBody: string,
+  options?: {
+    queueUrl?: string;
+    delaySeconds?: number;
+    messageGroupId?: string;
+    messageDedupId?: string;
+    messageAttributes?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { message_body: messageBody };
+  if (options?.queueUrl) payload.queue_url = options.queueUrl;
+  if (options?.delaySeconds !== undefined)
+    payload.delay_seconds = options.delaySeconds;
+  if (options?.messageGroupId)
+    payload.message_group_id = options.messageGroupId;
+  if (options?.messageDedupId)
+    payload.message_dedup_id = options.messageDedupId;
+  if (options?.messageAttributes)
+    payload.message_attributes = options.messageAttributes;
+  return payload;
+}
+
+/** Payload for the AWS S3 put-object action. */
+export interface S3PutObjectPayload {
+  key: string;
+  bucket?: string;
+  body?: string;
+  body_base64?: string;
+  content_type?: string;
+  metadata?: Record<string, string>;
+}
+
+/** Create a payload for the AWS S3 put-object action. */
+export function createS3PutObjectPayload(
+  key: string,
+  options?: {
+    bucket?: string;
+    body?: string;
+    bodyBase64?: string;
+    contentType?: string;
+    metadata?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { key };
+  if (options?.bucket) payload.bucket = options.bucket;
+  if (options?.body !== undefined) payload.body = options.body;
+  if (options?.bodyBase64) payload.body_base64 = options.bodyBase64;
+  if (options?.contentType) payload.content_type = options.contentType;
+  if (options?.metadata) payload.metadata = options.metadata;
+  return payload;
+}
+
+/** Payload for the AWS S3 get-object action. */
+export interface S3GetObjectPayload {
+  key: string;
+  bucket?: string;
+}
+
+/** Create a payload for the AWS S3 get-object action. */
+export function createS3GetObjectPayload(
+  key: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { key };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}
+
+/** Payload for the AWS S3 delete-object action. */
+export interface S3DeleteObjectPayload {
+  key: string;
+  bucket?: string;
+}
+
+/** Create a payload for the AWS S3 delete-object action. */
+export function createS3DeleteObjectPayload(
+  key: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { key };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}

@@ -135,6 +135,8 @@ nav:
     - Provider Health: features/provider-health.md
     - Grafana Dashboards: features/grafana-dashboards.md
     - WASM Plugins: features/wasm-plugins.md
+    - AWS Providers: features/aws-providers.md
+    - Native Providers: features/native-providers.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md
@@ -169,6 +171,7 @@ nav:
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
+    - AWS Event-Driven Pipeline: guides/aws-event-pipeline.md
   - Reference:
     - reference/index.md
     - Type Reference: reference/types.md

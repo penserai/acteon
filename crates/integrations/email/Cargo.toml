@@ -1,14 +1,20 @@
 [package]
 name = "acteon-email"
-description = "SMTP email provider for Acteon"
+description = "Email provider for Acteon with pluggable backends (SMTP, SES)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+ses = ["dep:acteon-aws"]
+
 [dependencies]
 acteon-core = { workspace = true }
 acteon-provider = { workspace = true }
+acteon-aws = { workspace = true, features = ["ses"], optional = true }
+async-trait = { workspace = true }
 lettre = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,0 +1,99 @@
+# Routing rules: direct telemetry to appropriate AWS services.
+
+rules:
+  # ── Critical temperature → SNS alert fan-out ─────────────────────────────
+  - name: critical-temperature-alert
+    priority: 5
+    description: "Route critical temperature readings (>85°C) to SNS for immediate alerting"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.payload.sensor_type
+          eq: "temperature"
+        - field: action.payload.value
+          gt: 85
+    action:
+      type: reroute
+      target_provider: "alert-fanout"
+
+  # ── Intrusion detection → SNS alert fan-out ──────────────────────────────
+  - name: intrusion-alert
+    priority: 6
+    description: "Route motion intrusion events to SNS for security alerting"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.payload.sensor_type
+          eq: "motion"
+        - field: action.payload.event
+          eq: "intrusion"
+    action:
+      type: reroute
+      target_provider: "alert-fanout"
+
+  # ── Standard sensor readings → telemetry processing chain ────────────────
+  - name: chain-sensor-readings
+    priority: 10
+    description: "Start telemetry processing chain for normal sensor readings"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.action_type
+          eq: "sensor_reading"
+    action:
+      type: chain
+      chain: "telemetry-processing"
+
+  # ── Device lifecycle events → EventBridge ────────────────────────────────
+  - name: lifecycle-to-eventbridge
+    priority: 12
+    description: "Publish device lifecycle events to EventBridge bus"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.action_type
+          eq: "device_lifecycle"
+    action:
+      type: reroute
+      target_provider: "event-bus"
+
+  # ── Firmware updates → SQS for batch processing ─────────────────────────
+  - name: firmware-to-sqs
+    priority: 14
+    description: "Queue firmware update requests for batch processing via SQS"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.action_type
+          eq: "firmware_update"
+    action:
+      type: reroute
+      target_provider: "metrics-queue"
+
+  # ── Enrich all telemetry with pipeline metadata ──────────────────────────
+  - name: enrich-telemetry-metadata
+    priority: 16
+    description: "Add pipeline version and building zone metadata to all actions"
+    condition:
+      field: action.tenant
+      eq: "smartbuilding-hq"
+    action:
+      type: modify
+      changes:
+        pipeline_version: "2.0.0"
+        building_zone: "main-campus"
+
+  # ── Allow remaining actions ──────────────────────────────────────────────
+  - name: allow-remaining
+    priority: 20
+    description: "Allow any smartbuilding-hq action that passed prior rules"
+    condition:
+      field: action.tenant
+      eq: "smartbuilding-hq"
+    action:
+      type: allow

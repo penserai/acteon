@@ -657,9 +657,179 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_discord::DiscordProvider::new(discord_config))
             }
+            "email" => {
+                let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': email type requires a 'from_address' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let backend = provider_cfg.email_backend.as_deref().unwrap_or("smtp");
+                match backend {
+                    "smtp" => {
+                        let smtp_host = provider_cfg.smtp_host.as_deref().ok_or_else(|| {
+                            format!(
+                                "provider '{}': email/smtp backend requires a 'smtp_host' field",
+                                provider_cfg.name
+                            )
+                        })?;
+                        let mut email_config =
+                            acteon_email::EmailConfig::new(smtp_host, from_address);
+                        if let Some(port) = provider_cfg.smtp_port {
+                            email_config = email_config.with_port(port);
+                        }
+                        if let Some(tls) = provider_cfg.tls {
+                            email_config = email_config.with_tls(tls);
+                        }
+                        if let (Some(user), Some(pass_raw)) =
+                            (&provider_cfg.username, &provider_cfg.password)
+                        {
+                            let pass = require_decrypt(pass_raw, master_key.as_ref())?;
+                            email_config = email_config.with_credentials(user, pass);
+                        }
+                        std::sync::Arc::new(
+                            acteon_email::EmailProvider::new(&email_config)
+                                .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                        )
+                    }
+                    "ses" => {
+                        let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                        let mut email_config = acteon_email::EmailConfig::ses(region, from_address);
+                        if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                            email_config = email_config.with_aws_endpoint_url(url);
+                        }
+                        if let Some(ref arn) = provider_cfg.aws_role_arn {
+                            email_config = email_config.with_aws_role_arn(arn);
+                        }
+                        if let Some(ref set) = provider_cfg.ses_configuration_set {
+                            email_config = email_config.with_ses_configuration_set(set);
+                        }
+                        if let Some(ref name) = provider_cfg.aws_session_name {
+                            email_config = email_config.with_aws_session_name(name);
+                        }
+                        if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                            email_config = email_config.with_aws_external_id(ext_id);
+                        }
+                        std::sync::Arc::new(acteon_email::EmailProvider::ses(&email_config).await)
+                    }
+                    other => {
+                        return Err(format!(
+                            "provider '{}': unknown email backend '{other}' (expected 'smtp' or 'ses')",
+                            provider_cfg.name
+                        )
+                        .into());
+                    }
+                }
+            }
+            "aws-sns" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut sns_config = acteon_aws::SnsConfig::new(region);
+                if let Some(ref arn) = provider_cfg.topic_arn {
+                    sns_config = sns_config.with_topic_arn(arn);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    sns_config = sns_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    sns_config = sns_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    sns_config = sns_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    sns_config = sns_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::SnsProvider::new(sns_config).await)
+            }
+            "aws-lambda" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut lambda_config = acteon_aws::LambdaConfig::new(region);
+                if let Some(ref name) = provider_cfg.function_name {
+                    lambda_config = lambda_config.with_function_name(name);
+                }
+                if let Some(ref q) = provider_cfg.qualifier {
+                    lambda_config = lambda_config.with_qualifier(q);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    lambda_config = lambda_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    lambda_config = lambda_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    lambda_config = lambda_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    lambda_config = lambda_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::LambdaProvider::new(lambda_config).await)
+            }
+            "aws-eventbridge" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut eb_config = acteon_aws::EventBridgeConfig::new(region);
+                if let Some(ref bus) = provider_cfg.event_bus_name {
+                    eb_config = eb_config.with_event_bus_name(bus);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    eb_config = eb_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    eb_config = eb_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    eb_config = eb_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    eb_config = eb_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::EventBridgeProvider::new(eb_config).await)
+            }
+            "aws-sqs" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut sqs_config = acteon_aws::SqsConfig::new(region);
+                if let Some(ref url) = provider_cfg.queue_url {
+                    sqs_config = sqs_config.with_queue_url(url);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    sqs_config = sqs_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    sqs_config = sqs_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    sqs_config = sqs_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    sqs_config = sqs_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::SqsProvider::new(sqs_config).await)
+            }
+            "aws-s3" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut s3_config = acteon_aws::S3Config::new(region);
+                if let Some(ref bucket) = provider_cfg.bucket_name {
+                    s3_config = s3_config.with_bucket(bucket);
+                }
+                if let Some(ref prefix) = provider_cfg.object_prefix {
+                    s3_config = s3_config.with_prefix(prefix);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    s3_config = s3_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    s3_config = s3_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    s3_config = s3_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    s3_config = s3_config.with_external_id(ext_id);
+                }
+                std::sync::Arc::new(acteon_aws::S3Provider::new(s3_config).await)
+            }
             other => {
                 return Err(format!(
-                        "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', 'teams', or 'discord')",
+                        "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', 'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', 'aws-sqs', or 'aws-s3')",
                         provider_cfg.name
                     )
                     .into());

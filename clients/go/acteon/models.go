@@ -1175,3 +1175,163 @@ func NewDiscordMessagePayloadWithOptions(content, username, avatarURL string, em
 	}
 	return p
 }
+
+// =============================================================================
+// AWS Provider Payload Helpers
+// =============================================================================
+
+// NewSnsPublishPayload creates a payload for the AWS SNS provider.
+func NewSnsPublishPayload(message string) map[string]any {
+	return map[string]any{
+		"message": message,
+	}
+}
+
+// NewSnsPublishPayloadWithOptions creates an SNS payload with optional fields.
+func NewSnsPublishPayloadWithOptions(message, subject, topicArn, messageGroupID, messageDedupID string) map[string]any {
+	p := NewSnsPublishPayload(message)
+	if subject != "" {
+		p["subject"] = subject
+	}
+	if topicArn != "" {
+		p["topic_arn"] = topicArn
+	}
+	if messageGroupID != "" {
+		p["message_group_id"] = messageGroupID
+	}
+	if messageDedupID != "" {
+		p["message_dedup_id"] = messageDedupID
+	}
+	return p
+}
+
+// NewLambdaInvokePayload creates a payload for the AWS Lambda provider.
+func NewLambdaInvokePayload(payloadData any) map[string]any {
+	p := map[string]any{}
+	if payloadData != nil {
+		p["payload"] = payloadData
+	}
+	return p
+}
+
+// NewLambdaInvokePayloadWithOptions creates a Lambda payload with optional fields.
+func NewLambdaInvokePayloadWithOptions(payloadData any, functionName, invocationType string) map[string]any {
+	p := NewLambdaInvokePayload(payloadData)
+	if functionName != "" {
+		p["function_name"] = functionName
+	}
+	if invocationType != "" {
+		p["invocation_type"] = invocationType
+	}
+	return p
+}
+
+// NewEventBridgePutEventPayload creates a payload for the AWS EventBridge provider.
+func NewEventBridgePutEventPayload(source, detailType string, detail any) map[string]any {
+	return map[string]any{
+		"source":      source,
+		"detail_type": detailType,
+		"detail":      detail,
+	}
+}
+
+// NewEventBridgePutEventPayloadWithOptions creates an EventBridge payload with optional fields.
+func NewEventBridgePutEventPayloadWithOptions(source, detailType string, detail any, eventBusName string, resources []string) map[string]any {
+	p := NewEventBridgePutEventPayload(source, detailType, detail)
+	if eventBusName != "" {
+		p["event_bus_name"] = eventBusName
+	}
+	if len(resources) > 0 {
+		p["resources"] = resources
+	}
+	return p
+}
+
+// NewSqsSendMessagePayload creates a payload for the AWS SQS provider.
+func NewSqsSendMessagePayload(messageBody string) map[string]any {
+	return map[string]any{
+		"message_body": messageBody,
+	}
+}
+
+// NewSqsSendMessagePayloadWithOptions creates an SQS payload with optional fields.
+func NewSqsSendMessagePayloadWithOptions(messageBody, queueURL string, delaySeconds int, messageGroupID, messageDedupID string, messageAttributes map[string]string) map[string]any {
+	p := NewSqsSendMessagePayload(messageBody)
+	if queueURL != "" {
+		p["queue_url"] = queueURL
+	}
+	if delaySeconds > 0 {
+		p["delay_seconds"] = delaySeconds
+	}
+	if messageGroupID != "" {
+		p["message_group_id"] = messageGroupID
+	}
+	if messageDedupID != "" {
+		p["message_dedup_id"] = messageDedupID
+	}
+	if len(messageAttributes) > 0 {
+		p["message_attributes"] = messageAttributes
+	}
+	return p
+}
+
+// NewS3PutObjectPayload creates a payload for the AWS S3 put-object action.
+func NewS3PutObjectPayload(key, body string) map[string]any {
+	return map[string]any{
+		"key":  key,
+		"body": body,
+	}
+}
+
+// NewS3PutObjectPayloadWithOptions creates an S3 put-object payload with optional fields.
+func NewS3PutObjectPayloadWithOptions(key, bucket, body, bodyBase64, contentType string, metadata map[string]string) map[string]any {
+	p := map[string]any{"key": key}
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	if body != "" {
+		p["body"] = body
+	}
+	if bodyBase64 != "" {
+		p["body_base64"] = bodyBase64
+	}
+	if contentType != "" {
+		p["content_type"] = contentType
+	}
+	if len(metadata) > 0 {
+		p["metadata"] = metadata
+	}
+	return p
+}
+
+// NewS3GetObjectPayload creates a payload for the AWS S3 get-object action.
+func NewS3GetObjectPayload(key string) map[string]any {
+	return map[string]any{
+		"key": key,
+	}
+}
+
+// NewS3GetObjectPayloadWithBucket creates an S3 get-object payload with a bucket override.
+func NewS3GetObjectPayloadWithBucket(key, bucket string) map[string]any {
+	p := NewS3GetObjectPayload(key)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}
+
+// NewS3DeleteObjectPayload creates a payload for the AWS S3 delete-object action.
+func NewS3DeleteObjectPayload(key string) map[string]any {
+	return map[string]any{
+		"key": key,
+	}
+}
+
+// NewS3DeleteObjectPayloadWithBucket creates an S3 delete-object payload with a bucket override.
+func NewS3DeleteObjectPayloadWithBucket(key, bucket string) map[string]any {
+	p := NewS3DeleteObjectPayload(key)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}

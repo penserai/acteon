@@ -57,6 +57,7 @@
 //!     .unwrap();
 //! ```
 
+pub mod aws;
 mod error;
 pub mod stream;
 pub mod webhook;
