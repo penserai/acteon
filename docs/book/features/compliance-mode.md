@@ -1,5 +1,7 @@
 # Compliance Mode (SOC2 / HIPAA)
 
+![Compliance Status — SOC2](../admin-ui/assets/compliance-soc2.png)
+
 Compliance mode configures the audit pipeline for regulatory requirements. Selecting a mode pre-configures sensible defaults for synchronous writes, hash chaining, and record immutability:
 
 - **SOC2** -- synchronous audit writes and SHA-256 hash chaining across records
@@ -134,6 +136,8 @@ When `hash_chain = true`, each audit record receives three additional fields:
 The first record in a chain has `previous_hash = "genesis"` and `sequence_number = 1`.
 
 ### Verification
+
+![Chain Verification — Valid](../admin-ui/assets/compliance-verify-valid.png)
 
 Verify the integrity of the hash chain for a namespace/tenant pair:
 
