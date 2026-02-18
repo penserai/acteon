@@ -78,5 +78,18 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
         sqlx::query(stmt).execute(pool).await?;
     }
 
+    // Add hash chain columns for compliance mode (idempotent).
+    let hash_chain_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS record_hash TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS previous_hash TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS sequence_number BIGINT"),
+        format!(
+            "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_hash_chain ON {table} (namespace, tenant, sequence_number) WHERE sequence_number IS NOT NULL"
+        ),
+    ];
+    for stmt in &hash_chain_stmts {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
     Ok(())
 }

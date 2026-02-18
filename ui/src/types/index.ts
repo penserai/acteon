@@ -86,6 +86,9 @@ export interface AuditRecord {
   expires_at?: string
   caller_id: string
   auth_method: string
+  record_hash?: string
+  previous_hash?: string
+  sequence_number?: number
 }
 
 export interface AuditPage {
@@ -711,4 +714,23 @@ export interface UpdateRetentionRequest {
 
 export interface CreateRetentionResponse {
   id: string
+}
+
+// ---- Compliance ----
+
+export type ComplianceMode = 'none' | 'soc2' | 'hipaa'
+
+export interface ComplianceStatus {
+  mode: ComplianceMode
+  sync_audit_writes: boolean
+  immutable_audit: boolean
+  hash_chain: boolean
+}
+
+export interface HashChainVerification {
+  valid: boolean
+  records_checked: number
+  first_broken_at: string | null
+  first_record_id: string | null
+  last_record_id: string | null
 }

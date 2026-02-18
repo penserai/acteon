@@ -22,6 +22,12 @@ public class AuditRecord {
     private long durationMs;
     @JsonProperty("dispatched_at")
     private String dispatchedAt;
+    @JsonProperty("record_hash")
+    private String recordHash;
+    @JsonProperty("previous_hash")
+    private String previousHash;
+    @JsonProperty("sequence_number")
+    private Long sequenceNumber;
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
@@ -55,4 +61,13 @@ public class AuditRecord {
 
     public String getDispatchedAt() { return dispatchedAt; }
     public void setDispatchedAt(String dispatchedAt) { this.dispatchedAt = dispatchedAt; }
+
+    public String getRecordHash() { return recordHash; }
+    public void setRecordHash(String recordHash) { this.recordHash = recordHash; }
+
+    public String getPreviousHash() { return previousHash; }
+    public void setPreviousHash(String previousHash) { this.previousHash = previousHash; }
+
+    public Long getSequenceNumber() { return sequenceNumber; }
+    public void setSequenceNumber(Long sequenceNumber) { this.sequenceNumber = sequenceNumber; }
 }

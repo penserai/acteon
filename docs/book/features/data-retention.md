@@ -332,3 +332,8 @@ The reaper operates independently of the audit TTL mechanism. Audit TTLs are enf
 - **Reaper granularity**: The background reaper checks on a configurable interval (default: 1 hour). Data may persist slightly beyond the configured TTL until the next reaper cycle.
 - **No per-action-type retention**: Retention policies apply to all action types within a namespace:tenant scope. Use labels and separate namespaces if different action types need different retention.
 - **State backend dependency**: The reaper relies on the state backend's `scan_keys_by_kind` capability. Backends that do not support key scanning may have limited reaper functionality.
+
+## Related Features
+
+- **[Compliance Mode](compliance-mode.md)**: When `immutable_audit = true`, audit records cannot be deleted even by the retention reaper. Combined with `compliance_hold`, records are fully protected from both manual deletion and automated cleanup.
+- **[Audit Trail](audit-trail.md)**: Retention policies control the `expires_at` field on audit records and the background cleanup of expired records.

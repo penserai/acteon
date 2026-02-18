@@ -1618,6 +1618,59 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Compliance (SOC2/HIPAA)
+    // =========================================================================
+
+    /**
+     * Gets the current compliance configuration status.
+     *
+     * @return the compliance status
+     */
+    public ComplianceStatus getComplianceStatus() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/v1/compliance/status")
+                    .GET()
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), ComplianceStatus.class);
+            }
+            throw new HttpException(response.statusCode(), "Failed to get compliance status");
+        } catch (IOException e) {
+            throw new ConnectionException("Failed to connect: " + e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Verifies the integrity of the audit hash chain for a namespace/tenant pair.
+     *
+     * @param req the verification request
+     * @return the verification result
+     */
+    public HashChainVerification verifyAuditChain(VerifyHashChainRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/audit/verify")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .header("Content-Type", "application/json")
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return objectMapper.readValue(response.body(), HashChainVerification.class);
+            }
+            throw new HttpException(response.statusCode(), "Failed to verify audit chain");
+        } catch (IOException e) {
+            throw new ConnectionException("Failed to connect: " + e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Chains (Task Chain Orchestration)
     // =========================================================================
 

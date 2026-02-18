@@ -400,6 +400,12 @@ export interface AuditRecord {
   matchedRule?: string;
   durationMs: number;
   dispatchedAt: string;
+  /** SHA-256 hex digest of the canonicalized record content (compliance mode). */
+  recordHash?: string;
+  /** Hash of the previous record in the chain (compliance mode). */
+  previousHash?: string;
+  /** Monotonic sequence number within the (namespace, tenant) pair (compliance mode). */
+  sequenceNumber?: number;
 }
 
 /**
@@ -418,6 +424,9 @@ export function parseAuditRecord(data: Record<string, unknown>): AuditRecord {
     matchedRule: data.matched_rule as string | undefined,
     durationMs: data.duration_ms as number,
     dispatchedAt: data.dispatched_at as string,
+    recordHash: data.record_hash as string | undefined,
+    previousHash: data.previous_hash as string | undefined,
+    sequenceNumber: data.sequence_number as number | undefined,
   };
 }
 
@@ -1809,6 +1818,59 @@ export function parsePluginInvocationResponse(data: Record<string, unknown>): Pl
     metadata: data.metadata as Record<string, unknown> | undefined,
     durationMs: data.duration_ms as number | undefined,
   };
+}
+
+// =============================================================================
+// Compliance Types (SOC2/HIPAA)
+// =============================================================================
+
+/** Compliance mode: "none", "soc2", or "hipaa". */
+export type ComplianceMode = "none" | "soc2" | "hipaa";
+
+/** Current compliance configuration status. */
+export interface ComplianceStatus {
+  mode: ComplianceMode;
+  syncAuditWrites: boolean;
+  immutableAudit: boolean;
+  hashChain: boolean;
+}
+
+/** Parse a ComplianceStatus from API response. */
+export function parseComplianceStatus(data: Record<string, unknown>): ComplianceStatus {
+  return {
+    mode: data.mode as ComplianceMode,
+    syncAuditWrites: data.sync_audit_writes as boolean,
+    immutableAudit: data.immutable_audit as boolean,
+    hashChain: data.hash_chain as boolean,
+  };
+}
+
+/** Result of verifying the integrity of an audit hash chain. */
+export interface HashChainVerification {
+  valid: boolean;
+  recordsChecked: number;
+  firstBrokenAt?: string;
+  firstRecordId?: string;
+  lastRecordId?: string;
+}
+
+/** Parse a HashChainVerification from API response. */
+export function parseHashChainVerification(data: Record<string, unknown>): HashChainVerification {
+  return {
+    valid: data.valid as boolean,
+    recordsChecked: data.records_checked as number,
+    firstBrokenAt: data.first_broken_at as string | undefined,
+    firstRecordId: data.first_record_id as string | undefined,
+    lastRecordId: data.last_record_id as string | undefined,
+  };
+}
+
+/** Request body for hash chain verification. */
+export interface VerifyHashChainRequest {
+  namespace: string;
+  tenant: string;
+  from?: string;
+  to?: string;
 }
 
 // =============================================================================

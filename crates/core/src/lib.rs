@@ -3,6 +3,7 @@ pub mod caller;
 pub mod chain;
 pub mod chain_dag;
 pub mod circuit_breaker;
+pub mod compliance;
 pub mod context;
 pub mod error;
 pub mod fingerprint;
@@ -27,6 +28,7 @@ pub use chain_dag::{DagEdge, DagNode, DagResponse};
 pub use circuit_breaker::{
     CircuitBreakerActionResponse, CircuitBreakerStatus, ListCircuitBreakersResponse,
 };
+pub use compliance::{ComplianceConfig, ComplianceMode, HashChainVerification};
 pub use context::ActionContext;
 pub use error::ActeonError;
 pub use fingerprint::compute_fingerprint;

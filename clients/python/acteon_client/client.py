@@ -54,6 +54,9 @@ from .models import (
     ListPluginsResponse,
     PluginInvocationRequest,
     PluginInvocationResponse,
+    ComplianceStatus,
+    HashChainVerification,
+    VerifyHashChainRequest,
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
@@ -1415,6 +1418,48 @@ class ActeonClient:
             )
 
     # =========================================================================
+    # Compliance (SOC2/HIPAA)
+    # =========================================================================
+
+    def get_compliance_status(self) -> ComplianceStatus:
+        """Get the current compliance configuration status.
+
+        Returns:
+            The current compliance mode and settings.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: On non-200 responses.
+        """
+        response = self._request("GET", "/v1/compliance/status")
+        if response.status_code == 200:
+            return ComplianceStatus.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get compliance status")
+
+    def verify_audit_chain(
+        self, req: "VerifyHashChainRequest"
+    ) -> HashChainVerification:
+        """Verify the integrity of the audit hash chain for a namespace/tenant pair.
+
+        Args:
+            req: The verification request specifying namespace, tenant, and
+                optional time range.
+
+        Returns:
+            The verification result indicating chain validity.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: On non-200 responses.
+        """
+        response = self._request("POST", "/v1/audit/verify", json=req.to_dict())
+        if response.status_code == 200:
+            return HashChainVerification.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to verify audit chain")
+
+    # =========================================================================
     # Chains
     # =========================================================================
 
@@ -2470,6 +2515,30 @@ class AsyncActeonClient:
                 message=data.get("message", "Unknown error"),
                 retryable=data.get("retryable", False),
             )
+
+    # =========================================================================
+    # Compliance (SOC2/HIPAA)
+    # =========================================================================
+
+    async def get_compliance_status(self) -> ComplianceStatus:
+        """Get the current compliance configuration status."""
+        response = await self._request("GET", "/v1/compliance/status")
+        if response.status_code == 200:
+            return ComplianceStatus.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get compliance status")
+
+    async def verify_audit_chain(
+        self, req: "VerifyHashChainRequest"
+    ) -> HashChainVerification:
+        """Verify the integrity of the audit hash chain for a namespace/tenant pair."""
+        response = await self._request(
+            "POST", "/v1/audit/verify", json=req.to_dict()
+        )
+        if response.status_code == 200:
+            return HashChainVerification.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to verify audit chain")
 
     # =========================================================================
     # Chains

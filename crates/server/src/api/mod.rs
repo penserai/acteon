@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth;
 pub mod chains;
 pub mod circuit_breakers;
+pub mod compliance;
 pub mod config;
 pub mod dispatch;
 pub mod dlq;
@@ -176,6 +177,12 @@ pub fn router(state: AppState) -> Router {
                 .put(retention::update_retention)
                 .delete(retention::delete_retention),
         )
+        // Compliance
+        .route(
+            "/v1/compliance/status",
+            get(compliance::get_compliance_status),
+        )
+        .route("/v1/audit/verify", post(compliance::verify_audit_chain))
         // Embeddings
         .route("/v1/embeddings/similarity", post(embeddings::similarity))
         // Approvals (list requires auth)

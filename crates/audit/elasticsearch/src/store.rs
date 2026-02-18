@@ -85,7 +85,10 @@ impl ElasticsearchAuditStore {
                     "duration_ms":      { "type": "long" },
                     "expires_at":       { "type": "date" },
                     "caller_id":        { "type": "keyword" },
-                    "auth_method":      { "type": "keyword" }
+                    "auth_method":      { "type": "keyword" },
+                    "record_hash":      { "type": "keyword" },
+                    "previous_hash":    { "type": "keyword" },
+                    "sequence_number":  { "type": "long" }
                 }
             }
         });

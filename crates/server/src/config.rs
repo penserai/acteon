@@ -56,6 +56,9 @@ pub struct ActeonConfig {
     /// WASM plugin runtime configuration.
     #[serde(default)]
     pub wasm: WasmServerConfig,
+    /// Compliance mode configuration (`SOC2` / `HIPAA`).
+    #[serde(default)]
+    pub compliance: ComplianceServerConfig,
     /// Provider definitions.
     ///
     /// Each entry registers a named provider that actions can be routed to.
@@ -870,6 +873,71 @@ fn default_wasm_timeout_ms() -> u64 {
     100
 }
 
+/// Compliance mode configuration for `SOC2` / `HIPAA` audit mode.
+///
+/// # Example
+///
+/// ```toml
+/// [compliance]
+/// mode = "soc2"       # "none", "soc2", or "hipaa"
+/// sync_audit_writes = true
+/// immutable_audit = false
+/// hash_chain = true
+/// ```
+#[derive(Debug, Default, Deserialize)]
+pub struct ComplianceServerConfig {
+    /// Compliance mode preset: `"none"` (default), `"soc2"`, or `"hipaa"`.
+    ///
+    /// Each mode pre-configures sensible defaults that can be individually
+    /// overridden by setting the other fields explicitly.
+    #[serde(default)]
+    pub mode: String,
+    /// Override: whether audit writes must be synchronous.
+    #[serde(default)]
+    pub sync_audit_writes: Option<bool>,
+    /// Override: whether audit records are immutable.
+    #[serde(default)]
+    pub immutable_audit: Option<bool>,
+    /// Override: whether `SHA-256` hash chaining is enabled.
+    #[serde(default)]
+    pub hash_chain: Option<bool>,
+}
+
+impl ComplianceServerConfig {
+    /// Convert this config into a [`acteon_core::ComplianceConfig`], applying
+    /// mode presets first, then any explicit overrides.
+    pub fn to_compliance_config(&self) -> acteon_core::ComplianceConfig {
+        let mode = match self.mode.to_lowercase().as_str() {
+            "soc2" => acteon_core::ComplianceMode::Soc2,
+            "hipaa" => acteon_core::ComplianceMode::Hipaa,
+            _ => acteon_core::ComplianceMode::None,
+        };
+
+        let mut config = acteon_core::ComplianceConfig::new(mode);
+
+        if let Some(v) = self.sync_audit_writes {
+            config = config.with_sync_audit_writes(v);
+        }
+        if let Some(v) = self.immutable_audit {
+            config = config.with_immutable_audit(v);
+        }
+        if let Some(v) = self.hash_chain {
+            config = config.with_hash_chain(v);
+        }
+
+        config
+    }
+
+    /// Returns `true` if any compliance feature is enabled.
+    pub fn is_active(&self) -> bool {
+        let config = self.to_compliance_config();
+        config.mode != acteon_core::ComplianceMode::None
+            || config.sync_audit_writes
+            || config.immutable_audit
+            || config.hash_chain
+    }
+}
+
 /// Configuration for task chain definitions.
 #[derive(Debug, Deserialize)]
 pub struct ChainsConfig {
@@ -1106,6 +1174,8 @@ pub struct ConfigSnapshot {
     pub encryption: EncryptionSnapshot,
     /// WASM plugin runtime configuration.
     pub wasm: WasmSnapshot,
+    /// Compliance mode configuration.
+    pub compliance: ComplianceSnapshot,
     /// Registered provider summaries.
     pub providers: Vec<ProviderSnapshot>,
 }
@@ -1129,6 +1199,7 @@ impl From<&ActeonConfig> for ConfigSnapshot {
             chains: ChainsSnapshot::from(&cfg.chains),
             encryption: EncryptionSnapshot::from(&cfg.encryption),
             wasm: WasmSnapshot::from(&cfg.wasm),
+            compliance: ComplianceSnapshot::from(&cfg.compliance),
             providers: cfg.providers.iter().map(ProviderSnapshot::from).collect(),
         }
     }
@@ -1640,6 +1711,31 @@ impl From<&WasmServerConfig> for WasmSnapshot {
             plugin_dir: cfg.plugin_dir.clone(),
             default_memory_limit_bytes: cfg.default_memory_limit_bytes,
             default_timeout_ms: cfg.default_timeout_ms,
+        }
+    }
+}
+
+/// Sanitized compliance mode configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ComplianceSnapshot {
+    /// Active compliance mode.
+    pub mode: String,
+    /// Whether synchronous audit writes are enabled.
+    pub sync_audit_writes: bool,
+    /// Whether audit records are immutable.
+    pub immutable_audit: bool,
+    /// Whether `SHA-256` hash chaining is enabled.
+    pub hash_chain: bool,
+}
+
+impl From<&ComplianceServerConfig> for ComplianceSnapshot {
+    fn from(cfg: &ComplianceServerConfig) -> Self {
+        let resolved = cfg.to_compliance_config();
+        Self {
+            mode: resolved.mode.to_string(),
+            sync_audit_writes: resolved.sync_audit_writes,
+            immutable_audit: resolved.immutable_audit,
+            hash_chain: resolved.hash_chain,
         }
     }
 }

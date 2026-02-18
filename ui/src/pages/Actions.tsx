@@ -146,6 +146,9 @@ export function Actions() {
                   'Dispatched': selected.dispatched_at,
                   'Caller': selected.caller_id,
                   'Auth Method': selected.auth_method,
+                  ...(selected.record_hash ? { 'Record Hash': selected.record_hash } : {}),
+                  ...(selected.previous_hash ? { 'Previous Hash': selected.previous_hash } : {}),
+                  ...(selected.sequence_number != null ? { 'Sequence Number': String(selected.sequence_number) } : {}),
                 }).map(([k, v]) => (
                   <div key={k} className={styles.detailRow}>
                     <span className={styles.detailLabel}>{k}</span>

@@ -62,6 +62,17 @@ pub struct AuditRecord {
     /// Authentication method used (`"jwt"`, `"api_key"`, `"anonymous"`).
     #[serde(default)]
     pub auth_method: String,
+
+    // -- Hash chain (compliance mode) --
+    /// `SHA-256` hex digest of the canonicalized record content.
+    #[serde(default)]
+    pub record_hash: Option<String>,
+    /// Hash of the previous record in the chain (for hash-chain integrity).
+    #[serde(default)]
+    pub previous_hash: Option<String>,
+    /// Monotonic sequence number within the `(namespace, tenant)` pair.
+    #[serde(default)]
+    pub sequence_number: Option<u64>,
 }
 
 /// Query parameters for searching audit records.

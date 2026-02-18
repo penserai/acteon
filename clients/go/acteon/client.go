@@ -1461,6 +1461,61 @@ func (c *Client) EvaluateRules(ctx context.Context, req EvaluateRulesRequest) (*
 }
 
 // =============================================================================
+// Compliance (SOC2/HIPAA)
+// =============================================================================
+
+// GetComplianceStatus returns the current compliance configuration status.
+func (c *Client) GetComplianceStatus(ctx context.Context) (*ComplianceStatus, error) {
+	resp, err := c.doRequest(ctx, "GET", "/v1/compliance/status", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+
+	if resp.StatusCode == 200 {
+		var result ComplianceStatus
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("decoding compliance status: %w", err)
+		}
+		return &result, nil
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get compliance status"}
+}
+
+// VerifyAuditChain verifies the integrity of the audit hash chain for a namespace/tenant pair.
+func (c *Client) VerifyAuditChain(ctx context.Context, req *VerifyHashChainRequest) (*HashChainVerification, error) {
+	reqBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("encoding request: %w", err)
+	}
+
+	resp, err := c.doRequest(ctx, "POST", "/v1/audit/verify", nil, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %w", err)
+	}
+
+	if resp.StatusCode == 200 {
+		var result HashChainVerification
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("decoding verification result: %w", err)
+		}
+		return &result, nil
+	}
+	return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to verify audit chain"}
+}
+
+// =============================================================================
 // Chains
 // =============================================================================
 

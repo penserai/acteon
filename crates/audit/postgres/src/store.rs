@@ -54,13 +54,15 @@ impl AuditStore for PostgresAuditStore {
                 verdict, matched_rule, outcome,
                 action_payload, verdict_details, outcome_details, metadata,
                 dispatched_at, completed_at, duration_ms, expires_at,
-                caller_id, auth_method
+                caller_id, auth_method,
+                record_hash, previous_hash, sequence_number
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10,
                 $11, $12, $13, $14,
                 $15, $16, $17, $18,
-                $19, $20
+                $19, $20,
+                $21, $22, $23
             )
             ",
             self.table
@@ -68,6 +70,8 @@ impl AuditStore for PostgresAuditStore {
 
         #[allow(clippy::cast_possible_wrap)]
         let duration = entry.duration_ms as i64;
+        #[allow(clippy::cast_possible_wrap)]
+        let sequence_number = entry.sequence_number.map(|n| n as i64);
 
         sqlx::query(&sql)
             .bind(&entry.id)
@@ -90,6 +94,9 @@ impl AuditStore for PostgresAuditStore {
             .bind(entry.expires_at)
             .bind(&entry.caller_id)
             .bind(&entry.auth_method)
+            .bind(&entry.record_hash)
+            .bind(&entry.previous_hash)
+            .bind(sequence_number)
             .execute(&self.pool)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
@@ -277,6 +284,9 @@ struct AuditRow {
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     caller_id: String,
     auth_method: String,
+    record_hash: Option<String>,
+    previous_hash: Option<String>,
+    sequence_number: Option<i64>,
 }
 
 impl From<AuditRow> for AuditRecord {
@@ -305,6 +315,10 @@ impl From<AuditRow> for AuditRecord {
             expires_at: row.expires_at,
             caller_id: row.caller_id,
             auth_method: row.auth_method,
+            record_hash: row.record_hash,
+            previous_hash: row.previous_hash,
+            #[allow(clippy::cast_sign_loss)]
+            sequence_number: row.sequence_number.map(|n| n as u64),
         }
     }
 }

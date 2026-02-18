@@ -911,6 +911,9 @@ mod tests {
             expires_at: None,
             caller_id: String::new(),
             auth_method: String::new(),
+            record_hash: None,
+            previous_hash: None,
+            sequence_number: None,
         }
     }
 

@@ -433,6 +433,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Wire compliance configuration.
+    if config.compliance.is_active() {
+        let compliance = config.compliance.to_compliance_config();
+        info!(
+            mode = %compliance.mode,
+            sync_audit_writes = compliance.sync_audit_writes,
+            immutable_audit = compliance.immutable_audit,
+            hash_chain = compliance.hash_chain,
+            "compliance mode enabled"
+        );
+        builder = builder.compliance_config(compliance);
+    }
+
     // Wire task chain definitions.
     for chain_toml in &config.chains.definitions {
         let on_failure = match chain_toml.on_failure.as_deref() {

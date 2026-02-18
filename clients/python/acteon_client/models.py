@@ -472,6 +472,9 @@ class AuditRecord:
     matched_rule: Optional[str]
     duration_ms: int
     dispatched_at: str
+    record_hash: Optional[str] = None
+    previous_hash: Optional[str] = None
+    sequence_number: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuditRecord":
@@ -487,6 +490,9 @@ class AuditRecord:
             matched_rule=data.get("matched_rule"),
             duration_ms=data["duration_ms"],
             dispatched_at=data["dispatched_at"],
+            record_hash=data.get("record_hash"),
+            previous_hash=data.get("previous_hash"),
+            sequence_number=data.get("sequence_number"),
         )
 
 
@@ -2066,6 +2072,91 @@ class PluginInvocationResponse:
             metadata=data.get("metadata"),
             duration_ms=data.get("duration_ms"),
         )
+
+
+# =============================================================================
+# Compliance Types (SOC2/HIPAA Audit Mode)
+# =============================================================================
+
+
+@dataclass
+class ComplianceStatus:
+    """Current compliance configuration status.
+
+    Attributes:
+        mode: The active compliance mode ("none", "soc2", or "hipaa").
+        sync_audit_writes: Whether audit writes block the dispatch pipeline.
+        immutable_audit: Whether audit records are immutable (deletes rejected).
+        hash_chain: Whether SHA-256 hash chaining is enabled for audit records.
+    """
+    mode: str
+    sync_audit_writes: bool
+    immutable_audit: bool
+    hash_chain: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ComplianceStatus":
+        return cls(
+            mode=data["mode"],
+            sync_audit_writes=data["sync_audit_writes"],
+            immutable_audit=data["immutable_audit"],
+            hash_chain=data["hash_chain"],
+        )
+
+
+@dataclass
+class HashChainVerification:
+    """Result of verifying the integrity of an audit hash chain.
+
+    Attributes:
+        valid: Whether the hash chain is intact (no broken links).
+        records_checked: Total number of records verified.
+        first_broken_at: ID of the first record where the chain broke, if any.
+        first_record_id: ID of the first record in the verified range.
+        last_record_id: ID of the last record in the verified range.
+    """
+    valid: bool
+    records_checked: int
+    first_broken_at: Optional[str] = None
+    first_record_id: Optional[str] = None
+    last_record_id: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "HashChainVerification":
+        return cls(
+            valid=data["valid"],
+            records_checked=data["records_checked"],
+            first_broken_at=data.get("first_broken_at"),
+            first_record_id=data.get("first_record_id"),
+            last_record_id=data.get("last_record_id"),
+        )
+
+
+@dataclass
+class VerifyHashChainRequest:
+    """Request body for hash chain verification.
+
+    Attributes:
+        namespace: Namespace to verify.
+        tenant: Tenant to verify.
+        from_time: Optional start of the time range (ISO 8601).
+        to_time: Optional end of the time range (ISO 8601).
+    """
+    namespace: str
+    tenant: str
+    from_time: Optional[str] = None
+    to_time: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+        }
+        if self.from_time is not None:
+            body["from"] = self.from_time
+        if self.to_time is not None:
+            body["to"] = self.to_time
+        return body
 
 
 def discord_message_payload(
