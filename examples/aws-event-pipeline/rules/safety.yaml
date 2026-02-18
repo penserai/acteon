@@ -1,0 +1,40 @@
+# Safety rules: suppress test devices, deny unsigned firmware, catch-all.
+
+rules:
+  # ── Suppress telemetry from test devices ─────────────────────────────────
+  - name: suppress-test-devices
+    priority: 1
+    description: "Block all telemetry from devices in the test environment"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.payload.environment
+          eq: "test"
+    action:
+      type: suppress
+
+  # ── Deny unsigned firmware updates ───────────────────────────────────────
+  - name: deny-unsigned-firmware
+    priority: 1
+    description: "Block firmware updates that are not cryptographically signed"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "smartbuilding-hq"
+        - field: action.action_type
+          eq: "firmware_update"
+        - field: action.payload.signed
+          eq: false
+    action:
+      type: deny
+
+  # ── Catch-all: suppress anything not explicitly allowed ──────────────────
+  - name: deny-unmatched
+    priority: 100
+    description: "Block any action not matched by a higher-priority rule"
+    condition:
+      field: action.tenant
+      eq: "smartbuilding-hq"
+    action:
+      type: suppress
