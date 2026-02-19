@@ -716,6 +716,102 @@ export interface CreateRetentionResponse {
   id: string
 }
 
+// ---- Payload Templates ----
+
+/**
+ * A profile field is either an inline string value or a $ref pointing to
+ * another template by name.
+ */
+export type TemplateProfileField = string | { $ref: string }
+
+export interface Template {
+  id: string
+  name: string
+  namespace: string
+  tenant: string
+  content: string
+  description: string | null
+  created_at: string
+  updated_at: string
+  labels: Record<string, string>
+}
+
+export interface TemplateProfile {
+  id: string
+  name: string
+  namespace: string
+  tenant: string
+  fields: Record<string, TemplateProfileField>
+  description: string | null
+  created_at: string
+  updated_at: string
+  labels: Record<string, string>
+}
+
+export interface TemplateListResponse {
+  templates: Template[]
+  count: number
+}
+
+export interface TemplateProfileListResponse {
+  profiles: TemplateProfile[]
+  count: number
+}
+
+export interface CreateTemplateRequest {
+  name: string
+  namespace: string
+  tenant: string
+  content: string
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateTemplateRequest {
+  content?: string
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateTemplateResponse {
+  id: string
+}
+
+export interface CreateProfileRequest {
+  name: string
+  namespace: string
+  tenant: string
+  fields: Record<string, TemplateProfileField>
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface UpdateProfileRequest {
+  fields?: Record<string, TemplateProfileField>
+  description?: string | null
+  labels?: Record<string, string>
+}
+
+export interface CreateProfileResponse {
+  id: string
+}
+
+export interface RenderPreviewRequest {
+  profile: string
+  namespace: string
+  tenant: string
+  payload: Record<string, unknown>
+}
+
+export interface RenderPreviewResponse {
+  rendered: Record<string, string>
+}
+
+export interface TemplateQueryParams {
+  namespace?: string
+  tenant?: string
+}
+
 // ---- Compliance ----
 
 export type ComplianceMode = 'none' | 'soc2' | 'hipaa'

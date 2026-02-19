@@ -19,6 +19,7 @@ type Action struct {
 	DedupKey   string          `json:"dedup_key,omitempty"`
 	Metadata   *ActionMetadata `json:"metadata,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`
+	Template   string          `json:"template,omitempty"`
 }
 
 // ActionMetadata contains optional metadata for an action.
@@ -1092,6 +1093,100 @@ type VerifyHashChainRequest struct {
 	Tenant    string  `json:"tenant"`
 	From      *string `json:"from,omitempty"`
 	To        *string `json:"to,omitempty"`
+}
+
+// =============================================================================
+// Payload Template Types
+// =============================================================================
+
+// TemplateInfo represents a payload template.
+type TemplateInfo struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace"`
+	Tenant      string            `json:"tenant"`
+	Content     string            `json:"content"`
+	CreatedAt   string            `json:"created_at"`
+	UpdatedAt   string            `json:"updated_at"`
+	Description *string           `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// CreateTemplateRequest is the request to create a payload template.
+type CreateTemplateRequest struct {
+	Name        string            `json:"name"`
+	Namespace   string            `json:"namespace"`
+	Tenant      string            `json:"tenant"`
+	Content     string            `json:"content"`
+	Description string            `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// UpdateTemplateRequest is the request to update a payload template.
+type UpdateTemplateRequest struct {
+	Content     *string           `json:"content,omitempty"`
+	Description *string           `json:"description,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+}
+
+// ListTemplatesResponse is the response from listing templates.
+type ListTemplatesResponse struct {
+	Templates []TemplateInfo `json:"templates"`
+	Count     int            `json:"count"`
+}
+
+// TemplateProfileField represents a field in a template profile.
+// It is either an inline string value or a reference object {"$ref": "template-name"}.
+// Use json.RawMessage for flexible deserialization.
+type TemplateProfileField = json.RawMessage
+
+// TemplateProfileInfo represents a template profile that groups multiple templates.
+type TemplateProfileInfo struct {
+	ID          string                          `json:"id"`
+	Name        string                          `json:"name"`
+	Namespace   string                          `json:"namespace"`
+	Tenant      string                          `json:"tenant"`
+	Fields      map[string]TemplateProfileField `json:"fields"`
+	CreatedAt   string                          `json:"created_at"`
+	UpdatedAt   string                          `json:"updated_at"`
+	Description *string                         `json:"description,omitempty"`
+	Labels      map[string]string               `json:"labels,omitempty"`
+}
+
+// CreateProfileRequest is the request to create a template profile.
+type CreateProfileRequest struct {
+	Name        string                          `json:"name"`
+	Namespace   string                          `json:"namespace"`
+	Tenant      string                          `json:"tenant"`
+	Fields      map[string]TemplateProfileField `json:"fields"`
+	Description string                          `json:"description,omitempty"`
+	Labels      map[string]string               `json:"labels,omitempty"`
+}
+
+// UpdateProfileRequest is the request to update a template profile.
+type UpdateProfileRequest struct {
+	Fields      map[string]TemplateProfileField `json:"fields,omitempty"`
+	Description *string                         `json:"description,omitempty"`
+	Labels      map[string]string               `json:"labels,omitempty"`
+}
+
+// ListProfilesResponse is the response from listing template profiles.
+type ListProfilesResponse struct {
+	Profiles []TemplateProfileInfo `json:"profiles"`
+	Count    int                   `json:"count"`
+}
+
+// RenderPreviewRequest is the request to render a template profile with payload data.
+type RenderPreviewRequest struct {
+	Profile   string         `json:"profile"`
+	Namespace string         `json:"namespace"`
+	Tenant    string         `json:"tenant"`
+	Payload   map[string]any `json:"payload"`
+}
+
+// RenderPreviewResponse is the response from rendering a template profile.
+type RenderPreviewResponse struct {
+	Rendered map[string]string `json:"rendered"`
 }
 
 // =============================================================================

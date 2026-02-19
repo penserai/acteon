@@ -1,9 +1,9 @@
 # Incident Response Pipeline example.
 #
-# Exercises 14 Acteon features: chains, sub-chains, conditional branching,
+# Exercises 15 Acteon features: chains, sub-chains, conditional branching,
 # event state management, circuit breakers with fallback, recurring actions,
 # data retention, event grouping, quotas, throttle, dedup, suppress, modify,
-# and audit with redaction.
+# audit with redaction, and payload templates.
 #
 # Requires PostgreSQL for durable state + audit:
 #   docker compose --profile postgres up -d

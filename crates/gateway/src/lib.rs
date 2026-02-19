@@ -8,6 +8,7 @@ pub mod error;
 pub mod gateway;
 pub mod group_manager;
 pub mod metrics;
+pub mod template_engine;
 pub mod watcher;
 
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};

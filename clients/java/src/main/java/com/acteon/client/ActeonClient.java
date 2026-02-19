@@ -1439,6 +1439,330 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Payload Templates
+    // =========================================================================
+
+    /**
+     * Creates a payload template.
+     */
+    public TemplateInfo createTemplate(CreateTemplateRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/templates")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, TemplateInfo.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists payload templates with optional namespace and tenant filters.
+     */
+    public ListTemplatesResponse listTemplates(String namespace, String tenant) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/templates";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListTemplatesResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list templates");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single template by ID.
+     */
+    public Optional<TemplateInfo> getTemplate(String templateId) throws ActeonException {
+        try {
+            String path = "/v1/templates/" + URLEncoder.encode(templateId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, TemplateInfo.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get template");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a payload template.
+     */
+    public TemplateInfo updateTemplate(String templateId, UpdateTemplateRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/templates/" + URLEncoder.encode(templateId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, TemplateInfo.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Template not found: " + templateId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a payload template.
+     */
+    public void deleteTemplate(String templateId) throws ActeonException {
+        try {
+            String path = "/v1/templates/" + URLEncoder.encode(templateId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Template not found: " + templateId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete template");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Creates a template profile.
+     */
+    public TemplateProfileInfo createProfile(CreateProfileRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/templates/profiles")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, TemplateProfileInfo.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists template profiles with optional namespace and tenant filters.
+     */
+    public ListProfilesResponse listProfiles(String namespace, String tenant) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+
+            String path = "/v1/templates/profiles";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListProfilesResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list profiles");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Gets a single template profile by ID.
+     */
+    public Optional<TemplateProfileInfo> getProfile(String profileId) throws ActeonException {
+        try {
+            String path = "/v1/templates/profiles/" + URLEncoder.encode(profileId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, TemplateProfileInfo.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get profile");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a template profile.
+     */
+    public TemplateProfileInfo updateProfile(String profileId, UpdateProfileRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/templates/profiles/" + URLEncoder.encode(profileId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, TemplateProfileInfo.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Profile not found: " + profileId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a template profile.
+     */
+    public void deleteProfile(String profileId) throws ActeonException {
+        try {
+            String path = "/v1/templates/profiles/" + URLEncoder.encode(profileId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Profile not found: " + profileId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete profile");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Renders a template profile with payload data.
+     */
+    public RenderPreviewResponse renderPreview(RenderPreviewRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/templates/render")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, RenderPreviewResponse.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Provider Health
     // =========================================================================
 

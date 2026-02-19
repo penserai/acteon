@@ -85,6 +85,13 @@ pub struct Action {
     #[serde(default)]
     #[cfg_attr(feature = "openapi", schema(value_type = HashMap<String, String>))]
     pub trace_context: HashMap<String, String>,
+
+    /// Optional template profile name. When set, the gateway renders the
+    /// matching [`TemplateProfile`](crate::template::TemplateProfile) fields
+    /// using the payload as variables and merges the results into the payload
+    /// before provider execution.
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 impl Action {
@@ -113,6 +120,7 @@ impl Action {
             ends_at: None,
             created_at: Utc::now(),
             trace_context: HashMap::new(),
+            template: None,
         }
     }
 
@@ -162,6 +170,13 @@ impl Action {
     #[must_use]
     pub fn with_trace_context(mut self, ctx: HashMap<String, String>) -> Self {
         self.trace_context = ctx;
+        self
+    }
+
+    /// Set the template profile name for payload rendering.
+    #[must_use]
+    pub fn with_template(mut self, template: impl Into<String>) -> Self {
+        self.template = Some(template.into());
         self
     }
 }

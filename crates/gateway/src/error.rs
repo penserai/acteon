@@ -42,4 +42,8 @@ pub enum GatewayError {
     /// A pre-dispatch enrichment step failed with `FailClosed` policy.
     #[error("enrichment failed: {0}")]
     Enrichment(String),
+
+    /// Template rendering failed.
+    #[error("template render error: {0}")]
+    TemplateRender(String),
 }

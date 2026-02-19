@@ -63,6 +63,8 @@ pub struct GatewayBuilder {
     compliance_config: Option<acteon_core::ComplianceConfig>,
     enrichments: Vec<EnrichmentConfig>,
     resource_lookups: HashMap<String, Arc<dyn ResourceLookup>>,
+    templates: HashMap<(String, String), HashMap<String, acteon_core::Template>>,
+    template_profiles: HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
 }
 
 impl GatewayBuilder {
@@ -103,6 +105,8 @@ impl GatewayBuilder {
             compliance_config: None,
             enrichments: Vec::new(),
             resource_lookups: HashMap::new(),
+            templates: HashMap::new(),
+            template_profiles: HashMap::new(),
         }
     }
 
@@ -449,6 +453,34 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a payload template.
+    ///
+    /// Templates are stored in a nested map keyed by `(namespace, tenant)` → `name`.
+    /// Duplicate names for the same scope replace the previous template.
+    #[must_use]
+    pub fn template(mut self, template: acteon_core::Template) -> Self {
+        let scope = (template.namespace.clone(), template.tenant.clone());
+        self.templates
+            .entry(scope)
+            .or_default()
+            .insert(template.name.clone(), template);
+        self
+    }
+
+    /// Register a template profile.
+    ///
+    /// Profiles are stored in a nested map keyed by `(namespace, tenant)` → `name`.
+    /// Duplicate names for the same scope replace the previous profile.
+    #[must_use]
+    pub fn template_profile(mut self, profile: acteon_core::TemplateProfile) -> Self {
+        let scope = (profile.namespace.clone(), profile.tenant.clone());
+        self.template_profiles
+            .entry(scope)
+            .or_default()
+            .insert(profile.name.clone(), profile);
+        self
+    }
+
     /// Set all quota policies at once (replaces any previously added).
     #[must_use]
     pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
@@ -725,6 +757,8 @@ impl GatewayBuilder {
             hash_chain_store,
             enrichments: self.enrichments,
             resource_lookups: self.resource_lookups,
+            templates: parking_lot::RwLock::new(self.templates),
+            template_profiles: parking_lot::RwLock::new(self.template_profiles),
         })
     }
 }

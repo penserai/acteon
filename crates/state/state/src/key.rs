@@ -44,6 +44,10 @@ pub enum KeyKind {
     QuotaUsage,
     /// Data retention policy definition.
     Retention,
+    /// Payload template definition.
+    Template,
+    /// Template profile definition.
+    TemplateProfile,
     Custom(String),
 }
 
@@ -74,6 +78,8 @@ impl KeyKind {
             Self::Quota => "quota",
             Self::QuotaUsage => "quota_usage",
             Self::Retention => "retention",
+            Self::Template => "template",
+            Self::TemplateProfile => "template_profile",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -166,6 +172,8 @@ mod tests {
         assert_eq!(KeyKind::Quota.as_str(), "quota");
         assert_eq!(KeyKind::QuotaUsage.as_str(), "quota_usage");
         assert_eq!(KeyKind::Retention.as_str(), "retention");
+        assert_eq!(KeyKind::Template.as_str(), "template");
+        assert_eq!(KeyKind::TemplateProfile.as_str(), "template_profile");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

@@ -24,6 +24,7 @@ public class Action {
     private ActionMetadata metadata;
     @JsonProperty("created_at")
     private String createdAt;
+    private String template;
 
     public Action() {
         this.id = UUID.randomUUID().toString();
@@ -72,6 +73,9 @@ public class Action {
     public String getCreatedAt() { return createdAt; }
     public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
 
+    public String getTemplate() { return template; }
+    public void setTemplate(String template) { this.template = template; }
+
     public Action withDedupKey(String dedupKey) {
         this.dedupKey = dedupKey;
         return this;
@@ -79,6 +83,11 @@ public class Action {
 
     public Action withMetadata(Map<String, String> labels) {
         this.metadata = new ActionMetadata(labels);
+        return this;
+    }
+
+    public Action withTemplate(String template) {
+        this.template = template;
         return this;
     }
 
@@ -92,6 +101,7 @@ public class Action {
         private String dedupKey;
         private Map<String, String> labels;
         private String createdAt = Instant.now().toString();
+        private String template;
 
         public Builder id(String id) { this.id = id; return this; }
         public Builder namespace(String namespace) { this.namespace = namespace; return this; }
@@ -102,6 +112,7 @@ public class Action {
         public Builder dedupKey(String dedupKey) { this.dedupKey = dedupKey; return this; }
         public Builder labels(Map<String, String> labels) { this.labels = labels; return this; }
         public Builder createdAt(String createdAt) { this.createdAt = createdAt; return this; }
+        public Builder template(String template) { this.template = template; return this; }
 
         public Action build() {
             Action action = new Action();
@@ -113,6 +124,7 @@ public class Action {
             action.payload = this.payload;
             action.dedupKey = this.dedupKey;
             action.createdAt = this.createdAt;
+            action.template = this.template;
             if (this.labels != null) {
                 action.metadata = new ActionMetadata(this.labels);
             }

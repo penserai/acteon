@@ -57,6 +57,17 @@ from .models import (
     ComplianceStatus,
     HashChainVerification,
     VerifyHashChainRequest,
+    TemplateInfo,
+    CreateTemplateRequest,
+    UpdateTemplateRequest,
+    ListTemplatesResponse,
+    TemplateProfileInfo,
+    TemplateProfileField,
+    CreateProfileRequest,
+    UpdateProfileRequest,
+    ListProfilesResponse,
+    RenderPreviewRequest,
+    RenderPreviewResponse,
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
@@ -1277,6 +1288,293 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to delete retention policy")
 
     # =========================================================================
+    # Payload Templates
+    # =========================================================================
+
+    def create_template(self, req: "CreateTemplateRequest") -> "TemplateInfo":
+        """Create a payload template.
+
+        Args:
+            req: The template definition.
+
+        Returns:
+            The created template.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/templates", json=req.to_dict())
+
+        if response.status_code == 201:
+            return TemplateInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_templates(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListTemplatesResponse":
+        """List payload templates.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+
+        Returns:
+            List of templates.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = self._request("GET", "/v1/templates", params=params)
+
+        if response.status_code == 200:
+            return ListTemplatesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list templates")
+
+    def get_template(self, template_id: str) -> Optional["TemplateInfo"]:
+        """Get a single template by ID.
+
+        Args:
+            template_id: The template ID.
+
+        Returns:
+            The template, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/templates/{template_id}")
+
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get template")
+
+    def update_template(
+        self, template_id: str, update: "UpdateTemplateRequest"
+    ) -> "TemplateInfo":
+        """Update a payload template.
+
+        Args:
+            template_id: The template ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated template.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the template is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/templates/{template_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_template(self, template_id: str) -> None:
+        """Delete a payload template.
+
+        Args:
+            template_id: The template ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the template is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/templates/{template_id}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete template")
+
+    def create_profile(self, req: "CreateProfileRequest") -> "TemplateProfileInfo":
+        """Create a template profile.
+
+        Args:
+            req: The profile definition.
+
+        Returns:
+            The created profile.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/templates/profiles", json=req.to_dict())
+
+        if response.status_code == 201:
+            return TemplateProfileInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_profiles(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListProfilesResponse":
+        """List template profiles.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+
+        Returns:
+            List of profiles.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = self._request("GET", "/v1/templates/profiles", params=params)
+
+        if response.status_code == 200:
+            return ListProfilesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list profiles")
+
+    def get_profile(self, profile_id: str) -> Optional["TemplateProfileInfo"]:
+        """Get a single template profile by ID.
+
+        Args:
+            profile_id: The profile ID.
+
+        Returns:
+            The profile, or None if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/templates/profiles/{profile_id}")
+
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get profile")
+
+    def update_profile(
+        self, profile_id: str, update: "UpdateProfileRequest"
+    ) -> "TemplateProfileInfo":
+        """Update a template profile.
+
+        Args:
+            profile_id: The profile ID.
+            update: The update request with fields to change.
+
+        Returns:
+            The updated profile.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the profile is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/templates/profiles/{profile_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_profile(self, profile_id: str) -> None:
+        """Delete a template profile.
+
+        Args:
+            profile_id: The profile ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the profile is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/templates/profiles/{profile_id}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete profile")
+
+    def render_preview(self, req: "RenderPreviewRequest") -> "RenderPreviewResponse":
+        """Render a template profile with payload data.
+
+        Args:
+            req: The render request with profile name and payload.
+
+        Returns:
+            The rendered output with field name to rendered string mapping.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        response = self._request("POST", "/v1/templates/render", json=req.to_dict())
+
+        if response.status_code == 200:
+            return RenderPreviewResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    # =========================================================================
     # Provider Health
     # =========================================================================
 
@@ -2439,6 +2737,161 @@ class AsyncActeonClient:
             raise HttpError(404, f"Retention policy not found: {retention_id}")
         else:
             raise HttpError(response.status_code, "Failed to delete retention policy")
+
+    # =========================================================================
+    # Payload Templates
+    # =========================================================================
+
+    async def create_template(self, req: "CreateTemplateRequest") -> "TemplateInfo":
+        """Create a payload template."""
+        response = await self._request("POST", "/v1/templates", json=req.to_dict())
+        if response.status_code == 201:
+            return TemplateInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_templates(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListTemplatesResponse":
+        """List payload templates."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = await self._request("GET", "/v1/templates", params=params)
+        if response.status_code == 200:
+            return ListTemplatesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list templates")
+
+    async def get_template(self, template_id: str) -> Optional["TemplateInfo"]:
+        """Get a single template by ID."""
+        response = await self._request("GET", f"/v1/templates/{template_id}")
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get template")
+
+    async def update_template(
+        self, template_id: str, update: "UpdateTemplateRequest"
+    ) -> "TemplateInfo":
+        """Update a payload template."""
+        response = await self._request(
+            "PUT", f"/v1/templates/{template_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return TemplateInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_template(self, template_id: str) -> None:
+        """Delete a payload template."""
+        response = await self._request("DELETE", f"/v1/templates/{template_id}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Template not found: {template_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete template")
+
+    async def create_profile(self, req: "CreateProfileRequest") -> "TemplateProfileInfo":
+        """Create a template profile."""
+        response = await self._request("POST", "/v1/templates/profiles", json=req.to_dict())
+        if response.status_code == 201:
+            return TemplateProfileInfo.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_profiles(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListProfilesResponse":
+        """List template profiles."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = await self._request("GET", "/v1/templates/profiles", params=params)
+        if response.status_code == 200:
+            return ListProfilesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list profiles")
+
+    async def get_profile(self, profile_id: str) -> Optional["TemplateProfileInfo"]:
+        """Get a single template profile by ID."""
+        response = await self._request("GET", f"/v1/templates/profiles/{profile_id}")
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get profile")
+
+    async def update_profile(
+        self, profile_id: str, update: "UpdateProfileRequest"
+    ) -> "TemplateProfileInfo":
+        """Update a template profile."""
+        response = await self._request(
+            "PUT", f"/v1/templates/profiles/{profile_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return TemplateProfileInfo.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_profile(self, profile_id: str) -> None:
+        """Delete a template profile."""
+        response = await self._request("DELETE", f"/v1/templates/profiles/{profile_id}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Profile not found: {profile_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete profile")
+
+    async def render_preview(self, req: "RenderPreviewRequest") -> "RenderPreviewResponse":
+        """Render a template profile with payload data."""
+        response = await self._request("POST", "/v1/templates/render", json=req.to_dict())
+        if response.status_code == 200:
+            return RenderPreviewResponse.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", "Unknown error"),
+                retryable=data.get("retryable", False),
+            )
 
     # =========================================================================
     # Provider Health

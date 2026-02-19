@@ -1,6 +1,6 @@
 # Incident Response Pipeline
 
-An end-to-end example exercising 14 Acteon features through an ops incident response scenario. Alerts flow from monitoring systems through Acteon, which triages them via chain workflows, routes notifications to multiple providers, tracks alert lifecycle through event states, and protects against alert storms via throttling, dedup, and quotas.
+An end-to-end example exercising 15 Acteon features through an ops incident response scenario. Alerts flow from monitoring systems through Acteon, which triages them via chain workflows, routes notifications to multiple providers, tracks alert lifecycle through event states, and protects against alert storms via throttling, dedup, and quotas.
 
 ## Features Exercised
 
@@ -20,6 +20,7 @@ An end-to-end example exercising 14 Acteon features through an ops incident resp
 | 12 | **Suppress** | Block alerts from `test` environment |
 | 13 | **Modify** | Enrich all alerts with `pipeline_version` metadata |
 | 14 | **Audit + redaction** | Full audit with `api_key`/`webhook_url` redacted |
+| 15 | **Payload templates** | Slack + email alert bodies rendered from MiniJinja templates via profiles |
 
 ## Prerequisites
 
@@ -39,7 +40,7 @@ scripts/migrate.sh -c examples/incident-response-pipeline/acteon.toml
 cargo run -p acteon-server --features postgres -- \
   -c examples/incident-response-pipeline/acteon.toml
 
-# 4. Setup API resources (quotas, retention, recurring)
+# 4. Setup API resources (quotas, retention, recurring, templates)
 cd examples/incident-response-pipeline
 bash scripts/setup.sh
 
@@ -66,7 +67,7 @@ incident-response-pipeline/
 │   ├── routing.yaml         # Dedup, modify metadata, group low-severity, allow
 │   └── safety.yaml          # Catch-all deny
 ├── scripts/
-│   ├── setup.sh             # Create quotas + retention + recurring via API
+│   ├── setup.sh             # Create quotas + retention + recurring + templates via API
 │   ├── send-alerts.sh       # Fire 20 sample alerts exercising all features
 │   ├── manage-incident.sh   # Transition events through lifecycle via API
 │   ├── show-report.sh       # Query audit/chains/events/health/quotas/groups
@@ -149,3 +150,4 @@ python3 -m http.server 9999
 - **Event seeding** in `manage-incident.sh` dispatches an alert through the API to create initial event state.
 - **Quota window** uses `"hourly"` string format. Other options: `"daily"`, `"weekly"`, `"monthly"`.
 - All audit payloads containing `api_key`, `webhook_url`, or `pagerduty_key` fields are automatically redacted to `[REDACTED]`.
+- **Payload templates** render Slack and email alert bodies from MiniJinja templates. The `slack-alert` and `email-alert` profiles compose inline subjects with `$ref` body templates. Templates are created in `setup.sh` and cleaned up in `teardown.sh`.

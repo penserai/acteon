@@ -86,6 +86,7 @@ for i in 0 1 2 3 4; do
     "provider": "slack-alerts",
     "action_type": "alert",
     "payload": {"alert_id": "ALERT-20'"$i"'", "severity": "low", "service": "'"$SVC"'", "environment": "production"},
+    "template": "slack-alert",
     "metadata": {"source": "cloudwatch"},
     "created_at": "'"$CREATED_AT"'"
   }'
@@ -118,6 +119,7 @@ for i in 1 2 3; do
     "provider": "email-alerts",
     "action_type": "alert",
     "payload": {"alert_id": "ALERT-300", "severity": "high", "service": "network", "environment": "production"},
+    "template": "email-alert",
     "metadata": {"source": "nagios"},
     "dedup_key": "network-alert-300",
     "created_at": "'"$CREATED_AT"'"

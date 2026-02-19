@@ -26,6 +26,8 @@ export interface Action {
   metadata?: Record<string, string>;
   /** Timestamp when the action was created. */
   createdAt: string;
+  /** Optional template name for payload rendering. */
+  template?: string;
 }
 
 /**
@@ -42,6 +44,7 @@ export function createAction(
     dedupKey?: string;
     metadata?: Record<string, string>;
     createdAt?: string;
+    template?: string;
   }
 ): Action {
   return {
@@ -54,6 +57,7 @@ export function createAction(
     dedupKey: options?.dedupKey,
     metadata: options?.metadata,
     createdAt: options?.createdAt ?? new Date().toISOString(),
+    template: options?.template,
   };
 }
 
@@ -75,6 +79,9 @@ export function actionToRequest(action: Action): Record<string, unknown> {
   }
   if (action.metadata) {
     result.metadata = { labels: action.metadata };
+  }
+  if (action.template) {
+    result.template = action.template;
   }
   return result;
 }
@@ -1871,6 +1878,200 @@ export interface VerifyHashChainRequest {
   tenant: string;
   from?: string;
   to?: string;
+}
+
+// =============================================================================
+// Payload Template Types
+// =============================================================================
+
+/** A payload template. */
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  namespace: string;
+  tenant: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a TemplateInfo from API response. */
+export function parseTemplateInfo(data: Record<string, unknown>): TemplateInfo {
+  return {
+    id: data.id as string,
+    name: data.name as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    content: data.content as string,
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Request to create a payload template. */
+export interface CreateTemplateRequest {
+  name: string;
+  namespace: string;
+  tenant: string;
+  content: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateTemplateRequest to the API request format. */
+export function createTemplateRequestToApi(req: CreateTemplateRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    name: req.name,
+    namespace: req.namespace,
+    tenant: req.tenant,
+    content: req.content,
+  };
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a payload template. */
+export interface UpdateTemplateRequest {
+  content?: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert an UpdateTemplateRequest to the API request format. */
+export function updateTemplateRequestToApi(req: UpdateTemplateRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.content !== undefined) result.content = req.content;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Response from listing templates. */
+export interface ListTemplatesResponse {
+  templates: TemplateInfo[];
+  count: number;
+}
+
+/** Parse a ListTemplatesResponse from API response. */
+export function parseListTemplatesResponse(data: Record<string, unknown>): ListTemplatesResponse {
+  const items = data.templates as Record<string, unknown>[];
+  return {
+    templates: items.map(parseTemplateInfo),
+    count: data.count as number,
+  };
+}
+
+/**
+ * A field in a template profile.
+ * Either an inline string value or a reference to a template via $ref.
+ */
+export type TemplateProfileField = string | { $ref: string };
+
+/** A template profile that groups multiple templates. */
+export interface TemplateProfileInfo {
+  id: string;
+  name: string;
+  namespace: string;
+  tenant: string;
+  fields: Record<string, TemplateProfileField>;
+  createdAt: string;
+  updatedAt: string;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Parse a TemplateProfileInfo from API response. */
+export function parseTemplateProfileInfo(data: Record<string, unknown>): TemplateProfileInfo {
+  return {
+    id: data.id as string,
+    name: data.name as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    fields: (data.fields as Record<string, TemplateProfileField>) ?? {},
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    description: data.description as string | undefined,
+    labels: data.labels as Record<string, string> | undefined,
+  };
+}
+
+/** Request to create a template profile. */
+export interface CreateProfileRequest {
+  name: string;
+  namespace: string;
+  tenant: string;
+  fields: Record<string, TemplateProfileField>;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert a CreateProfileRequest to the API request format. */
+export function createProfileRequestToApi(req: CreateProfileRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    name: req.name,
+    namespace: req.namespace,
+    tenant: req.tenant,
+    fields: req.fields,
+  };
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Request to update a template profile. */
+export interface UpdateProfileRequest {
+  fields?: Record<string, TemplateProfileField>;
+  description?: string;
+  labels?: Record<string, string>;
+}
+
+/** Convert an UpdateProfileRequest to the API request format. */
+export function updateProfileRequestToApi(req: UpdateProfileRequest): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.fields !== undefined) result.fields = req.fields;
+  if (req.description !== undefined) result.description = req.description;
+  if (req.labels !== undefined) result.labels = req.labels;
+  return result;
+}
+
+/** Response from listing template profiles. */
+export interface ListProfilesResponse {
+  profiles: TemplateProfileInfo[];
+  count: number;
+}
+
+/** Parse a ListProfilesResponse from API response. */
+export function parseListProfilesResponse(data: Record<string, unknown>): ListProfilesResponse {
+  const items = data.profiles as Record<string, unknown>[];
+  return {
+    profiles: items.map(parseTemplateProfileInfo),
+    count: data.count as number,
+  };
+}
+
+/** Request to render a template profile with payload data. */
+export interface RenderPreviewRequest {
+  profile: string;
+  namespace: string;
+  tenant: string;
+  payload: Record<string, unknown>;
+}
+
+/** Response from rendering a template profile. */
+export interface RenderPreviewResponse {
+  rendered: Record<string, string>;
+}
+
+/** Parse a RenderPreviewResponse from API response. */
+export function parseRenderPreviewResponse(data: Record<string, unknown>): RenderPreviewResponse {
+  return {
+    rendered: (data.rendered as Record<string, string>) ?? {},
+  };
 }
 
 // =============================================================================

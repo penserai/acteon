@@ -41,6 +41,7 @@ dispatch "order-std-001" '{
   "provider": "payment-gateway",
   "action_type": "place_order",
   "payload": {"order_id": "ORD-1001", "customer_email": "alice@example.com", "total_cents": 5990, "currency": "USD", "shipping_country": "US", "items": [{"sku": "WIDGET-A", "qty": 2}], "card_last4": "4242", "billing_zip": "10001"},
+  "template": "order-confirmation",
   "dedup_key": "order-ORD-1001",
   "created_at": "'"$CREATED_AT"'"
 }'
@@ -52,6 +53,7 @@ dispatch "order-std-002" '{
   "provider": "payment-gateway",
   "action_type": "place_order",
   "payload": {"order_id": "ORD-1002", "customer_email": "bob@example.com", "total_cents": 12500, "currency": "USD", "shipping_country": "CA", "items": [{"sku": "GADGET-B", "qty": 1}], "card_last4": "1234", "billing_zip": "M5V3L9"},
+  "template": "order-confirmation",
   "dedup_key": "order-ORD-1002",
   "created_at": "'"$CREATED_AT"'"
 }'
@@ -63,6 +65,7 @@ dispatch "order-std-003" '{
   "provider": "payment-gateway",
   "action_type": "place_order",
   "payload": {"order_id": "ORD-1003", "customer_email": "carol@example.com", "total_cents": 19999, "currency": "USD", "shipping_country": "GB", "items": [{"sku": "TOOL-C", "qty": 3}, {"sku": "PART-D", "qty": 1}], "card_last4": "5678", "billing_zip": "SW1A1AA"},
+  "template": "order-confirmation",
   "dedup_key": "order-ORD-1003",
   "created_at": "'"$CREATED_AT"'"
 }'

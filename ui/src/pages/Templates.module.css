@@ -1,0 +1,274 @@
+@reference "../index.css";
+
+/* Page-level header actions */
+.headerActions {
+  @apply flex items-center gap-2;
+}
+
+/* Top-level tabs bar */
+.topTabs {
+  @apply mb-6;
+}
+
+/* Filter bar */
+.filterBar {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+/* Table row actions */
+.actionsCell {
+  @apply flex items-center gap-1;
+}
+
+/* Cells */
+.nameCell {
+  @apply font-mono text-sm;
+  color: var(--text-default);
+}
+
+.descCell {
+  @apply text-sm truncate max-w-xs;
+  color: var(--text-muted);
+}
+
+.monoCell {
+  @apply font-mono text-xs tabular-nums;
+  color: var(--text-default);
+}
+
+/* Create / Edit modal form */
+.formSection {
+  @apply space-y-4;
+}
+
+.formGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.textareaLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.textareaContent {
+  @apply w-full rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  min-height: 12rem;
+  resize: vertical;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.textareaShort {
+  @apply w-full rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  min-height: 5rem;
+  resize: vertical;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+/* Profile field builder */
+.fieldBuilderList {
+  @apply space-y-2;
+}
+
+.fieldRow {
+  @apply flex items-center gap-2;
+}
+
+.fieldRowKey {
+  @apply flex-none w-36;
+}
+
+.fieldRowValue {
+  @apply flex-1;
+}
+
+.fieldTypeToggle {
+  @apply flex-none;
+}
+
+.addFieldButton {
+  @apply mt-2;
+}
+
+/* Field type badge */
+.fieldTypeBadge {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium select-none cursor-pointer;
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-default);
+}
+
+/* Detail drawer */
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailRow {
+  @apply flex justify-between py-1 border-b;
+  border-color: var(--border-default);
+}
+
+.detailLabel {
+  color: var(--text-muted);
+}
+
+.detailValue {
+  @apply font-mono text-xs;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.contentPreview {
+  @apply mt-4 p-3 rounded-md border font-mono text-xs overflow-auto max-h-64;
+  background: var(--bg-surface-secondary);
+  border-color: var(--border-default);
+  color: var(--text-default);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2 mt-4;
+  color: var(--text-secondary);
+}
+
+.actionButtons {
+  @apply mt-6 flex gap-2;
+}
+
+/* Fields display in drawer */
+.fieldsList {
+  @apply mt-2 space-y-1;
+}
+
+.fieldsEntry {
+  @apply flex items-start gap-2 py-1.5 border-b text-sm;
+  border-color: var(--border-default);
+}
+
+.fieldsKey {
+  @apply font-mono text-xs w-36 flex-none;
+  color: var(--text-secondary);
+}
+
+.fieldsValue {
+  @apply font-mono text-xs flex-1 break-all;
+  color: var(--text-default);
+}
+
+.refBadge {
+  @apply inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs;
+  background: var(--bg-surface-secondary);
+  color: var(--text-muted);
+  border: 1px solid var(--border-default);
+}
+
+/* Delete confirmation */
+.deleteWarning {
+  @apply text-sm mb-4;
+  color: var(--text-secondary);
+}
+
+.deleteName {
+  @apply font-semibold;
+  color: var(--text-primary);
+}
+
+/* ---- Playground Tab ---- */
+
+.playgroundContainer {
+  @apply max-w-6xl;
+}
+
+.playgroundLayout {
+  @apply grid grid-cols-1 lg:grid-cols-2 gap-6;
+}
+
+.playgroundCard {
+  @apply border rounded-lg p-6 space-y-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.playgroundCardTitle {
+  @apply text-base font-semibold;
+  color: var(--text-default);
+}
+
+.selectInput {
+  @apply w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.playgroundTextarea {
+  @apply w-full rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  min-height: 12rem;
+  resize: vertical;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.validationError {
+  @apply text-xs mt-1;
+  color: var(--text-error, #ef4444);
+}
+
+.playgroundSubmit {
+  @apply pt-2;
+}
+
+.playgroundError {
+  @apply rounded-lg border p-3 text-sm flex items-center gap-2;
+  background: rgb(245 158 11 / 0.1);
+  border-color: rgb(245 158 11 / 0.3);
+  color: rgb(180 83 9);
+}
+
+.playgroundEmpty {
+  @apply text-sm text-center py-8;
+  color: var(--text-muted);
+}
+
+.renderedFields {
+  @apply space-y-4;
+}
+
+.renderedField {
+  @apply border rounded-lg overflow-hidden;
+  border-color: var(--border-default);
+}
+
+.renderedFieldHeader {
+  @apply px-3 py-2;
+  background: var(--bg-surface-secondary);
+}
+
+.renderedFieldName {
+  @apply font-mono text-xs font-medium;
+  color: var(--text-secondary);
+}
+
+.renderedFieldValue {
+  @apply px-3 py-3 font-mono text-xs overflow-auto;
+  max-height: 20rem;
+  background: var(--bg-surface);
+  color: var(--text-default);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}

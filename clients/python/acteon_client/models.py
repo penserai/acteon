@@ -31,6 +31,7 @@ class Action:
     dedup_key: Optional[str] = None
     metadata: Optional[dict[str, str]] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
+    template: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -47,6 +48,8 @@ class Action:
             result["dedup_key"] = self.dedup_key
         if self.metadata:
             result["metadata"] = {"labels": self.metadata}
+        if self.template:
+            result["template"] = self.template
         return result
 
 
@@ -2157,6 +2160,231 @@ class VerifyHashChainRequest:
         if self.to_time is not None:
             body["to"] = self.to_time
         return body
+
+
+# =============================================================================
+# Payload Template Types
+# =============================================================================
+
+
+@dataclass
+class TemplateInfo:
+    """A payload template."""
+    id: str
+    name: str
+    namespace: str
+    tenant: str
+    content: str
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TemplateInfo":
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            content=data["content"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class CreateTemplateRequest:
+    """Request to create a payload template."""
+    name: str
+    namespace: str
+    tenant: str
+    content: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "name": self.name,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "content": self.content,
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateTemplateRequest:
+    """Request to update a payload template."""
+    content: Optional[str] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.content is not None:
+            result["content"] = self.content
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class ListTemplatesResponse:
+    """Response from listing templates."""
+    templates: list[TemplateInfo]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListTemplatesResponse":
+        return cls(
+            templates=[TemplateInfo.from_dict(t) for t in data["templates"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class TemplateProfileField:
+    """A field in a template profile.
+
+    Either an inline string value or a reference to a template via ``$ref``.
+    """
+    value: Optional[str] = None
+    ref: Optional[str] = None
+
+    def to_dict(self) -> Any:
+        if self.ref is not None:
+            return {"$ref": self.ref}
+        return self.value
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "TemplateProfileField":
+        if isinstance(data, str):
+            return cls(value=data)
+        if isinstance(data, dict) and "$ref" in data:
+            return cls(ref=data["$ref"])
+        return cls(value=str(data))
+
+
+@dataclass
+class TemplateProfileInfo:
+    """A template profile that groups multiple templates."""
+    id: str
+    name: str
+    namespace: str
+    tenant: str
+    fields: dict[str, TemplateProfileField]
+    created_at: str
+    updated_at: str
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TemplateProfileInfo":
+        raw_fields = data.get("fields", {})
+        fields = {k: TemplateProfileField.from_dict(v) for k, v in raw_fields.items()}
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            fields=fields,
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            description=data.get("description"),
+            labels=data.get("labels"),
+        )
+
+
+@dataclass
+class CreateProfileRequest:
+    """Request to create a template profile."""
+    name: str
+    namespace: str
+    tenant: str
+    fields: dict[str, TemplateProfileField]
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "name": self.name,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "fields": {k: v.to_dict() for k, v in self.fields.items()},
+        }
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class UpdateProfileRequest:
+    """Request to update a template profile."""
+    fields: Optional[dict[str, TemplateProfileField]] = None
+    description: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.fields is not None:
+            result["fields"] = {k: v.to_dict() for k, v in self.fields.items()}
+        if self.description is not None:
+            result["description"] = self.description
+        if self.labels is not None:
+            result["labels"] = self.labels
+        return result
+
+
+@dataclass
+class ListProfilesResponse:
+    """Response from listing template profiles."""
+    profiles: list[TemplateProfileInfo]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListProfilesResponse":
+        return cls(
+            profiles=[TemplateProfileInfo.from_dict(p) for p in data["profiles"]],
+            count=data["count"],
+        )
+
+
+@dataclass
+class RenderPreviewRequest:
+    """Request to render a template profile with payload data."""
+    profile: str
+    namespace: str
+    tenant: str
+    payload: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profile": self.profile,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "payload": self.payload,
+        }
+
+
+@dataclass
+class RenderPreviewResponse:
+    """Response from rendering a template profile."""
+    rendered: dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RenderPreviewResponse":
+        return cls(rendered=data.get("rendered", {}))
 
 
 def discord_message_payload(

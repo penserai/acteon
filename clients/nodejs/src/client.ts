@@ -108,6 +108,25 @@ import {
   HashChainVerification,
   parseHashChainVerification,
   VerifyHashChainRequest,
+  TemplateInfo,
+  parseTemplateInfo,
+  CreateTemplateRequest,
+  createTemplateRequestToApi,
+  UpdateTemplateRequest,
+  updateTemplateRequestToApi,
+  ListTemplatesResponse,
+  parseListTemplatesResponse,
+  TemplateProfileInfo,
+  parseTemplateProfileInfo,
+  CreateProfileRequest,
+  createProfileRequestToApi,
+  UpdateProfileRequest,
+  updateProfileRequestToApi,
+  ListProfilesResponse,
+  parseListProfilesResponse,
+  RenderPreviewRequest,
+  RenderPreviewResponse,
+  parseRenderPreviewResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 
@@ -998,6 +1017,215 @@ export class ActeonClient {
       throw new HttpError(404, `Retention policy not found: ${retentionId}`);
     } else {
       throw new HttpError(response.status, "Failed to delete retention policy");
+    }
+  }
+
+  // =========================================================================
+  // Payload Templates
+  // =========================================================================
+
+  /**
+   * Create a payload template.
+   */
+  async createTemplate(req: CreateTemplateRequest): Promise<TemplateInfo> {
+    const response = await this.request("POST", "/v1/templates", {
+      body: createTemplateRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateInfo(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List payload templates.
+   */
+  async listTemplates(namespace?: string, tenant?: string): Promise<ListTemplatesResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/templates", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListTemplatesResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list templates");
+    }
+  }
+
+  /**
+   * Get a single template by ID.
+   */
+  async getTemplate(templateId: string): Promise<TemplateInfo | null> {
+    const response = await this.request("GET", `/v1/templates/${templateId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateInfo(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get template");
+    }
+  }
+
+  /**
+   * Update a payload template.
+   */
+  async updateTemplate(templateId: string, update: UpdateTemplateRequest): Promise<TemplateInfo> {
+    const response = await this.request("PUT", `/v1/templates/${templateId}`, {
+      body: updateTemplateRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateInfo(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Template not found: ${templateId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a payload template.
+   */
+  async deleteTemplate(templateId: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/templates/${templateId}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Template not found: ${templateId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete template");
+    }
+  }
+
+  /**
+   * Create a template profile.
+   */
+  async createProfile(req: CreateProfileRequest): Promise<TemplateProfileInfo> {
+    const response = await this.request("POST", "/v1/templates/profiles", {
+      body: createProfileRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateProfileInfo(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List template profiles.
+   */
+  async listProfiles(namespace?: string, tenant?: string): Promise<ListProfilesResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/templates/profiles", { params: params.toString() ? params : undefined });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListProfilesResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list profiles");
+    }
+  }
+
+  /**
+   * Get a single template profile by ID.
+   */
+  async getProfile(profileId: string): Promise<TemplateProfileInfo | null> {
+    const response = await this.request("GET", `/v1/templates/profiles/${profileId}`);
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateProfileInfo(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get profile");
+    }
+  }
+
+  /**
+   * Update a template profile.
+   */
+  async updateProfile(profileId: string, update: UpdateProfileRequest): Promise<TemplateProfileInfo> {
+    const response = await this.request("PUT", `/v1/templates/profiles/${profileId}`, {
+      body: updateProfileRequestToApi(update),
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTemplateProfileInfo(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Profile not found: ${profileId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Delete a template profile.
+   */
+  async deleteProfile(profileId: string): Promise<void> {
+    const response = await this.request("DELETE", `/v1/templates/profiles/${profileId}`);
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Profile not found: ${profileId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete profile");
+    }
+  }
+
+  /**
+   * Render a template profile with payload data.
+   */
+  async renderPreview(req: RenderPreviewRequest): Promise<RenderPreviewResponse> {
+    const response = await this.request("POST", "/v1/templates/render", {
+      body: req,
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseRenderPreviewResponse(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        (data.message as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
     }
   }
 
