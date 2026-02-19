@@ -24,4 +24,9 @@ Route monitoring alerts through Acteon for triage, dedup, throttle, and multi-st
 Process e-commerce orders through Acteon with fraud screening, business-hours scheduling, approval gates, and multi-step fulfillment chains. Covers time-based conditions, SSE streaming, order lifecycle tracking, and payment field redaction.
 </div>
 
+<div class="card" markdown>
+### [Healthcare Notification Pipeline](healthcare-notification-pipeline.md)
+Build a HIPAA-compliant notification gateway that detects and blocks PHI over insecure channels, reroutes sensitive data to a patient portal, and maintains a tamper-evident hash-chained audit trail. Covers compliance mode, approval workflows, and PHI redaction.
+</div>
+
 </div>
