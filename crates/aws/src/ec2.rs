@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use acteon_core::{Action, ProviderResponse};
 use acteon_provider::ProviderError;
+use acteon_provider::ResourceLookup;
 use acteon_provider::provider::Provider;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
 
@@ -772,6 +774,84 @@ impl Ec2Provider {
             "action": "describe_instances",
             "instances": instances,
         })))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resource lookup
+// ---------------------------------------------------------------------------
+
+/// Payload for `ResourceLookup` `instance` lookups.
+#[derive(Debug, Deserialize)]
+struct Ec2LookupParams {
+    /// EC2 instance IDs to look up.
+    #[serde(default)]
+    instance_ids: Vec<String>,
+}
+
+#[async_trait]
+impl ResourceLookup for Ec2Provider {
+    async fn lookup(
+        &self,
+        resource_type: &str,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError> {
+        match resource_type {
+            "instance" => {
+                let lookup_params: Ec2LookupParams = serde_json::from_value(params.clone())
+                    .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+                debug!(
+                    instance_ids = ?lookup_params.instance_ids,
+                    "resource lookup: describing EC2 instances"
+                );
+
+                let mut request = self.client.describe_instances();
+                if !lookup_params.instance_ids.is_empty() {
+                    request = request.set_instance_ids(Some(lookup_params.instance_ids.clone()));
+                }
+
+                let result = request.send().await.map_err(|e| {
+                    let err_str = e.to_string();
+                    error!(error = %err_str, "resource lookup: describe_instances failed");
+                    let aws_err: ProviderError = classify_sdk_error(&err_str).into();
+                    aws_err
+                })?;
+
+                let instances: Vec<_> = result
+                    .reservations()
+                    .iter()
+                    .flat_map(aws_sdk_ec2::types::Reservation::instances)
+                    .map(|i| {
+                        serde_json::json!({
+                            "instance_id": i.instance_id().unwrap_or_default(),
+                            "instance_type": i.instance_type().map_or(
+                                "unknown",
+                                aws_sdk_ec2::types::InstanceType::as_str,
+                            ),
+                            "state": i.state().and_then(|s| s.name()).map_or(
+                                "unknown",
+                                aws_sdk_ec2::types::InstanceStateName::as_str,
+                            ),
+                            "public_ip": i.public_ip_address().unwrap_or_default(),
+                            "private_ip": i.private_ip_address().unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+
+                Ok(serde_json::json!({
+                    "instances": instances,
+                }))
+            }
+            other => Err(ProviderError::Configuration(format!(
+                "unsupported resource type '{other}' for EC2 provider \
+                 (supported: 'instance')"
+            ))),
+        }
+    }
+
+    fn supported_resource_types(&self) -> Vec<String> {
+        vec!["instance".to_owned()]
     }
 }
 

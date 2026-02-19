@@ -91,6 +91,23 @@ enable_retention_reaper = false
 namespace = "infra"
 tenant = "cost-optimizer"
 
+# ── Pre-Dispatch Enrichment (commented — requires real ASG state) ────────────
+# Uncomment to have the gateway automatically fetch live ASG state before rule
+# evaluation. Rules can then check `action.payload.current_asg_state.*` fields.
+#
+# [[enrichments]]
+# name = "fetch-asg-state"
+# action_type = "terminate_instances"
+# provider = "cost-ec2"
+# lookup_provider = "cost-asg"
+# resource_type = "auto_scaling_group"
+# merge_key = "current_asg_state"
+# timeout_seconds = 10
+# failure_policy = "fail_closed"
+#
+# [enrichments.params]
+# auto_scaling_group_names = ["{{payload.asg_name}}"]
+
 # ── Quotas ───────────────────────────────────────────────────────────────────
 # Quota enforcement enabled; policies created via the API in scripts/setup-api.sh.
 [quotas]

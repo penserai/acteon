@@ -38,6 +38,14 @@ pub enum BranchOperator {
     Contains,
     /// Check if a field exists and is not `null`.
     Exists,
+    /// Greater than (`>`). Supports numeric and lexicographic string comparison.
+    Gt,
+    /// Less than (`<`). Supports numeric and lexicographic string comparison.
+    Lt,
+    /// Greater than or equal (`>=`). Supports numeric and lexicographic string comparison.
+    Gte,
+    /// Less than or equal (`<=`). Supports numeric and lexicographic string comparison.
+    Lte,
 }
 
 /// A condition that determines which step to execute next after the current
@@ -98,6 +106,37 @@ impl BranchCondition {
                 }
             }
             BranchOperator::Exists => !field_value.is_null(),
+            BranchOperator::Gt => self.compare_ordered(&field_value, std::cmp::Ordering::is_gt),
+            BranchOperator::Lt => self.compare_ordered(&field_value, std::cmp::Ordering::is_lt),
+            BranchOperator::Gte => self.compare_ordered(&field_value, std::cmp::Ordering::is_ge),
+            BranchOperator::Lte => self.compare_ordered(&field_value, std::cmp::Ordering::is_le),
+        }
+    }
+
+    /// Compare the resolved field value against `self.value` using an ordered
+    /// comparison and return whether the given predicate holds.
+    ///
+    /// - For `Number` JSON values: compare as `f64` via `partial_cmp` (NaN yields `false`).
+    /// - For `String` JSON values: lexicographic comparison.
+    /// - Type mismatch or missing comparison value: `false`.
+    fn compare_ordered(
+        &self,
+        field_value: &serde_json::Value,
+        predicate: impl Fn(std::cmp::Ordering) -> bool,
+    ) -> bool {
+        let Some(cmp_value) = self.value.as_ref() else {
+            return false;
+        };
+
+        match (field_value, cmp_value) {
+            (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+                match (a.as_f64(), b.as_f64()) {
+                    (Some(fa), Some(fb)) => fa.partial_cmp(&fb).is_some_and(&predicate),
+                    _ => false,
+                }
+            }
+            (serde_json::Value::String(a), serde_json::Value::String(b)) => predicate(a.cmp(b)),
+            _ => false,
         }
     }
 
@@ -1291,5 +1330,241 @@ mod tests {
         let step: ChainStepConfig = serde_json::from_str(json).unwrap();
         assert!(step.sub_chain.is_none());
         assert!(!step.is_sub_chain());
+    }
+
+    #[test]
+    fn branch_condition_evaluate_gt_number() {
+        let cond = BranchCondition::new(
+            "body.count",
+            BranchOperator::Gt,
+            Some(serde_json::json!(5)),
+            "high",
+        );
+        // count=10 > 5 → true
+        let result_true = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 10})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(cond.evaluate(&result_true));
+
+        // count=3 > 5 → false
+        let result_false = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 3})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result_false));
+    }
+
+    #[test]
+    fn branch_condition_evaluate_lt_number() {
+        let cond = BranchCondition::new(
+            "body.count",
+            BranchOperator::Lt,
+            Some(serde_json::json!(5)),
+            "low",
+        );
+        // count=3 < 5 → true
+        let result_true = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 3})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(cond.evaluate(&result_true));
+
+        // count=10 < 5 → false
+        let result_false = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 10})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result_false));
+    }
+
+    #[test]
+    fn branch_condition_evaluate_gte_number() {
+        let cond = BranchCondition::new(
+            "body.count",
+            BranchOperator::Gte,
+            Some(serde_json::json!(5)),
+            "at-least",
+        );
+        // count=10 >= 5 → true
+        let result_above = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 10})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(cond.evaluate(&result_above));
+
+        // count=5 >= 5 → true (boundary)
+        let result_equal = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 5})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(cond.evaluate(&result_equal));
+
+        // count=3 >= 5 → false
+        let result_below = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 3})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result_below));
+    }
+
+    #[test]
+    fn branch_condition_evaluate_lte_number() {
+        let cond = BranchCondition::new(
+            "body.count",
+            BranchOperator::Lte,
+            Some(serde_json::json!(5)),
+            "at-most",
+        );
+        // count=3 <= 5 → true
+        let result_below = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 3})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(cond.evaluate(&result_below));
+
+        // count=5 <= 5 → true (boundary)
+        let result_equal = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 5})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(cond.evaluate(&result_equal));
+
+        // count=10 <= 5 → false
+        let result_above = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 10})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result_above));
+    }
+
+    #[test]
+    fn branch_condition_evaluate_gt_string() {
+        let cond = BranchCondition::new(
+            "body.grade",
+            BranchOperator::Gt,
+            Some(serde_json::json!("a")),
+            "after-a",
+        );
+        // "b" > "a" lexicographically → true
+        let result_true = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"grade": "b"})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(cond.evaluate(&result_true));
+
+        // "a" > "a" → false (not strictly greater)
+        let result_equal = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"grade": "a"})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result_equal));
+    }
+
+    #[test]
+    fn branch_condition_evaluate_numeric_type_mismatch() {
+        // Field value is a string, condition value is a number → false
+        let cond = BranchCondition::new(
+            "body.count",
+            BranchOperator::Gt,
+            Some(serde_json::json!(5)),
+            "step",
+        );
+        let result = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": "not-a-number"})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result));
+    }
+
+    #[test]
+    fn branch_condition_evaluate_gt_missing_field() {
+        let cond = BranchCondition::new(
+            "body.nonexistent",
+            BranchOperator::Gt,
+            Some(serde_json::json!(5)),
+            "step",
+        );
+        let result = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"other": 10})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result));
+    }
+
+    #[test]
+    fn branch_condition_evaluate_gt_no_value() {
+        // Gt without a comparison value → false
+        let cond = BranchCondition::new("body.count", BranchOperator::Gt, None, "step");
+        let result = StepResult {
+            step_name: "check".into(),
+            success: true,
+            response_body: Some(serde_json::json!({"count": 10})),
+            error: None,
+            completed_at: Utc::now(),
+        };
+        assert!(!cond.evaluate(&result));
+    }
+
+    #[test]
+    fn branch_operator_serde_roundtrip_numeric() {
+        let operators = vec![
+            (BranchOperator::Eq, "\"eq\""),
+            (BranchOperator::Neq, "\"neq\""),
+            (BranchOperator::Contains, "\"contains\""),
+            (BranchOperator::Exists, "\"exists\""),
+            (BranchOperator::Gt, "\"gt\""),
+            (BranchOperator::Lt, "\"lt\""),
+            (BranchOperator::Gte, "\"gte\""),
+            (BranchOperator::Lte, "\"lte\""),
+        ];
+        for (op, expected_json) in &operators {
+            let json = serde_json::to_string(op).unwrap();
+            assert_eq!(&json, expected_json, "serialization mismatch for {op:?}");
+            let back: BranchOperator = serde_json::from_str(&json).unwrap();
+            assert_eq!(&back, op, "deserialization mismatch for {expected_json}");
+        }
     }
 }

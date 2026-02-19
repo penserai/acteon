@@ -59,6 +59,12 @@ pub struct ActeonConfig {
     /// Compliance mode configuration (`SOC2` / `HIPAA`).
     #[serde(default)]
     pub compliance: ComplianceServerConfig,
+    /// Pre-dispatch enrichment configurations.
+    ///
+    /// Each entry describes a resource lookup to execute before rule evaluation,
+    /// merging live external state into the action payload.
+    #[serde(default)]
+    pub enrichments: Vec<EnrichmentConfigToml>,
     /// Provider definitions.
     ///
     /// Each entry registers a named provider that actions can be routed to.
@@ -1103,7 +1109,8 @@ pub struct ChainStepConfigToml {
 pub struct BranchConditionToml {
     /// The field to evaluate (e.g., `"success"`, `"body.status"`).
     pub field: String,
-    /// Comparison operator: `"eq"`, `"neq"`, `"contains"`, or `"exists"`.
+    /// Comparison operator: `"eq"`, `"neq"`, `"contains"`, `"exists"`,
+    /// `"gt"`, `"lt"`, `"gte"`, or `"lte"`.
     pub operator: String,
     /// Value to compare against (ignored for `"exists"`).
     #[serde(default)]
@@ -1844,6 +1851,61 @@ impl From<&ProviderConfig> for ProviderSnapshot {
     }
 }
 
+/// Configuration for a pre-dispatch enrichment step, loaded from TOML.
+///
+/// # Example
+///
+/// ```toml
+/// [[enrichments]]
+/// name = "fetch-asg-state"
+/// action_type = "set_desired_capacity"
+/// provider = "aws-autoscaling"
+/// lookup_provider = "aws-autoscaling"
+/// resource_type = "auto_scaling_group"
+/// merge_key = "current_asg_state"
+/// timeout_seconds = 10
+/// failure_policy = "fail_closed"
+///
+/// [enrichments.params]
+/// auto_scaling_group_names = ["{{payload.asg_name}}"]
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct EnrichmentConfigToml {
+    /// Human-readable name for this enrichment.
+    pub name: String,
+    /// Only apply to actions matching this namespace (if set).
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Only apply to actions matching this tenant (if set).
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Only apply to actions matching this action type (if set).
+    #[serde(default)]
+    pub action_type: Option<String>,
+    /// Only apply to actions targeting this provider (if set).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The name of the resource lookup provider to use.
+    pub lookup_provider: String,
+    /// The resource type to look up (e.g., `"auto_scaling_group"`, `"instance"`).
+    pub resource_type: String,
+    /// Template for lookup parameters. Supports `{{payload.X}}`, `{{namespace}}`,
+    /// `{{tenant}}`, `{{action_type}}` placeholders.
+    pub params: serde_json::Value,
+    /// Key under which to merge the lookup result into the action payload.
+    pub merge_key: String,
+    /// Timeout for the lookup call, in seconds (default: 5).
+    #[serde(default = "default_enrichment_timeout")]
+    pub timeout_seconds: u64,
+    /// Failure policy: `"fail_open"` (default) or `"fail_closed"`.
+    #[serde(default)]
+    pub failure_policy: acteon_core::EnrichmentFailurePolicy,
+}
+
+fn default_enrichment_timeout() -> u64 {
+    5
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2393,5 +2455,68 @@ mod tests {
         assert_eq!(step.provider.as_deref(), Some("email"));
         assert_eq!(step.action_type.as_deref(), Some("send"));
         assert!(step.sub_chain.is_none());
+    }
+
+    #[test]
+    fn enrichment_config_parses_with_defaults() {
+        let toml = r#"
+            [[enrichments]]
+            name = "fetch-asg"
+            lookup_provider = "cost-asg"
+            resource_type = "auto_scaling_group"
+            merge_key = "asg_data"
+
+            [enrichments.params]
+            auto_scaling_group_names = ["my-asg"]
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.enrichments.len(), 1);
+        let e = &config.enrichments[0];
+        assert_eq!(e.name, "fetch-asg");
+        assert_eq!(e.lookup_provider, "cost-asg");
+        assert_eq!(e.resource_type, "auto_scaling_group");
+        assert_eq!(e.merge_key, "asg_data");
+        assert_eq!(e.timeout_seconds, 5); // default
+        assert_eq!(
+            e.failure_policy,
+            acteon_core::EnrichmentFailurePolicy::FailOpen
+        ); // default
+        assert!(e.namespace.is_none());
+        assert!(e.tenant.is_none());
+        assert!(e.action_type.is_none());
+        assert!(e.provider.is_none());
+    }
+
+    #[test]
+    fn enrichment_config_parses_full() {
+        let toml = r#"
+            [[enrichments]]
+            name = "fetch-asg-state"
+            namespace = "infra"
+            tenant = "prod"
+            action_type = "terminate_instances"
+            provider = "cost-ec2"
+            lookup_provider = "cost-asg"
+            resource_type = "auto_scaling_group"
+            merge_key = "current_asg_state"
+            timeout_seconds = 10
+            failure_policy = "fail_closed"
+
+            [enrichments.params]
+            auto_scaling_group_names = ["{{payload.asg_name}}"]
+        "#;
+
+        let config: ActeonConfig = toml::from_str(toml).unwrap();
+        let e = &config.enrichments[0];
+        assert_eq!(e.namespace.as_deref(), Some("infra"));
+        assert_eq!(e.tenant.as_deref(), Some("prod"));
+        assert_eq!(e.action_type.as_deref(), Some("terminate_instances"));
+        assert_eq!(e.provider.as_deref(), Some("cost-ec2"));
+        assert_eq!(e.timeout_seconds, 10);
+        assert_eq!(
+            e.failure_policy,
+            acteon_core::EnrichmentFailurePolicy::FailClosed
+        );
     }
 }

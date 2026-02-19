@@ -91,6 +91,7 @@ version = "0.1.0"
 dependencies = [
  "acteon-core",
  "acteon-provider",
+ "async-trait",
  "aws-config",
  "aws-sdk-autoscaling",
  "aws-sdk-ec2",

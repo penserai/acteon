@@ -3,6 +3,7 @@ pub mod builder;
 pub mod chain;
 pub mod circuit_breaker;
 pub mod encrypting_dlq;
+pub mod enrichment;
 pub mod error;
 pub mod gateway;
 pub mod group_manager;

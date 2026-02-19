@@ -1082,22 +1082,81 @@ Step 1: describe_auto_scaling_groups → get current state
 Step 2: terminate_instances (uses result from step 1)
 ```
 
-The describe result is available in step 2 via `{{steps.step1.body.auto_scaling_groups}}`. However, chain branch conditions currently support only `Eq`, `Neq`, `Contains`, and `Exists` operators -- **not** numeric comparisons like "is `desired_capacity > min_size + 2`?". This means the chain can orchestrate the sequence but cannot conditionally abort based on capacity arithmetic.
+The describe result is available in step 2 via `{{steps.step1.body.auto_scaling_groups}}`. With numeric branch operators (`gt`, `lt`, `gte`, `lte`), chains can conditionally abort based on capacity arithmetic:
 
-This approach works for existence checks (e.g., "does the ASG exist?") but not for "is capacity above threshold N?".
+```toml
+[[chains.definitions]]
+name = "safe-terminate"
+
+[[chains.definitions.steps]]
+name = "check-capacity"
+provider = "cost-asg"
+action_type = "describe_auto_scaling_groups"
+payload = { auto_scaling_group_names = ["staging-api"] }
+
+[[chains.definitions.steps.branches]]
+field = "body.auto_scaling_groups.0.desired_capacity"
+operator = "lte"
+value = 2
+target = "abort"
+
+[[chains.definitions.steps]]
+name = "terminate"
+provider = "cost-ec2"
+action_type = "terminate_instances"
+payload = { instance_ids = ["i-0abc123"] }
+
+[[chains.definitions.steps]]
+name = "abort"
+provider = "log"
+action_type = "send_alert"
+payload = { message = "Insufficient capacity, termination blocked" }
+```
+
+### Pre-dispatch enrichment (live state in rules)
+
+Pre-dispatch enrichment lets the gateway fetch live resource state before rule evaluation, so rules can check real-time data instead of relying on client-side attestation.
+
+```toml
+[[enrichments]]
+name = "fetch-asg-state"
+action_type = "terminate_instances"
+provider = "cost-ec2"
+lookup_provider = "cost-asg"
+resource_type = "auto_scaling_group"
+merge_key = "current_asg_state"
+timeout_seconds = 10
+failure_policy = "fail_closed"
+
+[enrichments.params]
+auto_scaling_group_names = ["{{payload.asg_name}}"]
+```
+
+When configured, the gateway automatically:
+
+1. Matches the enrichment filter against the incoming action (namespace, tenant, action_type, provider)
+2. Resolves `{{payload.X}}` placeholders in the params template
+3. Calls the `ResourceLookup` implementation on the lookup provider
+4. Merges the result into `action.payload` under the configured `merge_key`
+
+Rules can then check `action.payload.current_asg_state.auto_scaling_groups.0.desired_capacity` to enforce capacity thresholds on live data.
+
+The `failure_policy` controls behavior when the lookup fails:
+- `fail_open` (default) -- continue dispatch without the enrichment data
+- `fail_closed` -- reject the dispatch entirely
+
+EC2 and Auto Scaling providers automatically register as `ResourceLookup` implementations, supporting `"instance"` and `"auto_scaling_group"` resource types respectively.
 
 ### Limitations and future direction
 
 | Limitation | Why | Workaround |
 |-----------|-----|------------|
-| No real-time capacity awareness in rules | Rules evaluate payload fields only, not live AWS state | Client-side orchestration (see above) |
 | WASM plugins can't query AWS | Sandboxed with no network access | Use WASM for payload validation logic only |
-| Chain branches lack numeric operators | Only `Eq`/`Neq`/`Contains`/`Exists` | Client-side arithmetic before dispatch |
+| Enrichment adds latency | Lookup call happens before rule evaluation | Use `timeout_seconds` and `fail_open` to bound impact |
 
-Future enhancements that would close these gaps:
-- Numeric branch operators (`Gt`, `Lt`, `Gte`, `Lte`) for chains
+Future enhancements:
 - Optional WASM network grants for trusted plugins
-- Built-in "pre-flight query" step type that evaluates a provider response before proceeding
+- Additional `ResourceLookup` implementations for GCP, Azure
 
 See the [AWS Cost Optimizer example](../../examples/aws-cost-optimizer/) for a runnable demo of static guardrails with the `capacity_verified` attestation pattern.
 

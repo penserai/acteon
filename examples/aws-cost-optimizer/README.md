@@ -64,7 +64,7 @@ The example includes **safety rules** (`rules/safety.yaml`) that block destructi
 
 ### The `capacity_verified` attestation pattern
 
-Acteon rules can't query AWS in real time, so the pattern is:
+Acteon rules can't query AWS in real time (without enrichment), so the simplest pattern is:
 
 1. **Client** calls `describe_auto_scaling_groups` to check current capacity
 2. **Client** verifies `desired_capacity > min_size + N` (enough headroom)
@@ -72,6 +72,10 @@ Acteon rules can't query AWS in real time, so the pattern is:
 4. **Acteon** rules allow the destructive operation because the attestation is present
 
 This keeps the safety check at the caller while Acteon enforces that the check was performed. The `available_capacity` field is recorded in the audit trail for post-incident review.
+
+### Pre-dispatch enrichment (alternative)
+
+For automated pipelines where client-side orchestration is impractical, you can configure **pre-dispatch enrichment** to have the gateway fetch live ASG state before rule evaluation. See the commented `[[enrichments]]` section in `acteon.toml` and the [AWS Providers documentation](../../docs/book/features/aws-providers.md) for details.
 
 ### Testing the guardrails
 

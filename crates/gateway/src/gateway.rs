@@ -192,6 +192,10 @@ pub struct Gateway {
     pub(crate) compliance_config: Option<acteon_core::ComplianceConfig>,
     /// Typed reference to the hash chain audit store for chain verification.
     pub(crate) hash_chain_store: Option<Arc<acteon_audit::HashChainAuditStore>>,
+    /// Pre-dispatch enrichment configurations.
+    pub(crate) enrichments: Vec<acteon_core::EnrichmentConfig>,
+    /// Resource lookup providers for enrichment (keyed by provider name).
+    pub(crate) resource_lookups: HashMap<String, Arc<dyn acteon_provider::ResourceLookup>>,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -368,6 +372,7 @@ impl Gateway {
         }
 
         // 2b. Quota check (skip in dry-run mode).
+        let mut action = action;
         if !dry_run && let Some(outcome) = self.check_quota(&action).await? {
             let dummy_verdict = RuleVerdict::Allow(None);
             if let Some(ref audit) = self.audit {
@@ -401,6 +406,16 @@ impl Gateway {
                 let _ = g.release().await;
             }
             return Ok(outcome);
+        }
+
+        // 2c. Apply pre-dispatch enrichments (skip in dry-run mode).
+        if !dry_run && !self.enrichments.is_empty() {
+            crate::enrichment::apply_enrichments(
+                &mut action,
+                &self.enrichments,
+                &self.resource_lookups,
+            )
+            .await?;
         }
 
         // 3. Build the evaluation context and evaluate rules.
@@ -7706,6 +7721,53 @@ mod tests {
                 Gateway::resolve_next_step(&config, 0, &result_500, &map),
                 Some(3),
                 "code 500 should fall through to default_next error_handler"
+            );
+        }
+
+        #[test]
+        fn branch_with_gt_operator_routes_to_correct_step() {
+            let config = ChainConfig::new("gt-branch")
+                .with_step(
+                    ChainStepConfig::new("check_capacity", "p", "t", serde_json::json!({}))
+                        .with_branch(BranchCondition::new(
+                            "body.desired_capacity",
+                            BranchOperator::Gt,
+                            Some(serde_json::json!(10)),
+                            "abort",
+                        ))
+                        .with_default_next("proceed"),
+                )
+                .with_step(ChainStepConfig::new(
+                    "proceed",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ))
+                .with_step(ChainStepConfig::new(
+                    "abort",
+                    "p",
+                    "t",
+                    serde_json::json!({}),
+                ));
+
+            let map = index_map(&config);
+
+            // desired_capacity = 15 > 10 → branch to "abort" (index 2)
+            let result_high =
+                make_step_result(true, Some(serde_json::json!({"desired_capacity": 15})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_high, &map),
+                Some(2),
+                "desired_capacity 15 > 10 should route to abort"
+            );
+
+            // desired_capacity = 5 <= 10 → no match, default_next "proceed" (index 1)
+            let result_low =
+                make_step_result(true, Some(serde_json::json!({"desired_capacity": 5})));
+            assert_eq!(
+                Gateway::resolve_next_step(&config, 0, &result_low, &map),
+                Some(1),
+                "desired_capacity 5 <= 10 should fall through to proceed"
             );
         }
     }

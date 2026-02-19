@@ -514,6 +514,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "neq" => BranchOperator::Neq,
                     "contains" => BranchOperator::Contains,
                     "exists" => BranchOperator::Exists,
+                    "gt" => BranchOperator::Gt,
+                    "lt" => BranchOperator::Lt,
+                    "gte" => BranchOperator::Gte,
+                    "lte" => BranchOperator::Lte,
                     _ => BranchOperator::Eq,
                 };
                 step = step.with_branch(BranchCondition::new(
@@ -851,7 +855,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref ext_id) = provider_cfg.aws_external_id {
                     ec2_config = ec2_config.with_external_id(ext_id);
                 }
-                std::sync::Arc::new(acteon_aws::Ec2Provider::new(ec2_config).await)
+                let ec2 = std::sync::Arc::new(acteon_aws::Ec2Provider::new(ec2_config).await);
+                builder = builder.resource_lookup(
+                    provider_cfg.name.clone(),
+                    std::sync::Arc::clone(&ec2)
+                        as std::sync::Arc<dyn acteon_provider::ResourceLookup>,
+                );
+                ec2
             }
             "aws-autoscaling" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
@@ -868,7 +878,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref ext_id) = provider_cfg.aws_external_id {
                     asg_config = asg_config.with_external_id(ext_id);
                 }
-                std::sync::Arc::new(acteon_aws::AutoScalingProvider::new(asg_config).await)
+                let asg =
+                    std::sync::Arc::new(acteon_aws::AutoScalingProvider::new(asg_config).await);
+                builder = builder.resource_lookup(
+                    provider_cfg.name.clone(),
+                    std::sync::Arc::clone(&asg)
+                        as std::sync::Arc<dyn acteon_provider::ResourceLookup>,
+                );
+                asg
             }
             other => {
                 return Err(format!(
@@ -886,6 +903,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!(
             count = config.providers.len(),
             "providers registered from config"
+        );
+    }
+
+    // Wire enrichment configs.
+    for enrichment_toml in &config.enrichments {
+        let enrichment_config = acteon_core::EnrichmentConfig {
+            name: enrichment_toml.name.clone(),
+            namespace: enrichment_toml.namespace.clone(),
+            tenant: enrichment_toml.tenant.clone(),
+            action_type: enrichment_toml.action_type.clone(),
+            provider: enrichment_toml.provider.clone(),
+            lookup_provider: enrichment_toml.lookup_provider.clone(),
+            resource_type: enrichment_toml.resource_type.clone(),
+            params: enrichment_toml.params.clone(),
+            merge_key: enrichment_toml.merge_key.clone(),
+            timeout_seconds: enrichment_toml.timeout_seconds,
+            failure_policy: enrichment_toml.failure_policy,
+        };
+        builder = builder.enrichment(enrichment_config);
+    }
+    if !config.enrichments.is_empty() {
+        info!(
+            count = config.enrichments.len(),
+            "pre-dispatch enrichments configured"
         );
     }
 

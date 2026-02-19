@@ -1,6 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
 use acteon_provider::ProviderError;
+use acteon_provider::ResourceLookup;
 use acteon_provider::provider::Provider;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
 
@@ -324,6 +326,80 @@ impl AutoScalingProvider {
             "auto_scaling_group_name": payload.auto_scaling_group_name,
             "status": "updated",
         })))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resource lookup
+// ---------------------------------------------------------------------------
+
+/// Payload for `ResourceLookup` `auto_scaling_group` lookups.
+#[derive(Debug, Deserialize)]
+struct AsgLookupParams {
+    /// Auto Scaling Group names to look up.
+    #[serde(default)]
+    auto_scaling_group_names: Vec<String>,
+}
+
+#[async_trait]
+impl ResourceLookup for AutoScalingProvider {
+    async fn lookup(
+        &self,
+        resource_type: &str,
+        params: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError> {
+        match resource_type {
+            "auto_scaling_group" => {
+                let lookup_params: AsgLookupParams = serde_json::from_value(params.clone())
+                    .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+                debug!(
+                    group_names = ?lookup_params.auto_scaling_group_names,
+                    "resource lookup: describing Auto Scaling Groups"
+                );
+
+                let mut request = self.client.describe_auto_scaling_groups();
+                if !lookup_params.auto_scaling_group_names.is_empty() {
+                    request = request.set_auto_scaling_group_names(Some(
+                        lookup_params.auto_scaling_group_names.clone(),
+                    ));
+                }
+
+                let result = request.send().await.map_err(|e| {
+                    let err_str = e.to_string();
+                    error!(error = %err_str, "resource lookup: describe_auto_scaling_groups failed");
+                    let aws_err: ProviderError = classify_sdk_error(&err_str).into();
+                    aws_err
+                })?;
+
+                let groups: Vec<_> = result
+                    .auto_scaling_groups()
+                    .iter()
+                    .map(|g| {
+                        serde_json::json!({
+                            "auto_scaling_group_name": g.auto_scaling_group_name(),
+                            "min_size": g.min_size(),
+                            "max_size": g.max_size(),
+                            "desired_capacity": g.desired_capacity(),
+                            "instance_count": g.instances().len(),
+                            "health_check_type": g.health_check_type().unwrap_or_default(),
+                        })
+                    })
+                    .collect();
+
+                Ok(serde_json::json!({
+                    "auto_scaling_groups": groups,
+                }))
+            }
+            other => Err(ProviderError::Configuration(format!(
+                "unsupported resource type '{other}' for Auto Scaling provider \
+                 (supported: 'auto_scaling_group')"
+            ))),
+        }
+    }
+
+    fn supported_resource_types(&self) -> Vec<String> {
+        vec!["auto_scaling_group".to_owned()]
     }
 }
 
