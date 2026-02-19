@@ -408,8 +408,10 @@ impl Gateway {
             return Ok(outcome);
         }
 
-        // 2c. Apply pre-dispatch enrichments (skip in dry-run mode).
-        if !dry_run && !self.enrichments.is_empty() {
+        // 2c. Apply pre-dispatch enrichments.
+        // Lookups are read-only, so we run them even in dry-run mode to ensure
+        // rule evaluation produces the same verdict as an actual dispatch.
+        if !self.enrichments.is_empty() {
             crate::enrichment::apply_enrichments(
                 &mut action,
                 &self.enrichments,
