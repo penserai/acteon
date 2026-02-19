@@ -172,6 +172,8 @@ nav:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
     - AWS Event-Driven Pipeline: guides/aws-event-pipeline.md
+    - Incident Response Pipeline: guides/incident-response-pipeline.md
+    - E-Commerce Order Pipeline: guides/ecommerce-order-pipeline.md
   - Reference:
     - reference/index.md
     - Type Reference: reference/types.md
