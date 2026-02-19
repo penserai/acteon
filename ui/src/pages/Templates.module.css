@@ -185,3 +185,90 @@
   @apply font-semibold;
   color: var(--text-primary);
 }
+
+/* ---- Playground Tab ---- */
+
+.playgroundContainer {
+  @apply max-w-6xl;
+}
+
+.playgroundLayout {
+  @apply grid grid-cols-1 lg:grid-cols-2 gap-6;
+}
+
+.playgroundCard {
+  @apply border rounded-lg p-6 space-y-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.playgroundCardTitle {
+  @apply text-base font-semibold;
+  color: var(--text-default);
+}
+
+.selectInput {
+  @apply w-full rounded-md border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.playgroundTextarea {
+  @apply w-full rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
+  min-height: 12rem;
+  resize: vertical;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-default);
+}
+
+.validationError {
+  @apply text-xs mt-1;
+  color: var(--text-error, #ef4444);
+}
+
+.playgroundSubmit {
+  @apply pt-2;
+}
+
+.playgroundError {
+  @apply rounded-lg border p-3 text-sm flex items-center gap-2;
+  background: rgb(245 158 11 / 0.1);
+  border-color: rgb(245 158 11 / 0.3);
+  color: rgb(180 83 9);
+}
+
+.playgroundEmpty {
+  @apply text-sm text-center py-8;
+  color: var(--text-muted);
+}
+
+.renderedFields {
+  @apply space-y-4;
+}
+
+.renderedField {
+  @apply border rounded-lg overflow-hidden;
+  border-color: var(--border-default);
+}
+
+.renderedFieldHeader {
+  @apply px-3 py-2;
+  background: var(--bg-surface-secondary);
+}
+
+.renderedFieldName {
+  @apply font-mono text-xs font-medium;
+  color: var(--text-secondary);
+}
+
+.renderedFieldValue {
+  @apply px-3 py-3 font-mono text-xs overflow-auto;
+  max-height: 20rem;
+  background: var(--bg-surface);
+  color: var(--text-default);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}

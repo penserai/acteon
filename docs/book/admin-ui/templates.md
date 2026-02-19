@@ -1,6 +1,6 @@
 # Templates
 
-The Templates page lets you manage payload templates and profiles through the admin UI. It provides a two-tab layout: **Templates** for managing reusable content blocks, and **Profiles** for composing field mappings that wire templates into action payloads. For background on the template system, see [Payload Templates](../features/payload-templates.md).
+The Templates page lets you manage payload templates and profiles through the admin UI. It provides a three-tab layout: **Templates** for managing reusable content blocks, **Profiles** for composing field mappings that wire templates into action payloads, and **Playground** for testing how profiles render against sample data. For background on the template system, see [Payload Templates](../features/payload-templates.md).
 
 ![Templates list view](../../screenshots/templates-list.png)
 
@@ -100,6 +100,29 @@ The drawer shows the profile metadata and a **Fields** section listing each fiel
 
 Editing and deleting profiles works the same as templates. Open the detail drawer and use the **Edit** or **Delete** buttons. Profile deletion does not have referential integrity constraints -- you can delete a profile even if actions reference it by name (though those actions will fail at dispatch time if the profile is missing).
 
+## Playground Tab
+
+The Playground tab lets you test how a template profile renders against sample data without dispatching any actions. This is useful for validating templates during development, debugging render errors, and previewing output before going live.
+
+![Template Playground](../../screenshots/templates-playground.png)
+
+### Using the Playground
+
+1. Set the **Namespace** and **Tenant** to scope which profiles are available
+2. Select a **Profile** from the dropdown (profiles matching the current namespace/tenant are listed automatically) or type a profile name directly
+3. Enter **Payload** variables as a JSON object -- these are the variables your templates reference (e.g., `{{ name }}`, `{{ severity }}`)
+4. Click **Render Preview** to send the payload to the server for rendering
+
+The right panel displays each rendered field in a labeled section. For example, an email alert profile might render three fields: `subject` (from an inline template), `body` (from a `$ref` template), and `footer` (from another inline template).
+
+If rendering fails -- for example, due to a missing variable or syntax error in a template -- the error message appears in the output panel with details about what went wrong.
+
+### Tips for the Playground
+
+- **Start with simple payloads.** Begin with the minimum required variables and add more as needed. Missing variables render as empty strings by default.
+- **Test edge cases.** Try payloads with empty strings, missing optional fields, or unusual characters to see how your templates handle them.
+- **Iterate quickly.** The playground calls the same render engine used at dispatch time, so what you see here is exactly what the provider will receive.
+
 ## Understanding Inline vs $ref Fields
 
 The distinction between inline and `$ref` fields is the key concept in the template system:
@@ -116,6 +139,6 @@ When you update a stored template, every profile that references it via `$ref` p
 
 - **Start with templates, then build profiles.** Create your reusable content blocks as templates first, then wire them into profiles. This avoids `$ref` validation errors during profile creation.
 - **Use labels for organization.** Attach labels like `team=platform`, `env=production`, or `type=email` to templates for easier filtering and auditing.
-- **Preview before deploying.** Use the [render preview API](../features/payload-templates.md#preview-rendering) to test how a profile renders against sample data before dispatching real actions.
+- **Preview before deploying.** Use the [Playground tab](#playground-tab) to test how a profile renders against sample data before dispatching real actions. You can also use the [render preview API](../features/payload-templates.md#preview-rendering) programmatically.
 - **Name templates descriptively.** Names like `alert-body` or `order-confirmation-html` make it clear what the template produces and where it is used.
 - **Keep inline values short.** If an inline field grows beyond a single line, consider extracting it into a stored template with a `$ref`. This improves readability and enables reuse.

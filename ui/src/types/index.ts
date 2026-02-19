@@ -797,15 +797,14 @@ export interface CreateProfileResponse {
 }
 
 export interface RenderPreviewRequest {
-  template_id?: string
-  template_name?: string
+  profile: string
   namespace: string
   tenant: string
-  context: Record<string, unknown>
+  payload: Record<string, unknown>
 }
 
 export interface RenderPreviewResponse {
-  rendered: string
+  rendered: Record<string, string>
 }
 
 export interface TemplateQueryParams {
