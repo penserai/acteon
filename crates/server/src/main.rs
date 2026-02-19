@@ -992,6 +992,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Load templates from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::Template)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(tpl) = serde_json::from_str::<acteon_core::Template>(&value) {
+                    gateway.set_template(tpl);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded templates from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load templates from state store");
+        }
+    }
+
+    // Load template profiles from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::TemplateProfile)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(profile) = serde_json::from_str::<acteon_core::TemplateProfile>(&value) {
+                    gateway.set_template_profile(profile);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded template profiles from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load template profiles from state store");
+        }
+    }
+
     // Pre-warm the embedding topic cache with topics from loaded rules.
     if let Some(ref bridge) = embedding_bridge {
         let topics: Vec<&str> = gateway

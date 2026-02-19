@@ -17,6 +17,7 @@ pub mod recurring;
 pub mod retention;
 pub mod state_machine;
 pub mod stream;
+pub mod template;
 pub mod types;
 
 pub use action::{Action, ActionMetadata};
@@ -51,5 +52,9 @@ pub use state_machine::{StateMachineConfig, TimeoutConfig, TransitionConfig, Tra
 pub use stream::{
     StreamEvent, StreamEventType, outcome_category, reconstruct_outcome, sanitize_outcome,
     timestamp_from_event_id,
+};
+pub use template::{
+    Template, TemplateProfile, TemplateProfileField, validate_template_content,
+    validate_template_name,
 };
 pub use types::{ActionId, Namespace, ProviderId, TenantId};

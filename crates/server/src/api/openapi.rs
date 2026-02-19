@@ -3,7 +3,7 @@
 use acteon_audit::{AuditPage, AuditQuery, AuditRecord};
 use acteon_core::{
     Action, ActionError, ActionMetadata, ActionOutcome, OverageBehavior, ProviderResponse,
-    QuotaUsage, QuotaWindow, ResponseStatus,
+    QuotaUsage, QuotaWindow, ResponseStatus, TemplateProfileField,
 };
 
 use super::approvals::{
@@ -63,7 +63,8 @@ use acteon_core::{
         (name = "Quotas", description = "Tenant quota policy management"),
         (name = "Retention", description = "Per-tenant data retention policy management"),
         (name = "Provider Health", description = "Per-provider health and performance monitoring"),
-        (name = "Plugins", description = "WASM plugin management")
+        (name = "Plugins", description = "WASM plugin management"),
+        (name = "Templates", description = "Payload template and profile management")
     ),
     paths(
         super::health::health,
@@ -119,6 +120,17 @@ use acteon_core::{
         super::prometheus::prometheus_metrics,
         super::plugins::list_plugins,
         super::plugins::unregister_plugin,
+        super::templates::create_template,
+        super::templates::list_templates,
+        super::templates::get_template,
+        super::templates::update_template,
+        super::templates::delete_template,
+        super::templates::create_profile,
+        super::templates::list_profiles,
+        super::templates::get_profile,
+        super::templates::update_profile,
+        super::templates::delete_profile,
+        super::templates::render_preview,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -147,6 +159,12 @@ use acteon_core::{
         ListRetentionResponse,
         ProviderHealthStatus, ListProviderHealthResponse,
         super::plugins::PluginSummary, super::plugins::ListPluginsResponse,
+        super::templates::CreateTemplateRequest, super::templates::UpdateTemplateRequest,
+        super::templates::TemplateResponse, super::templates::ListTemplatesResponse,
+        super::templates::CreateProfileRequest, super::templates::UpdateProfileRequest,
+        super::templates::ProfileResponse, super::templates::ListProfilesResponse,
+        super::templates::RenderPreviewRequest, super::templates::RenderPreviewResponse,
+        TemplateProfileField,
     ))
 )]
 pub struct ApiDoc;

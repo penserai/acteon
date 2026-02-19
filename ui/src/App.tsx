@@ -22,6 +22,7 @@ import { Quotas } from './pages/Quotas'
 import { RetentionPolicies } from './pages/RetentionPolicies'
 import { RulePlayground } from './pages/RulePlayground'
 import { WasmPlugins } from './pages/WasmPlugins'
+import { Templates } from './pages/Templates'
 import { ComplianceStatus } from './pages/ComplianceStatus'
 import { Settings } from './pages/Settings'
 
@@ -51,6 +52,7 @@ function App() {
           <Route path="quotas" element={<Quotas />} />
           <Route path="retention" element={<RetentionPolicies />} />
           <Route path="wasm-plugins" element={<WasmPlugins />} />
+          <Route path="templates" element={<Templates />} />
           <Route path="compliance" element={<ComplianceStatus />} />
           <Route path="settings/*" element={<Settings />} />
         </Route>

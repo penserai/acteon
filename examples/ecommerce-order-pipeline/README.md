@@ -1,6 +1,6 @@
 # E-Commerce Order Processing Pipeline
 
-An end-to-end example exercising 14 Acteon features through an e-commerce order processing scenario. Orders flow from a storefront through Acteon, which enforces fraud screening, business-hours routing, rate limiting, and deduplication, then routes approved orders through a multi-step processing chain with lifecycle tracking and real-time streaming.
+An end-to-end example exercising 15 Acteon features through an e-commerce order processing scenario. Orders flow from a storefront through Acteon, which enforces fraud screening, business-hours routing, rate limiting, and deduplication, then routes approved orders through a multi-step processing chain with lifecycle tracking and real-time streaming.
 
 ## Features Exercised
 
@@ -20,6 +20,7 @@ An end-to-end example exercising 14 Acteon features through an e-commerce order 
 | 12 | **Quotas** | 200 orders/hour per merchant via `POST /v1/quotas` |
 | 13 | **Data retention** | Audit 14 days, events 3 days via `POST /v1/retention` |
 | 14 | **Audit + redaction** | Full audit trail with `card_last4`, `billing_zip` redacted |
+| 15 | **Payload templates** | Order confirmation + fraud alert emails rendered from MiniJinja templates |
 
 ## Prerequisites
 
@@ -69,7 +70,7 @@ ecommerce-order-pipeline/
 │   ├── processing.yaml      # Schedule after-hours, dedup, throttle
 │   └── safety.yaml          # Catch-all suppress
 ├── scripts/
-│   ├── setup.sh             # Create quotas + retention via API
+│   ├── setup.sh             # Create quotas, retention, templates + profiles via API
 │   ├── send-orders.sh       # Fire 15 sample orders exercising all features
 │   ├── manage-order.sh      # Transition orders through lifecycle via API
 │   ├── stream-orders.sh     # SSE streaming demo (real-time order events)
@@ -167,3 +168,4 @@ All order payloads containing `card_last4`, `billing_zip`, or `card_number` fiel
 - **Quota window** uses `"hourly"` string format. Other options: `"daily"`, `"weekly"`, `"monthly"`.
 - **State machine** transitions are driven by API calls (`PUT /v1/events/{fingerprint}/transition`), not by rules. The `manage-order.sh` script demonstrates the full lifecycle.
 - **First-match-wins**: Acteon evaluates rules by priority and stops at the first match. In this example, dedup (priority 15) catches all standard orders before throttle (priority 20). To see throttle fire, send >10 orders within 60 seconds after restarting the server (to clear dedup state).
+- **Payload templates** render order confirmations and fraud alerts from MiniJinja templates. Standard orders dispatch with `template: "order-confirmation"`, composing inline subjects with HTML body templates via `$ref`. Templates are created in `setup.sh` and cleaned up in `teardown.sh`.

@@ -197,6 +197,9 @@ regex = "1"
 # JSON patching
 json-patch = "3"
 
+# Templating
+minijinja = { version = "2", features = ["fuel", "loader"] }
+
 # HTTP server
 axum = "0.8"
 tower = "0.5"

@@ -23,6 +23,7 @@ pub mod rules;
 pub mod schemas;
 pub mod stream;
 pub mod subscribe;
+pub mod templates;
 pub mod trace_context;
 
 use std::sync::Arc;
@@ -190,6 +191,28 @@ pub fn router(state: AppState) -> Router {
         // WASM plugins
         .route("/v1/plugins", get(plugins::list_plugins))
         .route("/v1/plugins/{name}", delete(plugins::unregister_plugin))
+        // Templates (non-parameterized routes BEFORE parameterized)
+        .route(
+            "/v1/templates/profiles",
+            get(templates::list_profiles).post(templates::create_profile),
+        )
+        .route(
+            "/v1/templates/profiles/{id}",
+            get(templates::get_profile)
+                .put(templates::update_profile)
+                .delete(templates::delete_profile),
+        )
+        .route("/v1/templates/render", post(templates::render_preview))
+        .route(
+            "/v1/templates",
+            get(templates::list_templates).post(templates::create_template),
+        )
+        .route(
+            "/v1/templates/{id}",
+            get(templates::get_template)
+                .put(templates::update_template)
+                .delete(templates::delete_template),
+        )
         // Provider health dashboard
         .route(
             "/v1/providers/health",

@@ -184,6 +184,11 @@ pub struct Gateway {
     /// Data retention policies indexed by `"namespace:tenant"`.
     pub(crate) retention_policies:
         parking_lot::RwLock<HashMap<String, acteon_core::RetentionPolicy>>,
+    /// Payload templates indexed by `"namespace:tenant:name"`.
+    pub(crate) templates: parking_lot::RwLock<HashMap<String, acteon_core::Template>>,
+    /// Template profiles indexed by `"namespace:tenant:name"`.
+    pub(crate) template_profiles:
+        parking_lot::RwLock<HashMap<String, acteon_core::TemplateProfile>>,
     /// Per-provider execution metrics (latency, success/failure counters).
     pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
     /// Optional WASM plugin runtime for rule condition evaluation.
@@ -418,6 +423,31 @@ impl Gateway {
                 &self.resource_lookups,
             )
             .await?;
+        }
+
+        // 2d. Template rendering.
+        // If the action has a template profile, render it and merge into payload.
+        // This runs before rule evaluation so rules see the rendered payload.
+        if let Some(ref profile_name) = action.template {
+            let profile_key = format!("{}:{}:{profile_name}", action.namespace, action.tenant);
+            if let Some(profile) = self.template_profiles.read().get(&profile_key).cloned() {
+                let scoped_templates =
+                    self.templates_for_scope(action.namespace.as_ref(), action.tenant.as_ref());
+                let rendered = crate::template_engine::render_profile(
+                    &profile,
+                    &scoped_templates,
+                    &action.payload,
+                )?;
+                crate::template_engine::merge_rendered_into_payload(
+                    &mut action.payload,
+                    &rendered,
+                )?;
+                debug!(profile = profile_name, "template profile rendered");
+            } else {
+                return Err(GatewayError::TemplateRender(format!(
+                    "template profile not found: {profile_name}"
+                )));
+            }
         }
 
         // 3. Build the evaluation context and evaluate rules.
@@ -847,6 +877,68 @@ impl Gateway {
     ) -> Option<acteon_core::RetentionPolicy> {
         let key = format!("{namespace}:{tenant}");
         self.retention_policies.write().remove(&key)
+    }
+
+    /// Return a snapshot of the current in-memory templates.
+    pub fn templates(&self) -> HashMap<String, acteon_core::Template> {
+        self.templates.read().clone()
+    }
+
+    /// Add or replace a template. Keyed by `"namespace:tenant:name"`.
+    pub fn set_template(&self, template: acteon_core::Template) {
+        let key = format!(
+            "{}:{}:{}",
+            template.namespace, template.tenant, template.name
+        );
+        self.templates.write().insert(key, template);
+    }
+
+    /// Remove a template by its lookup key (`"namespace:tenant:name"`).
+    pub fn remove_template(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        name: &str,
+    ) -> Option<acteon_core::Template> {
+        let key = format!("{namespace}:{tenant}:{name}");
+        self.templates.write().remove(&key)
+    }
+
+    /// Return a snapshot of the current in-memory template profiles.
+    pub fn template_profiles(&self) -> HashMap<String, acteon_core::TemplateProfile> {
+        self.template_profiles.read().clone()
+    }
+
+    /// Add or replace a template profile. Keyed by `"namespace:tenant:name"`.
+    pub fn set_template_profile(&self, profile: acteon_core::TemplateProfile) {
+        let key = format!("{}:{}:{}", profile.namespace, profile.tenant, profile.name);
+        self.template_profiles.write().insert(key, profile);
+    }
+
+    /// Remove a template profile by its lookup key (`"namespace:tenant:name"`).
+    pub fn remove_template_profile(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        name: &str,
+    ) -> Option<acteon_core::TemplateProfile> {
+        let key = format!("{namespace}:{tenant}:{name}");
+        self.template_profiles.write().remove(&key)
+    }
+
+    /// Get scoped templates for a namespace + tenant pair.
+    fn templates_for_scope(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> HashMap<String, acteon_core::Template> {
+        let prefix = format!("{namespace}:{tenant}:");
+        self.templates
+            .read()
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(_, v)| (v.name.clone(), v.clone()))
+            .collect()
     }
 
     /// Compute the effective audit TTL for a given namespace and tenant.

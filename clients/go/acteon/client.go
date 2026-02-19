@@ -1287,6 +1287,310 @@ func (c *Client) DeleteRetention(ctx context.Context, retentionID string) error 
 }
 
 // =============================================================================
+// Payload Templates
+// =============================================================================
+
+// CreateTemplate creates a payload template.
+func (c *Client) CreateTemplate(ctx context.Context, req *CreateTemplateRequest) (*TemplateInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/templates", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result TemplateInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create template"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListTemplates lists payload templates with optional namespace and tenant filters.
+func (c *Client) ListTemplates(ctx context.Context, namespace, tenant *string) (*ListTemplatesResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+
+	path := "/v1/templates"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list templates"}
+	}
+
+	var result ListTemplatesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetTemplate gets a single template by ID.
+func (c *Client) GetTemplate(ctx context.Context, templateID string) (*TemplateInfo, error) {
+	path := fmt.Sprintf("/v1/templates/%s", templateID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get template"}
+	}
+
+	var result TemplateInfo
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateTemplate updates a payload template.
+func (c *Client) UpdateTemplate(ctx context.Context, templateID string, update *UpdateTemplateRequest) (*TemplateInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/templates/%s", templateID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result TemplateInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Template not found: %s", templateID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update template"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteTemplate deletes a payload template.
+func (c *Client) DeleteTemplate(ctx context.Context, templateID string) error {
+	path := fmt.Sprintf("/v1/templates/%s", templateID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Template not found: %s", templateID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete template"}
+}
+
+// CreateProfile creates a template profile.
+func (c *Client) CreateProfile(ctx context.Context, req *CreateProfileRequest) (*TemplateProfileInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/templates/profiles", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result TemplateProfileInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create profile"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListProfiles lists template profiles with optional namespace and tenant filters.
+func (c *Client) ListProfiles(ctx context.Context, namespace, tenant *string) (*ListProfilesResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+
+	path := "/v1/templates/profiles"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list profiles"}
+	}
+
+	var result ListProfilesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetProfile gets a single template profile by ID.
+func (c *Client) GetProfile(ctx context.Context, profileID string) (*TemplateProfileInfo, error) {
+	path := fmt.Sprintf("/v1/templates/profiles/%s", profileID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get profile"}
+	}
+
+	var result TemplateProfileInfo
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateProfile updates a template profile.
+func (c *Client) UpdateProfile(ctx context.Context, profileID string, update *UpdateProfileRequest) (*TemplateProfileInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/templates/profiles/%s", profileID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result TemplateProfileInfo
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Profile not found: %s", profileID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update profile"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteProfile deletes a template profile.
+func (c *Client) DeleteProfile(ctx context.Context, profileID string) error {
+	path := fmt.Sprintf("/v1/templates/profiles/%s", profileID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Profile not found: %s", profileID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete profile"}
+}
+
+// RenderPreview renders a template profile with payload data.
+func (c *Client) RenderPreview(ctx context.Context, req *RenderPreviewRequest) (*RenderPreviewResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/templates/render", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result RenderPreviewResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to render preview"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// =============================================================================
 // Provider Health
 // =============================================================================
 

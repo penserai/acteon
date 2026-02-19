@@ -59,6 +59,9 @@ pub struct ActeonConfig {
     /// Compliance mode configuration (`SOC2` / `HIPAA`).
     #[serde(default)]
     pub compliance: ComplianceServerConfig,
+    /// Payload template configuration.
+    #[serde(default)]
+    pub templates: TemplateServerConfig,
     /// Pre-dispatch enrichment configurations.
     ///
     /// Each entry describes a resource lookup to execute before rule evaluation,
@@ -892,6 +895,17 @@ impl Default for QuotaConfig {
 
 fn default_quotas_enabled() -> bool {
     true
+}
+
+/// Configuration for payload templates.
+#[derive(Debug, Default, Deserialize)]
+pub struct TemplateServerConfig {
+    /// Directory to scan for `.jinja` template files on startup.
+    #[serde(default)]
+    pub directory: Option<String>,
+    /// Directory to scan for profile YAML files on startup.
+    #[serde(default)]
+    pub profiles_directory: Option<String>,
 }
 
 /// Configuration for the WASM plugin runtime.
