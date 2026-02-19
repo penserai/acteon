@@ -518,6 +518,12 @@ pub struct BackgroundProcessingConfig {
     /// How often to run the data retention reaper (seconds).
     #[serde(default = "default_retention_check_interval")]
     pub retention_check_interval_seconds: u64,
+    /// Whether to periodically sync templates from the state store.
+    #[serde(default = "default_enable_template_sync")]
+    pub enable_template_sync: bool,
+    /// How often to sync templates from the state store (seconds).
+    #[serde(default = "default_template_sync_interval")]
+    pub template_sync_interval_seconds: u64,
     /// Namespace to scan for timeouts (required for timeout processing).
     #[serde(default)]
     pub namespace: String,
@@ -543,6 +549,8 @@ impl Default for BackgroundProcessingConfig {
             max_recurring_actions_per_tenant: default_max_recurring_actions_per_tenant(),
             enable_retention_reaper: false,
             retention_check_interval_seconds: default_retention_check_interval(),
+            enable_template_sync: default_enable_template_sync(),
+            template_sync_interval_seconds: default_template_sync_interval(),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -551,6 +559,14 @@ impl Default for BackgroundProcessingConfig {
 
 fn default_retention_check_interval() -> u64 {
     3600
+}
+
+fn default_enable_template_sync() -> bool {
+    true
+}
+
+fn default_template_sync_interval() -> u64 {
+    30
 }
 
 fn default_background_enabled() -> bool {
@@ -1651,6 +1667,10 @@ pub struct BackgroundSnapshot {
     pub enable_retention_reaper: bool,
     /// Retention reaper check interval in seconds.
     pub retention_check_interval_seconds: u64,
+    /// Whether template sync is enabled.
+    pub enable_template_sync: bool,
+    /// Template sync interval in seconds.
+    pub template_sync_interval_seconds: u64,
 }
 
 impl Default for BackgroundSnapshot {
@@ -1677,6 +1697,8 @@ impl From<&BackgroundProcessingConfig> for BackgroundSnapshot {
             max_recurring_actions_per_tenant: cfg.max_recurring_actions_per_tenant,
             enable_retention_reaper: cfg.enable_retention_reaper,
             retention_check_interval_seconds: cfg.retention_check_interval_seconds,
+            enable_template_sync: cfg.enable_template_sync,
+            template_sync_interval_seconds: cfg.template_sync_interval_seconds,
         }
     }
 }

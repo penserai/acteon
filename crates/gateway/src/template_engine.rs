@@ -5,6 +5,7 @@
 //! `$ref` references to stored [`Template`] objects.
 
 use std::collections::HashMap;
+use std::io::Write;
 
 use acteon_core::template::{Template, TemplateProfile, TemplateProfileField};
 
@@ -15,6 +16,44 @@ const MAX_RENDERED_BYTES: usize = 1_024 * 1_024;
 
 /// Fuel limit for `MiniJinja` template evaluation (denial-of-service protection).
 const FUEL_LIMIT: u64 = 100_000;
+
+/// A writer that aborts once a byte-count limit is exceeded.
+struct SizeLimitedWriter {
+    buf: Vec<u8>,
+    limit: usize,
+}
+
+impl SizeLimitedWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            buf: Vec::new(),
+            limit,
+        }
+    }
+
+    fn into_string(self) -> Result<String, GatewayError> {
+        String::from_utf8(self.buf).map_err(|e| {
+            GatewayError::TemplateRender(format!("rendered output is not valid UTF-8: {e}"))
+        })
+    }
+}
+
+impl Write for SizeLimitedWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + data.len() > self.limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "rendered output exceeds size limit",
+            ));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 /// Result of rendering a template profile.
 #[derive(Debug)]
@@ -30,8 +69,11 @@ pub struct RenderResult {
 /// - `Ref { template_ref }` -- looks up the named template in `templates_map`
 ///   and renders its content
 ///
-/// The `payload` is flattened into template variables so that
-/// `{{ field_name }}` accesses top-level payload keys.
+/// All templates in `templates_map` are registered in the `MiniJinja` environment
+/// so that `{% include %}` and `{% extends %}` directives work across templates.
+///
+/// Output is streamed through a [`SizeLimitedWriter`] that aborts mid-render
+/// when the per-field limit is exceeded, preventing unbounded memory growth.
 pub fn render_profile<S: ::std::hash::BuildHasher>(
     profile: &TemplateProfile,
     templates_map: &HashMap<String, Template, S>,
@@ -40,21 +82,23 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
     let mut env = minijinja::Environment::new();
     env.set_fuel(Some(FUEL_LIMIT));
 
-    // Register all stored templates referenced by this profile.
-    for (field_name, field) in &profile.fields {
-        if let TemplateProfileField::Ref { template_ref } = field {
-            let template = templates_map.get(template_ref).ok_or_else(|| {
-                GatewayError::TemplateRender(format!(
-                    "profile '{}' field '{field_name}' references unknown template '{template_ref}'",
-                    profile.name
-                ))
+    // Register ALL scoped templates so {% include %} and {% extends %} work.
+    for (name, template) in templates_map {
+        env.add_template_owned(name.clone(), template.content.clone())
+            .map_err(|e| {
+                GatewayError::TemplateRender(format!("syntax error in template '{name}': {e}"))
             })?;
-            env.add_template_owned(template_ref.clone(), template.content.clone())
-                .map_err(|e| {
-                    GatewayError::TemplateRender(format!(
-                        "syntax error in template '{template_ref}': {e}"
-                    ))
-                })?;
+    }
+
+    // Validate that all $ref fields reference templates that exist in scope.
+    for (field_name, field) in &profile.fields {
+        if let TemplateProfileField::Ref { template_ref } = field
+            && !templates_map.contains_key(template_ref.as_str())
+        {
+            return Err(GatewayError::TemplateRender(format!(
+                "profile '{}' field '{field_name}' references unknown template '{template_ref}'",
+                profile.name
+            )));
         }
     }
 
@@ -66,12 +110,29 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
     for (field_name, field) in &profile.fields {
         let rendered = match field {
             TemplateProfileField::Inline(literal) => {
-                env.render_str(literal, &ctx).map_err(|e| {
+                // Add the inline literal as a named template so we can use
+                // render_to_write for streaming size enforcement.
+                let inline_name = format!("__inline__{field_name}");
+                env.add_template_owned(inline_name.clone(), literal.clone())
+                    .map_err(|e| {
+                        GatewayError::TemplateRender(format!(
+                            "error compiling inline field '{field_name}' in profile '{}': {e}",
+                            profile.name
+                        ))
+                    })?;
+                let tmpl = env.get_template(&inline_name).map_err(|e| {
+                    GatewayError::TemplateRender(format!(
+                        "error loading inline field '{field_name}': {e}"
+                    ))
+                })?;
+                let mut writer = SizeLimitedWriter::new(MAX_RENDERED_BYTES);
+                tmpl.render_to_write(&ctx, &mut writer).map_err(|e| {
                     GatewayError::TemplateRender(format!(
                         "error rendering inline field '{field_name}' in profile '{}': {e}",
                         profile.name
                     ))
-                })?
+                })?;
+                writer.into_string()?
             }
             TemplateProfileField::Ref { template_ref } => {
                 let tmpl = env.get_template(template_ref).map_err(|e| {
@@ -79,20 +140,16 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
                         "failed to load template '{template_ref}': {e}"
                     ))
                 })?;
-                tmpl.render(&ctx).map_err(|e| {
+                let mut writer = SizeLimitedWriter::new(MAX_RENDERED_BYTES);
+                tmpl.render_to_write(&ctx, &mut writer).map_err(|e| {
                     GatewayError::TemplateRender(format!(
                         "error rendering template '{template_ref}' for field '{field_name}' in profile '{}': {e}",
                         profile.name
                     ))
-                })?
+                })?;
+                writer.into_string()?
             }
         };
-
-        if rendered.len() > MAX_RENDERED_BYTES {
-            return Err(GatewayError::TemplateRender(format!(
-                "rendered output for field '{field_name}' exceeds maximum size of {MAX_RENDERED_BYTES} bytes"
-            )));
-        }
 
         rendered_fields.insert(field_name.clone(), rendered);
     }
@@ -276,7 +333,11 @@ mod tests {
         let payload = serde_json::json!({});
 
         let err = render_profile(&profile, &HashMap::new(), &payload).unwrap_err();
-        assert!(err.to_string().contains("error rendering"));
+        assert!(
+            err.to_string().contains("error compiling")
+                || err.to_string().contains("error rendering"),
+            "expected compile/render error, got: {err}"
+        );
     }
 
     #[test]
@@ -369,5 +430,69 @@ mod tests {
 
         let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
         assert!(result.fields.is_empty());
+    }
+
+    #[test]
+    fn render_include_across_templates() {
+        // Template A includes template B via {% include %}.
+        let header = make_template("header", "<header>{{ title }}</header>");
+        let page = make_template("page", "{% include 'header' %}<main>{{ body }}</main>");
+
+        let mut templates = HashMap::new();
+        templates.insert("header".to_string(), header);
+        templates.insert("page".to_string(), page);
+
+        let mut fields = HashMap::new();
+        fields.insert(
+            "html".to_string(),
+            TemplateProfileField::Ref {
+                template_ref: "page".to_string(),
+            },
+        );
+        let profile = make_profile("include-test", fields);
+        let payload = serde_json::json!({"title": "Welcome", "body": "Hello world"});
+
+        let result = render_profile(&profile, &templates, &payload).unwrap();
+        let html = result.fields.get("html").unwrap();
+        assert!(html.contains("<header>Welcome</header>"));
+        assert!(html.contains("<main>Hello world</main>"));
+    }
+
+    #[test]
+    fn render_size_limit_aborts_during_render() {
+        // Use a loop that would generate output exceeding MAX_RENDERED_BYTES.
+        // We generate ~2 MB of output (2048 * 1024 = 2M chars).
+        let mut fields = HashMap::new();
+        fields.insert(
+            "big".to_string(),
+            TemplateProfileField::Inline(
+                "{% for i in range(2048) %}{{ padding }}{% endfor %}".to_string(),
+            ),
+        );
+        let profile = make_profile("big-output", fields);
+        // Each iteration outputs 1024 'x' chars → 2048 * 1024 = 2 MB > 1 MB limit.
+        let padding = "x".repeat(1024);
+        let payload = serde_json::json!({"padding": padding});
+
+        let err = render_profile(&profile, &HashMap::new(), &payload).unwrap_err();
+        assert!(
+            err.to_string().contains("size limit") || err.to_string().contains("error rendering"),
+            "expected size-limit error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn render_inline_via_named_template() {
+        // Verify inline templates go through the named-template + render_to_write path.
+        let mut fields = HashMap::new();
+        fields.insert(
+            "greeting".to_string(),
+            TemplateProfileField::Inline("Hi {{ name }}, welcome!".to_string()),
+        );
+        let profile = make_profile("inline-named", fields);
+        let payload = serde_json::json!({"name": "Dana"});
+
+        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        assert_eq!(result.fields.get("greeting").unwrap(), "Hi Dana, welcome!");
     }
 }

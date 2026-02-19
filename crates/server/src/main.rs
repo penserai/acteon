@@ -1125,6 +1125,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             retention_check_interval: Duration::from_secs(
                 config.background.retention_check_interval_seconds,
             ),
+            enable_template_sync: config.background.enable_template_sync,
+            template_sync_interval: Duration::from_secs(
+                config.background.template_sync_interval_seconds,
+            ),
             namespace: config.background.namespace.clone(),
             tenant: config.background.tenant.clone(),
         };
@@ -1163,6 +1167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(ref enc) = payload_encryptor {
             bg_builder = bg_builder.payload_encryptor(Arc::clone(enc));
+        }
+
+        if config.background.enable_template_sync {
+            bg_builder = bg_builder.gateway(Arc::clone(&gateway));
         }
 
         let (mut processor, shutdown_tx) = bg_builder

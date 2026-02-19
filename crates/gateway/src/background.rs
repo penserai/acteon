@@ -55,6 +55,10 @@ pub struct BackgroundConfig {
     pub enable_retention_reaper: bool,
     /// How often to run the data retention reaper (default: 3600 seconds).
     pub retention_check_interval: Duration,
+    /// Whether periodic template sync from state store is enabled (default: false).
+    pub enable_template_sync: bool,
+    /// How often to sync templates from the state store (default: 30 seconds).
+    pub template_sync_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -78,6 +82,8 @@ impl Default for BackgroundConfig {
             recurring_check_interval: Duration::from_secs(60),
             enable_retention_reaper: false,
             retention_check_interval: Duration::from_secs(3600),
+            enable_template_sync: false,
+            template_sync_interval: Duration::from_secs(30),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -197,6 +203,8 @@ pub struct BackgroundProcessor {
     metrics: Arc<GatewayMetrics>,
     /// In-memory copy of retention policies for the reaper.
     retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
+    /// Optional gateway reference for template sync.
+    gateway: Option<Arc<tokio::sync::RwLock<crate::gateway::Gateway>>>,
 }
 
 impl BackgroundProcessor {
@@ -224,6 +232,7 @@ impl BackgroundProcessor {
             recurring_action_tx: None,
             payload_encryptor: None,
             retention_policies: HashMap::new(),
+            gateway: None,
         }
     }
 
@@ -234,6 +243,16 @@ impl BackgroundProcessor {
         policies: HashMap<String, acteon_core::RetentionPolicy>,
     ) -> Self {
         self.retention_policies = policies;
+        self
+    }
+
+    /// Set the gateway reference for periodic template sync.
+    #[must_use]
+    pub fn with_gateway(
+        mut self,
+        gateway: Arc<tokio::sync::RwLock<crate::gateway::Gateway>>,
+    ) -> Self {
+        self.gateway = Some(gateway);
         self
     }
 
@@ -314,6 +333,7 @@ impl BackgroundProcessor {
         let mut scheduled_interval = interval(self.config.scheduled_check_interval);
         let mut recurring_interval = interval(self.config.recurring_check_interval);
         let mut retention_interval = interval(self.config.retention_check_interval);
+        let mut template_sync_interval = interval(self.config.template_sync_interval);
 
         loop {
             tokio::select! {
@@ -349,6 +369,22 @@ impl BackgroundProcessor {
                 _ = retention_interval.tick(), if self.config.enable_retention_reaper => {
                     if let Err(e) = self.run_retention_reaper().await {
                         error!(error = %e, "error running retention reaper");
+                    }
+                }
+                // TODO(template-sync): Replace with reactive invalidation
+                // (Redis pub/sub, PostgreSQL CDC, DynamoDB Streams).
+                // See `Gateway::sync_templates_from_store` for details.
+                _ = template_sync_interval.tick(), if self.config.enable_template_sync => {
+                    if let Some(ref gw) = self.gateway {
+                        let gw = gw.read().await;
+                        match gw.sync_templates_from_store().await {
+                            Ok(count) => {
+                                debug!(count, "template sync completed");
+                            }
+                            Err(e) => {
+                                error!(error = %e, "error syncing templates from store");
+                            }
+                        }
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -1249,6 +1285,7 @@ pub struct BackgroundProcessorBuilder {
     recurring_action_tx: Option<mpsc::Sender<RecurringActionDueEvent>>,
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
     metrics: Option<Arc<GatewayMetrics>>,
+    gateway: Option<Arc<tokio::sync::RwLock<crate::gateway::Gateway>>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -1268,6 +1305,7 @@ impl BackgroundProcessorBuilder {
             recurring_action_tx: None,
             payload_encryptor: None,
             metrics: None,
+            gateway: None,
         }
     }
 
@@ -1355,6 +1393,13 @@ impl BackgroundProcessorBuilder {
         self
     }
 
+    /// Set the gateway reference for periodic template sync.
+    #[must_use]
+    pub fn gateway(mut self, gateway: Arc<tokio::sync::RwLock<crate::gateway::Gateway>>) -> Self {
+        self.gateway = Some(gateway);
+        self
+    }
+
     /// Build the background processor.
     ///
     /// Returns the processor and a shutdown sender.
@@ -1402,6 +1447,10 @@ impl BackgroundProcessorBuilder {
             processor = processor.with_payload_encryptor(enc);
         }
 
+        if let Some(gw) = self.gateway {
+            processor = processor.with_gateway(gw);
+        }
+
         Ok((processor, shutdown_tx))
     }
 }
@@ -1440,6 +1489,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_template_sync: false,
+                template_sync_interval: Duration::from_secs(30),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -1558,6 +1609,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_template_sync: false,
+                template_sync_interval: Duration::from_secs(30),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1667,6 +1720,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_template_sync: false,
+                template_sync_interval: Duration::from_secs(30),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -1767,6 +1822,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_template_sync: false,
+                template_sync_interval: Duration::from_secs(30),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })

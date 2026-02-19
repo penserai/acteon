@@ -184,11 +184,13 @@ pub struct Gateway {
     /// Data retention policies indexed by `"namespace:tenant"`.
     pub(crate) retention_policies:
         parking_lot::RwLock<HashMap<String, acteon_core::RetentionPolicy>>,
-    /// Payload templates indexed by `"namespace:tenant:name"`.
-    pub(crate) templates: parking_lot::RwLock<HashMap<String, acteon_core::Template>>,
-    /// Template profiles indexed by `"namespace:tenant:name"`.
-    pub(crate) template_profiles:
-        parking_lot::RwLock<HashMap<String, acteon_core::TemplateProfile>>,
+    /// Payload templates indexed by `(namespace, tenant)` → `name` → `Template`.
+    pub(crate) templates:
+        parking_lot::RwLock<HashMap<(String, String), HashMap<String, acteon_core::Template>>>,
+    /// Template profiles indexed by `(namespace, tenant)` → `name` → `TemplateProfile`.
+    pub(crate) template_profiles: parking_lot::RwLock<
+        HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
+    >,
     /// Per-provider execution metrics (latency, success/failure counters).
     pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
     /// Optional WASM plugin runtime for rule condition evaluation.
@@ -429,25 +431,28 @@ impl Gateway {
         // If the action has a template profile, render it and merge into payload.
         // This runs before rule evaluation so rules see the rendered payload.
         if let Some(ref profile_name) = action.template {
-            let profile_key = format!("{}:{}:{profile_name}", action.namespace, action.tenant);
-            if let Some(profile) = self.template_profiles.read().get(&profile_key).cloned() {
-                let scoped_templates =
-                    self.templates_for_scope(action.namespace.as_ref(), action.tenant.as_ref());
-                let rendered = crate::template_engine::render_profile(
+            let profile = self
+                .template_profile_by_scope(&action.namespace, &action.tenant, profile_name)
+                .ok_or_else(|| {
+                    GatewayError::TemplateRender(format!(
+                        "template profile not found: {profile_name}"
+                    ))
+                })?;
+            let scoped_templates = self.templates_for_scope(&action.namespace, &action.tenant);
+            let payload_snapshot = action.payload.clone();
+
+            let rendered = tokio::task::spawn_blocking(move || {
+                crate::template_engine::render_profile(
                     &profile,
                     &scoped_templates,
-                    &action.payload,
-                )?;
-                crate::template_engine::merge_rendered_into_payload(
-                    &mut action.payload,
-                    &rendered,
-                )?;
-                debug!(profile = profile_name, "template profile rendered");
-            } else {
-                return Err(GatewayError::TemplateRender(format!(
-                    "template profile not found: {profile_name}"
-                )));
-            }
+                    &payload_snapshot,
+                )
+            })
+            .await
+            .map_err(|e| GatewayError::TemplateRender(format!("render task panicked: {e}")))??;
+
+            crate::template_engine::merge_rendered_into_payload(&mut action.payload, &rendered)?;
+            debug!(profile = profile_name, "template profile rendered");
         }
 
         // 3. Build the evaluation context and evaluate rules.
@@ -879,66 +884,215 @@ impl Gateway {
         self.retention_policies.write().remove(&key)
     }
 
-    /// Return a snapshot of the current in-memory templates.
+    /// Return a flat snapshot of the current in-memory templates.
+    ///
+    /// Keyed by `"namespace:tenant:name"` for backward compatibility with
+    /// CRUD handlers. **Not** used on the hot dispatch path.
     pub fn templates(&self) -> HashMap<String, acteon_core::Template> {
-        self.templates.read().clone()
+        self.templates
+            .read()
+            .iter()
+            .flat_map(|((ns, t), inner)| {
+                inner
+                    .iter()
+                    .map(move |(name, tpl)| (format!("{ns}:{t}:{name}"), tpl.clone()))
+            })
+            .collect()
     }
 
-    /// Add or replace a template. Keyed by `"namespace:tenant:name"`.
+    /// Add or replace a template in the nested map.
     pub fn set_template(&self, template: acteon_core::Template) {
-        let key = format!(
-            "{}:{}:{}",
-            template.namespace, template.tenant, template.name
-        );
-        self.templates.write().insert(key, template);
+        let scope = (template.namespace.clone(), template.tenant.clone());
+        self.templates
+            .write()
+            .entry(scope)
+            .or_default()
+            .insert(template.name.clone(), template);
     }
 
-    /// Remove a template by its lookup key (`"namespace:tenant:name"`).
+    /// Remove a template by scope and name.
     pub fn remove_template(
         &self,
         namespace: &str,
         tenant: &str,
         name: &str,
     ) -> Option<acteon_core::Template> {
-        let key = format!("{namespace}:{tenant}:{name}");
-        self.templates.write().remove(&key)
+        let scope = (namespace.to_owned(), tenant.to_owned());
+        let mut guard = self.templates.write();
+        let inner = guard.get_mut(&scope)?;
+        let removed = inner.remove(name);
+        if inner.is_empty() {
+            guard.remove(&scope);
+        }
+        removed
     }
 
-    /// Return a snapshot of the current in-memory template profiles.
+    /// Check whether a template exists in a given scope — O(1).
+    pub fn template_exists(&self, namespace: &str, tenant: &str, name: &str) -> bool {
+        let scope = (namespace.to_owned(), tenant.to_owned());
+        self.templates
+            .read()
+            .get(&scope)
+            .is_some_and(|inner| inner.contains_key(name))
+    }
+
+    /// Return a flat snapshot of the current in-memory template profiles.
+    ///
+    /// Keyed by `"namespace:tenant:name"` for backward compatibility with
+    /// CRUD handlers. **Not** used on the hot dispatch path.
     pub fn template_profiles(&self) -> HashMap<String, acteon_core::TemplateProfile> {
-        self.template_profiles.read().clone()
+        self.template_profiles
+            .read()
+            .iter()
+            .flat_map(|((ns, t), inner)| {
+                inner
+                    .iter()
+                    .map(move |(name, prof)| (format!("{ns}:{t}:{name}"), prof.clone()))
+            })
+            .collect()
     }
 
-    /// Add or replace a template profile. Keyed by `"namespace:tenant:name"`.
+    /// Return all template profiles for a `(namespace, tenant)` scope — O(1).
+    pub fn template_profiles_for_scope(
+        &self,
+        namespace: &str,
+        tenant: &str,
+    ) -> HashMap<String, acteon_core::TemplateProfile> {
+        let scope = (namespace.to_owned(), tenant.to_owned());
+        self.template_profiles
+            .read()
+            .get(&scope)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Look up a single template profile by scope and name — O(1).
+    pub fn template_profile_by_scope(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        name: &str,
+    ) -> Option<acteon_core::TemplateProfile> {
+        let scope = (namespace.to_owned(), tenant.to_owned());
+        self.template_profiles
+            .read()
+            .get(&scope)
+            .and_then(|inner| inner.get(name).cloned())
+    }
+
+    /// Add or replace a template profile in the nested map.
     pub fn set_template_profile(&self, profile: acteon_core::TemplateProfile) {
-        let key = format!("{}:{}:{}", profile.namespace, profile.tenant, profile.name);
-        self.template_profiles.write().insert(key, profile);
+        let scope = (profile.namespace.clone(), profile.tenant.clone());
+        self.template_profiles
+            .write()
+            .entry(scope)
+            .or_default()
+            .insert(profile.name.clone(), profile);
     }
 
-    /// Remove a template profile by its lookup key (`"namespace:tenant:name"`).
+    /// Remove a template profile by scope and name.
     pub fn remove_template_profile(
         &self,
         namespace: &str,
         tenant: &str,
         name: &str,
     ) -> Option<acteon_core::TemplateProfile> {
-        let key = format!("{namespace}:{tenant}:{name}");
-        self.template_profiles.write().remove(&key)
+        let scope = (namespace.to_owned(), tenant.to_owned());
+        let mut guard = self.template_profiles.write();
+        let inner = guard.get_mut(&scope)?;
+        let removed = inner.remove(name);
+        if inner.is_empty() {
+            guard.remove(&scope);
+        }
+        removed
     }
 
-    /// Get scoped templates for a namespace + tenant pair.
-    fn templates_for_scope(
+    /// Get scoped templates for a namespace + tenant pair — O(1).
+    pub fn templates_for_scope(
         &self,
         namespace: &str,
         tenant: &str,
     ) -> HashMap<String, acteon_core::Template> {
-        let prefix = format!("{namespace}:{tenant}:");
+        let scope = (namespace.to_owned(), tenant.to_owned());
         self.templates
             .read()
-            .iter()
-            .filter(|(k, _)| k.starts_with(&prefix))
-            .map(|(_, v)| (v.name.clone(), v.clone()))
-            .collect()
+            .get(&scope)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Reload all templates and profiles from the state store into memory.
+    ///
+    /// Used by the background sync task to keep multi-node deployments
+    /// consistent. Returns the total number of items synced.
+    ///
+    // TODO(template-sync): Replace this poll-based sync with a reactive,
+    // backend-specific invalidation mechanism for near-zero-latency
+    // propagation across nodes:
+    //
+    //   - **Redis**: Subscribe to a pub/sub channel; the API layer publishes
+    //     an invalidation message on template create/update/delete. Each node
+    //     listens and calls `sync_templates_from_store()` (or applies a
+    //     targeted delta) on receipt.
+    //
+    //   - **PostgreSQL**: Use Change Data Capture (CDC) via logical replication
+    //     or LISTEN/NOTIFY on the template tables. A background listener
+    //     converts WAL events into in-memory map updates.
+    //
+    //   - **DynamoDB**: Enable DynamoDB Streams on the template items table.
+    //     A background consumer reads stream shards and applies inserts,
+    //     modifications, and deletions to the in-memory maps.
+    //
+    // Until then, the current approach polls at `template_sync_interval`
+    // (default 30 s), giving eventual consistency with a bounded staleness
+    // window equal to the poll interval.
+    pub async fn sync_templates_from_store(&self) -> Result<usize, GatewayError> {
+        let mut new_templates: HashMap<(String, String), HashMap<String, acteon_core::Template>> =
+            HashMap::new();
+        let mut new_profiles: HashMap<
+            (String, String),
+            HashMap<String, acteon_core::TemplateProfile>,
+        > = HashMap::new();
+
+        let tpl_entries = self
+            .state
+            .scan_keys_by_kind(KeyKind::Template)
+            .await
+            .map_err(|e| GatewayError::Configuration(format!("template sync scan failed: {e}")))?;
+
+        let mut count = 0usize;
+        for (_key, value) in &tpl_entries {
+            if let Ok(tpl) = serde_json::from_str::<acteon_core::Template>(value) {
+                let scope = (tpl.namespace.clone(), tpl.tenant.clone());
+                new_templates
+                    .entry(scope)
+                    .or_default()
+                    .insert(tpl.name.clone(), tpl);
+                count += 1;
+            }
+        }
+
+        let prof_entries = self
+            .state
+            .scan_keys_by_kind(KeyKind::TemplateProfile)
+            .await
+            .map_err(|e| GatewayError::Configuration(format!("profile sync scan failed: {e}")))?;
+
+        for (_key, value) in &prof_entries {
+            if let Ok(prof) = serde_json::from_str::<acteon_core::TemplateProfile>(value) {
+                let scope = (prof.namespace.clone(), prof.tenant.clone());
+                new_profiles
+                    .entry(scope)
+                    .or_default()
+                    .insert(prof.name.clone(), prof);
+                count += 1;
+            }
+        }
+
+        *self.templates.write() = new_templates;
+        *self.template_profiles.write() = new_profiles;
+
+        Ok(count)
     }
 
     /// Compute the effective audit TTL for a given namespace and tenant.
@@ -8512,5 +8666,136 @@ mod tests {
         let gateway_snap = gw.metrics().snapshot();
         assert_eq!(gateway_snap.dispatched, 30);
         assert_eq!(gateway_snap.executed, 30);
+    }
+
+    #[test]
+    fn templates_for_scope_is_o1() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let tpl_a = acteon_core::Template {
+            id: "t1".into(),
+            name: "welcome".into(),
+            namespace: "ns1".into(),
+            tenant: "t1".into(),
+            content: "Hello {{ name }}".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+        let tpl_b = acteon_core::Template {
+            id: "t2".into(),
+            name: "farewell".into(),
+            namespace: "ns1".into(),
+            tenant: "t1".into(),
+            content: "Bye {{ name }}".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+        let tpl_other = acteon_core::Template {
+            id: "t3".into(),
+            name: "other".into(),
+            namespace: "ns2".into(),
+            tenant: "t2".into(),
+            content: "Other".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .template(tpl_a)
+            .template(tpl_b)
+            .template(tpl_other)
+            .build()
+            .unwrap();
+
+        let scope1 = gw.templates_for_scope("ns1", "t1");
+        assert_eq!(scope1.len(), 2);
+        assert!(scope1.contains_key("welcome"));
+        assert!(scope1.contains_key("farewell"));
+
+        let scope2 = gw.templates_for_scope("ns2", "t2");
+        assert_eq!(scope2.len(), 1);
+        assert!(scope2.contains_key("other"));
+
+        let empty = gw.templates_for_scope("ns3", "t3");
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn template_exists_check() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        let tpl = acteon_core::Template {
+            id: "t1".into(),
+            name: "welcome".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            content: "Hello".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .template(tpl)
+            .build()
+            .unwrap();
+
+        assert!(gw.template_exists("ns", "t", "welcome"));
+        assert!(!gw.template_exists("ns", "t", "nonexistent"));
+        assert!(!gw.template_exists("other", "t", "welcome"));
+    }
+
+    #[tokio::test]
+    async fn sync_templates_from_store_round_trip() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+
+        // Build a gateway with no templates.
+        let gw = GatewayBuilder::new()
+            .state(Arc::clone(&store))
+            .lock(lock)
+            .build()
+            .unwrap();
+
+        assert!(gw.templates_for_scope("ns", "t").is_empty());
+
+        // Write a template to the state store (simulating another node's API write).
+        let tpl = acteon_core::Template {
+            id: "t1".into(),
+            name: "synced".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            content: "{{ greeting }}".into(),
+            description: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            labels: HashMap::new(),
+        };
+        let key = acteon_state::StateKey::new(
+            "_system",
+            "_templates",
+            acteon_state::KeyKind::Template,
+            "t1",
+        );
+        let data = serde_json::to_string(&tpl).unwrap();
+        store.set(&key, &data, None).await.unwrap();
+
+        // Sync and verify.
+        let count = gw.sync_templates_from_store().await.unwrap();
+        assert_eq!(count, 1);
+        assert!(gw.template_exists("ns", "t", "synced"));
     }
 }

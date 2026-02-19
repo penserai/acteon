@@ -627,9 +627,8 @@ pub async fn delete_template(
 
     // Check if any profiles reference this template.
     let referencing: Vec<String> = gw
-        .template_profiles()
+        .template_profiles_for_scope(&tpl.namespace, &tpl.tenant)
         .values()
-        .filter(|p| p.namespace == tpl.namespace && p.tenant == tpl.tenant)
         .filter(|p| {
             p.fields.values().any(|f| {
                 matches!(f, TemplateProfileField::Ref { template_ref } if template_ref == &tpl.name)
@@ -693,14 +692,13 @@ pub async fn create_profile(
     // Validate that all $ref templates exist.
     let gw = state.gateway.read().await;
     for (field_name, field) in &req.fields {
-        if let TemplateProfileField::Ref { template_ref } = field {
-            let tpl_key = format!("{}:{}:{template_ref}", req.namespace, req.tenant);
-            if !gw.templates().contains_key(&tpl_key) {
-                return error_response(
-                    StatusCode::BAD_REQUEST,
-                    &format!("field '{field_name}' references unknown template '{template_ref}'"),
-                );
-            }
+        if let TemplateProfileField::Ref { template_ref } = field
+            && !gw.template_exists(&req.namespace, &req.tenant, template_ref)
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!("field '{field_name}' references unknown template '{template_ref}'"),
+            );
         }
     }
 
@@ -895,16 +893,13 @@ pub async fn update_profile(
     if let Some(ref fields) = req.fields {
         // Validate $ref templates exist.
         for (field_name, field) in fields {
-            if let TemplateProfileField::Ref { template_ref } = field {
-                let tpl_key = format!("{}:{}:{template_ref}", prof.namespace, prof.tenant);
-                if !gw.templates().contains_key(&tpl_key) {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        &format!(
-                            "field '{field_name}' references unknown template '{template_ref}'"
-                        ),
-                    );
-                }
+            if let TemplateProfileField::Ref { template_ref } = field
+                && !gw.template_exists(&prof.namespace, &prof.tenant, template_ref)
+            {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    &format!("field '{field_name}' references unknown template '{template_ref}'"),
+                );
             }
         }
         prof.fields.clone_from(fields);
@@ -1007,25 +1002,16 @@ pub async fn render_preview(
 ) -> impl IntoResponse {
     let gw = state.gateway.read().await;
 
-    let profile_key = format!("{}:{}:{}", req.namespace, req.tenant, req.profile);
-    let profile = match gw.template_profiles().get(&profile_key) {
-        Some(p) => p.clone(),
-        None => {
-            return error_response(
-                StatusCode::NOT_FOUND,
-                &format!("profile not found: {}", req.profile),
-            );
-        }
+    let Some(profile) = gw.template_profile_by_scope(&req.namespace, &req.tenant, &req.profile)
+    else {
+        return error_response(
+            StatusCode::NOT_FOUND,
+            &format!("profile not found: {}", req.profile),
+        );
     };
 
-    // Gather scoped templates.
-    let prefix = format!("{}:{}:", req.namespace, req.tenant);
-    let scoped_templates: HashMap<String, Template> = gw
-        .templates()
-        .iter()
-        .filter(|(k, _)| k.starts_with(&prefix))
-        .map(|(_, v)| (v.name.clone(), v.clone()))
-        .collect();
+    // Gather scoped templates — O(1) lookup.
+    let scoped_templates = gw.templates_for_scope(&req.namespace, &req.tenant);
 
     match acteon_gateway::template_engine::render_profile(&profile, &scoped_templates, &req.payload)
     {

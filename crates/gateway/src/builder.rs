@@ -63,8 +63,8 @@ pub struct GatewayBuilder {
     compliance_config: Option<acteon_core::ComplianceConfig>,
     enrichments: Vec<EnrichmentConfig>,
     resource_lookups: HashMap<String, Arc<dyn ResourceLookup>>,
-    templates: HashMap<String, acteon_core::Template>,
-    template_profiles: HashMap<String, acteon_core::TemplateProfile>,
+    templates: HashMap<(String, String), HashMap<String, acteon_core::Template>>,
+    template_profiles: HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
 }
 
 impl GatewayBuilder {
@@ -455,26 +455,29 @@ impl GatewayBuilder {
 
     /// Register a payload template.
     ///
-    /// Templates are keyed by `"namespace:tenant:name"`. Duplicate names for
-    /// the same scope replace the previous template.
+    /// Templates are stored in a nested map keyed by `(namespace, tenant)` → `name`.
+    /// Duplicate names for the same scope replace the previous template.
     #[must_use]
     pub fn template(mut self, template: acteon_core::Template) -> Self {
-        let key = format!(
-            "{}:{}:{}",
-            template.namespace, template.tenant, template.name
-        );
-        self.templates.insert(key, template);
+        let scope = (template.namespace.clone(), template.tenant.clone());
+        self.templates
+            .entry(scope)
+            .or_default()
+            .insert(template.name.clone(), template);
         self
     }
 
     /// Register a template profile.
     ///
-    /// Profiles are keyed by `"namespace:tenant:name"`. Duplicate names for
-    /// the same scope replace the previous profile.
+    /// Profiles are stored in a nested map keyed by `(namespace, tenant)` → `name`.
+    /// Duplicate names for the same scope replace the previous profile.
     #[must_use]
     pub fn template_profile(mut self, profile: acteon_core::TemplateProfile) -> Self {
-        let key = format!("{}:{}:{}", profile.namespace, profile.tenant, profile.name);
-        self.template_profiles.insert(key, profile);
+        let scope = (profile.namespace.clone(), profile.tenant.clone());
+        self.template_profiles
+            .entry(scope)
+            .or_default()
+            .insert(profile.name.clone(), profile);
         self
     }
 
