@@ -102,6 +102,7 @@ rules:
     priority: 100
     description: "Suppress unmatched actions from other tenants"
     condition:
-      any: true
+      field: action.tenant
+      ne: "cost-optimizer"
     action:
       type: suppress
