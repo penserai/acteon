@@ -91,7 +91,10 @@ version = "0.1.0"
 dependencies = [
  "acteon-core",
  "acteon-provider",
+ "async-trait",
  "aws-config",
+ "aws-sdk-autoscaling",
+ "aws-sdk-ec2",
  "aws-sdk-eventbridge",
  "aws-sdk-lambda",
  "aws-sdk-s3",
@@ -1021,6 +1024,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "aws-sdk-autoscaling"
+version = "1.107.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffcd0bb3d8c777e815202fceee7c4c339e2bfef9cdc1700a93abd81ad25df1eb"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.62.6",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
+ "fastrand",
+ "http 0.2.12",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
 name = "aws-sdk-dynamodb"
 version = "1.103.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1037,6 +1064,30 @@ dependencies = [
  "aws-smithy-types",
  "aws-types",
  "bytes",
+ "fastrand",
+ "http 0.2.12",
+ "regex-lite",
+ "tracing",
+]
+
+[[package]]
+name = "aws-sdk-ec2"
+version = "1.206.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "45900e23181a7783ee0a247ccf255070b07d112968d2dc0dfc6b1facd6871c11"
+dependencies = [
+ "aws-credential-types",
+ "aws-runtime",
+ "aws-smithy-async",
+ "aws-smithy-http 0.62.6",
+ "aws-smithy-json",
+ "aws-smithy-observability",
+ "aws-smithy-query",
+ "aws-smithy-runtime",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
+ "aws-smithy-xml",
+ "aws-types",
  "fastrand",
  "http 0.2.12",
  "regex-lite",

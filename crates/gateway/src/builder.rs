@@ -12,8 +12,10 @@ use acteon_rules::{Rule, RuleEngine};
 use acteon_state::{DistributedLock, StateStore};
 use tokio_util::task::TaskTracker;
 
+use acteon_core::EnrichmentConfig;
 use acteon_crypto::PayloadEncryptor;
 use acteon_llm::LlmEvaluator;
+use acteon_provider::ResourceLookup;
 
 use crate::circuit_breaker::{CircuitBreakerConfig, CircuitBreakerRegistry};
 use crate::error::GatewayError;
@@ -59,6 +61,8 @@ pub struct GatewayBuilder {
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
     wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
     compliance_config: Option<acteon_core::ComplianceConfig>,
+    enrichments: Vec<EnrichmentConfig>,
+    resource_lookups: HashMap<String, Arc<dyn ResourceLookup>>,
 }
 
 impl GatewayBuilder {
@@ -97,6 +101,8 @@ impl GatewayBuilder {
             payload_encryptor: None,
             wasm_runtime: None,
             compliance_config: None,
+            enrichments: Vec::new(),
+            resource_lookups: HashMap::new(),
         }
     }
 
@@ -419,6 +425,30 @@ impl GatewayBuilder {
         self
     }
 
+    /// Register a pre-dispatch enrichment configuration.
+    ///
+    /// Enrichments are applied in order before rule evaluation. Each enrichment
+    /// calls a [`ResourceLookup`] provider to fetch external state and merge it
+    /// into the action payload.
+    #[must_use]
+    pub fn enrichment(mut self, config: EnrichmentConfig) -> Self {
+        self.enrichments.push(config);
+        self
+    }
+
+    /// Register a resource lookup provider for pre-dispatch enrichment.
+    ///
+    /// The name should match the `lookup_provider` field in enrichment configs.
+    #[must_use]
+    pub fn resource_lookup(
+        mut self,
+        name: impl Into<String>,
+        lookup: Arc<dyn ResourceLookup>,
+    ) -> Self {
+        self.resource_lookups.insert(name.into(), lookup);
+        self
+    }
+
     /// Set all quota policies at once (replaces any previously added).
     #[must_use]
     pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
@@ -693,6 +723,8 @@ impl GatewayBuilder {
             wasm_runtime: self.wasm_runtime,
             compliance_config: self.compliance_config,
             hash_chain_store,
+            enrichments: self.enrichments,
+            resource_lookups: self.resource_lookups,
         })
     }
 }

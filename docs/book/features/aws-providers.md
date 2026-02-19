@@ -1,6 +1,6 @@
 # AWS Providers
 
-Acteon ships with native AWS provider integrations for **SNS**, **Lambda**, **EventBridge**, **SQS**, **S3**, and **SES** (via the email provider). All six are first-class citizens -- they implement the same `Provider` trait, participate in circuit breaking, health checks, and per-provider metrics, and require no external plugins.
+Acteon ships with native AWS provider integrations for **SNS**, **Lambda**, **EventBridge**, **SQS**, **S3**, **SES** (via the email provider), **EC2**, and **Auto Scaling**. All eight are first-class citizens -- they implement the same `Provider` trait, participate in circuit breaking, health checks, and per-provider metrics, and require no external plugins.
 
 ## Overview
 
@@ -12,6 +12,8 @@ Acteon ships with native AWS provider integrations for **SNS**, **Lambda**, **Ev
 | `aws-sqs` | Simple Queue Service | `send_message` | Queue messages for async processing |
 | `aws-s3` | Simple Storage Service | `put_object`, `get_object`, `delete_object` | Store and retrieve objects (logs, artifacts, archives) |
 | `ses` (email) | Simple Email Service | `send_email` | Send transactional emails via SES |
+| `aws-ec2` | EC2 | `start_instances`, `stop_instances`, `reboot_instances`, `terminate_instances`, `hibernate_instances`, `run_instances`, `attach_volume`, `detach_volume`, `describe_instances` | Instance lifecycle management, EBS volume operations |
+| `aws-autoscaling` | Auto Scaling | `describe_auto_scaling_groups`, `set_desired_capacity`, `update_auto_scaling_group` | Manage Auto Scaling Group capacity and settings |
 
 All AWS providers:
 
@@ -154,6 +156,59 @@ aws_region = "us-east-1"
 ```
 
 See the [Email provider documentation](native-providers.md) for full payload format details.
+
+### AWS EC2
+
+```toml
+[[providers]]
+name = "compute"
+type = "aws-ec2"
+aws_region = "us-east-1"
+# Optional defaults applied to run_instances when not overridden in the payload:
+# default_security_group_ids = ["sg-0123456789abcdef0"]
+# default_subnet_id = "subnet-0123456789abcdef0"
+# default_key_name = "my-keypair"
+# aws_endpoint_url = "http://localhost:4566"   # LocalStack
+# aws_role_arn = "arn:aws:iam::123:role/ec2"   # Cross-account
+# aws_session_name = "acteon-ec2"              # STS session name
+# aws_external_id = "ext-123"                  # Trust policy external ID
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique provider name used in action dispatch |
+| `type` | Yes | Must be `"aws-ec2"` |
+| `aws_region` | Yes | AWS region |
+| `default_security_group_ids` | No | Default security group IDs for `run_instances`. Can be overridden per-action |
+| `default_subnet_id` | No | Default subnet ID for `run_instances`. Can be overridden per-action |
+| `default_key_name` | No | Default key-pair name for `run_instances`. Can be overridden per-action |
+| `aws_endpoint_url` | No | Endpoint URL override (for LocalStack) |
+| `aws_role_arn` | No | IAM role ARN to assume via STS |
+| `aws_session_name` | No | STS session name (defaults to `"acteon-aws-provider"`) |
+| `aws_external_id` | No | External ID for cross-account trust policies |
+
+### AWS Auto Scaling
+
+```toml
+[[providers]]
+name = "scaling"
+type = "aws-autoscaling"
+aws_region = "us-east-1"
+# aws_endpoint_url = "http://localhost:4566"   # LocalStack
+# aws_role_arn = "arn:aws:iam::123:role/asg"   # Cross-account
+# aws_session_name = "acteon-asg"              # STS session name
+# aws_external_id = "ext-123"                  # Trust policy external ID
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Unique provider name used in action dispatch |
+| `type` | Yes | Must be `"aws-autoscaling"` |
+| `aws_region` | Yes | AWS region |
+| `aws_endpoint_url` | No | Endpoint URL override (for LocalStack) |
+| `aws_role_arn` | No | IAM role ARN to assume via STS |
+| `aws_session_name` | No | STS session name (defaults to `"acteon-aws-provider"`) |
+| `aws_external_id` | No | External ID for cross-account trust policies |
 
 ## Payload Formats
 
@@ -367,6 +422,356 @@ See the [Email provider documentation](native-providers.md) for full payload for
 }
 ```
 
+### EC2: `start_instances`
+
+```json
+{
+  "instance_ids": ["i-0abc123def456789a", "i-0def456abc789012b"]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `instance_ids` | Yes | string[] | EC2 instance IDs to start |
+
+**Response:**
+
+```json
+{
+  "action": "start_instances",
+  "instance_state_changes": [
+    {
+      "instance_id": "i-0abc123def456789a",
+      "previous_state": "stopped",
+      "current_state": "pending"
+    }
+  ]
+}
+```
+
+### EC2: `stop_instances`
+
+```json
+{
+  "instance_ids": ["i-0abc123def456789a"],
+  "hibernate": false,
+  "force": false
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `instance_ids` | Yes | string[] | EC2 instance IDs to stop |
+| `hibernate` | No | bool | Hibernate the instances instead of stopping (default `false`) |
+| `force` | No | bool | Force stop without graceful shutdown (default `false`) |
+
+**Response:**
+
+```json
+{
+  "action": "stop_instances",
+  "hibernate": false,
+  "instance_state_changes": [
+    {
+      "instance_id": "i-0abc123def456789a",
+      "previous_state": "running",
+      "current_state": "stopping"
+    }
+  ]
+}
+```
+
+### EC2: `reboot_instances`
+
+```json
+{
+  "instance_ids": ["i-0abc123def456789a"]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `instance_ids` | Yes | string[] | EC2 instance IDs to reboot |
+
+**Response:**
+
+```json
+{
+  "action": "reboot_instances",
+  "instance_ids": ["i-0abc123def456789a"],
+  "status": "rebooting"
+}
+```
+
+### EC2: `terminate_instances`
+
+```json
+{
+  "instance_ids": ["i-0abc123def456789a"]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `instance_ids` | Yes | string[] | EC2 instance IDs to terminate |
+
+**Response:**
+
+```json
+{
+  "action": "terminate_instances",
+  "instance_state_changes": [
+    {
+      "instance_id": "i-0abc123def456789a",
+      "previous_state": "running",
+      "current_state": "shutting-down"
+    }
+  ]
+}
+```
+
+### EC2: `hibernate_instances`
+
+Sugar action type that internally dispatches `stop_instances` with `hibernate: true`.
+
+```json
+{
+  "instance_ids": ["i-0abc123def456789a"]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `instance_ids` | Yes | string[] | EC2 instance IDs to hibernate |
+
+**Response:** Same as `stop_instances` with `"hibernate": true`.
+
+### EC2: `run_instances`
+
+```json
+{
+  "image_id": "ami-0abcdef1234567890",
+  "instance_type": "t3.micro",
+  "min_count": 1,
+  "max_count": 2,
+  "key_name": "my-keypair",
+  "security_group_ids": ["sg-0123456789abcdef0"],
+  "subnet_id": "subnet-0123456789abcdef0",
+  "user_data": "IyEvYmluL2Jhc2gKZWNobyBIZWxsbw==",
+  "tags": {
+    "env": "staging",
+    "team": "platform"
+  },
+  "iam_instance_profile": "arn:aws:iam::123456789012:instance-profile/app-profile"
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `image_id` | Yes | string | AMI ID to launch |
+| `instance_type` | Yes | string | Instance type (e.g. `"t3.micro"`) |
+| `min_count` | No | integer | Minimum instances to launch (default 1) |
+| `max_count` | No | integer | Maximum instances to launch (default 1) |
+| `key_name` | No | string | Key-pair name. Overrides config `default_key_name` |
+| `security_group_ids` | No | string[] | Security group IDs. Overrides config `default_security_group_ids` |
+| `subnet_id` | No | string | Subnet ID. Overrides config `default_subnet_id` |
+| `user_data` | No | string | Base64-encoded user data script |
+| `tags` | No | object | Key-value tags applied to launched instances |
+| `iam_instance_profile` | No | string | IAM instance profile name or ARN |
+
+**Response:**
+
+```json
+{
+  "action": "run_instances",
+  "reservation_id": "r-0abc123def456789a",
+  "instances": [
+    {
+      "instance_id": "i-0abc123def456789a",
+      "instance_type": "t3.micro",
+      "state": "pending"
+    }
+  ]
+}
+```
+
+### EC2: `attach_volume`
+
+```json
+{
+  "volume_id": "vol-0abc123def456789a",
+  "instance_id": "i-0abc123def456789a",
+  "device": "/dev/sdf"
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `volume_id` | Yes | string | EBS volume ID to attach |
+| `instance_id` | Yes | string | Target EC2 instance ID |
+| `device` | Yes | string | Device name (e.g. `"/dev/sdf"`) |
+
+**Response:**
+
+```json
+{
+  "action": "attach_volume",
+  "volume_id": "vol-0abc123def456789a",
+  "instance_id": "i-0abc123def456789a",
+  "device": "/dev/sdf",
+  "state": "attaching"
+}
+```
+
+### EC2: `detach_volume`
+
+```json
+{
+  "volume_id": "vol-0abc123def456789a",
+  "instance_id": "i-0abc123def456789a",
+  "device": "/dev/sdf",
+  "force": false
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `volume_id` | Yes | string | EBS volume ID to detach |
+| `instance_id` | No | string | Instance to detach from |
+| `device` | No | string | Device name |
+| `force` | No | bool | Force detachment (default `false`) |
+
+**Response:**
+
+```json
+{
+  "action": "detach_volume",
+  "volume_id": "vol-0abc123def456789a",
+  "instance_id": "i-0abc123def456789a",
+  "state": "detaching"
+}
+```
+
+### EC2: `describe_instances`
+
+```json
+{
+  "instance_ids": ["i-0abc123def456789a"]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `instance_ids` | No | string[] | Instance IDs to describe. If empty, describes all instances |
+
+**Response:**
+
+```json
+{
+  "action": "describe_instances",
+  "instances": [
+    {
+      "instance_id": "i-0abc123def456789a",
+      "instance_type": "t3.micro",
+      "state": "running",
+      "public_ip": "54.123.45.67",
+      "private_ip": "10.0.1.42"
+    }
+  ]
+}
+```
+
+### Auto Scaling: `describe_auto_scaling_groups`
+
+```json
+{
+  "auto_scaling_group_names": ["web-tier-asg", "api-tier-asg"]
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `auto_scaling_group_names` | No | string[] | Group names to describe. If empty, describes all groups |
+
+**Response:**
+
+```json
+{
+  "action": "describe_auto_scaling_groups",
+  "auto_scaling_groups": [
+    {
+      "auto_scaling_group_name": "web-tier-asg",
+      "min_size": 2,
+      "max_size": 10,
+      "desired_capacity": 4,
+      "instance_count": 4,
+      "health_check_type": "ELB"
+    }
+  ]
+}
+```
+
+### Auto Scaling: `set_desired_capacity`
+
+```json
+{
+  "auto_scaling_group_name": "web-tier-asg",
+  "desired_capacity": 6,
+  "honor_cooldown": true
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `auto_scaling_group_name` | Yes | string | Auto Scaling Group name |
+| `desired_capacity` | Yes | integer | Target capacity |
+| `honor_cooldown` | No | bool | Whether to honor the group's cooldown period (default `false`) |
+
+**Response:**
+
+```json
+{
+  "action": "set_desired_capacity",
+  "auto_scaling_group_name": "web-tier-asg",
+  "desired_capacity": 6,
+  "status": "updated"
+}
+```
+
+### Auto Scaling: `update_auto_scaling_group`
+
+```json
+{
+  "auto_scaling_group_name": "web-tier-asg",
+  "min_size": 2,
+  "max_size": 20,
+  "desired_capacity": 8,
+  "default_cooldown": 300,
+  "health_check_type": "ELB",
+  "health_check_grace_period": 120
+}
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `auto_scaling_group_name` | Yes | string | Auto Scaling Group name |
+| `min_size` | No | integer | New minimum size |
+| `max_size` | No | integer | New maximum size |
+| `desired_capacity` | No | integer | New desired capacity |
+| `default_cooldown` | No | integer | Default cooldown period in seconds |
+| `health_check_type` | No | string | Health check type (`"EC2"` or `"ELB"`) |
+| `health_check_grace_period` | No | integer | Health check grace period in seconds |
+
+**Response:**
+
+```json
+{
+  "action": "update_auto_scaling_group",
+  "auto_scaling_group_name": "web-tier-asg",
+  "status": "updated"
+}
+```
+
 ## Authentication and Credential Refresh
 
 All AWS providers share a common authentication layer in `acteon-aws`. Credentials are resolved in this order:
@@ -403,6 +808,8 @@ The `aws_external_id` is validated against the trust policy's `Condition` block,
 | `aws-sqs` | `ListQueues` (max 1) | Verifies API connectivity and credentials |
 | `aws-s3` | `ListBuckets` (max 1) | Verifies API connectivity and credentials |
 | SES (email) | `GetAccount` | Verifies SES sending is enabled |
+| `aws-ec2` | `DescribeInstances` (dry-run) | `DryRunOperation` error = healthy; verifies IAM permissions |
+| `aws-autoscaling` | `DescribeAutoScalingGroups` (max 1) | Verifies API connectivity and credentials |
 
 All health checks are lightweight read-only operations that do not modify any resources.
 
@@ -463,6 +870,33 @@ curl -X POST http://localhost:8080/v1/dispatch \
       "content_type": "application/json"
     }
   }'
+
+# Start EC2 instances
+curl -X POST http://localhost:8080/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "compute",
+    "tenant": "acme-corp",
+    "provider": "compute",
+    "action_type": "start_instances",
+    "payload": {
+      "instance_ids": ["i-0abc123def456789a"]
+    }
+  }'
+
+# Scale up an Auto Scaling Group
+curl -X POST http://localhost:8080/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "namespace": "scaling",
+    "tenant": "acme-corp",
+    "provider": "scaling",
+    "action_type": "set_desired_capacity",
+    "payload": {
+      "auto_scaling_group_name": "web-tier-asg",
+      "desired_capacity": 6
+    }
+  }'
 ```
 
 ## Example: Rust Client
@@ -501,9 +935,230 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     ).await?;
 
+    // Start EC2 instances
+    client.dispatch_action(
+        "compute", "acme-corp", "compute", "start_instances",
+        serde_json::json!({
+            "instance_ids": ["i-0abc123def456789a"]
+        }),
+    ).await?;
+
+    // Launch new EC2 instances
+    client.dispatch_action(
+        "compute", "acme-corp", "compute", "run_instances",
+        serde_json::json!({
+            "image_id": "ami-0abcdef1234567890",
+            "instance_type": "t3.micro",
+            "max_count": 2,
+            "tags": {"env": "staging"}
+        }),
+    ).await?;
+
+    // Scale up an Auto Scaling Group
+    client.dispatch_action(
+        "scaling", "acme-corp", "scaling", "set_desired_capacity",
+        serde_json::json!({
+            "auto_scaling_group_name": "web-tier-asg",
+            "desired_capacity": 6
+        }),
+    ).await?;
+
     Ok(())
 }
 ```
+
+## Guardrails for Destructive Operations
+
+EC2 operations like `terminate_instances` and `reboot_instances` can cause outages when the instances belong to an Auto Scaling Group at or near minimum capacity. Acteon provides several patterns for preventing this, ranging from zero-configuration static rules to client-side orchestration.
+
+### Static guardrails (recommended starting point)
+
+YAML rules evaluated at high priority can deny destructive operations unless the caller includes an attestation field. This is the simplest approach and works with no external dependencies.
+
+**Deny termination/reboot without capacity check:**
+
+```yaml
+rules:
+  - name: require-capacity-check-terminate
+    priority: 1
+    description: "Block terminate_instances unless capacity headroom is attested"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "terminate_instances"
+        - field: action.payload.capacity_verified
+          ne: true
+    action:
+      type: deny
+
+  - name: require-capacity-check-reboot
+    priority: 1
+    description: "Block reboot_instances unless capacity headroom is attested"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "reboot_instances"
+        - field: action.payload.capacity_verified
+          ne: true
+    action:
+      type: deny
+```
+
+**Deny scaling below a threshold:**
+
+```yaml
+  - name: block-zero-capacity-critical
+    priority: 2
+    description: "Prevent scaling critical ASGs to zero"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "set_desired_capacity"
+        - field: action.payload.desired_capacity
+          lt: 1
+        - field: action.payload.auto_scaling_group_name
+          ne: "staging-workers"
+    action:
+      type: deny
+```
+
+Advantages: zero latency, no external dependencies, full audit trail of blocked operations, works across all providers and action types.
+
+### Client-side orchestration (recommended for dynamic checks)
+
+Static rules can enforce that a capacity check *was performed*, but the actual check happens client-side. The pattern is:
+
+1. Client calls `describe_auto_scaling_groups` (via Acteon or directly) to read current state
+2. Client verifies `desired_capacity > min_size + N` (sufficient headroom)
+3. Client dispatches the destructive action with `"capacity_verified": true` and `"available_capacity": N`
+4. Acteon's static rules allow the action because the attestation is present
+
+**Python example:**
+
+```python
+import acteon
+import json
+
+client = acteon.ActeonClient("http://localhost:8080")
+
+# Step 1: Query current ASG state
+resp = client.dispatch(
+    namespace="infra",
+    tenant="cost-optimizer",
+    provider="cost-asg",
+    action_type="describe_auto_scaling_groups",
+    payload={"auto_scaling_group_names": ["staging-api"]},
+)
+asg = json.loads(resp.body)["auto_scaling_groups"][0]
+
+# Step 2: Check headroom
+desired = asg["desired_capacity"]
+min_size = asg["min_size"]
+headroom = desired - min_size
+
+if headroom < 2:
+    print(f"Insufficient headroom ({headroom}), skipping termination")
+else:
+    # Step 3: Dispatch with attestation
+    client.dispatch(
+        namespace="infra",
+        tenant="cost-optimizer",
+        provider="cost-ec2",
+        action_type="terminate_instances",
+        payload={
+            "instance_ids": ["i-0abc123def456789a"],
+            "capacity_verified": True,
+            "available_capacity": headroom,
+        },
+    )
+```
+
+### Chain-based pre-flight (partial support)
+
+Action chains can sequence a describe step before a destructive step:
+
+```
+Step 1: describe_auto_scaling_groups → get current state
+Step 2: terminate_instances (uses result from step 1)
+```
+
+The describe result is available in step 2 via `{{steps.step1.body.auto_scaling_groups}}`. With numeric branch operators (`gt`, `lt`, `gte`, `lte`), chains can conditionally abort based on capacity arithmetic:
+
+```toml
+[[chains.definitions]]
+name = "safe-terminate"
+
+[[chains.definitions.steps]]
+name = "check-capacity"
+provider = "cost-asg"
+action_type = "describe_auto_scaling_groups"
+payload = { auto_scaling_group_names = ["staging-api"] }
+
+[[chains.definitions.steps.branches]]
+field = "body.auto_scaling_groups.0.desired_capacity"
+operator = "lte"
+value = 2
+target = "abort"
+
+[[chains.definitions.steps]]
+name = "terminate"
+provider = "cost-ec2"
+action_type = "terminate_instances"
+payload = { instance_ids = ["i-0abc123"] }
+
+[[chains.definitions.steps]]
+name = "abort"
+provider = "log"
+action_type = "send_alert"
+payload = { message = "Insufficient capacity, termination blocked" }
+```
+
+### Pre-dispatch enrichment (live state in rules)
+
+Pre-dispatch enrichment lets the gateway fetch live resource state before rule evaluation, so rules can check real-time data instead of relying on client-side attestation.
+
+```toml
+[[enrichments]]
+name = "fetch-asg-state"
+action_type = "terminate_instances"
+provider = "cost-ec2"
+lookup_provider = "cost-asg"
+resource_type = "auto_scaling_group"
+merge_key = "current_asg_state"
+timeout_seconds = 10
+failure_policy = "fail_closed"
+
+[enrichments.params]
+auto_scaling_group_names = ["{{payload.asg_name}}"]
+```
+
+When configured, the gateway automatically:
+
+1. Matches the enrichment filter against the incoming action (namespace, tenant, action_type, provider)
+2. Resolves `{{payload.X}}` placeholders in the params template
+3. Calls the `ResourceLookup` implementation on the lookup provider
+4. Merges the result into `action.payload` under the configured `merge_key`
+
+Rules can then check `action.payload.current_asg_state.auto_scaling_groups.0.desired_capacity` to enforce capacity thresholds on live data.
+
+The `failure_policy` controls behavior when the lookup fails:
+- `fail_open` (default) -- continue dispatch without the enrichment data
+- `fail_closed` -- reject the dispatch entirely
+
+EC2 and Auto Scaling providers automatically register as `ResourceLookup` implementations, supporting `"instance"` and `"auto_scaling_group"` resource types respectively.
+
+### Limitations and future direction
+
+| Limitation | Why | Workaround |
+|-----------|-----|------------|
+| WASM plugins can't query AWS | Sandboxed with no network access | Use WASM for payload validation logic only |
+| Enrichment adds latency | Lookup call happens before rule evaluation | Use `timeout_seconds` and `fail_open` to bound impact |
+
+Future enhancements:
+- Optional WASM network grants for trusted plugins
+- Additional `ResourceLookup` implementations for GCP, Azure
+
+See the [AWS Cost Optimizer example](../../examples/aws-cost-optimizer/) for a runnable demo of static guardrails with the `capacity_verified` attestation pattern.
 
 ## LocalStack Development
 
@@ -525,4 +1180,4 @@ aws_endpoint_url = "http://localhost:4566"
 topic_arn = "arn:aws:sns:us-east-1:000000000000:alerts"
 ```
 
-See the [AWS Event-Driven Pipeline Guide](../guides/aws-event-pipeline.md) for a complete runnable example using LocalStack with all six provider types.
+See the [AWS Event-Driven Pipeline Guide](../guides/aws-event-pipeline.md) for a complete runnable example using LocalStack with all eight provider types.

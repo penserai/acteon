@@ -2403,3 +2403,311 @@ def s3_delete_object_payload(
     if bucket is not None:
         payload["bucket"] = bucket
     return payload
+
+
+# =============================================================================
+# AWS EC2 Provider Payload Helpers
+# =============================================================================
+
+
+def ec2_start_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 start-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to start.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``start_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_stop_instances_payload(
+    instance_ids: List[str],
+    *,
+    hibernate: Optional[bool] = None,
+    force: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 stop-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to stop.
+        hibernate: Whether to hibernate the instances instead of stopping.
+        force: Whether to force stop the instances.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``stop_instances``.
+    """
+    payload: dict[str, Any] = {"instance_ids": instance_ids}
+    if hibernate is not None:
+        payload["hibernate"] = hibernate
+    if force is not None:
+        payload["force"] = force
+    return payload
+
+
+def ec2_reboot_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 reboot-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to reboot.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``reboot_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_terminate_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 terminate-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to terminate.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``terminate_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_hibernate_instances_payload(
+    instance_ids: List[str],
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 hibernate-instances action.
+
+    Args:
+        instance_ids: List of EC2 instance IDs to hibernate.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``hibernate_instances``.
+    """
+    return {"instance_ids": instance_ids}
+
+
+def ec2_run_instances_payload(
+    image_id: str,
+    instance_type: str,
+    *,
+    min_count: Optional[int] = None,
+    max_count: Optional[int] = None,
+    key_name: Optional[str] = None,
+    security_group_ids: Optional[List[str]] = None,
+    subnet_id: Optional[str] = None,
+    user_data: Optional[str] = None,
+    tags: Optional[dict[str, str]] = None,
+    iam_instance_profile: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 run-instances action.
+
+    Args:
+        image_id: AMI ID to launch.
+        instance_type: EC2 instance type (e.g., ``"t3.micro"``).
+        min_count: Minimum number of instances to launch.
+        max_count: Maximum number of instances to launch.
+        key_name: Name of the key pair for SSH access.
+        security_group_ids: List of security group IDs.
+        subnet_id: VPC subnet ID to launch into.
+        user_data: Base64-encoded user data script.
+        tags: Tags to apply to the launched instances.
+        iam_instance_profile: IAM instance profile name or ARN.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``run_instances``.
+    """
+    payload: dict[str, Any] = {
+        "image_id": image_id,
+        "instance_type": instance_type,
+    }
+    if min_count is not None:
+        payload["min_count"] = min_count
+    if max_count is not None:
+        payload["max_count"] = max_count
+    if key_name is not None:
+        payload["key_name"] = key_name
+    if security_group_ids is not None:
+        payload["security_group_ids"] = security_group_ids
+    if subnet_id is not None:
+        payload["subnet_id"] = subnet_id
+    if user_data is not None:
+        payload["user_data"] = user_data
+    if tags is not None:
+        payload["tags"] = tags
+    if iam_instance_profile is not None:
+        payload["iam_instance_profile"] = iam_instance_profile
+    return payload
+
+
+def ec2_attach_volume_payload(
+    volume_id: str,
+    instance_id: str,
+    device: str,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 attach-volume action.
+
+    Args:
+        volume_id: EBS volume ID to attach.
+        instance_id: EC2 instance ID to attach the volume to.
+        device: Device name (e.g., ``"/dev/sdf"``).
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``attach_volume``.
+    """
+    return {
+        "volume_id": volume_id,
+        "instance_id": instance_id,
+        "device": device,
+    }
+
+
+def ec2_detach_volume_payload(
+    volume_id: str,
+    *,
+    instance_id: Optional[str] = None,
+    device: Optional[str] = None,
+    force: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 detach-volume action.
+
+    Args:
+        volume_id: EBS volume ID to detach.
+        instance_id: EC2 instance ID to detach the volume from.
+        device: Device name.
+        force: Whether to force detach the volume.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``detach_volume``.
+    """
+    payload: dict[str, Any] = {"volume_id": volume_id}
+    if instance_id is not None:
+        payload["instance_id"] = instance_id
+    if device is not None:
+        payload["device"] = device
+    if force is not None:
+        payload["force"] = force
+    return payload
+
+
+def ec2_describe_instances_payload(
+    *,
+    instance_ids: Optional[List[str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS EC2 describe-instances action.
+
+    Args:
+        instance_ids: Optional list of EC2 instance IDs to describe.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-ec2`` provider
+        with action type ``describe_instances``.
+    """
+    payload: dict[str, Any] = {}
+    if instance_ids is not None:
+        payload["instance_ids"] = instance_ids
+    return payload
+
+
+# =============================================================================
+# AWS Auto Scaling Provider Payload Helpers
+# =============================================================================
+
+
+def autoscaling_describe_groups_payload(
+    *,
+    group_names: Optional[List[str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Auto Scaling describe-groups action.
+
+    Args:
+        group_names: Optional list of Auto Scaling group names to describe.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-autoscaling``
+        provider with action type ``describe_auto_scaling_groups``.
+    """
+    payload: dict[str, Any] = {}
+    if group_names is not None:
+        payload["auto_scaling_group_names"] = group_names
+    return payload
+
+
+def autoscaling_set_desired_capacity_payload(
+    group_name: str,
+    desired_capacity: int,
+    *,
+    honor_cooldown: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Auto Scaling set-desired-capacity action.
+
+    Args:
+        group_name: Auto Scaling group name.
+        desired_capacity: Desired number of instances.
+        honor_cooldown: Whether to honor the cooldown period.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-autoscaling``
+        provider with action type ``set_desired_capacity``.
+    """
+    payload: dict[str, Any] = {
+        "auto_scaling_group_name": group_name,
+        "desired_capacity": desired_capacity,
+    }
+    if honor_cooldown is not None:
+        payload["honor_cooldown"] = honor_cooldown
+    return payload
+
+
+def autoscaling_update_group_payload(
+    group_name: str,
+    *,
+    min_size: Optional[int] = None,
+    max_size: Optional[int] = None,
+    desired_capacity: Optional[int] = None,
+    default_cooldown: Optional[int] = None,
+    health_check_type: Optional[str] = None,
+    health_check_grace_period: Optional[int] = None,
+) -> dict[str, Any]:
+    """Build a payload for the AWS Auto Scaling update-group action.
+
+    Args:
+        group_name: Auto Scaling group name.
+        min_size: Minimum group size.
+        max_size: Maximum group size.
+        desired_capacity: Desired number of instances.
+        default_cooldown: Default cooldown period in seconds.
+        health_check_type: Health check type (e.g., ``"EC2"``, ``"ELB"``).
+        health_check_grace_period: Health check grace period in seconds.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``aws-autoscaling``
+        provider with action type ``update_auto_scaling_group``.
+    """
+    payload: dict[str, Any] = {
+        "auto_scaling_group_name": group_name,
+    }
+    if min_size is not None:
+        payload["min_size"] = min_size
+    if max_size is not None:
+        payload["max_size"] = max_size
+    if desired_capacity is not None:
+        payload["desired_capacity"] = desired_capacity
+    if default_cooldown is not None:
+        payload["default_cooldown"] = default_cooldown
+    if health_check_type is not None:
+        payload["health_check_type"] = health_check_type
+    if health_check_grace_period is not None:
+        payload["health_check_grace_period"] = health_check_grace_period
+    return payload

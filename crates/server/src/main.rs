@@ -514,6 +514,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "neq" => BranchOperator::Neq,
                     "contains" => BranchOperator::Contains,
                     "exists" => BranchOperator::Exists,
+                    "gt" => BranchOperator::Gt,
+                    "lt" => BranchOperator::Lt,
+                    "gte" => BranchOperator::Gte,
+                    "lte" => BranchOperator::Lte,
                     _ => BranchOperator::Eq,
                 };
                 step = step.with_branch(BranchCondition::new(
@@ -827,12 +831,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_aws::S3Provider::new(s3_config).await)
             }
+            "aws-ec2" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut ec2_config = acteon_aws::Ec2Config::new(region);
+                if let Some(ref ids) = provider_cfg.default_security_group_ids {
+                    ec2_config = ec2_config.with_default_security_group_ids(ids.clone());
+                }
+                if let Some(ref sid) = provider_cfg.default_subnet_id {
+                    ec2_config = ec2_config.with_default_subnet_id(sid);
+                }
+                if let Some(ref kn) = provider_cfg.default_key_name {
+                    ec2_config = ec2_config.with_default_key_name(kn);
+                }
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    ec2_config = ec2_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    ec2_config = ec2_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    ec2_config = ec2_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    ec2_config = ec2_config.with_external_id(ext_id);
+                }
+                let ec2 = std::sync::Arc::new(acteon_aws::Ec2Provider::new(ec2_config).await);
+                builder = builder.resource_lookup(
+                    provider_cfg.name.clone(),
+                    std::sync::Arc::clone(&ec2)
+                        as std::sync::Arc<dyn acteon_provider::ResourceLookup>,
+                );
+                ec2
+            }
+            "aws-autoscaling" => {
+                let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
+                let mut asg_config = acteon_aws::AutoScalingConfig::new(region);
+                if let Some(ref url) = provider_cfg.aws_endpoint_url {
+                    asg_config = asg_config.with_endpoint_url(url);
+                }
+                if let Some(ref arn) = provider_cfg.aws_role_arn {
+                    asg_config = asg_config.with_role_arn(arn);
+                }
+                if let Some(ref name) = provider_cfg.aws_session_name {
+                    asg_config = asg_config.with_session_name(name);
+                }
+                if let Some(ref ext_id) = provider_cfg.aws_external_id {
+                    asg_config = asg_config.with_external_id(ext_id);
+                }
+                let asg =
+                    std::sync::Arc::new(acteon_aws::AutoScalingProvider::new(asg_config).await);
+                builder = builder.resource_lookup(
+                    provider_cfg.name.clone(),
+                    std::sync::Arc::clone(&asg)
+                        as std::sync::Arc<dyn acteon_provider::ResourceLookup>,
+                );
+                asg
+            }
             other => {
                 return Err(format!(
-                        "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', 'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', 'aws-sqs', or 'aws-s3')",
-                        provider_cfg.name
-                    )
-                    .into());
+                    "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', \
+                         'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', \
+                         'aws-sqs', 'aws-s3', 'aws-ec2', or 'aws-autoscaling')",
+                    provider_cfg.name
+                )
+                .into());
             }
         };
         builder = builder.provider(provider);
@@ -841,6 +903,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!(
             count = config.providers.len(),
             "providers registered from config"
+        );
+    }
+
+    // Wire enrichment configs.
+    for enrichment_toml in &config.enrichments {
+        let enrichment_config = acteon_core::EnrichmentConfig {
+            name: enrichment_toml.name.clone(),
+            namespace: enrichment_toml.namespace.clone(),
+            tenant: enrichment_toml.tenant.clone(),
+            action_type: enrichment_toml.action_type.clone(),
+            provider: enrichment_toml.provider.clone(),
+            lookup_provider: enrichment_toml.lookup_provider.clone(),
+            resource_type: enrichment_toml.resource_type.clone(),
+            params: enrichment_toml.params.clone(),
+            merge_key: enrichment_toml.merge_key.clone(),
+            timeout_seconds: enrichment_toml.timeout_seconds,
+            failure_policy: enrichment_toml.failure_policy,
+        };
+        builder = builder.enrichment(enrichment_config);
+    }
+    if !config.enrichments.is_empty() {
+        info!(
+            count = config.enrichments.len(),
+            "pre-dispatch enrichments configured"
         );
     }
 

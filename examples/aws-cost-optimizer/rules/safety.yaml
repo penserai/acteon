@@ -1,0 +1,68 @@
+# Safety guardrails: deny destructive EC2/ASG operations without capacity attestation.
+#
+# These rules run at high priority (1-2) so they are evaluated before any
+# routing or enrichment rules.  The pattern is "deny by default, allow when
+# the caller attests that capacity headroom has been verified."
+#
+# See docs/book/features/aws-providers.md § Guardrails for Destructive Operations.
+
+rules:
+  # ── EC2 destructive-operation guardrails ───────────────────────────────────
+
+  # Deny terminate_instances unless the caller sets capacity_verified: true.
+  - name: require-capacity-check-terminate
+    priority: 1
+    description: "Block EC2 instance termination unless capacity headroom is attested"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "terminate_instances"
+        - field: action.payload.capacity_verified
+          ne: true
+    action:
+      type: deny
+
+  # Deny reboot_instances unless the caller sets capacity_verified: true.
+  - name: require-capacity-check-reboot
+    priority: 1
+    description: "Block EC2 instance reboot unless capacity headroom is attested"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "reboot_instances"
+        - field: action.payload.capacity_verified
+          ne: true
+    action:
+      type: deny
+
+  # ── ASG scale-down guardrails ─────────────────────────────────────────────
+
+  # Deny scaling any non-worker ASG to zero capacity.
+  - name: block-zero-capacity-critical
+    priority: 2
+    description: "Prevent scaling critical (non-worker) ASGs to zero"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "set_desired_capacity"
+        - field: action.payload.desired_capacity
+          lt: 1
+        - field: action.payload.auto_scaling_group_name
+          ne: "staging-workers"
+    action:
+      type: deny
+
+  # Deny scaling the staging-api ASG below 1 instance.
+  - name: minimum-capacity-api
+    priority: 2
+    description: "Enforce minimum capacity of 1 for staging-api"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "set_desired_capacity"
+        - field: action.payload.auto_scaling_group_name
+          eq: "staging-api"
+        - field: action.payload.desired_capacity
+          lt: 1
+    action:
+      type: deny

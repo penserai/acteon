@@ -5,6 +5,7 @@ pub mod chain_dag;
 pub mod circuit_breaker;
 pub mod compliance;
 pub mod context;
+pub mod enrichment;
 pub mod error;
 pub mod fingerprint;
 pub mod group;
@@ -30,6 +31,7 @@ pub use circuit_breaker::{
 };
 pub use compliance::{ComplianceConfig, ComplianceMode, HashChainVerification};
 pub use context::ActionContext;
+pub use enrichment::{EnrichmentConfig, EnrichmentFailurePolicy, EnrichmentOutcome};
 pub use error::ActeonError;
 pub use fingerprint::compute_fingerprint;
 pub use group::{EventGroup, GroupState, GroupedEvent};

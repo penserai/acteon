@@ -1,6 +1,6 @@
 [package]
 name = "acteon-aws"
-description = "AWS service providers for Acteon (SNS, Lambda, EventBridge, SQS, SES)"
+description = "AWS service providers for Acteon (SNS, Lambda, EventBridge, SQS, SES, S3, EC2, Auto Scaling)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,9 @@ eventbridge = ["dep:aws-sdk-eventbridge"]
 sqs = ["dep:aws-sdk-sqs"]
 ses = ["dep:aws-sdk-sesv2"]
 s3 = ["dep:aws-sdk-s3"]
-full = ["sns", "lambda", "eventbridge", "sqs", "ses", "s3"]
+ec2 = ["dep:aws-sdk-ec2"]
+autoscaling = ["dep:aws-sdk-autoscaling"]
+full = ["sns", "lambda", "eventbridge", "sqs", "ses", "s3", "ec2", "autoscaling"]
 
 [dependencies]
 acteon-core = { workspace = true }
@@ -27,6 +29,9 @@ aws-sdk-eventbridge = { workspace = true, optional = true }
 aws-sdk-sqs = { workspace = true, optional = true }
 aws-sdk-sesv2 = { workspace = true, optional = true }
 aws-sdk-s3 = { workspace = true, optional = true }
+aws-sdk-ec2 = { workspace = true, optional = true }
+aws-sdk-autoscaling = { workspace = true, optional = true }
+async-trait = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

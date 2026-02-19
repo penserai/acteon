@@ -1335,3 +1335,193 @@ func NewS3DeleteObjectPayloadWithBucket(key, bucket string) map[string]any {
 	}
 	return p
 }
+
+// =============================================================================
+// AWS EC2 Provider Payload Helpers
+// =============================================================================
+
+// NewEc2StartInstancesPayload creates a payload for the AWS EC2 start-instances action.
+func NewEc2StartInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2StopInstancesPayload creates a payload for the AWS EC2 stop-instances action.
+func NewEc2StopInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2StopInstancesPayloadWithOptions creates an EC2 stop-instances payload with optional fields.
+func NewEc2StopInstancesPayloadWithOptions(instanceIDs []string, hibernate, force bool) map[string]any {
+	p := NewEc2StopInstancesPayload(instanceIDs)
+	if hibernate {
+		p["hibernate"] = hibernate
+	}
+	if force {
+		p["force"] = force
+	}
+	return p
+}
+
+// NewEc2RebootInstancesPayload creates a payload for the AWS EC2 reboot-instances action.
+func NewEc2RebootInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2TerminateInstancesPayload creates a payload for the AWS EC2 terminate-instances action.
+func NewEc2TerminateInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2HibernateInstancesPayload creates a payload for the AWS EC2 hibernate-instances action.
+func NewEc2HibernateInstancesPayload(instanceIDs []string) map[string]any {
+	return map[string]any{
+		"instance_ids": instanceIDs,
+	}
+}
+
+// NewEc2RunInstancesPayload creates a payload for the AWS EC2 run-instances action.
+func NewEc2RunInstancesPayload(imageID, instanceType string) map[string]any {
+	return map[string]any{
+		"image_id":      imageID,
+		"instance_type": instanceType,
+	}
+}
+
+// NewEc2RunInstancesPayloadWithOptions creates an EC2 run-instances payload with optional fields.
+func NewEc2RunInstancesPayloadWithOptions(imageID, instanceType string, minCount, maxCount int, keyName, subnetID, userData, iamProfile string, sgIDs []string, tags map[string]string) map[string]any {
+	p := NewEc2RunInstancesPayload(imageID, instanceType)
+	if minCount > 0 {
+		p["min_count"] = minCount
+	}
+	if maxCount > 0 {
+		p["max_count"] = maxCount
+	}
+	if keyName != "" {
+		p["key_name"] = keyName
+	}
+	if subnetID != "" {
+		p["subnet_id"] = subnetID
+	}
+	if userData != "" {
+		p["user_data"] = userData
+	}
+	if iamProfile != "" {
+		p["iam_instance_profile"] = iamProfile
+	}
+	if len(sgIDs) > 0 {
+		p["security_group_ids"] = sgIDs
+	}
+	if len(tags) > 0 {
+		p["tags"] = tags
+	}
+	return p
+}
+
+// NewEc2AttachVolumePayload creates a payload for the AWS EC2 attach-volume action.
+func NewEc2AttachVolumePayload(volumeID, instanceID, device string) map[string]any {
+	return map[string]any{
+		"volume_id":   volumeID,
+		"instance_id": instanceID,
+		"device":      device,
+	}
+}
+
+// NewEc2DetachVolumePayload creates a payload for the AWS EC2 detach-volume action.
+func NewEc2DetachVolumePayload(volumeID string) map[string]any {
+	return map[string]any{
+		"volume_id": volumeID,
+	}
+}
+
+// NewEc2DetachVolumePayloadWithOptions creates an EC2 detach-volume payload with optional fields.
+func NewEc2DetachVolumePayloadWithOptions(volumeID, instanceID, device string, force bool) map[string]any {
+	p := NewEc2DetachVolumePayload(volumeID)
+	if instanceID != "" {
+		p["instance_id"] = instanceID
+	}
+	if device != "" {
+		p["device"] = device
+	}
+	if force {
+		p["force"] = force
+	}
+	return p
+}
+
+// NewEc2DescribeInstancesPayload creates a payload for the AWS EC2 describe-instances action.
+func NewEc2DescribeInstancesPayload(instanceIDs []string) map[string]any {
+	p := map[string]any{}
+	if len(instanceIDs) > 0 {
+		p["instance_ids"] = instanceIDs
+	}
+	return p
+}
+
+// =============================================================================
+// AWS Auto Scaling Provider Payload Helpers
+// =============================================================================
+
+// NewAsgDescribeGroupsPayload creates a payload for the AWS Auto Scaling describe-groups action.
+func NewAsgDescribeGroupsPayload(groupNames []string) map[string]any {
+	p := map[string]any{}
+	if len(groupNames) > 0 {
+		p["auto_scaling_group_names"] = groupNames
+	}
+	return p
+}
+
+// NewAsgSetDesiredCapacityPayload creates a payload for the AWS Auto Scaling set-desired-capacity action.
+func NewAsgSetDesiredCapacityPayload(groupName string, desiredCapacity int) map[string]any {
+	return map[string]any{
+		"auto_scaling_group_name": groupName,
+		"desired_capacity":       desiredCapacity,
+	}
+}
+
+// NewAsgSetDesiredCapacityPayloadWithOptions creates an Auto Scaling set-desired-capacity payload with optional fields.
+func NewAsgSetDesiredCapacityPayloadWithOptions(groupName string, desiredCapacity int, honorCooldown bool) map[string]any {
+	p := NewAsgSetDesiredCapacityPayload(groupName, desiredCapacity)
+	if honorCooldown {
+		p["honor_cooldown"] = honorCooldown
+	}
+	return p
+}
+
+// NewAsgUpdateGroupPayload creates a payload for the AWS Auto Scaling update-group action.
+func NewAsgUpdateGroupPayload(groupName string) map[string]any {
+	return map[string]any{
+		"auto_scaling_group_name": groupName,
+	}
+}
+
+// NewAsgUpdateGroupPayloadWithOptions creates an Auto Scaling update-group payload with optional fields.
+func NewAsgUpdateGroupPayloadWithOptions(groupName string, minSize, maxSize, desiredCapacity, defaultCooldown *int, healthCheckType string, healthCheckGracePeriod *int) map[string]any {
+	p := NewAsgUpdateGroupPayload(groupName)
+	if minSize != nil {
+		p["min_size"] = *minSize
+	}
+	if maxSize != nil {
+		p["max_size"] = *maxSize
+	}
+	if desiredCapacity != nil {
+		p["desired_capacity"] = *desiredCapacity
+	}
+	if defaultCooldown != nil {
+		p["default_cooldown"] = *defaultCooldown
+	}
+	if healthCheckType != "" {
+		p["health_check_type"] = healthCheckType
+	}
+	if healthCheckGracePeriod != nil {
+		p["health_check_grace_period"] = *healthCheckGracePeriod
+	}
+	return p
+}

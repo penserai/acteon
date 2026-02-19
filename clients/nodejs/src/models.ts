@@ -2140,3 +2140,250 @@ export function createS3DeleteObjectPayload(
   if (options?.bucket) payload.bucket = options.bucket;
   return payload;
 }
+
+// =============================================================================
+// AWS EC2 Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the AWS EC2 start-instances action. */
+export interface Ec2StartInstancesPayload {
+  instance_ids: string[];
+}
+
+/** Create a payload for the AWS EC2 start-instances action. */
+export function createEc2StartInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Payload for the AWS EC2 stop-instances action. */
+export interface Ec2StopInstancesPayload {
+  instance_ids: string[];
+  hibernate?: boolean;
+  force?: boolean;
+}
+
+/** Create a payload for the AWS EC2 stop-instances action. */
+export function createEc2StopInstancesPayload(
+  instanceIds: string[],
+  options?: { hibernate?: boolean; force?: boolean }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { instance_ids: instanceIds };
+  if (options?.hibernate !== undefined) payload.hibernate = options.hibernate;
+  if (options?.force !== undefined) payload.force = options.force;
+  return payload;
+}
+
+/** Payload for the AWS EC2 reboot-instances action. */
+export interface Ec2RebootInstancesPayload {
+  instance_ids: string[];
+}
+
+/** Create a payload for the AWS EC2 reboot-instances action. */
+export function createEc2RebootInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Payload for the AWS EC2 terminate-instances action. */
+export interface Ec2TerminateInstancesPayload {
+  instance_ids: string[];
+}
+
+/** Create a payload for the AWS EC2 terminate-instances action. */
+export function createEc2TerminateInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Create a payload for the AWS EC2 hibernate-instances action. */
+export function createEc2HibernateInstancesPayload(
+  instanceIds: string[]
+): Record<string, unknown> {
+  return { instance_ids: instanceIds };
+}
+
+/** Payload for the AWS EC2 run-instances action. */
+export interface Ec2RunInstancesPayload {
+  image_id: string;
+  instance_type: string;
+  min_count?: number;
+  max_count?: number;
+  key_name?: string;
+  security_group_ids?: string[];
+  subnet_id?: string;
+  user_data?: string;
+  tags?: Record<string, string>;
+  iam_instance_profile?: string;
+}
+
+/** Create a payload for the AWS EC2 run-instances action. */
+export function createEc2RunInstancesPayload(
+  imageId: string,
+  instanceType: string,
+  options?: {
+    minCount?: number;
+    maxCount?: number;
+    keyName?: string;
+    securityGroupIds?: string[];
+    subnetId?: string;
+    userData?: string;
+    tags?: Record<string, string>;
+    iamInstanceProfile?: string;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    image_id: imageId,
+    instance_type: instanceType,
+  };
+  if (options?.minCount !== undefined) payload.min_count = options.minCount;
+  if (options?.maxCount !== undefined) payload.max_count = options.maxCount;
+  if (options?.keyName !== undefined) payload.key_name = options.keyName;
+  if (options?.securityGroupIds !== undefined)
+    payload.security_group_ids = options.securityGroupIds;
+  if (options?.subnetId !== undefined) payload.subnet_id = options.subnetId;
+  if (options?.userData !== undefined) payload.user_data = options.userData;
+  if (options?.tags !== undefined) payload.tags = options.tags;
+  if (options?.iamInstanceProfile !== undefined)
+    payload.iam_instance_profile = options.iamInstanceProfile;
+  return payload;
+}
+
+/** Payload for the AWS EC2 attach-volume action. */
+export interface Ec2AttachVolumePayload {
+  volume_id: string;
+  instance_id: string;
+  device: string;
+}
+
+/** Create a payload for the AWS EC2 attach-volume action. */
+export function createEc2AttachVolumePayload(
+  volumeId: string,
+  instanceId: string,
+  device: string
+): Record<string, unknown> {
+  return {
+    volume_id: volumeId,
+    instance_id: instanceId,
+    device,
+  };
+}
+
+/** Payload for the AWS EC2 detach-volume action. */
+export interface Ec2DetachVolumePayload {
+  volume_id: string;
+  instance_id?: string;
+  device?: string;
+  force?: boolean;
+}
+
+/** Create a payload for the AWS EC2 detach-volume action. */
+export function createEc2DetachVolumePayload(
+  volumeId: string,
+  options?: { instanceId?: string; device?: string; force?: boolean }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { volume_id: volumeId };
+  if (options?.instanceId !== undefined)
+    payload.instance_id = options.instanceId;
+  if (options?.device !== undefined) payload.device = options.device;
+  if (options?.force !== undefined) payload.force = options.force;
+  return payload;
+}
+
+/** Payload for the AWS EC2 describe-instances action. */
+export interface Ec2DescribeInstancesPayload {
+  instance_ids?: string[];
+}
+
+/** Create a payload for the AWS EC2 describe-instances action. */
+export function createEc2DescribeInstancesPayload(
+  options?: { instanceIds?: string[] }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (options?.instanceIds !== undefined)
+    payload.instance_ids = options.instanceIds;
+  return payload;
+}
+
+// =============================================================================
+// AWS Auto Scaling Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the AWS Auto Scaling describe-groups action. */
+export interface AsgDescribeGroupsPayload {
+  auto_scaling_group_names?: string[];
+}
+
+/** Create a payload for the AWS Auto Scaling describe-groups action. */
+export function createAsgDescribeGroupsPayload(
+  options?: { groupNames?: string[] }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  if (options?.groupNames !== undefined)
+    payload.auto_scaling_group_names = options.groupNames;
+  return payload;
+}
+
+/** Payload for the AWS Auto Scaling set-desired-capacity action. */
+export interface AsgSetDesiredCapacityPayload {
+  auto_scaling_group_name: string;
+  desired_capacity: number;
+  honor_cooldown?: boolean;
+}
+
+/** Create a payload for the AWS Auto Scaling set-desired-capacity action. */
+export function createAsgSetDesiredCapacityPayload(
+  groupName: string,
+  desiredCapacity: number,
+  options?: { honorCooldown?: boolean }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    auto_scaling_group_name: groupName,
+    desired_capacity: desiredCapacity,
+  };
+  if (options?.honorCooldown !== undefined)
+    payload.honor_cooldown = options.honorCooldown;
+  return payload;
+}
+
+/** Payload for the AWS Auto Scaling update-group action. */
+export interface AsgUpdateGroupPayload {
+  auto_scaling_group_name: string;
+  min_size?: number;
+  max_size?: number;
+  desired_capacity?: number;
+  default_cooldown?: number;
+  health_check_type?: string;
+  health_check_grace_period?: number;
+}
+
+/** Create a payload for the AWS Auto Scaling update-group action. */
+export function createAsgUpdateGroupPayload(
+  groupName: string,
+  options?: {
+    minSize?: number;
+    maxSize?: number;
+    desiredCapacity?: number;
+    defaultCooldown?: number;
+    healthCheckType?: string;
+    healthCheckGracePeriod?: number;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    auto_scaling_group_name: groupName,
+  };
+  if (options?.minSize !== undefined) payload.min_size = options.minSize;
+  if (options?.maxSize !== undefined) payload.max_size = options.maxSize;
+  if (options?.desiredCapacity !== undefined)
+    payload.desired_capacity = options.desiredCapacity;
+  if (options?.defaultCooldown !== undefined)
+    payload.default_cooldown = options.defaultCooldown;
+  if (options?.healthCheckType !== undefined)
+    payload.health_check_type = options.healthCheckType;
+  if (options?.healthCheckGracePeriod !== undefined)
+    payload.health_check_grace_period = options.healthCheckGracePeriod;
+  return payload;
+}

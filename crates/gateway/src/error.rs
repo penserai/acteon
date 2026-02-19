@@ -38,4 +38,8 @@ pub enum GatewayError {
     /// An error occurred during chain execution.
     #[error("chain error: {0}")]
     ChainError(String),
+
+    /// A pre-dispatch enrichment step failed with `FailClosed` policy.
+    #[error("enrichment failed: {0}")]
+    Enrichment(String),
 }
