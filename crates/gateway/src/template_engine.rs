@@ -72,7 +72,7 @@ pub struct RenderResult {
 /// All templates in `templates_map` are registered in the `MiniJinja` environment
 /// so that `{% include %}` and `{% extends %}` directives work across templates.
 ///
-/// Output is streamed through a [`SizeLimitedWriter`] that aborts mid-render
+/// Output is streamed through a size-limited writer that aborts mid-render
 /// when the per-field limit is exceeded, preventing unbounded memory growth.
 pub fn render_profile<S: ::std::hash::BuildHasher>(
     profile: &TemplateProfile,
