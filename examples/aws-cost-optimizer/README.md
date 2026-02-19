@@ -1,18 +1,19 @@
 # AWS Cost Optimizer
 
-A practical example using **Recurring Actions** with the **AWS Auto Scaling** provider to automatically scale down staging Auto Scaling Groups during off-hours and restore them each morning. This reduces overnight compute costs by ~87% for non-production environments.
+A practical example using **Recurring Actions** with the **AWS Auto Scaling** and **EC2** providers to automatically scale down staging Auto Scaling Groups during off-hours and restore them each morning. Includes safety guardrails that block destructive EC2 operations unless capacity headroom is attested. This reduces overnight compute costs by ~87% for non-production environments.
 
 ## Features Exercised
 
 | # | Feature | How |
 |---|---------|-----|
 | 1 | **AWS Auto Scaling** | `set_desired_capacity` to scale ASGs up and down |
-| 2 | **Recurring Actions** | 6 cron-scheduled jobs (3 scale-down, 3 scale-up) |
-| 3 | **Timezone-aware cron** | Schedules use `America/New_York` timezone |
-| 4 | **Quotas** | 100 scaling actions/day limit |
-| 5 | **Circuit breakers** | ASG provider trips after 2 failures, falls back to log |
-| 6 | **Rules** | Enrich scaling actions with cost-optimization metadata |
-| 7 | **Audit trail** | Full audit of all scaling operations |
+| 2 | **AWS EC2** | Instance-level operations (terminate, reboot) with safety guardrails |
+| 3 | **Recurring Actions** | 6 cron-scheduled jobs (3 scale-down, 3 scale-up) |
+| 4 | **Timezone-aware cron** | Schedules use `America/New_York` timezone |
+| 5 | **Quotas** | 100 scaling actions/day limit |
+| 6 | **Circuit breakers** | ASG provider trips after 2 failures, falls back to log |
+| 7 | **Rules** | Safety guardrails + enrichment for scaling actions |
+| 8 | **Audit trail** | Full audit of all scaling operations |
 
 ## Prerequisites
 
@@ -48,17 +49,46 @@ bash examples/aws-cost-optimizer/scripts/teardown.sh
 docker stop localstack
 ```
 
+## Guardrails
+
+The example includes **safety rules** (`rules/safety.yaml`) that block destructive EC2 and ASG operations unless the caller explicitly attests that capacity headroom has been verified. These rules run at priority 1-2 so they fire before routing.
+
+### What the rules protect against
+
+| Rule | Action Type | Blocks when |
+|------|------------|-------------|
+| `require-capacity-check-terminate` | `terminate_instances` | `capacity_verified` is not `true` |
+| `require-capacity-check-reboot` | `reboot_instances` | `capacity_verified` is not `true` |
+| `block-zero-capacity-critical` | `set_desired_capacity` | `desired_capacity < 1` on non-worker ASGs |
+| `minimum-capacity-api` | `set_desired_capacity` | `desired_capacity < 1` on `staging-api` |
+
+### The `capacity_verified` attestation pattern
+
+Acteon rules can't query AWS in real time, so the pattern is:
+
+1. **Client** calls `describe_auto_scaling_groups` to check current capacity
+2. **Client** verifies `desired_capacity > min_size + N` (enough headroom)
+3. **Client** includes `"capacity_verified": true` and `"available_capacity": N` in the payload
+4. **Acteon** rules allow the destructive operation because the attestation is present
+
+This keeps the safety check at the caller while Acteon enforces that the check was performed. The `available_capacity` field is recorded in the audit trail for post-incident review.
+
+### Testing the guardrails
+
+`send-scaling.sh` includes test cases at the end that exercise each safety rule. Expected outcomes are noted in the dispatch descriptions (DENIED vs ALLOWED).
+
 ## File Structure
 
 ```
 aws-cost-optimizer/
-├── acteon.toml              # Server config (ASG provider, background recurring, quota)
+├── acteon.toml              # Server config (EC2 + ASG providers, background recurring, quota)
 ├── rules/
+│   ├── safety.yaml          # Guardrail rules (deny destructive ops without attestation)
 │   └── routing.yaml         # Route scaling actions, enrich metadata, catch-all
 ├── scripts/
 │   ├── setup.sh             # Create LocalStack ASGs (staging-web, staging-api, staging-workers)
 │   ├── setup-api.sh         # Create 6 recurring actions + quota via API
-│   ├── send-scaling.sh      # Fire manual scaling actions (no waiting for cron)
+│   ├── send-scaling.sh      # Fire manual scaling actions + guardrail tests
 │   ├── show-report.sh       # Query audit/health/recurring/quotas
 │   └── teardown.sh          # Clean up API-created resources
 └── README.md

@@ -61,6 +61,19 @@ rules:
     action:
       type: allow
 
+  # ── EC2 instance operations → EC2 provider ─────────────────────────────────
+  - name: route-ec2-ops
+    priority: 5
+    description: "Route EC2 instance operations to the EC2 provider"
+    condition:
+      all:
+        - field: action.tenant
+          eq: "cost-optimizer"
+        - field: action.action_type
+          in_list: ["terminate_instances", "reboot_instances", "stop_instances", "start_instances", "describe_instances"]
+    action:
+      type: allow
+
   # ── Enrich all cost-optimizer actions with metadata ────────────────────────
   - name: enrich-cost-metadata
     priority: 15

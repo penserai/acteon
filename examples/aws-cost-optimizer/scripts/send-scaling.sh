@@ -143,6 +143,66 @@ dispatch "Update staging-workers max to 12 and health check" '{
   }
 }'
 
+# ── Guardrail Tests ───────────────────────────────────────────────────────
+echo "--- Guardrail Tests (safety rules) ---"
+echo ""
+
+dispatch "Terminate without capacity_verified → DENIED" '{
+  "namespace": "infra",
+  "tenant": "cost-optimizer",
+  "provider": "cost-ec2",
+  "action_type": "terminate_instances",
+  "payload": {
+    "instance_ids": ["i-0abc123def456789a"]
+  }
+}'
+
+dispatch "Terminate with capacity_verified → ALLOWED" '{
+  "namespace": "infra",
+  "tenant": "cost-optimizer",
+  "provider": "cost-ec2",
+  "action_type": "terminate_instances",
+  "payload": {
+    "instance_ids": ["i-0abc123def456789a"],
+    "capacity_verified": true,
+    "available_capacity": 3
+  }
+}'
+
+dispatch "Reboot without capacity_verified → DENIED" '{
+  "namespace": "infra",
+  "tenant": "cost-optimizer",
+  "provider": "cost-ec2",
+  "action_type": "reboot_instances",
+  "payload": {
+    "instance_ids": ["i-0abc123def456789a"]
+  }
+}'
+
+dispatch "Scale staging-api to 0 → DENIED (minimum capacity)" '{
+  "namespace": "infra",
+  "tenant": "cost-optimizer",
+  "provider": "cost-asg",
+  "action_type": "set_desired_capacity",
+  "payload": {
+    "auto_scaling_group_name": "staging-api",
+    "desired_capacity": 0,
+    "honor_cooldown": false
+  }
+}'
+
+dispatch "Scale staging-workers to 0 → ALLOWED (workers exempt)" '{
+  "namespace": "infra",
+  "tenant": "cost-optimizer",
+  "provider": "cost-asg",
+  "action_type": "set_desired_capacity",
+  "payload": {
+    "auto_scaling_group_name": "staging-workers",
+    "desired_capacity": 0,
+    "honor_cooldown": false
+  }
+}'
+
 echo "=== Manual scaling actions complete ==="
 echo ""
 echo "Actions sent:"
@@ -150,5 +210,6 @@ echo "  - 3 scale-down actions (simulate off-hours)"
 echo "  - 1 describe action (verify state)"
 echo "  - 3 scale-up actions (simulate morning)"
 echo "  - 1 update ASG config"
+echo "  - 5 guardrail tests (terminate, reboot, capacity limits)"
 echo ""
 echo "Run show-report.sh to see the audit trail."

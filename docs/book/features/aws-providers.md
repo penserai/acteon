@@ -967,6 +967,140 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Guardrails for Destructive Operations
+
+EC2 operations like `terminate_instances` and `reboot_instances` can cause outages when the instances belong to an Auto Scaling Group at or near minimum capacity. Acteon provides several patterns for preventing this, ranging from zero-configuration static rules to client-side orchestration.
+
+### Static guardrails (recommended starting point)
+
+YAML rules evaluated at high priority can deny destructive operations unless the caller includes an attestation field. This is the simplest approach and works with no external dependencies.
+
+**Deny termination/reboot without capacity check:**
+
+```yaml
+rules:
+  - name: require-capacity-check-terminate
+    priority: 1
+    description: "Block terminate_instances unless capacity headroom is attested"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "terminate_instances"
+        - field: action.payload.capacity_verified
+          ne: true
+    action:
+      type: deny
+
+  - name: require-capacity-check-reboot
+    priority: 1
+    description: "Block reboot_instances unless capacity headroom is attested"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "reboot_instances"
+        - field: action.payload.capacity_verified
+          ne: true
+    action:
+      type: deny
+```
+
+**Deny scaling below a threshold:**
+
+```yaml
+  - name: block-zero-capacity-critical
+    priority: 2
+    description: "Prevent scaling critical ASGs to zero"
+    condition:
+      all:
+        - field: action.action_type
+          eq: "set_desired_capacity"
+        - field: action.payload.desired_capacity
+          lt: 1
+        - field: action.payload.auto_scaling_group_name
+          ne: "staging-workers"
+    action:
+      type: deny
+```
+
+Advantages: zero latency, no external dependencies, full audit trail of blocked operations, works across all providers and action types.
+
+### Client-side orchestration (recommended for dynamic checks)
+
+Static rules can enforce that a capacity check *was performed*, but the actual check happens client-side. The pattern is:
+
+1. Client calls `describe_auto_scaling_groups` (via Acteon or directly) to read current state
+2. Client verifies `desired_capacity > min_size + N` (sufficient headroom)
+3. Client dispatches the destructive action with `"capacity_verified": true` and `"available_capacity": N`
+4. Acteon's static rules allow the action because the attestation is present
+
+**Python example:**
+
+```python
+import acteon
+import json
+
+client = acteon.ActeonClient("http://localhost:8080")
+
+# Step 1: Query current ASG state
+resp = client.dispatch(
+    namespace="infra",
+    tenant="cost-optimizer",
+    provider="cost-asg",
+    action_type="describe_auto_scaling_groups",
+    payload={"auto_scaling_group_names": ["staging-api"]},
+)
+asg = json.loads(resp.body)["auto_scaling_groups"][0]
+
+# Step 2: Check headroom
+desired = asg["desired_capacity"]
+min_size = asg["min_size"]
+headroom = desired - min_size
+
+if headroom < 2:
+    print(f"Insufficient headroom ({headroom}), skipping termination")
+else:
+    # Step 3: Dispatch with attestation
+    client.dispatch(
+        namespace="infra",
+        tenant="cost-optimizer",
+        provider="cost-ec2",
+        action_type="terminate_instances",
+        payload={
+            "instance_ids": ["i-0abc123def456789a"],
+            "capacity_verified": True,
+            "available_capacity": headroom,
+        },
+    )
+```
+
+### Chain-based pre-flight (partial support)
+
+Action chains can sequence a describe step before a destructive step:
+
+```
+Step 1: describe_auto_scaling_groups → get current state
+Step 2: terminate_instances (uses result from step 1)
+```
+
+The describe result is available in step 2 via `{{steps.step1.body.auto_scaling_groups}}`. However, chain branch conditions currently support only `Eq`, `Neq`, `Contains`, and `Exists` operators -- **not** numeric comparisons like "is `desired_capacity > min_size + 2`?". This means the chain can orchestrate the sequence but cannot conditionally abort based on capacity arithmetic.
+
+This approach works for existence checks (e.g., "does the ASG exist?") but not for "is capacity above threshold N?".
+
+### Limitations and future direction
+
+| Limitation | Why | Workaround |
+|-----------|-----|------------|
+| No real-time capacity awareness in rules | Rules evaluate payload fields only, not live AWS state | Client-side orchestration (see above) |
+| WASM plugins can't query AWS | Sandboxed with no network access | Use WASM for payload validation logic only |
+| Chain branches lack numeric operators | Only `Eq`/`Neq`/`Contains`/`Exists` | Client-side arithmetic before dispatch |
+
+Future enhancements that would close these gaps:
+- Numeric branch operators (`Gt`, `Lt`, `Gte`, `Lte`) for chains
+- Optional WASM network grants for trusted plugins
+- Built-in "pre-flight query" step type that evaluates a provider response before proceeding
+
+See the [AWS Cost Optimizer example](../../examples/aws-cost-optimizer/) for a runnable demo of static guardrails with the `capacity_verified` attestation pattern.
+
 ## LocalStack Development
 
 All AWS providers support endpoint URL overrides, making it easy to develop and test locally with [LocalStack](https://localstack.cloud/):

@@ -30,6 +30,13 @@ store_payload = true
 
 # ── Providers ────────────────────────────────────────────────────────────────
 
+# EC2: instance-level operations (terminate, reboot, describe)
+[[providers]]
+name = "cost-ec2"
+type = "aws-ec2"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+
 # Auto Scaling: manage ASG capacity
 [[providers]]
 name = "cost-asg"
@@ -58,6 +65,11 @@ enabled = true
 failure_threshold = 3
 success_threshold = 1
 recovery_timeout_seconds = 30
+
+[circuit_breaker.providers.cost-ec2]
+failure_threshold = 2
+recovery_timeout_seconds = 60
+fallback_provider = "local-fallback"
 
 [circuit_breaker.providers.cost-asg]
 failure_threshold = 2
