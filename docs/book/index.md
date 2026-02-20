@@ -6,7 +6,7 @@ hide:
 
 <div class="hero" markdown>
 
-![Acteon](assets/logo.png){ width="180" }
+![Acteon](assets/logo.svg){ width="180" }
 
 # Acteon
 

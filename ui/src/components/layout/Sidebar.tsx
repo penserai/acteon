@@ -8,7 +8,7 @@ import {
   PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart, Database, HeartPulse, Puzzle,
   ShieldAlert, FileText,
 } from 'lucide-react'
-import logoPng from '../../assets/logo.png'
+import logoSvg from '../../assets/logo.svg'
 import styles from './Sidebar.module.css'
 
 const mainItems = [
@@ -66,7 +66,7 @@ export function Sidebar() {
     <>
       <div className={styles.header}>
         <div className={styles.logoWrap}>
-          <img src={logoPng} alt="Acteon" className={styles.logoImg} />
+          <img src={logoSvg} alt="Acteon" className={styles.logoImg} />
           <span className={styles.logo}>Acteon</span>
         </div>
         {/* Desktop: collapse toggle */}
@@ -109,7 +109,7 @@ export function Sidebar() {
       >
         <div className={styles.header}>
           <div className={styles.logoWrap}>
-            <img src={logoPng} alt="Acteon" className={styles.logoImg} />
+            <img src={logoSvg} alt="Acteon" className={styles.logoImg} />
             {!collapsed && <span className={styles.logo}>Acteon</span>}
           </div>
           <button
