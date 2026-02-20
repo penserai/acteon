@@ -14,10 +14,7 @@ viewBox="634 370 1052 1552"
     .fil5 {fill:#98AEB9}
     .fil4 {fill:#C7DAE1}
     .fil2 {fill:white}
-    .fil1 {fill:#1D2E4A;fill-rule:nonzero}
-    @media (prefers-color-scheme: dark) {
-      .fil1 {fill:#C7DAE1}
-    }
+    .fil1 {fill:#98AEB9;fill-rule:nonzero}
    ]]>
   </style>
  </defs>
