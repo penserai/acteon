@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Send } from 'lucide-react'
 import { useDispatch } from '../api/hooks/useActions'
+import { useConfig } from '../api/hooks/useConfig'
+import { useAudit } from '../api/hooks/useAudit'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Input } from '../components/ui/Input'
+import { Select } from '../components/ui/Select'
 import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { JsonViewer } from '../components/ui/JsonViewer'
@@ -11,10 +14,107 @@ import { useToast } from '../components/ui/useToast'
 import type { DispatchRequest, DispatchResponse } from '../types'
 import styles from './Dispatch.module.css'
 
+/**
+ * Known action types keyed by provider type AND provider name.
+ * Lookup checks provider name first, then provider type, then merges both.
+ */
+const ACTION_TYPES: Record<string, string[]> = {
+  // By provider type
+  email: ['send_email'],
+  slack: ['send_message'],
+  twilio: ['send_sms'],
+  teams: ['notify'],
+  discord: ['notify'],
+  pagerduty: ['trigger', 'acknowledge', 'resolve'],
+  webhook: ['send'],
+  log: ['send'],
+  'aws-sns': ['publish'],
+  'aws-lambda': ['invoke'],
+  'aws-eventbridge': ['put_event'],
+  'aws-sqs': ['send_message'],
+  'aws-s3': ['put_object', 'get_object', 'delete_object'],
+  'aws-ec2': [
+    'run_instances', 'start_instances', 'stop_instances',
+    'reboot_instances', 'terminate_instances', 'hibernate_instances',
+    'describe_instances', 'attach_volume', 'detach_volume',
+  ],
+  'aws-autoscaling': [
+    'describe_auto_scaling_groups', 'set_desired_capacity',
+    'update_auto_scaling_group',
+  ],
+  // By common provider name (when name differs from type, e.g. name="sms" type="log")
+  sms: ['send_sms'],
+}
+
+const CUSTOM = '__custom__'
+
+/** Select that falls back to an Input when "Custom..." is chosen or no options exist. */
+function SelectOrCustom({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  options: string[]
+  placeholder: string
+}) {
+  const [custom, setCustom] = useState(false)
+
+  if (custom || options.length === 0) {
+    return (
+      <div>
+        <Input
+          label={label}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+        />
+        {options.length > 0 && (
+          <button
+            type="button"
+            className={styles.switchLink}
+            onClick={() => { setCustom(false); onChange('') }}
+          >
+            Pick from list
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const selectOptions = [
+    ...options.map((o) => ({ value: o, label: o })),
+    { value: CUSTOM, label: 'Custom...' },
+  ]
+
+  return (
+    <Select
+      label={label}
+      options={selectOptions}
+      value={value}
+      onChange={(e) => {
+        if (e.target.value === CUSTOM) {
+          setCustom(true)
+          onChange('')
+        } else {
+          onChange(e.target.value)
+        }
+      }}
+      placeholder={placeholder}
+    />
+  )
+}
+
 export function Dispatch() {
   const dispatch = useDispatch()
   const { toast } = useToast()
   const navigate = useNavigate()
+  const config = useConfig()
+  const audit = useAudit({ limit: 200 })
   const [ns, setNs] = useState('')
   const [tenant, setTenant] = useState('')
   const [provider, setProvider] = useState('')
@@ -24,6 +124,59 @@ export function Dispatch() {
   const [dryRun, setDryRun] = useState(false)
   const [result, setResult] = useState<DispatchResponse | null>(null)
   const [payloadError, setPayloadError] = useState('')
+
+  const providers = useMemo(() => config.data?.providers ?? [], [config.data])
+
+  const providerOptions = useMemo(() =>
+    providers.map((p) => ({
+      value: p.name,
+      label: `${p.name} (${p.provider_type})`,
+    })),
+    [providers],
+  )
+
+  // Resolve the selected provider's type to look up action types.
+  const selectedProviderType = useMemo(() => {
+    const p = providers.find((pr) => pr.name === provider)
+    return p?.provider_type ?? ''
+  }, [providers, provider])
+
+  // Action types: merge by provider name + provider type + audit history.
+  const actionTypeOptions = useMemo(() => {
+    const byName = ACTION_TYPES[provider] ?? []
+    const byType = ACTION_TYPES[selectedProviderType] ?? []
+    const fromAudit = new Set<string>()
+    if (audit.data?.records) {
+      for (const r of audit.data.records) {
+        if (r.provider === provider) {
+          fromAudit.add(r.action_type)
+        }
+      }
+    }
+    const merged = new Set([...byName, ...byType, ...fromAudit])
+    return [...merged].sort()
+  }, [selectedProviderType, provider, audit.data])
+
+  const { namespaces, tenants } = useMemo(() => {
+    const nsSet = new Set<string>()
+    const tenantSet = new Set<string>()
+    if (audit.data?.records) {
+      for (const r of audit.data.records) {
+        nsSet.add(r.namespace)
+        tenantSet.add(r.tenant)
+      }
+    }
+    return {
+      namespaces: [...nsSet].sort(),
+      tenants: [...tenantSet].sort(),
+    }
+  }, [audit.data])
+
+  // Reset action type when provider changes.
+  const handleProviderChange = (v: string) => {
+    setProvider(v)
+    setActionType('')
+  }
 
   const handleDispatch = () => {
     let parsed: Record<string, unknown>
@@ -60,10 +213,34 @@ export function Dispatch() {
       <div className={styles.container}>
         <div className={styles.formCard}>
           <div className={styles.formGrid}>
-            <Input label="Namespace *" value={ns} onChange={(e) => setNs(e.target.value)} placeholder="prod" />
-            <Input label="Tenant *" value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder="acme" />
-            <Input label="Provider *" value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="email" />
-            <Input label="Action Type *" value={actionType} onChange={(e) => setActionType(e.target.value)} placeholder="send-notification" />
+            <SelectOrCustom
+              label="Namespace *"
+              value={ns}
+              onChange={setNs}
+              options={namespaces}
+              placeholder="Select namespace"
+            />
+            <SelectOrCustom
+              label="Tenant *"
+              value={tenant}
+              onChange={setTenant}
+              options={tenants}
+              placeholder="Select tenant"
+            />
+            <Select
+              label="Provider *"
+              options={providerOptions}
+              value={provider}
+              onChange={(e) => handleProviderChange(e.target.value)}
+              placeholder="Select a provider"
+            />
+            <SelectOrCustom
+              label="Action Type *"
+              value={actionType}
+              onChange={setActionType}
+              options={actionTypeOptions}
+              placeholder="Select action type"
+            />
           </div>
 
           <div>
@@ -113,12 +290,14 @@ export function Dispatch() {
                 <Badge>{result.outcome}</Badge>
               </div>
             </div>
-            <div className={styles.resultDetailsSection}>
-              <span className={styles.resultDetailsLabel}>Details:</span>
-              <div className={styles.jsonViewerCard}>
-                <JsonViewer data={result.details} />
+            {result.details && (
+              <div className={styles.resultDetailsSection}>
+                <span className={styles.resultDetailsLabel}>Details:</span>
+                <div className={styles.jsonViewerCard}>
+                  <JsonViewer data={result.details} />
+                </div>
               </div>
-            </div>
+            )}
             <div className={styles.viewAuditContainer}>
               <Button
                 variant="ghost"

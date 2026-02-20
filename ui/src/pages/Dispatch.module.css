@@ -84,3 +84,11 @@
 .viewAuditContainer {
   @apply mt-4;
 }
+
+.switchLink {
+  @apply text-xs mt-1 cursor-pointer;
+  color: var(--text-tertiary);
+  &:hover {
+    color: var(--text-secondary);
+  }
+}

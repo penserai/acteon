@@ -49,7 +49,7 @@ export interface DispatchRequest {
 export interface DispatchResponse {
   action_id: string
   outcome: string
-  details: Record<string, unknown>
+  details: Record<string, unknown> | null
 }
 
 // ---- Rules ----
