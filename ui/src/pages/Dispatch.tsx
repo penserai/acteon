@@ -14,8 +14,12 @@ import { useToast } from '../components/ui/useToast'
 import type { DispatchRequest, DispatchResponse } from '../types'
 import styles from './Dispatch.module.css'
 
-/** Known action types per provider type. */
+/**
+ * Known action types keyed by provider type AND provider name.
+ * Lookup checks provider name first, then provider type, then merges both.
+ */
 const ACTION_TYPES: Record<string, string[]> = {
+  // By provider type
   email: ['send_email'],
   slack: ['send_message'],
   twilio: ['send_sms'],
@@ -38,6 +42,8 @@ const ACTION_TYPES: Record<string, string[]> = {
     'describe_auto_scaling_groups', 'set_desired_capacity',
     'update_auto_scaling_group',
   ],
+  // By common provider name (when name differs from type, e.g. name="sms" type="log")
+  sms: ['send_sms'],
 }
 
 const CUSTOM = '__custom__'
@@ -135,9 +141,10 @@ export function Dispatch() {
     return p?.provider_type ?? ''
   }, [providers, provider])
 
-  // Action types: known types for the provider type + any from audit history.
+  // Action types: merge by provider name + provider type + audit history.
   const actionTypeOptions = useMemo(() => {
-    const known = ACTION_TYPES[selectedProviderType] ?? []
+    const byName = ACTION_TYPES[provider] ?? []
+    const byType = ACTION_TYPES[selectedProviderType] ?? []
     const fromAudit = new Set<string>()
     if (audit.data?.records) {
       for (const r of audit.data.records) {
@@ -146,7 +153,7 @@ export function Dispatch() {
         }
       }
     }
-    const merged = new Set([...known, ...fromAudit])
+    const merged = new Set([...byName, ...byType, ...fromAudit])
     return [...merged].sort()
   }, [selectedProviderType, provider, audit.data])
 
