@@ -1782,15 +1782,9 @@ impl Gateway {
 
         let exec_start = std::time::Instant::now();
         let result = if let Some(ref ctx) = dispatch_ctx {
-            match provider.execute_with_context(action, ctx).await {
-                Ok(resp) => ActionOutcome::Executed(resp),
-                Err(e) => ActionOutcome::Failed(acteon_core::ActionError {
-                    code: "EXECUTION_FAILED".into(),
-                    message: e.to_string(),
-                    retryable: e.is_retryable(),
-                    attempts: 1,
-                }),
-            }
+            self.executor
+                .execute_with_context(action, provider, ctx)
+                .await
         } else {
             self.executor.execute(action, provider).await
         };
