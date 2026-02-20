@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Acteon" width="200">
+  <img src="docs/logo.svg" alt="Acteon" width="200">
 </p>
 
 <h1 align="center">acteon</h1>
