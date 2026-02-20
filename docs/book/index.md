@@ -6,11 +6,7 @@ hide:
 
 <div class="hero" markdown>
 
-![Acteon](assets/logo.svg){ width="180" }
-
-# Acteon
-
-**Actions forged in Rust**
+![Acteon — Actions forged in Rust](assets/logo.svg){ width="180" }
 
 _A distributed action gateway that transforms, deduplicates, routes, and dispatches actions through a configurable pipeline of rules, providers, and state backends._
 
