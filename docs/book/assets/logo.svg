@@ -14,7 +14,7 @@ viewBox="634 370 1052 1552"
     .fil5 {fill:#98AEB9}
     .fil4 {fill:#C7DAE1}
     .fil2 {fill:white}
-    .fil1 {fill:#1D2E4A;fill-rule:nonzero}
+    .fil1 {fill:currentColor;fill-rule:nonzero}
    ]]>
   </style>
  </defs>
