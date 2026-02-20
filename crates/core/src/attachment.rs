@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum Attachment {
-    /// A reference to a blob stored in an external [`BlobStore`](acteon_blob::BlobStore).
+    /// A reference to a blob stored in an external `BlobStore`.
     ///
     /// The blob is resolved at dispatch time. Requires a blob store to be
     /// configured on the gateway.

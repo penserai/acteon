@@ -237,10 +237,10 @@ impl Gateway {
     /// - `Inline` attachments are decoded from base64.
     ///
     /// Returns an error if:
-    /// - The action has more attachments than [`max_attachments_per_action`].
+    /// - The action has more attachments than `max_attachments_per_action`.
     /// - A `BlobRef` is used but no blob store is configured.
     /// - A blob cannot be found or has expired.
-    /// - An inline attachment exceeds [`max_inline_bytes`].
+    /// - An inline attachment exceeds `max_inline_bytes`.
     /// - Base64 decoding fails.
     pub async fn resolve_attachments(
         &self,
