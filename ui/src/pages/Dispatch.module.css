@@ -92,3 +92,46 @@
     color: var(--text-secondary);
   }
 }
+
+.hiddenInput {
+  @apply hidden;
+}
+
+.attachButton {
+  @apply flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-md border cursor-pointer;
+  background: var(--bg-surface);
+  border-color: var(--border-input);
+  color: var(--text-secondary);
+  &:hover {
+    background: var(--bg-surface-secondary);
+    color: var(--text-default);
+  }
+}
+
+.attachmentList {
+  @apply mt-2 space-y-1;
+}
+
+.attachmentItem {
+  @apply flex items-center gap-2 text-sm px-3 py-1.5 rounded-md border;
+  background: var(--bg-surface-secondary);
+  border-color: var(--border-default);
+}
+
+.attachmentName {
+  @apply truncate flex-1 font-mono text-xs;
+  color: var(--text-default);
+}
+
+.attachmentSize {
+  @apply text-xs shrink-0;
+  color: var(--text-tertiary);
+}
+
+.removeAttachment {
+  @apply shrink-0 p-0.5 rounded cursor-pointer;
+  color: var(--text-tertiary);
+  &:hover {
+    color: var(--text-default);
+  }
+}

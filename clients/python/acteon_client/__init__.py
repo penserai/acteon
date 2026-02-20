@@ -4,6 +4,9 @@ from .client import ActeonClient, AsyncActeonClient
 from .errors import ActeonError, ConnectionError, ApiError, HttpError
 from .models import (
     Action,
+    Attachment,
+    BlobRefAttachment,
+    InlineAttachment,
     ActionOutcome,
     BatchResult,
     RuleInfo,
@@ -79,6 +82,9 @@ __all__ = [
     "ApiError",
     "HttpError",
     "Action",
+    "Attachment",
+    "BlobRefAttachment",
+    "InlineAttachment",
     "ActionOutcome",
     "BatchResult",
     "RuleInfo",

@@ -31,6 +31,11 @@ export interface HealthResponse {
   metrics: MetricsResponse
 }
 
+// ---- Attachments ----
+export type Attachment =
+  | { blob_ref: { blob_id: string; filename?: string } }
+  | { inline: { data_base64: string; content_type: string; filename: string } }
+
 // ---- Dispatch ----
 export interface DispatchRequest {
   namespace: string
@@ -44,6 +49,7 @@ export interface DispatchRequest {
   status?: string
   starts_at?: string
   ends_at?: string
+  attachments?: Attachment[]
 }
 
 export interface DispatchResponse {
@@ -89,6 +95,7 @@ export interface AuditRecord {
   record_hash?: string
   previous_hash?: string
   sequence_number?: number
+  attachment_metadata?: Record<string, unknown>[]
 }
 
 export interface AuditPage {

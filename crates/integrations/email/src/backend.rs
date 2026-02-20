@@ -1,6 +1,17 @@
 use acteon_provider::ProviderError;
 use async_trait::async_trait;
 
+/// A file attachment to include in an email.
+#[derive(Debug, Clone)]
+pub struct EmailAttachment {
+    /// Filename for the attachment.
+    pub filename: String,
+    /// MIME content type (e.g. `"application/pdf"`).
+    pub content_type: String,
+    /// Raw attachment data.
+    pub data: Vec<u8>,
+}
+
 /// A unified email message representation shared across all backends.
 #[derive(Debug, Clone)]
 pub struct EmailMessage {
@@ -20,6 +31,9 @@ pub struct EmailMessage {
     pub bcc: Option<String>,
     /// Optional reply-to address.
     pub reply_to: Option<String>,
+    /// File attachments.
+    #[allow(dead_code)]
+    pub attachments: Vec<EmailAttachment>,
 }
 
 /// Result of a successful email send operation.

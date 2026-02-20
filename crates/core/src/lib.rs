@@ -1,4 +1,5 @@
 pub mod action;
+pub mod attachment;
 pub mod caller;
 pub mod chain;
 pub mod chain_dag;
@@ -21,6 +22,7 @@ pub mod template;
 pub mod types;
 
 pub use action::{Action, ActionMetadata};
+pub use attachment::Attachment;
 pub use caller::Caller;
 pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,

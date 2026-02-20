@@ -12,4 +12,4 @@ pub use provider::EmailProvider;
 pub use types::EmailPayload;
 
 // Re-export backend trait for external use.
-pub use backend::{EmailBackend, EmailMessage, EmailResult};
+pub use backend::{EmailAttachment, EmailBackend, EmailMessage, EmailResult};

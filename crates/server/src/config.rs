@@ -62,6 +62,9 @@ pub struct ActeonConfig {
     /// Payload template configuration.
     #[serde(default)]
     pub templates: TemplateServerConfig,
+    /// Attachment / blob configuration.
+    #[serde(default)]
+    pub attachments: AttachmentConfig,
     /// Pre-dispatch enrichment configurations.
     ///
     /// Each entry describes a resource lookup to execute before rule evaluation,
@@ -924,6 +927,47 @@ pub struct TemplateServerConfig {
     pub profiles_directory: Option<String>,
 }
 
+/// Configuration for action payload attachments.
+///
+/// Controls size limits for inline `base64` attachments and the maximum number
+/// of attachments per action.  A pluggable `BlobStore` trait can be wired in
+/// at runtime for external blob references; this configuration only governs
+/// the built-in inline mode.
+///
+/// # Example
+///
+/// ```toml
+/// [attachments]
+/// max_inline_bytes = 5242880
+/// max_attachments_per_action = 10
+/// ```
+#[derive(Debug, Deserialize)]
+pub struct AttachmentConfig {
+    /// Maximum size in bytes for a single inline `base64` attachment (default: 5 MB).
+    #[serde(default = "default_max_inline_bytes")]
+    pub max_inline_bytes: u64,
+    /// Maximum number of attachments allowed per action (default: 10).
+    #[serde(default = "default_max_attachments_per_action")]
+    pub max_attachments_per_action: usize,
+}
+
+impl Default for AttachmentConfig {
+    fn default() -> Self {
+        Self {
+            max_inline_bytes: default_max_inline_bytes(),
+            max_attachments_per_action: default_max_attachments_per_action(),
+        }
+    }
+}
+
+fn default_max_inline_bytes() -> u64 {
+    5 * 1024 * 1024 // 5 MB
+}
+
+fn default_max_attachments_per_action() -> usize {
+    10
+}
+
 /// Configuration for the WASM plugin runtime.
 ///
 /// When enabled, Acteon loads `.wasm` plugin files from the configured
@@ -1278,6 +1322,8 @@ pub struct ConfigSnapshot {
     pub wasm: WasmSnapshot,
     /// Compliance mode configuration.
     pub compliance: ComplianceSnapshot,
+    /// Attachment configuration.
+    pub attachments: AttachmentSnapshot,
     /// Registered provider summaries.
     pub providers: Vec<ProviderSnapshot>,
 }
@@ -1302,6 +1348,7 @@ impl From<&ActeonConfig> for ConfigSnapshot {
             encryption: EncryptionSnapshot::from(&cfg.encryption),
             wasm: WasmSnapshot::from(&cfg.wasm),
             compliance: ComplianceSnapshot::from(&cfg.compliance),
+            attachments: AttachmentSnapshot::from(&cfg.attachments),
             providers: cfg.providers.iter().map(ProviderSnapshot::from).collect(),
         }
     }
@@ -1844,6 +1891,24 @@ impl From<&ComplianceServerConfig> for ComplianceSnapshot {
             sync_audit_writes: resolved.sync_audit_writes,
             immutable_audit: resolved.immutable_audit,
             hash_chain: resolved.hash_chain,
+        }
+    }
+}
+
+/// Sanitized attachment configuration.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AttachmentSnapshot {
+    /// Maximum inline attachment size in bytes.
+    pub max_inline_bytes: u64,
+    /// Maximum attachments per action.
+    pub max_attachments_per_action: usize,
+}
+
+impl From<&AttachmentConfig> for AttachmentSnapshot {
+    fn from(cfg: &AttachmentConfig) -> Self {
+        Self {
+            max_inline_bytes: cfg.max_inline_bytes,
+            max_attachments_per_action: cfg.max_attachments_per_action,
         }
     }
 }

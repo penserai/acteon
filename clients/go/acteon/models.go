@@ -8,18 +8,51 @@ import (
 	"github.com/google/uuid"
 )
 
+// Attachment represents an attachment on an action.
+// Use NewBlobRefAttachment or NewInlineAttachment to create instances.
+type Attachment struct {
+	Type        string `json:"type"`
+	BlobID      string `json:"blob_id,omitempty"`
+	DataBase64  string `json:"data_base64,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Filename    string `json:"filename,omitempty"`
+}
+
+// NewBlobRefAttachment creates an attachment referencing an existing blob.
+func NewBlobRefAttachment(blobID string, filename string) Attachment {
+	a := Attachment{
+		Type:   "blob_ref",
+		BlobID: blobID,
+	}
+	if filename != "" {
+		a.Filename = filename
+	}
+	return a
+}
+
+// NewInlineAttachment creates an inline attachment with base64-encoded data.
+func NewInlineAttachment(dataBase64, contentType, filename string) Attachment {
+	return Attachment{
+		Type:        "inline",
+		DataBase64:  dataBase64,
+		ContentType: contentType,
+		Filename:    filename,
+	}
+}
+
 // Action represents an action to be dispatched through Acteon.
 type Action struct {
-	ID         string          `json:"id"`
-	Namespace  string          `json:"namespace"`
-	Tenant     string          `json:"tenant"`
-	Provider   string          `json:"provider"`
-	ActionType string          `json:"action_type"`
-	Payload    map[string]any  `json:"payload"`
-	DedupKey   string          `json:"dedup_key,omitempty"`
-	Metadata   *ActionMetadata `json:"metadata,omitempty"`
-	CreatedAt  time.Time       `json:"created_at"`
-	Template   string          `json:"template,omitempty"`
+	ID          string          `json:"id"`
+	Namespace   string          `json:"namespace"`
+	Tenant      string          `json:"tenant"`
+	Provider    string          `json:"provider"`
+	ActionType  string          `json:"action_type"`
+	Payload     map[string]any  `json:"payload"`
+	DedupKey    string          `json:"dedup_key,omitempty"`
+	Metadata    *ActionMetadata `json:"metadata,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Template    string          `json:"template,omitempty"`
+	Attachments []Attachment    `json:"attachments,omitempty"`
 }
 
 // ActionMetadata contains optional metadata for an action.
@@ -49,6 +82,12 @@ func (a *Action) WithDedupKey(key string) *Action {
 // WithMetadata sets the metadata labels.
 func (a *Action) WithMetadata(labels map[string]string) *Action {
 	a.Metadata = &ActionMetadata{Labels: labels}
+	return a
+}
+
+// WithAttachments sets the attachments on the action.
+func (a *Action) WithAttachments(attachments []Attachment) *Action {
+	a.Attachments = attachments
 	return a
 }
 

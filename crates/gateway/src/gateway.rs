@@ -203,6 +203,12 @@ pub struct Gateway {
     pub(crate) enrichments: Vec<acteon_core::EnrichmentConfig>,
     /// Resource lookup providers for enrichment (keyed by provider name).
     pub(crate) resource_lookups: HashMap<String, Arc<dyn acteon_provider::ResourceLookup>>,
+    /// Optional pluggable blob store for resolving `BlobRef` attachments.
+    pub(crate) blob_store: Option<Arc<dyn acteon_blob::BlobStore>>,
+    /// Maximum allowed size for inline base64 attachments (bytes).
+    pub(crate) max_inline_bytes: u64,
+    /// Maximum number of attachments per action.
+    pub(crate) max_attachments_per_action: usize,
 }
 
 impl std::fmt::Debug for Gateway {
@@ -218,6 +224,112 @@ impl Gateway {
     /// Returns the WASM plugin runtime, if configured.
     pub fn wasm_runtime(&self) -> Option<&dyn acteon_wasm_runtime::WasmPluginRuntime> {
         self.wasm_runtime.as_deref()
+    }
+
+    /// Returns the blob store, if configured.
+    pub fn blob_store(&self) -> Option<&dyn acteon_blob::BlobStore> {
+        self.blob_store.as_deref()
+    }
+
+    /// Resolve all attachments on an action into [`ResolvedBlob`](acteon_blob::ResolvedBlob) instances.
+    ///
+    /// - `BlobRef` attachments are fetched from the configured blob store.
+    /// - `Inline` attachments are decoded from base64.
+    ///
+    /// Returns an error if:
+    /// - The action has more attachments than [`max_attachments_per_action`].
+    /// - A `BlobRef` is used but no blob store is configured.
+    /// - A blob cannot be found or has expired.
+    /// - An inline attachment exceeds [`max_inline_bytes`].
+    /// - Base64 decoding fails.
+    pub async fn resolve_attachments(
+        &self,
+        action: &Action,
+    ) -> Result<Vec<acteon_blob::ResolvedBlob>, GatewayError> {
+        use base64::Engine;
+
+        if action.attachments.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if action.attachments.len() > self.max_attachments_per_action {
+            return Err(GatewayError::Attachment(format!(
+                "action has {} attachments, max is {}",
+                action.attachments.len(),
+                self.max_attachments_per_action
+            )));
+        }
+
+        let mut resolved = Vec::with_capacity(action.attachments.len());
+
+        for attachment in &action.attachments {
+            match attachment {
+                acteon_core::Attachment::BlobRef { blob_id, filename } => {
+                    let store = self.blob_store.as_ref().ok_or_else(|| {
+                        GatewayError::Attachment(
+                            "BlobRef attachment requires a blob store, but none is configured"
+                                .into(),
+                        )
+                    })?;
+
+                    let (meta, data) = store
+                        .get(blob_id)
+                        .await
+                        .map_err(|e| GatewayError::Attachment(e.to_string()))?
+                        .ok_or_else(|| {
+                            GatewayError::Attachment(format!("blob not found: {blob_id}"))
+                        })?;
+
+                    let final_filename = filename.as_deref().unwrap_or(&meta.filename);
+
+                    resolved.push(acteon_blob::ResolvedBlob {
+                        metadata: acteon_blob::BlobMetadata {
+                            filename: final_filename.to_owned(),
+                            ..meta
+                        },
+                        data,
+                    });
+                }
+                acteon_core::Attachment::Inline {
+                    data_base64,
+                    content_type,
+                    filename,
+                } => {
+                    let data = base64::engine::general_purpose::STANDARD
+                        .decode(data_base64)
+                        .map_err(|e| {
+                            GatewayError::Attachment(format!(
+                                "failed to decode base64 for '{filename}': {e}"
+                            ))
+                        })?;
+
+                    let size = data.len() as u64;
+                    if size > self.max_inline_bytes {
+                        return Err(GatewayError::Attachment(format!(
+                            "inline attachment '{filename}' is {size} bytes, max is {}",
+                            self.max_inline_bytes
+                        )));
+                    }
+
+                    resolved.push(acteon_blob::ResolvedBlob {
+                        metadata: acteon_blob::BlobMetadata {
+                            id: String::new(),
+                            filename: filename.clone(),
+                            content_type: content_type.clone(),
+                            size_bytes: size,
+                            checksum_sha256: String::new(),
+                            namespace: action.namespace.to_string(),
+                            tenant: action.tenant.to_string(),
+                            created_at: chrono::Utc::now(),
+                            expires_at: None,
+                        },
+                        data: bytes::Bytes::from(data),
+                    });
+                }
+            }
+        }
+
+        Ok(resolved)
     }
 
     /// Returns the compliance configuration, if set.
@@ -1596,9 +1708,8 @@ impl Gateway {
                 attempts: 0,
             });
         };
-        let exec_start = std::time::Instant::now();
-        let result = self.executor.execute(action, provider.as_ref()).await;
-        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+        let (result, latency_us) = self.execute_provider(action, provider.as_ref()).await;
 
         // Record per-provider metrics.
         match &result {
@@ -1639,6 +1750,52 @@ impl Gateway {
             _ => {}
         }
         result
+    }
+
+    /// Resolve attachments (if any) and execute the provider, returning the
+    /// outcome along with the execution latency in microseconds.
+    async fn execute_provider(
+        &self,
+        action: &Action,
+        provider: &dyn acteon_provider::DynProvider,
+    ) -> (ActionOutcome, u64) {
+        // Resolve attachments and use context-aware execution if applicable.
+        let dispatch_ctx = if !action.attachments.is_empty() && provider.supports_attachments() {
+            match self.resolve_attachments(action).await {
+                Ok(blobs) => Some(acteon_provider::DispatchContext { attachments: blobs }),
+                Err(e) => {
+                    self.metrics.increment_failed();
+                    return (
+                        ActionOutcome::Failed(acteon_core::ActionError {
+                            code: "ATTACHMENT_ERROR".into(),
+                            message: e.to_string(),
+                            retryable: false,
+                            attempts: 0,
+                        }),
+                        0,
+                    );
+                }
+            }
+        } else {
+            None
+        };
+
+        let exec_start = std::time::Instant::now();
+        let result = if let Some(ref ctx) = dispatch_ctx {
+            match provider.execute_with_context(action, ctx).await {
+                Ok(resp) => ActionOutcome::Executed(resp),
+                Err(e) => ActionOutcome::Failed(acteon_core::ActionError {
+                    code: "EXECUTION_FAILED".into(),
+                    message: e.to_string(),
+                    retryable: e.is_retryable(),
+                    attempts: 1,
+                }),
+            }
+        } else {
+            self.executor.execute(action, provider).await
+        };
+        let latency_us = u64::try_from(exec_start.elapsed().as_micros()).unwrap_or(u64::MAX);
+        (result, latency_us)
     }
 
     /// Handle the deduplication verdict: check state, execute only if new.
@@ -3851,6 +4008,7 @@ impl Gateway {
                 record_hash: None,
                 previous_hash: None,
                 sequence_number: None,
+                attachment_metadata: Vec::new(),
             };
 
             let audit = Arc::clone(audit);
@@ -3948,6 +4106,7 @@ impl Gateway {
                 record_hash: None,
                 previous_hash: None,
                 sequence_number: None,
+                attachment_metadata: Vec::new(),
             };
 
             let audit = Arc::clone(audit);
@@ -5091,6 +5250,29 @@ fn build_audit_record(
         None
     };
 
+    // Serialize attachment metadata (never binary data).
+    let attachment_metadata: Vec<serde_json::Value> = action
+        .attachments
+        .iter()
+        .map(|a| match a {
+            acteon_core::Attachment::BlobRef { blob_id, filename } => serde_json::json!({
+                "type": "blob_ref",
+                "blob_id": blob_id,
+                "filename": filename,
+            }),
+            acteon_core::Attachment::Inline {
+                content_type,
+                filename,
+                data_base64,
+            } => serde_json::json!({
+                "type": "inline",
+                "filename": filename,
+                "content_type": content_type,
+                "size_bytes": data_base64.len(),
+            }),
+        })
+        .collect();
+
     AuditRecord {
         id,
         action_id: action.id.to_string(),
@@ -5115,6 +5297,7 @@ fn build_audit_record(
         record_hash: None,
         previous_hash: None,
         sequence_number: None,
+        attachment_metadata,
     }
 }
 

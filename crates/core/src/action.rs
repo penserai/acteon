@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::attachment::Attachment;
 use crate::types::{ActionId, Namespace, ProviderId, TenantId};
 
 /// Metadata attached to an action for routing and observability.
@@ -92,6 +93,14 @@ pub struct Action {
     /// before provider execution.
     #[serde(default)]
     pub template: Option<String>,
+
+    /// Optional file attachments to include with the action.
+    ///
+    /// Providers that support attachments (email, Slack, Discord, webhook)
+    /// resolve these at execution time. Providers that don't simply ignore them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(nullable = false))]
+    pub attachments: Vec<Attachment>,
 }
 
 impl Action {
@@ -121,6 +130,7 @@ impl Action {
             created_at: Utc::now(),
             trace_context: HashMap::new(),
             template: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -177,6 +187,13 @@ impl Action {
     #[must_use]
     pub fn with_template(mut self, template: impl Into<String>) -> Self {
         self.template = Some(template.into());
+        self
+    }
+
+    /// Set file attachments for the action.
+    #[must_use]
+    pub fn with_attachments(mut self, attachments: Vec<Attachment>) -> Self {
+        self.attachments = attachments;
         self
     }
 }

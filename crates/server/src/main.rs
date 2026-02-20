@@ -930,6 +930,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    builder = builder
+        .max_inline_bytes(config.attachments.max_inline_bytes)
+        .max_attachments_per_action(config.attachments.max_attachments_per_action);
+
     let mut gateway = builder.build()?;
 
     if config.executor.dlq_enabled {

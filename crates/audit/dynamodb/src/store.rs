@@ -648,6 +648,7 @@ fn item_to_record(item: &HashMap<String, AttributeValue>) -> Result<AuditRecord,
         record_hash: get_s_opt("record_hash"),
         previous_hash: get_s_opt("previous_hash"),
         sequence_number: get_n_u64_opt("sequence_number"),
+        attachment_metadata: Vec::new(),
     })
 }
 
@@ -698,6 +699,7 @@ mod tests {
             record_hash: Some("abc123".to_owned()),
             previous_hash: Some("def456".to_owned()),
             sequence_number: Some(1),
+            attachment_metadata: Vec::new(),
         }
     }
 
@@ -794,6 +796,7 @@ mod tests {
             record_hash: None,
             previous_hash: None,
             sequence_number: None,
+            attachment_metadata: Vec::new(),
         };
         let item = record_to_item(&record);
 

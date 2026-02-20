@@ -141,6 +141,7 @@ impl From<AuditSelectRow> for AuditRecord {
             record_hash: row.record_hash,
             previous_hash: row.previous_hash,
             sequence_number: row.sequence_number,
+            attachment_metadata: Vec::new(),
         }
     }
 }

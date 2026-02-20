@@ -1,8 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError};
+use acteon_provider::{DispatchContext, Provider, ProviderError};
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::config::DiscordConfig;
 use crate::error::DiscordError;
@@ -123,6 +123,110 @@ impl Provider for DiscordProvider {
                 Err(_) => serde_json::json!({ "ok": true }),
             }
         };
+
+        Ok(ProviderResponse::success(response_body))
+    }
+
+    fn supports_attachments(&self) -> bool {
+        true
+    }
+
+    #[instrument(skip(self, action, ctx), fields(action_id = %action.id, provider = "discord"))]
+    async fn execute_with_context(
+        &self,
+        action: &Action,
+        ctx: &DispatchContext,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let payload: MessagePayload = serde_json::from_value(action.payload.clone())
+            .map_err(|e| DiscordError::InvalidPayload(format!("failed to parse payload: {e}")))?;
+
+        let has_content = payload.content.is_some();
+        let has_embeds = payload.embeds.as_ref().is_some_and(|e| !e.is_empty());
+
+        if !has_content && !has_embeds {
+            return Err(DiscordError::InvalidPayload(
+                "payload must contain at least one of 'content' or 'embeds'".into(),
+            )
+            .into());
+        }
+
+        let request = DiscordWebhookRequest {
+            content: payload.content,
+            username: payload
+                .username
+                .or_else(|| self.config.default_username.clone()),
+            avatar_url: payload
+                .avatar_url
+                .or_else(|| self.config.default_avatar_url.clone()),
+            tts: payload.tts,
+            embeds: payload.embeds,
+        };
+
+        let url = self.effective_url();
+
+        debug!(
+            attachment_count = ctx.attachments.len(),
+            "posting message to Discord webhook with attachments"
+        );
+
+        // Discord webhooks support multipart/form-data with payload_json + file parts.
+        let payload_json = serde_json::to_string(&request).map_err(|e| {
+            DiscordError::InvalidPayload(format!("failed to serialize request: {e}"))
+        })?;
+
+        let mut form = reqwest::multipart::Form::new().text("payload_json", payload_json);
+
+        for (i, blob) in ctx.attachments.iter().enumerate() {
+            let part = reqwest::multipart::Part::bytes(blob.data.to_vec())
+                .file_name(blob.metadata.filename.clone())
+                .mime_str(&blob.metadata.content_type)
+                .unwrap_or_else(|_| {
+                    reqwest::multipart::Part::bytes(blob.data.to_vec())
+                        .file_name(blob.metadata.filename.clone())
+                });
+            form = form.part(format!("files[{i}]"), part);
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(DiscordError::Http)?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            warn!("Discord API rate limit hit");
+            return Err(DiscordError::RateLimited.into());
+        }
+
+        if !status.is_success() {
+            let response_body = response.text().await.unwrap_or_default();
+            return Err(DiscordError::Api(format!("HTTP {status}: {response_body}")).into());
+        }
+
+        let response_body = if status == reqwest::StatusCode::NO_CONTENT {
+            serde_json::json!({ "ok": true, "attachment_count": ctx.attachments.len() })
+        } else {
+            match response.json::<DiscordWebhookResponse>().await {
+                Ok(resp) => serde_json::json!({
+                    "ok": true,
+                    "id": resp.id,
+                    "channel_id": resp.channel_id,
+                    "attachment_count": ctx.attachments.len(),
+                }),
+                Err(_) => {
+                    serde_json::json!({ "ok": true, "attachment_count": ctx.attachments.len() })
+                }
+            }
+        };
+
+        info!(
+            attachment_count = ctx.attachments.len(),
+            "Discord message with attachments sent"
+        );
 
         Ok(ProviderResponse::success(response_body))
     }

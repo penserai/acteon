@@ -205,6 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         record_hash: None,
         previous_hash: None,
         sequence_number: None,
+        attachment_metadata: Vec::new(),
     };
 
     encrypting_audit.record(record).await?;
@@ -260,6 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         record_hash: None,
         previous_hash: None,
         sequence_number: None,
+        attachment_metadata: Vec::new(),
     };
     encrypting_audit.record(no_payload).await?;
     let fetched_none = encrypting_audit
@@ -297,6 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         record_hash: None,
         previous_hash: None,
         sequence_number: None,
+        attachment_metadata: Vec::new(),
     };
     // Insert directly into inner store (bypass encryption).
     inner_audit.record(plain_record).await?;

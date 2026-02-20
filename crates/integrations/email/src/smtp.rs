@@ -1,6 +1,7 @@
 use acteon_provider::ProviderError;
 use async_trait::async_trait;
-use lettre::message::{Mailbox, MultiPart, SinglePart};
+use lettre::message::header::ContentType;
+use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use tracing::{debug, error, info};
@@ -111,36 +112,56 @@ fn build_message(msg: &EmailMessage) -> Result<Message, ProviderError> {
         builder = builder.bcc(bcc_mailbox);
     }
 
-    let message = match (&msg.body, &msg.html_body) {
-        (Some(text), Some(html)) => builder
-            .multipart(
-                MultiPart::alternative()
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(lettre::message::header::ContentType::TEXT_PLAIN)
-                            .body(text.clone()),
-                    )
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(lettre::message::header::ContentType::TEXT_HTML)
-                            .body(html.clone()),
-                    ),
-            )
-            .map_err(|e| ProviderError::ExecutionFailed(format!("failed to build email: {e}")))?,
-        (Some(text), None) => builder
-            .body(text.clone())
-            .map_err(|e| ProviderError::ExecutionFailed(format!("failed to build email: {e}")))?,
-        (None, Some(html)) => builder
+    // Build the body part(s).
+    let body_part: MultiPart = match (&msg.body, &msg.html_body) {
+        (Some(text), Some(html)) => MultiPart::alternative()
             .singlepart(
                 SinglePart::builder()
-                    .header(lettre::message::header::ContentType::TEXT_HTML)
-                    .body(html.clone()),
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(text.clone()),
             )
-            .map_err(|e| ProviderError::ExecutionFailed(format!("failed to build email: {e}")))?,
-        (None, None) => builder
-            .body(String::new())
-            .map_err(|e| ProviderError::ExecutionFailed(format!("failed to build email: {e}")))?,
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html.clone()),
+            ),
+        (Some(text), None) => MultiPart::mixed().singlepart(
+            SinglePart::builder()
+                .header(ContentType::TEXT_PLAIN)
+                .body(text.clone()),
+        ),
+        (None, Some(html)) => MultiPart::mixed().singlepart(
+            SinglePart::builder()
+                .header(ContentType::TEXT_HTML)
+                .body(html.clone()),
+        ),
+        (None, None) => MultiPart::mixed().singlepart(
+            SinglePart::builder()
+                .header(ContentType::TEXT_PLAIN)
+                .body(String::new()),
+        ),
     };
+
+    // If there are attachments, wrap everything in a mixed multipart.
+    let multipart = if msg.attachments.is_empty() {
+        body_part
+    } else {
+        let mut mixed = MultiPart::mixed().multipart(body_part);
+        for attachment in &msg.attachments {
+            let content_type = attachment
+                .content_type
+                .parse::<ContentType>()
+                .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
+            let file_attachment = Attachment::new(attachment.filename.clone())
+                .body(attachment.data.clone(), content_type);
+            mixed = mixed.singlepart(file_attachment);
+        }
+        mixed
+    };
+
+    let message = builder
+        .multipart(multipart)
+        .map_err(|e| ProviderError::ExecutionFailed(format!("failed to build email: {e}")))?;
 
     Ok(message)
 }
@@ -206,6 +227,7 @@ mod tests {
             cc: None,
             bcc: None,
             reply_to: None,
+            attachments: Vec::new(),
         }
     }
 

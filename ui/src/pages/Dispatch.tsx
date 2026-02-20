@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Send } from 'lucide-react'
+import { Send, Paperclip, X } from 'lucide-react'
 import { useDispatch } from '../api/hooks/useActions'
 import { useConfig } from '../api/hooks/useConfig'
 import { useAudit } from '../api/hooks/useAudit'
@@ -11,7 +11,7 @@ import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
-import type { DispatchRequest, DispatchResponse } from '../types'
+import type { Attachment, DispatchRequest, DispatchResponse } from '../types'
 import styles from './Dispatch.module.css'
 
 /**
@@ -124,6 +124,25 @@ export function Dispatch() {
   const [dryRun, setDryRun] = useState(false)
   const [result, setResult] = useState<DispatchResponse | null>(null)
   const [payloadError, setPayloadError] = useState('')
+  const [attachments, setAttachments] = useState<{ file: File; base64: string }[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileSelect = useCallback(async (files: FileList | null) => {
+    if (!files) return
+    const newAttachments: { file: File; base64: string }[] = []
+    for (const file of Array.from(files)) {
+      const buffer = await file.arrayBuffer()
+      const base64 = btoa(
+        new Uint8Array(buffer).reduce((s, b) => s + String.fromCharCode(b), ''),
+      )
+      newAttachments.push({ file, base64 })
+    }
+    setAttachments((prev) => [...prev, ...newAttachments])
+  }, [])
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index))
+  }, [])
 
   const providers = useMemo(() => config.data?.providers ?? [], [config.data])
 
@@ -188,6 +207,14 @@ export function Dispatch() {
       return
     }
 
+    const inlineAttachments: Attachment[] = attachments.map((a) => ({
+      inline: {
+        data_base64: a.base64,
+        content_type: a.file.type || 'application/octet-stream',
+        filename: a.file.name,
+      },
+    }))
+
     const request: DispatchRequest = {
       namespace: ns,
       tenant,
@@ -195,6 +222,7 @@ export function Dispatch() {
       action_type: actionType,
       payload: parsed,
       dedup_key: dedupKey || undefined,
+      attachments: inlineAttachments.length > 0 ? inlineAttachments : undefined,
     }
 
     dispatch.mutate({ request, dryRun }, {
@@ -254,6 +282,52 @@ export function Dispatch() {
           </div>
 
           <Input label="Dedup Key" value={dedupKey} onChange={(e) => setDedupKey(e.target.value)} placeholder="Optional" />
+
+          <div>
+            <label className={styles.textareaLabel}>Attachments</label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className={styles.hiddenInput}
+              onChange={(e) => {
+                void handleFileSelect(e.target.files)
+                e.target.value = ''
+              }}
+            />
+            <button
+              type="button"
+              className={styles.attachButton}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip className="h-3.5 w-3.5" />
+              Add files
+            </button>
+            {attachments.length > 0 && (
+              <ul className={styles.attachmentList}>
+                {attachments.map((a, i) => (
+                  <li key={i} className={styles.attachmentItem}>
+                    <span className={styles.attachmentName}>{a.file.name}</span>
+                    <span className={styles.attachmentSize}>
+                      {a.file.size < 1024
+                        ? `${a.file.size} B`
+                        : a.file.size < 1024 * 1024
+                          ? `${(a.file.size / 1024).toFixed(1)} KB`
+                          : `${(a.file.size / (1024 * 1024)).toFixed(1)} MB`}
+                    </span>
+                    <button
+                      type="button"
+                      className={styles.removeAttachment}
+                      onClick={() => removeAttachment(i)}
+                      aria-label={`Remove ${a.file.name}`}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
           <label className={styles.checkboxLabel}>
             <input

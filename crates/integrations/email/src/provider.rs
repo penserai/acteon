@@ -1,9 +1,9 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::ProviderError;
 use acteon_provider::provider::Provider;
+use acteon_provider::{DispatchContext, ProviderError};
 use tracing::{debug, info, instrument};
 
-use crate::backend::{EmailBackend, EmailMessage};
+use crate::backend::{EmailAttachment, EmailBackend, EmailMessage};
 use crate::config::EmailConfig;
 use crate::smtp::SmtpBackend;
 use crate::types::EmailPayload;
@@ -120,6 +120,7 @@ impl Provider for EmailProvider {
             cc: payload.cc.clone(),
             bcc: payload.bcc.clone(),
             reply_to: payload.reply_to.clone(),
+            attachments: Vec::new(),
         };
 
         debug!(
@@ -154,6 +155,74 @@ impl Provider for EmailProvider {
     #[instrument(skip(self), fields(provider = "email"))]
     async fn health_check(&self) -> Result<(), ProviderError> {
         self.backend.health_check().await
+    }
+
+    fn supports_attachments(&self) -> bool {
+        true
+    }
+
+    #[instrument(skip(self, action, ctx), fields(action_id = %action.id, provider = "email"))]
+    async fn execute_with_context(
+        &self,
+        action: &Action,
+        ctx: &DispatchContext,
+    ) -> Result<ProviderResponse, ProviderError> {
+        debug!("deserializing email payload (with attachments)");
+        let payload: EmailPayload = serde_json::from_value(action.payload.clone())
+            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+        let attachments: Vec<EmailAttachment> = ctx
+            .attachments
+            .iter()
+            .map(|blob| EmailAttachment {
+                filename: blob.metadata.filename.clone(),
+                content_type: blob.metadata.content_type.clone(),
+                data: blob.data.to_vec(),
+            })
+            .collect();
+
+        let message = EmailMessage {
+            from: self.from_address.clone(),
+            to: payload.to.clone(),
+            subject: payload.subject.clone(),
+            body: payload.body.clone(),
+            html_body: payload.html_body.clone(),
+            cc: payload.cc.clone(),
+            bcc: payload.bcc.clone(),
+            reply_to: payload.reply_to.clone(),
+            attachments,
+        };
+
+        debug!(
+            to = %message.to,
+            subject = %message.subject,
+            attachment_count = message.attachments.len(),
+            backend = self.backend.backend_name(),
+            "sending email with attachments"
+        );
+
+        let result = self.backend.send(&message).await?;
+
+        info!(
+            to = %payload.to,
+            attachment_count = ctx.attachments.len(),
+            backend = self.backend.backend_name(),
+            "email with attachments sent successfully"
+        );
+
+        let mut response = serde_json::json!({
+            "to": payload.to,
+            "subject": payload.subject,
+            "status": result.status,
+            "backend": self.backend.backend_name(),
+            "attachment_count": ctx.attachments.len()
+        });
+
+        if let Some(ref msg_id) = result.message_id {
+            response["message_id"] = serde_json::Value::String(msg_id.clone());
+        }
+
+        Ok(ProviderResponse::success(response))
     }
 }
 

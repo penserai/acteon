@@ -8,6 +8,52 @@ import uuid
 
 
 @dataclass
+class BlobRefAttachment:
+    """A reference to an existing blob stored in Acteon.
+
+    Attributes:
+        blob_id: The unique identifier of the stored blob.
+        filename: Optional filename for the attachment.
+    """
+    blob_id: str
+    filename: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        result: dict[str, Any] = {"type": "blob_ref", "blob_id": self.blob_id}
+        if self.filename:
+            result["filename"] = self.filename
+        return result
+
+
+@dataclass
+class InlineAttachment:
+    """An inline attachment with base64-encoded data.
+
+    Attributes:
+        data_base64: Base64-encoded attachment data.
+        content_type: MIME type of the attachment (e.g., "application/pdf").
+        filename: Filename for the attachment.
+    """
+    data_base64: str
+    content_type: str
+    filename: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "type": "inline",
+            "data_base64": self.data_base64,
+            "content_type": self.content_type,
+            "filename": self.filename,
+        }
+
+
+# Union type for attachments
+Attachment = BlobRefAttachment | InlineAttachment
+
+
+@dataclass
 class Action:
     """An action to be dispatched through Acteon.
 
@@ -21,6 +67,7 @@ class Action:
         dedup_key: Optional deduplication key.
         metadata: Optional key-value metadata.
         created_at: Timestamp when the action was created.
+        attachments: Optional list of attachments (blob references or inline data).
     """
     namespace: str
     tenant: str
@@ -32,6 +79,7 @@ class Action:
     metadata: Optional[dict[str, str]] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     template: Optional[str] = None
+    attachments: Optional[list[Attachment]] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -50,6 +98,8 @@ class Action:
             result["metadata"] = {"labels": self.metadata}
         if self.template:
             result["template"] = self.template
+        if self.attachments:
+            result["attachments"] = [a.to_dict() for a in self.attachments]
         return result
 
 

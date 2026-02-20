@@ -324,6 +324,7 @@ impl From<AuditRow> for AuditRecord {
             previous_hash: row.previous_hash,
             #[allow(clippy::cast_sign_loss)]
             sequence_number: row.sequence_number.map(|n| n as u64),
+            attachment_metadata: Vec::new(),
         }
     }
 }

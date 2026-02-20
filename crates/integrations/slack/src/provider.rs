@@ -1,8 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError};
+use acteon_provider::{DispatchContext, Provider, ProviderError};
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::config::SlackConfig;
 use crate::error::SlackError;
@@ -141,6 +141,73 @@ impl Provider for SlackProvider {
         });
 
         Ok(ProviderResponse::success(body))
+    }
+
+    fn supports_attachments(&self) -> bool {
+        true
+    }
+
+    #[instrument(skip(self, action, ctx), fields(action_id = %action.id, provider = "slack"))]
+    async fn execute_with_context(
+        &self,
+        action: &Action,
+        ctx: &DispatchContext,
+    ) -> Result<ProviderResponse, ProviderError> {
+        // First, send the message normally.
+        let response = self.execute(action).await?;
+
+        // Then upload each attachment to the channel.
+        if !ctx.attachments.is_empty() {
+            // Extract the channel from the response or payload.
+            let payload: MessagePayload = serde_json::from_value(action.payload.clone())
+                .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+            let channel = self.resolve_channel(payload.channel.as_deref())?;
+
+            for blob in &ctx.attachments {
+                let url = self.api_url("files.upload");
+                let part = reqwest::multipart::Part::bytes(blob.data.to_vec())
+                    .file_name(blob.metadata.filename.clone())
+                    .mime_str(&blob.metadata.content_type)
+                    .unwrap_or_else(|_| {
+                        reqwest::multipart::Part::bytes(blob.data.to_vec())
+                            .file_name(blob.metadata.filename.clone())
+                    });
+
+                let form = reqwest::multipart::Form::new()
+                    .text("channels", channel.clone())
+                    .text("filename", blob.metadata.filename.clone())
+                    .part("file", part);
+
+                debug!(
+                    filename = %blob.metadata.filename,
+                    size = blob.metadata.size_bytes,
+                    "uploading file to Slack"
+                );
+
+                let upload_response = self
+                    .client
+                    .post(&url)
+                    .bearer_auth(&self.config.token)
+                    .multipart(form)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        ProviderError::ExecutionFailed(format!("Slack file upload failed: {e}"))
+                    })?;
+
+                if !upload_response.status().is_success() {
+                    let body = upload_response.text().await.unwrap_or_default();
+                    warn!(filename = %blob.metadata.filename, "Slack file upload failed: {body}");
+                }
+            }
+
+            info!(
+                attachment_count = ctx.attachments.len(),
+                "Slack message with attachments sent"
+            );
+        }
+
+        Ok(response)
     }
 
     #[instrument(skip(self), fields(provider = "slack"))]

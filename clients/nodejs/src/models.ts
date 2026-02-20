@@ -5,6 +5,35 @@
 import { randomUUID } from "crypto";
 
 /**
+ * A reference to an existing blob stored in Acteon.
+ */
+export interface BlobRefAttachment {
+  type: "blob_ref";
+  /** The unique identifier of the stored blob. */
+  blobId: string;
+  /** Optional filename for the attachment. */
+  filename?: string;
+}
+
+/**
+ * An inline attachment with base64-encoded data.
+ */
+export interface InlineAttachment {
+  type: "inline";
+  /** Base64-encoded attachment data. */
+  dataBase64: string;
+  /** MIME type of the attachment (e.g., "application/pdf"). */
+  contentType: string;
+  /** Filename for the attachment. */
+  filename: string;
+}
+
+/**
+ * An attachment, either a blob reference or inline data.
+ */
+export type Attachment = BlobRefAttachment | InlineAttachment;
+
+/**
  * An action to be dispatched through Acteon.
  */
 export interface Action {
@@ -28,6 +57,8 @@ export interface Action {
   createdAt: string;
   /** Optional template name for payload rendering. */
   template?: string;
+  /** Optional attachments (blob references or inline data). */
+  attachments?: Attachment[];
 }
 
 /**
@@ -45,6 +76,7 @@ export function createAction(
     metadata?: Record<string, string>;
     createdAt?: string;
     template?: string;
+    attachments?: Attachment[];
   }
 ): Action {
   return {
@@ -58,12 +90,36 @@ export function createAction(
     metadata: options?.metadata,
     createdAt: options?.createdAt ?? new Date().toISOString(),
     template: options?.template,
+    attachments: options?.attachments,
   };
 }
 
 /**
  * Convert an Action to the API request format.
  */
+/**
+ * Convert an Attachment to the API request format.
+ */
+function attachmentToRequest(attachment: Attachment): Record<string, unknown> {
+  if (attachment.type === "blob_ref") {
+    const result: Record<string, unknown> = {
+      type: "blob_ref",
+      blob_id: attachment.blobId,
+    };
+    if (attachment.filename) {
+      result.filename = attachment.filename;
+    }
+    return result;
+  } else {
+    return {
+      type: "inline",
+      data_base64: attachment.dataBase64,
+      content_type: attachment.contentType,
+      filename: attachment.filename,
+    };
+  }
+}
+
 export function actionToRequest(action: Action): Record<string, unknown> {
   const result: Record<string, unknown> = {
     id: action.id,
@@ -82,6 +138,9 @@ export function actionToRequest(action: Action): Record<string, unknown> {
   }
   if (action.template) {
     result.template = action.template;
+  }
+  if (action.attachments && action.attachments.length > 0) {
+    result.attachments = action.attachments.map(attachmentToRequest);
   }
   return result;
 }

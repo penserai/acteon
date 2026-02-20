@@ -73,6 +73,10 @@ pub struct AuditRecord {
     /// Monotonic sequence number within the `(namespace, tenant)` pair.
     #[serde(default)]
     pub sequence_number: Option<u64>,
+
+    /// Attachment metadata (blob ID, filename, size, content type) — never binary data.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_metadata: Vec<serde_json::Value>,
 }
 
 /// Query parameters for searching audit records.
