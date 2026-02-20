@@ -1,10 +1,6 @@
 <p align="center">
-  <img src="docs/logo.svg" alt="Acteon" width="200">
+  <img src="docs/logo.svg" alt="Acteon — Actions forged in Rust" width="200">
 </p>
-
-<h1 align="center">acteon</h1>
-
-<p align="center">Actions forged in Rust</p>
 
 <p align="center">
   <a href="https://github.com/penserai/acteon/actions/workflows/ci.yml"><img src="https://github.com/penserai/acteon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
