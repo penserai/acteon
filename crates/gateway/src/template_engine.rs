@@ -77,9 +77,7 @@ fn build_template_context(
 ) -> minijinja::Value {
     // Start from the payload (must be an object for merge to work).
     let mut root = match payload {
-        serde_json::Value::Object(map) => {
-            serde_json::Value::Object(map.clone())
-        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(map.clone()),
         other => {
             // Wrap non-object payloads so we always have a map to inject into.
             let mut map = serde_json::Map::new();
@@ -568,7 +566,12 @@ mod tests {
         assert_eq!(result.fields.get("greeting").unwrap(), "Hi Dana, welcome!");
     }
 
-    fn make_attachment(id: &str, name: &str, filename: &str, content_type: &str) -> acteon_core::Attachment {
+    fn make_attachment(
+        id: &str,
+        name: &str,
+        filename: &str,
+        content_type: &str,
+    ) -> acteon_core::Attachment {
         acteon_core::Attachment {
             id: id.to_string(),
             name: name.to_string(),
@@ -609,9 +612,12 @@ mod tests {
         );
         let profile = make_profile("att-by-id", fields);
         let payload = serde_json::json!({});
-        let attachments = vec![
-            make_attachment("report", "Quarterly Report", "q4.pdf", "application/pdf"),
-        ];
+        let attachments = vec![make_attachment(
+            "report",
+            "Quarterly Report",
+            "q4.pdf",
+            "application/pdf",
+        )];
 
         let result = render_profile(&profile, &HashMap::new(), &payload, &attachments).unwrap();
         assert_eq!(
@@ -625,9 +631,7 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert(
             "summary".to_string(),
-            TemplateProfileField::Inline(
-                "{{ attachments | length }} file(s) attached".to_string(),
-            ),
+            TemplateProfileField::Inline("{{ attachments | length }} file(s) attached".to_string()),
         );
         let profile = make_profile("att-count", fields);
         let payload = serde_json::json!({});
@@ -663,15 +667,11 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert(
             "data".to_string(),
-            TemplateProfileField::Inline(
-                "{{ attachments[0].data_base64 }}".to_string(),
-            ),
+            TemplateProfileField::Inline("{{ attachments[0].data_base64 }}".to_string()),
         );
         let profile = make_profile("no-data", fields);
         let payload = serde_json::json!({});
-        let attachments = vec![
-            make_attachment("a1", "File", "f.txt", "text/plain"),
-        ];
+        let attachments = vec![make_attachment("a1", "File", "f.txt", "text/plain")];
 
         let result = render_profile(&profile, &HashMap::new(), &payload, &attachments).unwrap();
         // data_base64 is not in context, so MiniJinja renders it as empty.

@@ -226,7 +226,13 @@ pub(crate) fn build_audit_record(
         .iter()
         .map(|a| {
             let b64_len = a.data_base64.len();
-            let padding = a.data_base64.as_bytes().iter().rev().take_while(|&&b| b == b'=').count();
+            let padding = a
+                .data_base64
+                .as_bytes()
+                .iter()
+                .rev()
+                .take_while(|&&b| b == b'=')
+                .count();
             let decoded_size = (b64_len / 4) * 3 - padding;
             serde_json::json!({
                 "id": a.id,

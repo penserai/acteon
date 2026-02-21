@@ -146,8 +146,7 @@ impl From<AuditSelectRow> for AuditRecord {
             record_hash: row.record_hash,
             previous_hash: row.previous_hash,
             sequence_number: row.sequence_number,
-            attachment_metadata: serde_json::from_str(&row.attachment_metadata)
-                .unwrap_or_default(),
+            attachment_metadata: serde_json::from_str(&row.attachment_metadata).unwrap_or_default(),
         }
     }
 }

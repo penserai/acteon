@@ -537,10 +537,7 @@ fn record_to_item(record: &AuditRecord) -> HashMap<String, AttributeValue> {
     // Attachment metadata (JSON array of objects, no binary data).
     if !record.attachment_metadata.is_empty() {
         let json = serde_json::to_string(&record.attachment_metadata).unwrap_or_default();
-        item.insert(
-            "attachment_metadata".to_owned(),
-            AttributeValue::S(json),
-        );
+        item.insert("attachment_metadata".to_owned(), AttributeValue::S(json));
     }
 
     // TTL: epoch seconds for DynamoDB native TTL.

@@ -1022,8 +1022,7 @@ pub async fn render_preview(
         &scoped_templates,
         &req.payload,
         &req.attachments,
-    )
-    {
+    ) {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!(RenderPreviewResponse {
