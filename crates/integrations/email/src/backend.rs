@@ -32,7 +32,6 @@ pub struct EmailMessage {
     /// Optional reply-to address.
     pub reply_to: Option<String>,
     /// File attachments.
-    #[allow(dead_code)]
     pub attachments: Vec<EmailAttachment>,
 }
 

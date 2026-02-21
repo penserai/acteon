@@ -22,7 +22,7 @@ pub mod template;
 pub mod types;
 
 pub use action::{Action, ActionMetadata};
-pub use attachment::Attachment;
+pub use attachment::{Attachment, ResolvedAttachment};
 pub use caller::Caller;
 pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,

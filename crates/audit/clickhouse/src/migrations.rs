@@ -70,5 +70,11 @@ pub async fn run_migrations(
         client.query(stmt).execute().await?;
     }
 
+    // Add attachment_metadata column (idempotent).
+    let attachment_stmt = format!(
+        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS attachment_metadata String DEFAULT '[]'"
+    );
+    client.query(&attachment_stmt).execute().await?;
+
     Ok(())
 }

@@ -1,4 +1,4 @@
-use acteon_blob::ResolvedBlob;
+use acteon_core::ResolvedAttachment;
 
 /// Additional context passed to providers during dispatch.
 ///
@@ -7,6 +7,6 @@ use acteon_blob::ResolvedBlob;
 /// can ignore this context entirely.
 #[derive(Debug, Default)]
 pub struct DispatchContext {
-    /// Resolved file attachments (blob references fetched, inline data decoded).
-    pub attachments: Vec<ResolvedBlob>,
+    /// Resolved file attachments (decoded from `base64`).
+    pub attachments: Vec<ResolvedAttachment>,
 }

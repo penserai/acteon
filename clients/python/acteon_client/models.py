@@ -8,49 +8,31 @@ import uuid
 
 
 @dataclass
-class BlobRefAttachment:
-    """A reference to an existing blob stored in Acteon.
+class Attachment:
+    """An attachment with explicit metadata and base64-encoded data.
 
     Attributes:
-        blob_id: The unique identifier of the stored blob.
-        filename: Optional filename for the attachment.
+        id: User-set identifier for referencing in chains.
+        name: Human-readable display name.
+        filename: Filename with extension.
+        content_type: MIME type (e.g., "application/pdf").
+        data_base64: Base64-encoded file content.
     """
-    blob_id: str
-    filename: Optional[str] = None
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        result: dict[str, Any] = {"type": "blob_ref", "blob_id": self.blob_id}
-        if self.filename:
-            result["filename"] = self.filename
-        return result
-
-
-@dataclass
-class InlineAttachment:
-    """An inline attachment with base64-encoded data.
-
-    Attributes:
-        data_base64: Base64-encoded attachment data.
-        content_type: MIME type of the attachment (e.g., "application/pdf").
-        filename: Filename for the attachment.
-    """
-    data_base64: str
-    content_type: str
+    id: str
+    name: str
     filename: str
+    content_type: str
+    data_base64: str
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
-            "type": "inline",
-            "data_base64": self.data_base64,
-            "content_type": self.content_type,
+            "id": self.id,
+            "name": self.name,
             "filename": self.filename,
+            "content_type": self.content_type,
+            "data_base64": self.data_base64,
         }
-
-
-# Union type for attachments
-Attachment = BlobRefAttachment | InlineAttachment
 
 
 @dataclass
@@ -67,7 +49,7 @@ class Action:
         dedup_key: Optional deduplication key.
         metadata: Optional key-value metadata.
         created_at: Timestamp when the action was created.
-        attachments: Optional list of attachments (blob references or inline data).
+        attachments: Optional list of attachments.
     """
     namespace: str
     tenant: str

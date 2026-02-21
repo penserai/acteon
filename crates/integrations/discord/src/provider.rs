@@ -176,13 +176,13 @@ impl Provider for DiscordProvider {
 
         let mut form = reqwest::multipart::Form::new().text("payload_json", payload_json);
 
-        for (i, blob) in ctx.attachments.iter().enumerate() {
-            let part = reqwest::multipart::Part::bytes(blob.data.to_vec())
-                .file_name(blob.metadata.filename.clone())
-                .mime_str(&blob.metadata.content_type)
+        for (i, resolved) in ctx.attachments.iter().enumerate() {
+            let part = reqwest::multipart::Part::bytes(resolved.data.clone())
+                .file_name(resolved.filename.clone())
+                .mime_str(&resolved.content_type)
                 .unwrap_or_else(|_| {
-                    reqwest::multipart::Part::bytes(blob.data.to_vec())
-                        .file_name(blob.metadata.filename.clone())
+                    reqwest::multipart::Part::bytes(resolved.data.clone())
+                        .file_name(resolved.filename.clone())
                 });
             form = form.part(format!("files[{i}]"), part);
         }

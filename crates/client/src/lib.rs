@@ -281,10 +281,12 @@ impl ActeonClient {
     /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
     ///
     /// let attachments = vec![
-    ///     Attachment::Inline {
-    ///         data_base64: "SGVsbG8=".into(),
-    ///         content_type: "text/plain".into(),
+    ///     Attachment {
+    ///         id: "att-1".into(),
+    ///         name: "Hello".into(),
     ///         filename: "hello.txt".into(),
+    ///         content_type: "text/plain".into(),
+    ///         data_base64: "SGVsbG8=".into(),
     ///     },
     /// ];
     ///

@@ -9,34 +9,22 @@ import (
 )
 
 // Attachment represents an attachment on an action.
-// Use NewBlobRefAttachment or NewInlineAttachment to create instances.
 type Attachment struct {
-	Type        string `json:"type"`
-	BlobID      string `json:"blob_id,omitempty"`
-	DataBase64  string `json:"data_base64,omitempty"`
-	ContentType string `json:"content_type,omitempty"`
-	Filename    string `json:"filename,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	DataBase64  string `json:"data_base64"`
 }
 
-// NewBlobRefAttachment creates an attachment referencing an existing blob.
-func NewBlobRefAttachment(blobID string, filename string) Attachment {
-	a := Attachment{
-		Type:   "blob_ref",
-		BlobID: blobID,
-	}
-	if filename != "" {
-		a.Filename = filename
-	}
-	return a
-}
-
-// NewInlineAttachment creates an inline attachment with base64-encoded data.
-func NewInlineAttachment(dataBase64, contentType, filename string) Attachment {
+// NewAttachment creates an attachment with explicit metadata and base64-encoded data.
+func NewAttachment(id, name, filename, contentType, dataBase64 string) Attachment {
 	return Attachment{
-		Type:        "inline",
-		DataBase64:  dataBase64,
-		ContentType: contentType,
+		ID:          id,
+		Name:        name,
 		Filename:    filename,
+		ContentType: contentType,
+		DataBase64:  dataBase64,
 	}
 }
 

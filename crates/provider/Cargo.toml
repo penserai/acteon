@@ -12,7 +12,6 @@ trace-context = ["reqwest"]
 webhook = ["reqwest"]
 
 [dependencies]
-acteon-blob = { workspace = true }
 acteon-core = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }

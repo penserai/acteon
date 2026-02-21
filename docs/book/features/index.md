@@ -59,6 +59,22 @@ Track event lifecycle through configurable states with automatic timeouts.
 
 </div>
 
+## Payload Processing
+
+<div class="grid" markdown>
+
+<div class="card" markdown>
+### [Payload Templates](payload-templates.md)
+Reusable, parameterized content rendered into payloads at dispatch time using MiniJinja templates.
+</div>
+
+<div class="card" markdown>
+### [Attachments](attachments.md)
+Include files with action dispatches -- real MIME email attachments, Slack/Discord file uploads, and webhook multipart parts.
+</div>
+
+</div>
+
 ## Infrastructure
 
 <div class="grid" markdown>

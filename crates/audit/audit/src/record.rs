@@ -74,7 +74,8 @@ pub struct AuditRecord {
     #[serde(default)]
     pub sequence_number: Option<u64>,
 
-    /// Attachment metadata (blob ID, filename, size, content type) — never binary data.
+    /// Attachment metadata (`id`, `name`, `filename`, `content_type`, `size_bytes`)
+    /// for each attachment on the action. Never contains binary data.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_metadata: Vec<serde_json::Value>,
 }

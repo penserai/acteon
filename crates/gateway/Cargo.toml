@@ -8,7 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 acteon-audit = { workspace = true }
-acteon-blob = { workspace = true }
 acteon-core = { workspace = true }
 acteon-crypto = { workspace = true }
 acteon-llm = { workspace = true }

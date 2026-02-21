@@ -5,33 +5,20 @@
 import { randomUUID } from "crypto";
 
 /**
- * A reference to an existing blob stored in Acteon.
+ * An attachment with explicit metadata and base64-encoded data.
  */
-export interface BlobRefAttachment {
-  type: "blob_ref";
-  /** The unique identifier of the stored blob. */
-  blobId: string;
-  /** Optional filename for the attachment. */
-  filename?: string;
-}
-
-/**
- * An inline attachment with base64-encoded data.
- */
-export interface InlineAttachment {
-  type: "inline";
-  /** Base64-encoded attachment data. */
-  dataBase64: string;
-  /** MIME type of the attachment (e.g., "application/pdf"). */
-  contentType: string;
-  /** Filename for the attachment. */
+export interface Attachment {
+  /** User-set identifier for referencing in chains. */
+  id: string;
+  /** Human-readable display name. */
+  name: string;
+  /** Filename with extension. */
   filename: string;
+  /** MIME content type (e.g., "application/pdf"). */
+  contentType: string;
+  /** Base64-encoded file content. */
+  dataBase64: string;
 }
-
-/**
- * An attachment, either a blob reference or inline data.
- */
-export type Attachment = BlobRefAttachment | InlineAttachment;
 
 /**
  * An action to be dispatched through Acteon.
@@ -57,7 +44,7 @@ export interface Action {
   createdAt: string;
   /** Optional template name for payload rendering. */
   template?: string;
-  /** Optional attachments (blob references or inline data). */
+  /** Optional attachments. */
   attachments?: Attachment[];
 }
 
@@ -97,29 +84,6 @@ export function createAction(
 /**
  * Convert an Action to the API request format.
  */
-/**
- * Convert an Attachment to the API request format.
- */
-function attachmentToRequest(attachment: Attachment): Record<string, unknown> {
-  if (attachment.type === "blob_ref") {
-    const result: Record<string, unknown> = {
-      type: "blob_ref",
-      blob_id: attachment.blobId,
-    };
-    if (attachment.filename) {
-      result.filename = attachment.filename;
-    }
-    return result;
-  } else {
-    return {
-      type: "inline",
-      data_base64: attachment.dataBase64,
-      content_type: attachment.contentType,
-      filename: attachment.filename,
-    };
-  }
-}
-
 export function actionToRequest(action: Action): Record<string, unknown> {
   const result: Record<string, unknown> = {
     id: action.id,
@@ -140,7 +104,13 @@ export function actionToRequest(action: Action): Record<string, unknown> {
     result.template = action.template;
   }
   if (action.attachments && action.attachments.length > 0) {
-    result.attachments = action.attachments.map(attachmentToRequest);
+    result.attachments = action.attachments.map(a => ({
+      id: a.id,
+      name: a.name,
+      filename: a.filename,
+      content_type: a.contentType,
+      data_base64: a.dataBase64,
+    }));
   }
   return result;
 }

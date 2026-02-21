@@ -45,6 +45,8 @@ struct AuditInsertRow {
     record_hash: Option<String>,
     previous_hash: Option<String>,
     sequence_number: Option<u64>,
+    /// JSON-serialised `Vec<serde_json::Value>`.
+    attachment_metadata: String,
 }
 
 /// Row layout used when reading audit records from `ClickHouse`.
@@ -73,6 +75,7 @@ struct AuditSelectRow {
     record_hash: Option<String>,
     previous_hash: Option<String>,
     sequence_number: Option<u64>,
+    attachment_metadata: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +110,8 @@ impl From<AuditRecord> for AuditInsertRow {
             record_hash: r.record_hash,
             previous_hash: r.previous_hash,
             sequence_number: r.sequence_number,
+            attachment_metadata: serde_json::to_string(&r.attachment_metadata)
+                .unwrap_or_else(|_| "[]".to_owned()),
         }
     }
 }
@@ -141,7 +146,8 @@ impl From<AuditSelectRow> for AuditRecord {
             record_hash: row.record_hash,
             previous_hash: row.previous_hash,
             sequence_number: row.sequence_number,
-            attachment_metadata: Vec::new(),
+            attachment_metadata: serde_json::from_str(&row.attachment_metadata)
+                .unwrap_or_default(),
         }
     }
 }
@@ -161,7 +167,8 @@ const SELECT_COLUMNS: &str = "\
     id, action_id, chain_id, namespace, tenant, provider, action_type, verdict, \
     matched_rule, outcome, action_payload, verdict_details, outcome_details, \
     metadata, dispatched_at, completed_at, duration_ms, expires_at, \
-    caller_id, auth_method, record_hash, previous_hash, sequence_number";
+    caller_id, auth_method, record_hash, previous_hash, sequence_number, \
+    attachment_metadata";
 
 /// Escape a string value for safe interpolation inside a `ClickHouse` SQL
 /// single-quoted literal.  `ClickHouse` uses backslash escaping by default.

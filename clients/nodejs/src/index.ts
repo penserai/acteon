@@ -27,8 +27,6 @@ export { ActeonError, ConnectionError, HttpError, ApiError } from "./errors.js";
 export {
   type Action,
   type Attachment,
-  type BlobRefAttachment,
-  type InlineAttachment,
   type ActionOutcome,
   type ActionError,
   type ProviderResponse,

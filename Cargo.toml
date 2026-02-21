@@ -32,9 +32,6 @@ members = [
     "crates/rules/yaml",
     "crates/rules/cel",
 
-    # Blob storage
-    "crates/blob",
-
     # WASM runtime
     "crates/wasm-runtime",
 
@@ -100,9 +97,6 @@ acteon-audit-elasticsearch = { path = "crates/audit/elasticsearch" }
 acteon-rules = { path = "crates/rules/rules" }
 acteon-rules-yaml = { path = "crates/rules/yaml" }
 acteon-rules-cel = { path = "crates/rules/cel" }
-
-# Blob storage
-acteon-blob = { path = "crates/blob" }
 
 # WASM runtime
 acteon-wasm-runtime = { path = "crates/wasm-runtime" }

@@ -55,14 +55,16 @@ impl AuditStore for PostgresAuditStore {
                 action_payload, verdict_details, outcome_details, metadata,
                 dispatched_at, completed_at, duration_ms, expires_at,
                 caller_id, auth_method,
-                record_hash, previous_hash, sequence_number
+                record_hash, previous_hash, sequence_number,
+                attachment_metadata
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10,
                 $11, $12, $13, $14,
                 $15, $16, $17, $18,
                 $19, $20,
-                $21, $22, $23
+                $21, $22, $23,
+                $24
             )
             ",
             self.table
@@ -97,6 +99,7 @@ impl AuditStore for PostgresAuditStore {
             .bind(&entry.record_hash)
             .bind(&entry.previous_hash)
             .bind(sequence_number)
+            .bind(serde_json::Value::Array(entry.attachment_metadata.clone()))
             .execute(&self.pool)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
@@ -292,12 +295,18 @@ struct AuditRow {
     record_hash: Option<String>,
     previous_hash: Option<String>,
     sequence_number: Option<i64>,
+    attachment_metadata: serde_json::Value,
 }
 
 impl From<AuditRow> for AuditRecord {
     fn from(row: AuditRow) -> Self {
         #[allow(clippy::cast_sign_loss)]
         let duration_ms = row.duration_ms as u64;
+
+        let attachment_metadata = match row.attachment_metadata {
+            serde_json::Value::Array(arr) => arr,
+            _ => Vec::new(),
+        };
 
         Self {
             id: row.id,
@@ -324,7 +333,7 @@ impl From<AuditRow> for AuditRecord {
             previous_hash: row.previous_hash,
             #[allow(clippy::cast_sign_loss)]
             sequence_number: row.sequence_number.map(|n| n as u64),
-            attachment_metadata: Vec::new(),
+            attachment_metadata,
         }
     }
 }

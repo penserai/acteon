@@ -203,9 +203,7 @@ pub struct Gateway {
     pub(crate) enrichments: Vec<acteon_core::EnrichmentConfig>,
     /// Resource lookup providers for enrichment (keyed by provider name).
     pub(crate) resource_lookups: HashMap<String, Arc<dyn acteon_provider::ResourceLookup>>,
-    /// Optional pluggable blob store for resolving `BlobRef` attachments.
-    pub(crate) blob_store: Option<Arc<dyn acteon_blob::BlobStore>>,
-    /// Maximum allowed size for inline base64 attachments (bytes).
+    /// Maximum allowed size for a single attachment after `base64` decoding (bytes).
     pub(crate) max_inline_bytes: u64,
     /// Maximum number of attachments per action.
     pub(crate) max_attachments_per_action: usize,
@@ -226,26 +224,18 @@ impl Gateway {
         self.wasm_runtime.as_deref()
     }
 
-    /// Returns the blob store, if configured.
-    pub fn blob_store(&self) -> Option<&dyn acteon_blob::BlobStore> {
-        self.blob_store.as_deref()
-    }
-
-    /// Resolve all attachments on an action into [`ResolvedBlob`](acteon_blob::ResolvedBlob) instances.
+    /// Resolve all attachments on an action into [`ResolvedAttachment`](acteon_core::ResolvedAttachment) instances.
     ///
-    /// - `BlobRef` attachments are fetched from the configured blob store.
-    /// - `Inline` attachments are decoded from base64.
+    /// Decodes each attachment's `base64` data and validates size limits.
     ///
     /// Returns an error if:
     /// - The action has more attachments than `max_attachments_per_action`.
-    /// - A `BlobRef` is used but no blob store is configured.
-    /// - A blob cannot be found or has expired.
-    /// - An inline attachment exceeds `max_inline_bytes`.
-    /// - Base64 decoding fails.
-    pub async fn resolve_attachments(
+    /// - An attachment exceeds `max_inline_bytes` after decoding.
+    /// - `Base64` decoding fails.
+    pub fn resolve_attachments(
         &self,
         action: &Action,
-    ) -> Result<Vec<acteon_blob::ResolvedBlob>, GatewayError> {
+    ) -> Result<Vec<acteon_core::ResolvedAttachment>, GatewayError> {
         use base64::Engine;
 
         if action.attachments.is_empty() {
@@ -263,70 +253,30 @@ impl Gateway {
         let mut resolved = Vec::with_capacity(action.attachments.len());
 
         for attachment in &action.attachments {
-            match attachment {
-                acteon_core::Attachment::BlobRef { blob_id, filename } => {
-                    let store = self.blob_store.as_ref().ok_or_else(|| {
-                        GatewayError::Attachment(
-                            "BlobRef attachment requires a blob store, but none is configured"
-                                .into(),
-                        )
-                    })?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(&attachment.data_base64)
+                .map_err(|e| {
+                    GatewayError::Attachment(format!(
+                        "failed to decode base64 for '{}': {e}",
+                        attachment.filename
+                    ))
+                })?;
 
-                    let (meta, data) = store
-                        .get(blob_id)
-                        .await
-                        .map_err(|e| GatewayError::Attachment(e.to_string()))?
-                        .ok_or_else(|| {
-                            GatewayError::Attachment(format!("blob not found: {blob_id}"))
-                        })?;
-
-                    let final_filename = filename.as_deref().unwrap_or(&meta.filename);
-
-                    resolved.push(acteon_blob::ResolvedBlob {
-                        metadata: acteon_blob::BlobMetadata {
-                            filename: final_filename.to_owned(),
-                            ..meta
-                        },
-                        data,
-                    });
-                }
-                acteon_core::Attachment::Inline {
-                    data_base64,
-                    content_type,
-                    filename,
-                } => {
-                    let data = base64::engine::general_purpose::STANDARD
-                        .decode(data_base64)
-                        .map_err(|e| {
-                            GatewayError::Attachment(format!(
-                                "failed to decode base64 for '{filename}': {e}"
-                            ))
-                        })?;
-
-                    let size = data.len() as u64;
-                    if size > self.max_inline_bytes {
-                        return Err(GatewayError::Attachment(format!(
-                            "inline attachment '{filename}' is {size} bytes, max is {}",
-                            self.max_inline_bytes
-                        )));
-                    }
-
-                    resolved.push(acteon_blob::ResolvedBlob {
-                        metadata: acteon_blob::BlobMetadata {
-                            id: String::new(),
-                            filename: filename.clone(),
-                            content_type: content_type.clone(),
-                            size_bytes: size,
-                            checksum_sha256: String::new(),
-                            namespace: action.namespace.to_string(),
-                            tenant: action.tenant.to_string(),
-                            created_at: chrono::Utc::now(),
-                            expires_at: None,
-                        },
-                        data: bytes::Bytes::from(data),
-                    });
-                }
+            let size = data.len() as u64;
+            if size > self.max_inline_bytes {
+                return Err(GatewayError::Attachment(format!(
+                    "attachment '{}' is {size} bytes, max is {}",
+                    attachment.filename, self.max_inline_bytes
+                )));
             }
+
+            resolved.push(acteon_core::ResolvedAttachment {
+                id: attachment.id.clone(),
+                name: attachment.name.clone(),
+                filename: attachment.filename.clone(),
+                content_type: attachment.content_type.clone(),
+                data,
+            });
         }
 
         Ok(resolved)
@@ -552,12 +502,14 @@ impl Gateway {
                 })?;
             let scoped_templates = self.templates_for_scope(&action.namespace, &action.tenant);
             let payload_snapshot = action.payload.clone();
+            let attachments_snapshot = action.attachments.clone();
 
             let rendered = tokio::task::spawn_blocking(move || {
                 crate::template_engine::render_profile(
                     &profile,
                     &scoped_templates,
                     &payload_snapshot,
+                    &attachments_snapshot,
                 )
             })
             .await
@@ -996,216 +948,7 @@ impl Gateway {
         self.retention_policies.write().remove(&key)
     }
 
-    /// Return a flat snapshot of the current in-memory templates.
-    ///
-    /// Keyed by `"namespace:tenant:name"` for backward compatibility with
-    /// CRUD handlers. **Not** used on the hot dispatch path.
-    pub fn templates(&self) -> HashMap<String, acteon_core::Template> {
-        self.templates
-            .read()
-            .iter()
-            .flat_map(|((ns, t), inner)| {
-                inner
-                    .iter()
-                    .map(move |(name, tpl)| (format!("{ns}:{t}:{name}"), tpl.clone()))
-            })
-            .collect()
-    }
-
-    /// Add or replace a template in the nested map.
-    pub fn set_template(&self, template: acteon_core::Template) {
-        let scope = (template.namespace.clone(), template.tenant.clone());
-        self.templates
-            .write()
-            .entry(scope)
-            .or_default()
-            .insert(template.name.clone(), template);
-    }
-
-    /// Remove a template by scope and name.
-    pub fn remove_template(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        name: &str,
-    ) -> Option<acteon_core::Template> {
-        let scope = (namespace.to_owned(), tenant.to_owned());
-        let mut guard = self.templates.write();
-        let inner = guard.get_mut(&scope)?;
-        let removed = inner.remove(name);
-        if inner.is_empty() {
-            guard.remove(&scope);
-        }
-        removed
-    }
-
-    /// Check whether a template exists in a given scope — O(1).
-    pub fn template_exists(&self, namespace: &str, tenant: &str, name: &str) -> bool {
-        let scope = (namespace.to_owned(), tenant.to_owned());
-        self.templates
-            .read()
-            .get(&scope)
-            .is_some_and(|inner| inner.contains_key(name))
-    }
-
-    /// Return a flat snapshot of the current in-memory template profiles.
-    ///
-    /// Keyed by `"namespace:tenant:name"` for backward compatibility with
-    /// CRUD handlers. **Not** used on the hot dispatch path.
-    pub fn template_profiles(&self) -> HashMap<String, acteon_core::TemplateProfile> {
-        self.template_profiles
-            .read()
-            .iter()
-            .flat_map(|((ns, t), inner)| {
-                inner
-                    .iter()
-                    .map(move |(name, prof)| (format!("{ns}:{t}:{name}"), prof.clone()))
-            })
-            .collect()
-    }
-
-    /// Return all template profiles for a `(namespace, tenant)` scope — O(1).
-    pub fn template_profiles_for_scope(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> HashMap<String, acteon_core::TemplateProfile> {
-        let scope = (namespace.to_owned(), tenant.to_owned());
-        self.template_profiles
-            .read()
-            .get(&scope)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Look up a single template profile by scope and name — O(1).
-    pub fn template_profile_by_scope(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        name: &str,
-    ) -> Option<acteon_core::TemplateProfile> {
-        let scope = (namespace.to_owned(), tenant.to_owned());
-        self.template_profiles
-            .read()
-            .get(&scope)
-            .and_then(|inner| inner.get(name).cloned())
-    }
-
-    /// Add or replace a template profile in the nested map.
-    pub fn set_template_profile(&self, profile: acteon_core::TemplateProfile) {
-        let scope = (profile.namespace.clone(), profile.tenant.clone());
-        self.template_profiles
-            .write()
-            .entry(scope)
-            .or_default()
-            .insert(profile.name.clone(), profile);
-    }
-
-    /// Remove a template profile by scope and name.
-    pub fn remove_template_profile(
-        &self,
-        namespace: &str,
-        tenant: &str,
-        name: &str,
-    ) -> Option<acteon_core::TemplateProfile> {
-        let scope = (namespace.to_owned(), tenant.to_owned());
-        let mut guard = self.template_profiles.write();
-        let inner = guard.get_mut(&scope)?;
-        let removed = inner.remove(name);
-        if inner.is_empty() {
-            guard.remove(&scope);
-        }
-        removed
-    }
-
-    /// Get scoped templates for a namespace + tenant pair — O(1).
-    pub fn templates_for_scope(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> HashMap<String, acteon_core::Template> {
-        let scope = (namespace.to_owned(), tenant.to_owned());
-        self.templates
-            .read()
-            .get(&scope)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Reload all templates and profiles from the state store into memory.
-    ///
-    /// Used by the background sync task to keep multi-node deployments
-    /// consistent. Returns the total number of items synced.
-    ///
-    // TODO(template-sync): Replace this poll-based sync with a reactive,
-    // backend-specific invalidation mechanism for near-zero-latency
-    // propagation across nodes:
-    //
-    //   - **Redis**: Subscribe to a pub/sub channel; the API layer publishes
-    //     an invalidation message on template create/update/delete. Each node
-    //     listens and calls `sync_templates_from_store()` (or applies a
-    //     targeted delta) on receipt.
-    //
-    //   - **PostgreSQL**: Use Change Data Capture (CDC) via logical replication
-    //     or LISTEN/NOTIFY on the template tables. A background listener
-    //     converts WAL events into in-memory map updates.
-    //
-    //   - **DynamoDB**: Enable DynamoDB Streams on the template items table.
-    //     A background consumer reads stream shards and applies inserts,
-    //     modifications, and deletions to the in-memory maps.
-    //
-    // Until then, the current approach polls at `template_sync_interval`
-    // (default 30 s), giving eventual consistency with a bounded staleness
-    // window equal to the poll interval.
-    pub async fn sync_templates_from_store(&self) -> Result<usize, GatewayError> {
-        let mut new_templates: HashMap<(String, String), HashMap<String, acteon_core::Template>> =
-            HashMap::new();
-        let mut new_profiles: HashMap<
-            (String, String),
-            HashMap<String, acteon_core::TemplateProfile>,
-        > = HashMap::new();
-
-        let tpl_entries = self
-            .state
-            .scan_keys_by_kind(KeyKind::Template)
-            .await
-            .map_err(|e| GatewayError::Configuration(format!("template sync scan failed: {e}")))?;
-
-        let mut count = 0usize;
-        for (_key, value) in &tpl_entries {
-            if let Ok(tpl) = serde_json::from_str::<acteon_core::Template>(value) {
-                let scope = (tpl.namespace.clone(), tpl.tenant.clone());
-                new_templates
-                    .entry(scope)
-                    .or_default()
-                    .insert(tpl.name.clone(), tpl);
-                count += 1;
-            }
-        }
-
-        let prof_entries = self
-            .state
-            .scan_keys_by_kind(KeyKind::TemplateProfile)
-            .await
-            .map_err(|e| GatewayError::Configuration(format!("profile sync scan failed: {e}")))?;
-
-        for (_key, value) in &prof_entries {
-            if let Ok(prof) = serde_json::from_str::<acteon_core::TemplateProfile>(value) {
-                let scope = (prof.namespace.clone(), prof.tenant.clone());
-                new_profiles
-                    .entry(scope)
-                    .or_default()
-                    .insert(prof.name.clone(), prof);
-                count += 1;
-            }
-        }
-
-        *self.templates.write() = new_templates;
-        *self.template_profiles.write() = new_profiles;
-
-        Ok(count)
-    }
+    // -- Template management methods moved to template_management.rs ----------
 
     /// Compute the effective audit TTL for a given namespace and tenant.
     ///
@@ -1314,231 +1057,7 @@ impl Gateway {
         Ok(trace)
     }
 
-    /// Check whether the action's tenant has exceeded their quota.
-    ///
-    /// Uses an atomic `increment()` to avoid read-then-write races between
-    /// concurrent actions for the same tenant.  The counter is always
-    /// incremented first; if the new value exceeds the limit the configured
-    /// [`OverageBehavior`](acteon_core::OverageBehavior) determines the outcome.
-    ///
-    /// Returns `None` when the action is within quota or no policy exists.
-    /// Returns `Some(ActionOutcome::QuotaExceeded { .. })` when the action
-    /// should be blocked or degraded.
-    #[instrument(name = "gateway.check_quota", skip_all)]
-    async fn check_quota(&self, action: &Action) -> Result<Option<ActionOutcome>, GatewayError> {
-        // Skip quota for internal re-dispatches (scheduled, recurring, groups)
-        // to avoid double-counting. The action was already counted when it
-        // first entered the gateway.
-        if action
-            .payload
-            .get("_scheduled_dispatch")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            || action
-                .payload
-                .get("_recurring_dispatch")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-            || action
-                .payload
-                .get("_group_dispatch")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-        {
-            return Ok(None);
-        }
-
-        let policy_key = format!("{}:{}", action.namespace, action.tenant);
-        let now = Utc::now();
-
-        // 1. Check in-memory cache with a 60-second TTL to ensure we eventually
-        //    see updates made on other instances.
-        let cached = {
-            let map = self.quota_policies.read();
-            map.get(&policy_key).cloned()
-        };
-
-        const CACHE_TTL_SECS: i64 = 60;
-
-        let policy = if let Some(c) = cached
-            && (now - c.cached_at).num_seconds() < CACHE_TTL_SECS
-        {
-            c.policy
-        } else {
-            // Cold path: fetch from state store. We fail-open if the store
-            // is down to protect system availability.
-            let found = match self
-                .load_quota_from_state_store(&action.namespace, &action.tenant)
-                .await
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    warn!(error = %e, "quota policy lookup failed (fail-open)");
-                    return Ok(None);
-                }
-            };
-
-            match found {
-                Some(p) => {
-                    let cached = CachedPolicy {
-                        policy: p.clone(),
-                        cached_at: now,
-                    };
-                    self.quota_policies
-                        .write()
-                        .insert(policy_key.clone(), cached);
-                    p
-                }
-                None => return Ok(None),
-            }
-        };
-
-        if !policy.enabled {
-            return Ok(None);
-        }
-
-        let counter_id =
-            acteon_core::quota_counter_key(&action.namespace, &action.tenant, &policy.window, &now);
-        let counter_key = acteon_state::StateKey::new(
-            action.namespace.as_str(),
-            action.tenant.as_str(),
-            acteon_state::KeyKind::QuotaUsage,
-            &counter_id,
-        );
-
-        let window_ttl = Some(std::time::Duration::from_secs(
-            policy.window.duration_seconds(),
-        ));
-
-        // 2. Increment usage counter. Fail-open on state store errors.
-        let new_count = match self.state.increment(&counter_key, 1, window_ttl).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(error = %e, "quota increment failed (fail-open)");
-                return Ok(None);
-            }
-        };
-
-        #[allow(clippy::cast_sign_loss)]
-        let used = new_count as u64;
-
-        if used <= policy.max_actions {
-            return Ok(None);
-        }
-
-        // Quota exceeded — apply behavior.
-        self.apply_overage_behavior(action, &policy, used, &counter_key, window_ttl)
-            .await
-    }
-
-    /// Apply the configured overage behavior when a tenant exceeds their quota.
-    ///
-    /// Separated from [`check_quota`](Self::check_quota) to keep each method
-    /// under the clippy line-count limit.
-    async fn apply_overage_behavior(
-        &self,
-        action: &Action,
-        policy: &acteon_core::QuotaPolicy,
-        used: u64,
-        counter_key: &acteon_state::StateKey,
-        window_ttl: Option<std::time::Duration>,
-    ) -> Result<Option<ActionOutcome>, GatewayError> {
-        match &policy.overage_behavior {
-            acteon_core::OverageBehavior::Block => {
-                self.metrics.increment_quota_exceeded();
-                // Roll back the increment so the blocked request doesn't
-                // consume a slot.
-                let _ = self.state.increment(counter_key, -1, window_ttl).await;
-                info!(
-                    tenant = %action.tenant,
-                    limit = policy.max_actions,
-                    used,
-                    "quota exceeded — blocking action"
-                );
-                Ok(Some(ActionOutcome::QuotaExceeded {
-                    tenant: action.tenant.to_string(),
-                    limit: policy.max_actions,
-                    used,
-                    overage_behavior: "block".into(),
-                }))
-            }
-            acteon_core::OverageBehavior::Warn => {
-                self.metrics.increment_quota_warned();
-                warn!(
-                    tenant = %action.tenant,
-                    limit = policy.max_actions,
-                    used,
-                    "quota exceeded — warning, allowing action"
-                );
-                Ok(None)
-            }
-            acteon_core::OverageBehavior::Degrade { fallback_provider } => {
-                self.metrics.increment_quota_degraded();
-                info!(
-                    tenant = %action.tenant,
-                    fallback = %fallback_provider,
-                    "quota exceeded — degrading to fallback provider"
-                );
-                Ok(Some(ActionOutcome::QuotaExceeded {
-                    tenant: action.tenant.to_string(),
-                    limit: policy.max_actions,
-                    used,
-                    overage_behavior: format!("degrade:{fallback_provider}"),
-                }))
-            }
-            acteon_core::OverageBehavior::Notify { target } => {
-                self.metrics.increment_quota_notified();
-                warn!(
-                    tenant = %action.tenant,
-                    target = %target,
-                    "quota exceeded — notifying admin, allowing action"
-                );
-                Ok(None)
-            }
-        }
-    }
-
-    /// Try to load a quota policy for `namespace:tenant` from the state store.
-    ///
-    /// This is the cold-path fallback used by [`check_quota`](Self::check_quota)
-    /// when no in-memory policy is found, enabling cross-instance visibility
-    /// without requiring a restart.
-    ///
-    /// Uses a two-step O(1) lookup via the `idx:{namespace}:{tenant}` index
-    /// key written by the API layer, avoiding a full `scan_keys_by_kind`.
-    async fn load_quota_from_state_store(
-        &self,
-        namespace: &str,
-        tenant: &str,
-    ) -> Result<Option<acteon_core::QuotaPolicy>, GatewayError> {
-        // Step 1: look up the index key to get the policy ID.
-        let idx_suffix = format!("idx:{namespace}:{tenant}");
-        let idx_key = acteon_state::StateKey::new(
-            "_system",
-            "_quotas",
-            acteon_state::KeyKind::Quota,
-            &idx_suffix,
-        );
-        let Some(policy_id) = self.state.get(&idx_key).await? else {
-            return Ok(None);
-        };
-
-        // Step 2: look up the policy by ID.
-        let policy_key = acteon_state::StateKey::new(
-            "_system",
-            "_quotas",
-            acteon_state::KeyKind::Quota,
-            &policy_id,
-        );
-        match self.state.get(&policy_key).await? {
-            Some(data) => {
-                let policy = serde_json::from_str::<acteon_core::QuotaPolicy>(&data)
-                    .map_err(|e| GatewayError::Configuration(e.to_string()))?;
-                Ok(Some(policy))
-            }
-            None => Ok(None),
-        }
-    }
+    // -- Quota enforcement methods moved to quota_enforcement.rs ---------------
 
     /// Load rules from a directory using the given frontends, replacing current rules.
     pub fn load_rules_from_directory(
@@ -1761,8 +1280,10 @@ impl Gateway {
     ) -> (ActionOutcome, u64) {
         // Resolve attachments and use context-aware execution if applicable.
         let dispatch_ctx = if !action.attachments.is_empty() && provider.supports_attachments() {
-            match self.resolve_attachments(action).await {
-                Ok(blobs) => Some(acteon_provider::DispatchContext { attachments: blobs }),
+            match self.resolve_attachments(action) {
+                Ok(resolved) => Some(acteon_provider::DispatchContext {
+                    attachments: resolved,
+                }),
                 Err(e) => {
                     self.metrics.increment_failed();
                     return (
@@ -5035,265 +4556,11 @@ impl acteon_state::StateStore for BorrowedStateStore<'_> {
     }
 }
 
-// -- Audit helpers -----------------------------------------------------------
+// -- Audit helpers (moved to audit_helpers.rs) -------------------------------
 
-/// Extract the matched rule name from a `RuleVerdict`, if any.
-fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
-    match verdict {
-        RuleVerdict::Allow(_) | RuleVerdict::Deduplicate { .. } => None,
-        RuleVerdict::Deny(rule)
-        | RuleVerdict::Suppress(rule)
-        | RuleVerdict::Reroute { rule, .. }
-        | RuleVerdict::Throttle { rule, .. }
-        | RuleVerdict::Modify { rule, .. }
-        | RuleVerdict::StateMachine { rule, .. }
-        | RuleVerdict::Group { rule, .. }
-        | RuleVerdict::RequestApproval { rule, .. }
-        | RuleVerdict::Chain { rule, .. }
-        | RuleVerdict::Schedule { rule, .. } => Some(rule.clone()),
-    }
-}
-
-/// Extract a string tag from an `ActionOutcome`.
-fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
-    match outcome {
-        ActionOutcome::Executed(_) => "executed",
-        ActionOutcome::Deduplicated => "deduplicated",
-        ActionOutcome::Suppressed { .. } => "suppressed",
-        ActionOutcome::Rerouted { .. } => "rerouted",
-        ActionOutcome::Throttled { .. } => "throttled",
-        ActionOutcome::Failed(_) => "failed",
-        ActionOutcome::Grouped { .. } => "grouped",
-        ActionOutcome::StateChanged { .. } => "state_changed",
-        ActionOutcome::PendingApproval { .. } => "pending_approval",
-        ActionOutcome::ChainStarted { .. } => "chain_started",
-        ActionOutcome::DryRun { .. } => "dry_run",
-        ActionOutcome::CircuitOpen { .. } => "circuit_open",
-        ActionOutcome::Scheduled { .. } => "scheduled",
-        ActionOutcome::RecurringCreated { .. } => "recurring_created",
-        ActionOutcome::QuotaExceeded { .. } => "quota_exceeded",
-    }
-}
-
-/// Enrich serialized action metadata with extra `Action` fields so that
-/// Check if `source` and `target` are adjacent in the execution path
-/// (i.e., `target` immediately follows `source`).
-fn is_adjacent_in_path(path: &[String], source: &str, target: &str) -> bool {
-    path.windows(2).any(|w| w[0] == source && w[1] == target)
-}
-
-/// replays can reconstruct the full action. System fields use a `__` prefix
-/// to distinguish them from user-supplied labels.
-fn enrich_audit_metadata(action: &Action) -> serde_json::Value {
-    let mut meta = serde_json::to_value(&action.metadata).unwrap_or_default();
-    if let Some(obj) = meta.as_object_mut() {
-        if let Some(k) = &action.dedup_key {
-            obj.insert("__dedup_key".into(), serde_json::json!(k));
-        }
-        if let Some(f) = &action.fingerprint {
-            obj.insert("__fingerprint".into(), serde_json::json!(f));
-        }
-        if let Some(s) = &action.status {
-            obj.insert("__status".into(), serde_json::json!(s));
-        }
-        if let Some(t) = action.starts_at {
-            obj.insert("__starts_at".into(), serde_json::json!(t));
-        }
-        if let Some(t) = action.ends_at {
-            obj.insert("__ends_at".into(), serde_json::json!(t));
-        }
-    }
-    meta
-}
-
-/// Build an `AuditRecord` from the dispatch context.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn build_audit_record(
-    id: String,
-    action: &Action,
-    verdict: &RuleVerdict,
-    outcome: &ActionOutcome,
-    dispatched_at: chrono::DateTime<chrono::Utc>,
-    elapsed: Duration,
-    ttl_seconds: Option<u64>,
-    store_payload: bool,
-    caller: Option<&Caller>,
-) -> AuditRecord {
-    let completed_at = Utc::now();
-    #[allow(clippy::cast_possible_wrap)]
-    let expires_at = ttl_seconds.map(|secs| dispatched_at + chrono::Duration::seconds(secs as i64));
-
-    let action_payload = if store_payload {
-        Some(action.payload.clone())
-    } else {
-        None
-    };
-
-    let outcome_details = match outcome {
-        ActionOutcome::Executed(resp) => serde_json::json!({
-            "status": format!("{:?}", resp.status),
-        }),
-        ActionOutcome::Failed(err) => serde_json::json!({
-            "code": err.code,
-            "message": err.message,
-            "retryable": err.retryable,
-            "attempts": err.attempts,
-        }),
-        ActionOutcome::Suppressed { rule } => serde_json::json!({ "rule": rule }),
-        ActionOutcome::Rerouted {
-            original_provider,
-            new_provider,
-            ..
-        } => serde_json::json!({
-            "original_provider": original_provider,
-            "new_provider": new_provider,
-        }),
-        ActionOutcome::Throttled { retry_after } => {
-            serde_json::json!({ "retry_after_secs": retry_after.as_secs() })
-        }
-        ActionOutcome::Deduplicated => serde_json::json!({}),
-        ActionOutcome::Grouped {
-            group_id,
-            group_size,
-            notify_at,
-        } => serde_json::json!({
-            "group_id": group_id,
-            "group_size": group_size,
-            "notify_at": notify_at.to_rfc3339(),
-        }),
-        ActionOutcome::StateChanged {
-            fingerprint,
-            previous_state,
-            new_state,
-            notify,
-        } => serde_json::json!({
-            "fingerprint": fingerprint,
-            "previous_state": previous_state,
-            "new_state": new_state,
-            "notify": notify,
-        }),
-        ActionOutcome::PendingApproval {
-            approval_id,
-            expires_at,
-            notification_sent,
-            ..
-        } => serde_json::json!({
-            "approval_id": approval_id,
-            "expires_at": expires_at.to_rfc3339(),
-            "notification_sent": notification_sent,
-        }),
-        ActionOutcome::ChainStarted {
-            chain_id,
-            chain_name,
-            total_steps,
-            first_step,
-        } => serde_json::json!({
-            "chain_id": chain_id,
-            "chain_name": chain_name,
-            "total_steps": total_steps,
-            "first_step": first_step,
-        }),
-        ActionOutcome::DryRun {
-            verdict,
-            matched_rule,
-            would_be_provider,
-        } => serde_json::json!({
-            "verdict": verdict,
-            "matched_rule": matched_rule,
-            "would_be_provider": would_be_provider,
-        }),
-        ActionOutcome::CircuitOpen {
-            provider,
-            fallback_chain,
-        } => serde_json::json!({
-            "provider": provider,
-            "fallback_chain": fallback_chain,
-        }),
-        ActionOutcome::Scheduled {
-            action_id,
-            scheduled_for,
-        } => serde_json::json!({
-            "action_id": action_id,
-            "scheduled_for": scheduled_for.to_rfc3339(),
-        }),
-        ActionOutcome::RecurringCreated {
-            recurring_id,
-            cron_expr,
-            next_execution_at,
-        } => serde_json::json!({
-            "recurring_id": recurring_id,
-            "cron_expr": cron_expr,
-            "next_execution_at": next_execution_at.map(|t| t.to_rfc3339()),
-        }),
-        ActionOutcome::QuotaExceeded {
-            tenant,
-            limit,
-            used,
-            overage_behavior,
-        } => serde_json::json!({
-            "tenant": tenant,
-            "limit": limit,
-            "used": used,
-            "overage_behavior": overage_behavior,
-        }),
-    };
-
-    let chain_id = if let ActionOutcome::ChainStarted { chain_id, .. } = outcome {
-        Some(chain_id.clone())
-    } else {
-        None
-    };
-
-    // Serialize attachment metadata (never binary data).
-    let attachment_metadata: Vec<serde_json::Value> = action
-        .attachments
-        .iter()
-        .map(|a| match a {
-            acteon_core::Attachment::BlobRef { blob_id, filename } => serde_json::json!({
-                "type": "blob_ref",
-                "blob_id": blob_id,
-                "filename": filename,
-            }),
-            acteon_core::Attachment::Inline {
-                content_type,
-                filename,
-                data_base64,
-            } => serde_json::json!({
-                "type": "inline",
-                "filename": filename,
-                "content_type": content_type,
-                "size_bytes": data_base64.len(),
-            }),
-        })
-        .collect();
-
-    AuditRecord {
-        id,
-        action_id: action.id.to_string(),
-        chain_id,
-        namespace: action.namespace.to_string(),
-        tenant: action.tenant.to_string(),
-        provider: action.provider.to_string(),
-        action_type: action.action_type.clone(),
-        verdict: verdict.as_tag().to_owned(),
-        matched_rule: matched_rule_name(verdict),
-        outcome: outcome_tag(outcome).to_owned(),
-        action_payload,
-        verdict_details: serde_json::json!({ "verdict": verdict.as_tag() }),
-        outcome_details,
-        metadata: enrich_audit_metadata(action),
-        dispatched_at,
-        completed_at,
-        duration_ms: u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-        expires_at,
-        caller_id: caller.map_or_else(String::new, |c| c.id.clone()),
-        auth_method: caller.map_or_else(String::new, |c| c.auth_method.clone()),
-        record_hash: None,
-        previous_hash: None,
-        sequence_number: None,
-        attachment_metadata,
-    }
-}
+use crate::audit_helpers::{
+    build_audit_record, enrich_audit_metadata, is_adjacent_in_path, matched_rule_name,
+};
 
 #[cfg(test)]
 mod tests {

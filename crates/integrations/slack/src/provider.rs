@@ -163,24 +163,24 @@ impl Provider for SlackProvider {
                 .map_err(|e| ProviderError::Serialization(e.to_string()))?;
             let channel = self.resolve_channel(payload.channel.as_deref())?;
 
-            for blob in &ctx.attachments {
+            for resolved in &ctx.attachments {
                 let url = self.api_url("files.upload");
-                let part = reqwest::multipart::Part::bytes(blob.data.to_vec())
-                    .file_name(blob.metadata.filename.clone())
-                    .mime_str(&blob.metadata.content_type)
+                let part = reqwest::multipart::Part::bytes(resolved.data.clone())
+                    .file_name(resolved.filename.clone())
+                    .mime_str(&resolved.content_type)
                     .unwrap_or_else(|_| {
-                        reqwest::multipart::Part::bytes(blob.data.to_vec())
-                            .file_name(blob.metadata.filename.clone())
+                        reqwest::multipart::Part::bytes(resolved.data.clone())
+                            .file_name(resolved.filename.clone())
                     });
 
                 let form = reqwest::multipart::Form::new()
                     .text("channels", channel.clone())
-                    .text("filename", blob.metadata.filename.clone())
+                    .text("filename", resolved.filename.clone())
                     .part("file", part);
 
                 debug!(
-                    filename = %blob.metadata.filename,
-                    size = blob.metadata.size_bytes,
+                    filename = %resolved.filename,
+                    size = resolved.data.len(),
                     "uploading file to Slack"
                 );
 
@@ -197,7 +197,7 @@ impl Provider for SlackProvider {
 
                 if !upload_response.status().is_success() {
                     let body = upload_response.text().await.unwrap_or_default();
-                    warn!(filename = %blob.metadata.filename, "Slack file upload failed: {body}");
+                    warn!(filename = %resolved.filename, "Slack file upload failed: {body}");
                 }
             }
 

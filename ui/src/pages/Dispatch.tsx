@@ -124,18 +124,23 @@ export function Dispatch() {
   const [dryRun, setDryRun] = useState(false)
   const [result, setResult] = useState<DispatchResponse | null>(null)
   const [payloadError, setPayloadError] = useState('')
-  const [attachments, setAttachments] = useState<{ file: File; base64: string }[]>([])
+  const [attachments, setAttachments] = useState<{ id: string; name: string; file: File; base64: string }[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileSelect = useCallback(async (files: FileList | null) => {
     if (!files) return
-    const newAttachments: { file: File; base64: string }[] = []
+    const newAttachments: { id: string; name: string; file: File; base64: string }[] = []
     for (const file of Array.from(files)) {
       const buffer = await file.arrayBuffer()
       const base64 = btoa(
         new Uint8Array(buffer).reduce((s, b) => s + String.fromCharCode(b), ''),
       )
-      newAttachments.push({ file, base64 })
+      newAttachments.push({
+        id: crypto.randomUUID(),
+        name: file.name.replace(/\.[^.]+$/, ''),
+        file,
+        base64,
+      })
     }
     setAttachments((prev) => [...prev, ...newAttachments])
   }, [])
@@ -207,12 +212,12 @@ export function Dispatch() {
       return
     }
 
-    const inlineAttachments: Attachment[] = attachments.map((a) => ({
-      inline: {
-        data_base64: a.base64,
-        content_type: a.file.type || 'application/octet-stream',
-        filename: a.file.name,
-      },
+    const flatAttachments: Attachment[] = attachments.map((a) => ({
+      id: a.id,
+      name: a.name,
+      filename: a.file.name,
+      content_type: a.file.type || 'application/octet-stream',
+      data_base64: a.base64,
     }))
 
     const request: DispatchRequest = {
@@ -222,7 +227,7 @@ export function Dispatch() {
       action_type: actionType,
       payload: parsed,
       dedup_key: dedupKey || undefined,
-      attachments: inlineAttachments.length > 0 ? inlineAttachments : undefined,
+      attachments: flatAttachments.length > 0 ? flatAttachments : undefined,
     }
 
     dispatch.mutate({ request, dryRun }, {
@@ -306,7 +311,23 @@ export function Dispatch() {
             {attachments.length > 0 && (
               <ul className={styles.attachmentList}>
                 {attachments.map((a, i) => (
-                  <li key={i} className={styles.attachmentItem}>
+                  <li key={a.id} className={styles.attachmentItem}>
+                    <div className={styles.attachmentFields}>
+                      <input
+                        type="text"
+                        value={a.id}
+                        onChange={(e) => setAttachments(prev => prev.map((att, idx) => idx === i ? { ...att, id: e.target.value } : att))}
+                        className={styles.attachmentInput}
+                        placeholder="Attachment ID"
+                      />
+                      <input
+                        type="text"
+                        value={a.name}
+                        onChange={(e) => setAttachments(prev => prev.map((att, idx) => idx === i ? { ...att, name: e.target.value } : att))}
+                        className={styles.attachmentInput}
+                        placeholder="Display name"
+                      />
+                    </div>
                     <span className={styles.attachmentName}>{a.file.name}</span>
                     <span className={styles.attachmentSize}>
                       {a.file.size < 1024

@@ -110,18 +110,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "acteon-blob"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "bytes",
- "chrono",
- "serde",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
 name = "acteon-cli"
 version = "0.1.0"
 dependencies = [
@@ -245,7 +233,6 @@ name = "acteon-gateway"
 version = "0.1.0"
 dependencies = [
  "acteon-audit",
- "acteon-blob",
  "acteon-core",
  "acteon-crypto",
  "acteon-executor",
@@ -347,7 +334,6 @@ dependencies = [
 name = "acteon-provider"
 version = "0.1.0"
 dependencies = [
- "acteon-blob",
  "acteon-core",
  "async-trait",
  "bytes",

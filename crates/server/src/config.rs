@@ -62,7 +62,7 @@ pub struct ActeonConfig {
     /// Payload template configuration.
     #[serde(default)]
     pub templates: TemplateServerConfig,
-    /// Attachment / blob configuration.
+    /// Attachment size and count limits.
     #[serde(default)]
     pub attachments: AttachmentConfig,
     /// Pre-dispatch enrichment configurations.
@@ -929,10 +929,8 @@ pub struct TemplateServerConfig {
 
 /// Configuration for action payload attachments.
 ///
-/// Controls size limits for inline `base64` attachments and the maximum number
-/// of attachments per action.  A pluggable `BlobStore` trait can be wired in
-/// at runtime for external blob references; this configuration only governs
-/// the built-in inline mode.
+/// Controls the maximum decoded size for a single attachment and the maximum
+/// number of attachments per action.
 ///
 /// # Example
 ///
@@ -943,7 +941,7 @@ pub struct TemplateServerConfig {
 /// ```
 #[derive(Debug, Deserialize)]
 pub struct AttachmentConfig {
-    /// Maximum size in bytes for a single inline `base64` attachment (default: 5 MB).
+    /// Maximum decoded size in bytes for a single attachment (default: 5 MB).
     #[serde(default = "default_max_inline_bytes")]
     pub max_inline_bytes: u64,
     /// Maximum number of attachments allowed per action (default: 10).
@@ -1898,7 +1896,7 @@ impl From<&ComplianceServerConfig> for ComplianceSnapshot {
 /// Sanitized attachment configuration.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct AttachmentSnapshot {
-    /// Maximum inline attachment size in bytes.
+    /// Maximum decoded attachment size in bytes.
     pub max_inline_bytes: u64,
     /// Maximum attachments per action.
     pub max_attachments_per_action: usize,

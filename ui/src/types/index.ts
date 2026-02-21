@@ -32,9 +32,13 @@ export interface HealthResponse {
 }
 
 // ---- Attachments ----
-export type Attachment =
-  | { blob_ref: { blob_id: string; filename?: string } }
-  | { inline: { data_base64: string; content_type: string; filename: string } }
+export interface Attachment {
+  id: string
+  name: string
+  filename: string
+  content_type: string
+  data_base64: string
+}
 
 // ---- Dispatch ----
 export interface DispatchRequest {

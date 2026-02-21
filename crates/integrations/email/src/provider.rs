@@ -174,10 +174,10 @@ impl Provider for EmailProvider {
         let attachments: Vec<EmailAttachment> = ctx
             .attachments
             .iter()
-            .map(|blob| EmailAttachment {
-                filename: blob.metadata.filename.clone(),
-                content_type: blob.metadata.content_type.clone(),
-                data: blob.data.to_vec(),
+            .map(|resolved| EmailAttachment {
+                filename: resolved.filename.clone(),
+                content_type: resolved.content_type.clone(),
+                data: resolved.data.clone(),
             })
             .collect();
 

@@ -62,7 +62,73 @@ pub struct RenderResult {
     pub fields: HashMap<String, String>,
 }
 
-/// Render a template profile against a payload.
+/// Build a `MiniJinja` context value from the action payload and attachment
+/// metadata.
+///
+/// Payload fields live at the root level. Two extra keys are injected:
+/// - `attachments` -- ordered list of `{id, name, filename, content_type}`
+/// - `attachments_by_id` -- map from attachment `id` to the same metadata
+///
+/// Binary content (`data_base64`) is intentionally excluded to avoid
+/// multi-megabyte strings inside the template engine.
+fn build_template_context(
+    payload: &serde_json::Value,
+    attachments: &[acteon_core::Attachment],
+) -> minijinja::Value {
+    // Start from the payload (must be an object for merge to work).
+    let mut root = match payload {
+        serde_json::Value::Object(map) => {
+            serde_json::Value::Object(map.clone())
+        }
+        other => {
+            // Wrap non-object payloads so we always have a map to inject into.
+            let mut map = serde_json::Map::new();
+            map.insert("payload".into(), other.clone());
+            serde_json::Value::Object(map)
+        }
+    };
+
+    // Build attachment metadata list (no data_base64).
+    let att_list: Vec<serde_json::Value> = attachments
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "name": a.name,
+                "filename": a.filename,
+                "content_type": a.content_type,
+            })
+        })
+        .collect();
+
+    // Build id → metadata lookup map.
+    let att_by_id: serde_json::Map<String, serde_json::Value> = attachments
+        .iter()
+        .map(|a| {
+            (
+                a.id.clone(),
+                serde_json::json!({
+                    "id": a.id,
+                    "name": a.name,
+                    "filename": a.filename,
+                    "content_type": a.content_type,
+                }),
+            )
+        })
+        .collect();
+
+    if let serde_json::Value::Object(ref mut map) = root {
+        map.insert("attachments".into(), serde_json::Value::Array(att_list));
+        map.insert(
+            "attachments_by_id".into(),
+            serde_json::Value::Object(att_by_id),
+        );
+    }
+
+    minijinja::Value::from_serialize(&root)
+}
+
+/// Render a template profile against a payload and optional attachments.
 ///
 /// For each field in the profile:
 /// - `Inline(literal)` -- renders the literal as a `MiniJinja` template
@@ -72,12 +138,18 @@ pub struct RenderResult {
 /// All templates in `templates_map` are registered in the `MiniJinja` environment
 /// so that `{% include %}` and `{% extends %}` directives work across templates.
 ///
+/// Attachment metadata (without `data_base64`) is injected into the template
+/// context under two keys:
+/// - **`attachments`** -- list of `{id, name, filename, content_type}` objects
+/// - **`attachments_by_id`** -- map from `id` to the same metadata objects
+///
 /// Output is streamed through a size-limited writer that aborts mid-render
 /// when the per-field limit is exceeded, preventing unbounded memory growth.
 pub fn render_profile<S: ::std::hash::BuildHasher>(
     profile: &TemplateProfile,
     templates_map: &HashMap<String, Template, S>,
     payload: &serde_json::Value,
+    attachments: &[acteon_core::Attachment],
 ) -> Result<RenderResult, GatewayError> {
     let mut env = minijinja::Environment::new();
     env.set_fuel(Some(FUEL_LIMIT));
@@ -102,8 +174,8 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
         }
     }
 
-    // Build the context from the payload.
-    let ctx = minijinja::Value::from_serialize(payload);
+    // Build the context: payload fields at root level + attachment metadata.
+    let ctx = build_template_context(payload, attachments);
 
     let mut rendered_fields = HashMap::new();
 
@@ -224,7 +296,7 @@ mod tests {
         let profile = make_profile("test", fields);
         let payload = serde_json::json!({"name": "Alice"});
 
-        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
         assert_eq!(result.fields.get("greeting").unwrap(), "Hello, Alice!");
     }
 
@@ -244,7 +316,7 @@ mod tests {
         let profile = make_profile("test", fields);
         let payload = serde_json::json!({"name": "Bob", "company": "Acme"});
 
-        let result = render_profile(&profile, &templates, &payload).unwrap();
+        let result = render_profile(&profile, &templates, &payload, &[]).unwrap();
         assert_eq!(result.fields.get("body").unwrap(), "Welcome to Acme, Bob!");
     }
 
@@ -268,7 +340,7 @@ mod tests {
         let profile = make_profile("mixed", fields);
         let payload = serde_json::json!({"level": "critical", "title": "Server Down", "message": "Check immediately"});
 
-        let result = render_profile(&profile, &templates, &payload).unwrap();
+        let result = render_profile(&profile, &templates, &payload, &[]).unwrap();
         assert_eq!(result.fields.get("subject").unwrap(), "Alert: critical");
         assert!(result.fields.get("body").unwrap().contains("Server Down"));
     }
@@ -286,7 +358,7 @@ mod tests {
         let profile = make_profile("loop-test", fields);
         let payload = serde_json::json!({"items": ["a", "b", "c"]});
 
-        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
         assert_eq!(result.fields.get("list").unwrap(), "a, b, c");
     }
 
@@ -302,7 +374,7 @@ mod tests {
         let profile = make_profile("cond-test", fields);
         let payload = serde_json::json!({"urgent": true, "message": "disk full"});
 
-        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
         assert_eq!(result.fields.get("msg").unwrap(), "URGENT: disk full");
     }
 
@@ -318,7 +390,7 @@ mod tests {
         let profile = make_profile("bad-ref", fields);
         let payload = serde_json::json!({});
 
-        let err = render_profile(&profile, &HashMap::new(), &payload).unwrap_err();
+        let err = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap_err();
         assert!(err.to_string().contains("nonexistent"));
     }
 
@@ -332,7 +404,7 @@ mod tests {
         let profile = make_profile("syntax-err", fields);
         let payload = serde_json::json!({});
 
-        let err = render_profile(&profile, &HashMap::new(), &payload).unwrap_err();
+        let err = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap_err();
         assert!(
             err.to_string().contains("error compiling")
                 || err.to_string().contains("error rendering"),
@@ -376,7 +448,7 @@ mod tests {
         let profile = make_profile("nested", fields);
         let payload = serde_json::json!({"user": {"name": "Alice", "email": "alice@example.com"}});
 
-        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
         assert_eq!(
             result.fields.get("msg").unwrap(),
             "Alice (alice@example.com)"
@@ -402,7 +474,7 @@ mod tests {
         let profile = make_profile("html-test", fields);
         let payload = serde_json::json!({"title": "Welcome", "content": "Hello world"});
 
-        let result = render_profile(&profile, &templates, &payload).unwrap();
+        let result = render_profile(&profile, &templates, &payload, &[]).unwrap();
         let body = result.fields.get("html_body").unwrap();
         assert!(body.contains("<h1>Welcome</h1>"));
         assert!(body.contains("<p>Hello world</p>"));
@@ -419,7 +491,7 @@ mod tests {
         let payload = serde_json::json!({});
 
         // `MiniJinja` renders missing variables as empty strings by default.
-        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
         assert_eq!(result.fields.get("msg").unwrap(), "Hello ");
     }
 
@@ -428,7 +500,7 @@ mod tests {
         let profile = make_profile("empty", HashMap::new());
         let payload = serde_json::json!({"foo": "bar"});
 
-        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
         assert!(result.fields.is_empty());
     }
 
@@ -452,7 +524,7 @@ mod tests {
         let profile = make_profile("include-test", fields);
         let payload = serde_json::json!({"title": "Welcome", "body": "Hello world"});
 
-        let result = render_profile(&profile, &templates, &payload).unwrap();
+        let result = render_profile(&profile, &templates, &payload, &[]).unwrap();
         let html = result.fields.get("html").unwrap();
         assert!(html.contains("<header>Welcome</header>"));
         assert!(html.contains("<main>Hello world</main>"));
@@ -474,7 +546,7 @@ mod tests {
         let padding = "x".repeat(1024);
         let payload = serde_json::json!({"padding": padding});
 
-        let err = render_profile(&profile, &HashMap::new(), &payload).unwrap_err();
+        let err = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap_err();
         assert!(
             err.to_string().contains("size limit") || err.to_string().contains("error rendering"),
             "expected size-limit error, got: {err}"
@@ -492,7 +564,117 @@ mod tests {
         let profile = make_profile("inline-named", fields);
         let payload = serde_json::json!({"name": "Dana"});
 
-        let result = render_profile(&profile, &HashMap::new(), &payload).unwrap();
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
         assert_eq!(result.fields.get("greeting").unwrap(), "Hi Dana, welcome!");
+    }
+
+    fn make_attachment(id: &str, name: &str, filename: &str, content_type: &str) -> acteon_core::Attachment {
+        acteon_core::Attachment {
+            id: id.to_string(),
+            name: name.to_string(),
+            filename: filename.to_string(),
+            content_type: content_type.to_string(),
+            data_base64: "dGVzdA==".to_string(), // "test"
+        }
+    }
+
+    #[test]
+    fn render_with_attachment_list() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "files".to_string(),
+            TemplateProfileField::Inline(
+                "{% for att in attachments %}{{ att.filename }}{% if not loop.last %}, {% endif %}{% endfor %}".to_string(),
+            ),
+        );
+        let profile = make_profile("att-list", fields);
+        let payload = serde_json::json!({"subject": "Report"});
+        let attachments = vec![
+            make_attachment("a1", "Report PDF", "report.pdf", "application/pdf"),
+            make_attachment("a2", "Logo", "logo.png", "image/png"),
+        ];
+
+        let result = render_profile(&profile, &HashMap::new(), &payload, &attachments).unwrap();
+        assert_eq!(result.fields.get("files").unwrap(), "report.pdf, logo.png");
+    }
+
+    #[test]
+    fn render_with_attachment_by_id() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "msg".to_string(),
+            TemplateProfileField::Inline(
+                "Attached: {{ attachments_by_id.report.filename }} ({{ attachments_by_id.report.content_type }})".to_string(),
+            ),
+        );
+        let profile = make_profile("att-by-id", fields);
+        let payload = serde_json::json!({});
+        let attachments = vec![
+            make_attachment("report", "Quarterly Report", "q4.pdf", "application/pdf"),
+        ];
+
+        let result = render_profile(&profile, &HashMap::new(), &payload, &attachments).unwrap();
+        assert_eq!(
+            result.fields.get("msg").unwrap(),
+            "Attached: q4.pdf (application/pdf)"
+        );
+    }
+
+    #[test]
+    fn render_attachments_count() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "summary".to_string(),
+            TemplateProfileField::Inline(
+                "{{ attachments | length }} file(s) attached".to_string(),
+            ),
+        );
+        let profile = make_profile("att-count", fields);
+        let payload = serde_json::json!({});
+        let attachments = vec![
+            make_attachment("a1", "File 1", "f1.txt", "text/plain"),
+            make_attachment("a2", "File 2", "f2.txt", "text/plain"),
+            make_attachment("a3", "File 3", "f3.txt", "text/plain"),
+        ];
+
+        let result = render_profile(&profile, &HashMap::new(), &payload, &attachments).unwrap();
+        assert_eq!(result.fields.get("summary").unwrap(), "3 file(s) attached");
+    }
+
+    #[test]
+    fn render_empty_attachments() {
+        let mut fields = HashMap::new();
+        fields.insert(
+            "msg".to_string(),
+            TemplateProfileField::Inline(
+                "{% if attachments %}Has files{% else %}No files{% endif %}".to_string(),
+            ),
+        );
+        let profile = make_profile("no-att", fields);
+        let payload = serde_json::json!({});
+
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
+        assert_eq!(result.fields.get("msg").unwrap(), "No files");
+    }
+
+    #[test]
+    fn render_attachment_metadata_excludes_data() {
+        // Verify that data_base64 is NOT accessible in templates.
+        let mut fields = HashMap::new();
+        fields.insert(
+            "data".to_string(),
+            TemplateProfileField::Inline(
+                "{{ attachments[0].data_base64 }}".to_string(),
+            ),
+        );
+        let profile = make_profile("no-data", fields);
+        let payload = serde_json::json!({});
+        let attachments = vec![
+            make_attachment("a1", "File", "f.txt", "text/plain"),
+        ];
+
+        let result = render_profile(&profile, &HashMap::new(), &payload, &attachments).unwrap();
+        // data_base64 is not in context, so MiniJinja renders it as empty.
+        assert_eq!(result.fields.get("data").unwrap(), "");
     }
 }

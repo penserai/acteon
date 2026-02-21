@@ -5,8 +5,6 @@ from .errors import ActeonError, ConnectionError, ApiError, HttpError
 from .models import (
     Action,
     Attachment,
-    BlobRefAttachment,
-    InlineAttachment,
     ActionOutcome,
     BatchResult,
     RuleInfo,
@@ -83,8 +81,6 @@ __all__ = [
     "HttpError",
     "Action",
     "Attachment",
-    "BlobRefAttachment",
-    "InlineAttachment",
     "ActionOutcome",
     "BatchResult",
     "RuleInfo",
