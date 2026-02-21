@@ -94,5 +94,11 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
         sqlx::query(stmt).execute(pool).await?;
     }
 
+    // Add attachment_metadata column (idempotent).
+    let attachment_stmt = format!(
+        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS attachment_metadata JSONB NOT NULL DEFAULT '[]'::jsonb"
+    );
+    sqlx::query(&attachment_stmt).execute(pool).await?;
+
     Ok(())
 }

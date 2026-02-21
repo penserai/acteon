@@ -1,3 +1,4 @@
+pub(crate) mod audit_helpers;
 pub mod background;
 pub mod builder;
 pub mod chain;
@@ -8,7 +9,9 @@ pub mod error;
 pub mod gateway;
 pub mod group_manager;
 pub mod metrics;
+mod quota_enforcement;
 pub mod template_engine;
+mod template_management;
 pub mod watcher;
 
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};

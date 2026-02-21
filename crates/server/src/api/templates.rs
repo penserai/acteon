@@ -176,6 +176,10 @@ pub struct RenderPreviewRequest {
     pub tenant: String,
     /// Test payload variables.
     pub payload: serde_json::Value,
+    /// Optional test attachments whose metadata will be available in templates
+    /// as `attachments` (list) and `attachments_by_id` (map).
+    #[serde(default)]
+    pub attachments: Vec<acteon_core::Attachment>,
 }
 
 /// Template render preview response.
@@ -1013,8 +1017,12 @@ pub async fn render_preview(
     // Gather scoped templates — O(1) lookup.
     let scoped_templates = gw.templates_for_scope(&req.namespace, &req.tenant);
 
-    match acteon_gateway::template_engine::render_profile(&profile, &scoped_templates, &req.payload)
-    {
+    match acteon_gateway::template_engine::render_profile(
+        &profile,
+        &scoped_templates,
+        &req.payload,
+        &req.attachments,
+    ) {
         Ok(result) => (
             StatusCode::OK,
             Json(serde_json::json!(RenderPreviewResponse {

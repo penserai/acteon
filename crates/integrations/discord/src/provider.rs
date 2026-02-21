@@ -1,8 +1,8 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError};
+use acteon_provider::{DispatchContext, Provider, ProviderError};
 use reqwest::Client;
 use serde::Deserialize;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::config::DiscordConfig;
 use crate::error::DiscordError;
@@ -54,16 +54,10 @@ impl DiscordProvider {
             self.config.webhook_url.clone()
         }
     }
-}
 
-impl Provider for DiscordProvider {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
-        "discord"
-    }
-
-    #[instrument(skip(self, action), fields(action_id = %action.id, provider = "discord"))]
-    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+    /// Parse and validate the action payload, returning the webhook request
+    /// ready for dispatch.
+    fn parse_request(&self, action: &Action) -> Result<DiscordWebhookRequest, ProviderError> {
         let payload: MessagePayload = serde_json::from_value(action.payload.clone())
             .map_err(|e| DiscordError::InvalidPayload(format!("failed to parse payload: {e}")))?;
 
@@ -77,7 +71,7 @@ impl Provider for DiscordProvider {
             .into());
         }
 
-        let request = DiscordWebhookRequest {
+        Ok(DiscordWebhookRequest {
             content: payload.content,
             username: payload
                 .username
@@ -87,17 +81,16 @@ impl Provider for DiscordProvider {
                 .or_else(|| self.config.default_avatar_url.clone()),
             tts: payload.tts,
             embeds: payload.embeds,
-        };
+        })
+    }
 
-        let url = self.effective_url();
-
-        debug!("posting message to Discord webhook");
-
-        let response = acteon_provider::inject_trace_context(self.client.post(&url).json(&request))
-            .send()
-            .await
-            .map_err(DiscordError::Http)?;
-
+    /// Interpret the Discord HTTP response, handling status codes and
+    /// building the provider response with an optional attachment count.
+    async fn interpret_response(
+        &self,
+        response: reqwest::Response,
+        attachment_count: usize,
+    ) -> Result<ProviderResponse, ProviderError> {
         let status = response.status();
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -110,8 +103,7 @@ impl Provider for DiscordProvider {
             return Err(DiscordError::Api(format!("HTTP {status}: {response_body}")).into());
         }
 
-        // Discord returns 204 No Content normally, or 200 with JSON if ?wait=true.
-        let response_body = if status == reqwest::StatusCode::NO_CONTENT {
+        let mut body = if status == reqwest::StatusCode::NO_CONTENT {
             serde_json::json!({ "ok": true })
         } else {
             match response.json::<DiscordWebhookResponse>().await {
@@ -124,7 +116,87 @@ impl Provider for DiscordProvider {
             }
         };
 
-        Ok(ProviderResponse::success(response_body))
+        if attachment_count > 0 {
+            body["attachment_count"] = serde_json::json!(attachment_count);
+        }
+
+        Ok(ProviderResponse::success(body))
+    }
+}
+
+impl Provider for DiscordProvider {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "discord"
+    }
+
+    #[instrument(skip(self, action), fields(action_id = %action.id, provider = "discord"))]
+    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+        let request = self.parse_request(action)?;
+        let url = self.effective_url();
+
+        debug!("posting message to Discord webhook");
+
+        let response = acteon_provider::inject_trace_context(self.client.post(&url).json(&request))
+            .send()
+            .await
+            .map_err(DiscordError::Http)?;
+
+        self.interpret_response(response, 0).await
+    }
+
+    fn supports_attachments(&self) -> bool {
+        true
+    }
+
+    #[instrument(skip(self, action, ctx), fields(action_id = %action.id, provider = "discord"))]
+    async fn execute_with_context(
+        &self,
+        action: &Action,
+        ctx: &DispatchContext,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let request = self.parse_request(action)?;
+        let url = self.effective_url();
+
+        debug!(
+            attachment_count = ctx.attachments.len(),
+            "posting message to Discord webhook with attachments"
+        );
+
+        // Discord webhooks support multipart/form-data with payload_json + file parts.
+        let payload_json = serde_json::to_string(&request).map_err(|e| {
+            DiscordError::InvalidPayload(format!("failed to serialize request: {e}"))
+        })?;
+
+        let mut form = reqwest::multipart::Form::new().text("payload_json", payload_json);
+
+        for (i, resolved) in ctx.attachments.iter().enumerate() {
+            let part = reqwest::multipart::Part::bytes(resolved.data.clone())
+                .file_name(resolved.filename.clone())
+                .mime_str(&resolved.content_type)
+                .unwrap_or_else(|_| {
+                    reqwest::multipart::Part::bytes(resolved.data.clone())
+                        .file_name(resolved.filename.clone())
+                });
+            form = form.part(format!("files[{i}]"), part);
+        }
+
+        let response = self
+            .client
+            .post(&url)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(DiscordError::Http)?;
+
+        let attachment_count = ctx.attachments.len();
+        let result = self.interpret_response(response, attachment_count).await;
+
+        if result.is_ok() {
+            info!(attachment_count, "Discord message with attachments sent");
+        }
+
+        result
     }
 
     #[instrument(skip(self), fields(provider = "discord"))]

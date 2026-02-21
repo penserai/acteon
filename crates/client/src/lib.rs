@@ -65,6 +65,9 @@ pub mod webhook;
 pub use error::Error;
 pub use stream::{EventStream, StreamFilter, StreamItem};
 
+// Re-export core attachment type so callers don't need a direct `acteon_core` dependency.
+pub use acteon_core::Attachment;
+
 use std::fmt::Write;
 use std::time::Duration;
 
@@ -259,6 +262,47 @@ impl ActeonClient {
     /// ```
     pub async fn dispatch_dry_run(&self, action: &Action) -> Result<ActionOutcome, Error> {
         self.dispatch_inner(action, true).await
+    }
+
+    /// Dispatch a single action with file attachments.
+    ///
+    /// This is a convenience wrapper that clones the action, sets the given
+    /// attachments, and dispatches it. For repeated use, prefer constructing
+    /// the action with [`Action::with_attachments`] directly.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::{ActeonClient, Attachment};
+    /// use acteon_core::Action;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
+    ///
+    /// let attachments = vec![
+    ///     Attachment {
+    ///         id: "att-1".into(),
+    ///         name: "Hello".into(),
+    ///         filename: "hello.txt".into(),
+    ///         content_type: "text/plain".into(),
+    ///         data_base64: "SGVsbG8=".into(),
+    ///     },
+    /// ];
+    ///
+    /// let outcome = client.dispatch_with_attachments(&action, attachments).await?;
+    /// println!("Outcome: {:?}", outcome);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn dispatch_with_attachments(
+        &self,
+        action: &Action,
+        attachments: Vec<Attachment>,
+    ) -> Result<ActionOutcome, Error> {
+        let mut action = action.clone();
+        action.attachments = attachments;
+        self.dispatch_inner(&action, false).await
     }
 
     async fn dispatch_inner(&self, action: &Action, dry_run: bool) -> Result<ActionOutcome, Error> {

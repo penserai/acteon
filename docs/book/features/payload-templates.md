@@ -48,7 +48,7 @@ Payload templates use a two-layer architecture:
 
 ### Templates (Layer 1 -- Pure Text)
 
-A **template** is a named blob of `MiniJinja` text stored in the system. It
+A **template** is a named piece of `MiniJinja` text stored in the system. It
 contains the raw template content with variable placeholders, loops,
 conditionals, and filters. Templates are scoped to a namespace + tenant pair.
 
@@ -163,6 +163,27 @@ Use `-` to strip whitespace around blocks:
   {{ message }}
 {%- endif -%}
 ```
+
+### Attachment Context Variables
+
+When an action includes [attachments](attachments.md), their metadata is
+available in templates via two context variables:
+
+- **`attachments`** -- ordered list of `{id, name, filename, content_type}` objects
+- **`attachments_by_id`** -- map from attachment `id` to the same metadata
+
+```
+Files attached: {{ attachments | length }}
+{% for att in attachments %}
+  - {{ att.name }} ({{ att.filename }}, {{ att.content_type }})
+{% endfor %}
+
+Report: {{ attachments_by_id["report"].filename }}
+```
+
+Binary content (`data_base64`) is excluded from the template context.
+When no attachments are present, both variables are empty (the list is `[]`
+and the map is `{}`).
 
 ## Creating Templates via API
 
@@ -357,9 +378,22 @@ curl -X POST http://localhost:8080/v1/templates/render \
       "title": "Test Alert",
       "severity": "warning",
       "message": "This is a test."
-    }
+    },
+    "attachments": [
+      {
+        "id": "runbook",
+        "name": "Runbook",
+        "filename": "runbook.pdf",
+        "content_type": "application/pdf",
+        "data_base64": ""
+      }
+    ]
   }'
 ```
+
+The optional `attachments` array lets you test templates that reference
+`attachments` or `attachments_by_id` variables. The `data_base64` field can be
+empty for previews since binary content is not exposed to templates.
 
 **Response (200):**
 

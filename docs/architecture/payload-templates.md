@@ -239,6 +239,7 @@ pub fn render_profile(
     profile: &TemplateProfile,
     templates_map: &HashMap<String, Template>,
     payload: &serde_json::Value,
+    attachments: &[Attachment],
 ) -> Result<RenderResult, GatewayError>
 ```
 
@@ -250,9 +251,17 @@ For each field in the profile:
    registers it in the `MiniJinja` environment, and renders it using
    `tmpl.render(&ctx)`
 
-The payload is converted to a `MiniJinja` context via
-`minijinja::Value::from_serialize(payload)`, making all top-level and nested
-JSON fields available as template variables.
+The template context is built by `build_template_context()`, which:
+
+1. Takes the payload object as the root context (all payload fields are
+   accessible as top-level variables)
+2. Injects an `attachments` key -- an ordered list of attachment metadata
+   objects (`{id, name, filename, content_type}`), excluding `data_base64`
+3. Injects an `attachments_by_id` key -- a map from attachment `id` to the
+   same metadata, enabling direct lookup (e.g. `{{ attachments_by_id["report"].filename }}`)
+
+Binary content (`data_base64`) is intentionally excluded from the template
+context to avoid multi-megabyte strings inside the rendering engine.
 
 ### MiniJinja Environment
 
@@ -362,29 +371,29 @@ This position was chosen because:
 ```rust
 // 2d. Template rendering.
 if let Some(ref profile_name) = action.template {
-    let profile_key = format!(
-        "{}:{}:{profile_name}",
-        action.namespace, action.tenant
+    let profile = self.template_profile_by_scope(
+        &action.namespace, &action.tenant, profile_name
+    ).ok_or_else(|| GatewayError::TemplateRender(
+        format!("template profile not found: {profile_name}")
+    ))?;
+    let scoped_templates = self.templates_for_scope(
+        &action.namespace, &action.tenant,
     );
-    if let Some(profile) = self.template_profiles.read().get(&profile_key).cloned() {
-        let scoped_templates = self.templates_for_scope(
-            action.namespace.as_ref(),
-            action.tenant.as_ref(),
-        );
-        let rendered = crate::template_engine::render_profile(
+    let payload_snapshot = action.payload.clone();
+    let attachments_snapshot = action.attachments.clone();
+
+    let rendered = tokio::task::spawn_blocking(move || {
+        crate::template_engine::render_profile(
             &profile,
             &scoped_templates,
-            &action.payload,
-        )?;
-        crate::template_engine::merge_rendered_into_payload(
-            &mut action.payload,
-            &rendered,
-        )?;
-    } else {
-        return Err(GatewayError::TemplateRender(format!(
-            "template profile not found: {profile_name}"
-        )));
-    }
+            &payload_snapshot,
+            &attachments_snapshot,
+        )
+    }).await??;
+
+    crate::template_engine::merge_rendered_into_payload(
+        &mut action.payload, &rendered,
+    )?;
 }
 ```
 

@@ -8,18 +8,39 @@ import (
 	"github.com/google/uuid"
 )
 
+// Attachment represents an attachment on an action.
+type Attachment struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	DataBase64  string `json:"data_base64"`
+}
+
+// NewAttachment creates an attachment with explicit metadata and base64-encoded data.
+func NewAttachment(id, name, filename, contentType, dataBase64 string) Attachment {
+	return Attachment{
+		ID:          id,
+		Name:        name,
+		Filename:    filename,
+		ContentType: contentType,
+		DataBase64:  dataBase64,
+	}
+}
+
 // Action represents an action to be dispatched through Acteon.
 type Action struct {
-	ID         string          `json:"id"`
-	Namespace  string          `json:"namespace"`
-	Tenant     string          `json:"tenant"`
-	Provider   string          `json:"provider"`
-	ActionType string          `json:"action_type"`
-	Payload    map[string]any  `json:"payload"`
-	DedupKey   string          `json:"dedup_key,omitempty"`
-	Metadata   *ActionMetadata `json:"metadata,omitempty"`
-	CreatedAt  time.Time       `json:"created_at"`
-	Template   string          `json:"template,omitempty"`
+	ID          string          `json:"id"`
+	Namespace   string          `json:"namespace"`
+	Tenant      string          `json:"tenant"`
+	Provider    string          `json:"provider"`
+	ActionType  string          `json:"action_type"`
+	Payload     map[string]any  `json:"payload"`
+	DedupKey    string          `json:"dedup_key,omitempty"`
+	Metadata    *ActionMetadata `json:"metadata,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Template    string          `json:"template,omitempty"`
+	Attachments []Attachment    `json:"attachments,omitempty"`
 }
 
 // ActionMetadata contains optional metadata for an action.
@@ -49,6 +70,12 @@ func (a *Action) WithDedupKey(key string) *Action {
 // WithMetadata sets the metadata labels.
 func (a *Action) WithMetadata(labels map[string]string) *Action {
 	a.Metadata = &ActionMetadata{Labels: labels}
+	return a
+}
+
+// WithAttachments sets the attachments on the action.
+func (a *Action) WithAttachments(attachments []Attachment) *Action {
+	a.Attachments = attachments
 	return a
 }
 

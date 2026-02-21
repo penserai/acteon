@@ -65,6 +65,8 @@ pub struct GatewayBuilder {
     resource_lookups: HashMap<String, Arc<dyn ResourceLookup>>,
     templates: HashMap<(String, String), HashMap<String, acteon_core::Template>>,
     template_profiles: HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
+    max_inline_bytes: u64,
+    max_attachments_per_action: usize,
 }
 
 impl GatewayBuilder {
@@ -107,6 +109,8 @@ impl GatewayBuilder {
             resource_lookups: HashMap::new(),
             templates: HashMap::new(),
             template_profiles: HashMap::new(),
+            max_inline_bytes: 5_242_880,
+            max_attachments_per_action: 10,
         }
     }
 
@@ -481,6 +485,20 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set the maximum allowed size for a single attachment after `base64` decoding (default: 5 MB).
+    #[must_use]
+    pub fn max_inline_bytes(mut self, max: u64) -> Self {
+        self.max_inline_bytes = max;
+        self
+    }
+
+    /// Set the maximum number of attachments per action (default: 10).
+    #[must_use]
+    pub fn max_attachments_per_action(mut self, max: usize) -> Self {
+        self.max_attachments_per_action = max;
+        self
+    }
+
     /// Set all quota policies at once (replaces any previously added).
     #[must_use]
     pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
@@ -759,6 +777,8 @@ impl GatewayBuilder {
             resource_lookups: self.resource_lookups,
             templates: parking_lot::RwLock::new(self.templates),
             template_profiles: parking_lot::RwLock::new(self.template_profiles),
+            max_inline_bytes: self.max_inline_bytes,
+            max_attachments_per_action: self.max_attachments_per_action,
         })
     }
 }

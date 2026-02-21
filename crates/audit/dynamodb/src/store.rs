@@ -534,6 +534,12 @@ fn record_to_item(record: &AuditRecord) -> HashMap<String, AttributeValue> {
         AttributeValue::S(record.metadata.to_string()),
     );
 
+    // Attachment metadata (JSON array of objects, no binary data).
+    if !record.attachment_metadata.is_empty() {
+        let json = serde_json::to_string(&record.attachment_metadata).unwrap_or_default();
+        item.insert("attachment_metadata".to_owned(), AttributeValue::S(json));
+    }
+
     // TTL: epoch seconds for DynamoDB native TTL.
     if let Some(ref expires_at) = record.expires_at {
         item.insert(
@@ -648,6 +654,9 @@ fn item_to_record(item: &HashMap<String, AttributeValue>) -> Result<AuditRecord,
         record_hash: get_s_opt("record_hash"),
         previous_hash: get_s_opt("previous_hash"),
         sequence_number: get_n_u64_opt("sequence_number"),
+        attachment_metadata: get_s_opt("attachment_metadata")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
     })
 }
 
@@ -698,6 +707,7 @@ mod tests {
             record_hash: Some("abc123".to_owned()),
             previous_hash: Some("def456".to_owned()),
             sequence_number: Some(1),
+            attachment_metadata: Vec::new(),
         }
     }
 
@@ -794,6 +804,7 @@ mod tests {
             record_hash: None,
             previous_hash: None,
             sequence_number: None,
+            attachment_metadata: Vec::new(),
         };
         let item = record_to_item(&record);
 

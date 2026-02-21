@@ -46,4 +46,8 @@ pub enum GatewayError {
     /// Template rendering failed.
     #[error("template render error: {0}")]
     TemplateRender(String),
+
+    /// An attachment could not be resolved.
+    #[error("attachment error: {0}")]
+    Attachment(String),
 }

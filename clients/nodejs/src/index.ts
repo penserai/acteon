@@ -26,6 +26,7 @@ export { ActeonClient, type ActeonClientOptions } from "./client.js";
 export { ActeonError, ConnectionError, HttpError, ApiError } from "./errors.js";
 export {
   type Action,
+  type Attachment,
   type ActionOutcome,
   type ActionError,
   type ProviderResponse,

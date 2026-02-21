@@ -914,6 +914,7 @@ mod tests {
             record_hash: None,
             previous_hash: None,
             sequence_number: None,
+            attachment_metadata: Vec::new(),
         }
     }
 

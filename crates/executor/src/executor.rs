@@ -4,7 +4,7 @@ use tokio::sync::Semaphore;
 use tracing::{debug, instrument, warn};
 
 use acteon_core::{Action, ActionError, ActionOutcome};
-use acteon_provider::{DynProvider, ProviderError};
+use acteon_provider::{DispatchContext, DynProvider, ProviderError};
 
 use crate::config::ExecutorConfig;
 use crate::dlq::DeadLetterSink;
@@ -90,6 +90,33 @@ impl ActionExecutor {
     /// non-retryable error.
     #[instrument(skip(self, action, provider), fields(action.id = %action.id, attempt, otel.status_code))]
     pub async fn execute(&self, action: &Action, provider: &dyn DynProvider) -> ActionOutcome {
+        self.execute_inner(action, provider, None).await
+    }
+
+    /// Execute an action with a [`DispatchContext`] (e.g. resolved attachments).
+    ///
+    /// Identical to [`execute`](Self::execute) but calls
+    /// [`DynProvider::execute_with_context`] instead of
+    /// [`DynProvider::execute`], passing the context on each attempt.
+    #[instrument(skip(self, action, provider, ctx), fields(action.id = %action.id, attempt, otel.status_code))]
+    pub async fn execute_with_context(
+        &self,
+        action: &Action,
+        provider: &dyn DynProvider,
+        ctx: &DispatchContext,
+    ) -> ActionOutcome {
+        self.execute_inner(action, provider, Some(ctx)).await
+    }
+
+    /// Shared retry/timeout/concurrency loop used by both [`execute`] and
+    /// [`execute_with_context`].
+    #[allow(clippy::too_many_lines)]
+    async fn execute_inner(
+        &self,
+        action: &Action,
+        provider: &dyn DynProvider,
+        ctx: Option<&DispatchContext>,
+    ) -> ActionOutcome {
         // Acquire a concurrency permit. This is cancel-safe: if the caller
         // drops the future while waiting, the permit is never acquired.
         let _permit = self
@@ -109,8 +136,14 @@ impl ActionExecutor {
                 "executing action"
             );
 
-            let result =
-                tokio::time::timeout(self.config.execution_timeout, provider.execute(action)).await;
+            let result = tokio::time::timeout(
+                self.config.execution_timeout,
+                match ctx {
+                    Some(c) => provider.execute_with_context(action, c),
+                    None => provider.execute(action),
+                },
+            )
+            .await;
 
             match result {
                 Ok(Ok(response)) => {

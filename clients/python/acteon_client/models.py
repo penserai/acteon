@@ -8,6 +8,34 @@ import uuid
 
 
 @dataclass
+class Attachment:
+    """An attachment with explicit metadata and base64-encoded data.
+
+    Attributes:
+        id: User-set identifier for referencing in chains.
+        name: Human-readable display name.
+        filename: Filename with extension.
+        content_type: MIME type (e.g., "application/pdf").
+        data_base64: Base64-encoded file content.
+    """
+    id: str
+    name: str
+    filename: str
+    content_type: str
+    data_base64: str
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "filename": self.filename,
+            "content_type": self.content_type,
+            "data_base64": self.data_base64,
+        }
+
+
+@dataclass
 class Action:
     """An action to be dispatched through Acteon.
 
@@ -21,6 +49,7 @@ class Action:
         dedup_key: Optional deduplication key.
         metadata: Optional key-value metadata.
         created_at: Timestamp when the action was created.
+        attachments: Optional list of attachments.
     """
     namespace: str
     tenant: str
@@ -32,6 +61,7 @@ class Action:
     metadata: Optional[dict[str, str]] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     template: Optional[str] = None
+    attachments: Optional[list[Attachment]] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -50,6 +80,8 @@ class Action:
             result["metadata"] = {"labels": self.metadata}
         if self.template:
             result["template"] = self.template
+        if self.attachments:
+            result["attachments"] = [a.to_dict() for a in self.attachments]
         return result
 
 

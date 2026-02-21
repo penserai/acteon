@@ -1,9 +1,9 @@
-use acteon_core::{Action, ProviderResponse};
-use acteon_provider::ProviderError;
+use acteon_core::{Action, ProviderResponse, ResolvedAttachment};
 use acteon_provider::provider::Provider;
+use acteon_provider::{DispatchContext, ProviderError};
 use tracing::{debug, info, instrument};
 
-use crate::backend::{EmailBackend, EmailMessage};
+use crate::backend::{EmailAttachment, EmailBackend, EmailMessage};
 use crate::config::EmailConfig;
 use crate::smtp::SmtpBackend;
 use crate::types::EmailPayload;
@@ -97,19 +97,31 @@ impl EmailProvider {
             backend: Box::new(backend),
         }
     }
-}
 
-impl Provider for EmailProvider {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
-        "email"
-    }
-
-    #[instrument(skip(self, action), fields(action_id = %action.id, provider = "email"))]
-    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+    /// Shared dispatch logic for both `execute` and `execute_with_context`.
+    ///
+    /// Deserializes the payload, maps resolved attachments to
+    /// [`EmailAttachment`]s, sends through the backend, and builds the
+    /// provider response.
+    async fn dispatch_email(
+        &self,
+        action: &Action,
+        resolved: &[ResolvedAttachment],
+    ) -> Result<ProviderResponse, ProviderError> {
         debug!("deserializing email payload");
         let payload: EmailPayload = serde_json::from_value(action.payload.clone())
             .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+        let attachments: Vec<EmailAttachment> = resolved
+            .iter()
+            .map(|r| EmailAttachment {
+                filename: r.filename.clone(),
+                content_type: r.content_type.clone(),
+                data: r.data.clone(),
+            })
+            .collect();
+
+        let attachment_count = attachments.len();
 
         let message = EmailMessage {
             from: self.from_address.clone(),
@@ -120,11 +132,13 @@ impl Provider for EmailProvider {
             cc: payload.cc.clone(),
             bcc: payload.bcc.clone(),
             reply_to: payload.reply_to.clone(),
+            attachments,
         };
 
         debug!(
             to = %message.to,
             subject = %message.subject,
+            attachment_count,
             backend = self.backend.backend_name(),
             "sending email"
         );
@@ -133,6 +147,7 @@ impl Provider for EmailProvider {
 
         info!(
             to = %payload.to,
+            attachment_count,
             backend = self.backend.backend_name(),
             "email sent successfully"
         );
@@ -144,16 +159,45 @@ impl Provider for EmailProvider {
             "backend": self.backend.backend_name()
         });
 
+        if attachment_count > 0 {
+            response["attachment_count"] = serde_json::json!(attachment_count);
+        }
+
         if let Some(ref msg_id) = result.message_id {
             response["message_id"] = serde_json::Value::String(msg_id.clone());
         }
 
         Ok(ProviderResponse::success(response))
     }
+}
+
+impl Provider for EmailProvider {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "email"
+    }
+
+    #[instrument(skip(self, action), fields(action_id = %action.id, provider = "email"))]
+    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+        self.dispatch_email(action, &[]).await
+    }
 
     #[instrument(skip(self), fields(provider = "email"))]
     async fn health_check(&self) -> Result<(), ProviderError> {
         self.backend.health_check().await
+    }
+
+    fn supports_attachments(&self) -> bool {
+        true
+    }
+
+    #[instrument(skip(self, action, ctx), fields(action_id = %action.id, provider = "email"))]
+    async fn execute_with_context(
+        &self,
+        action: &Action,
+        ctx: &DispatchContext,
+    ) -> Result<ProviderResponse, ProviderError> {
+        self.dispatch_email(action, &ctx.attachments).await
     }
 }
 

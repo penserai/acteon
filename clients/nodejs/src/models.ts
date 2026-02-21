@@ -5,6 +5,22 @@
 import { randomUUID } from "crypto";
 
 /**
+ * An attachment with explicit metadata and base64-encoded data.
+ */
+export interface Attachment {
+  /** User-set identifier for referencing in chains. */
+  id: string;
+  /** Human-readable display name. */
+  name: string;
+  /** Filename with extension. */
+  filename: string;
+  /** MIME content type (e.g., "application/pdf"). */
+  contentType: string;
+  /** Base64-encoded file content. */
+  dataBase64: string;
+}
+
+/**
  * An action to be dispatched through Acteon.
  */
 export interface Action {
@@ -28,6 +44,8 @@ export interface Action {
   createdAt: string;
   /** Optional template name for payload rendering. */
   template?: string;
+  /** Optional attachments. */
+  attachments?: Attachment[];
 }
 
 /**
@@ -45,6 +63,7 @@ export function createAction(
     metadata?: Record<string, string>;
     createdAt?: string;
     template?: string;
+    attachments?: Attachment[];
   }
 ): Action {
   return {
@@ -58,6 +77,7 @@ export function createAction(
     metadata: options?.metadata,
     createdAt: options?.createdAt ?? new Date().toISOString(),
     template: options?.template,
+    attachments: options?.attachments,
   };
 }
 
@@ -82,6 +102,15 @@ export function actionToRequest(action: Action): Record<string, unknown> {
   }
   if (action.template) {
     result.template = action.template;
+  }
+  if (action.attachments && action.attachments.length > 0) {
+    result.attachments = action.attachments.map(a => ({
+      id: a.id,
+      name: a.name,
+      filename: a.filename,
+      content_type: a.contentType,
+      data_base64: a.dataBase64,
+    }));
   }
   return result;
 }

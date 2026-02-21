@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -25,6 +26,7 @@ public class Action {
     @JsonProperty("created_at")
     private String createdAt;
     private String template;
+    private List<Attachment> attachments;
 
     public Action() {
         this.id = UUID.randomUUID().toString();
@@ -76,6 +78,9 @@ public class Action {
     public String getTemplate() { return template; }
     public void setTemplate(String template) { this.template = template; }
 
+    public List<Attachment> getAttachments() { return attachments; }
+    public void setAttachments(List<Attachment> attachments) { this.attachments = attachments; }
+
     public Action withDedupKey(String dedupKey) {
         this.dedupKey = dedupKey;
         return this;
@@ -91,6 +96,11 @@ public class Action {
         return this;
     }
 
+    public Action withAttachments(List<Attachment> attachments) {
+        this.attachments = attachments;
+        return this;
+    }
+
     public static class Builder {
         private String id = UUID.randomUUID().toString();
         private String namespace;
@@ -102,6 +112,7 @@ public class Action {
         private Map<String, String> labels;
         private String createdAt = Instant.now().toString();
         private String template;
+        private List<Attachment> attachments;
 
         public Builder id(String id) { this.id = id; return this; }
         public Builder namespace(String namespace) { this.namespace = namespace; return this; }
@@ -113,6 +124,7 @@ public class Action {
         public Builder labels(Map<String, String> labels) { this.labels = labels; return this; }
         public Builder createdAt(String createdAt) { this.createdAt = createdAt; return this; }
         public Builder template(String template) { this.template = template; return this; }
+        public Builder attachments(List<Attachment> attachments) { this.attachments = attachments; return this; }
 
         public Action build() {
             Action action = new Action();
@@ -125,6 +137,7 @@ public class Action {
             action.dedupKey = this.dedupKey;
             action.createdAt = this.createdAt;
             action.template = this.template;
+            action.attachments = this.attachments;
             if (this.labels != null) {
                 action.metadata = new ActionMetadata(this.labels);
             }
