@@ -1,4 +1,4 @@
-use acteon_core::{Action, ProviderResponse};
+use acteon_core::{Action, ProviderResponse, ResolvedAttachment};
 use acteon_provider::provider::Provider;
 use acteon_provider::{DispatchContext, ProviderError};
 use tracing::{debug, info, instrument};
@@ -97,19 +97,31 @@ impl EmailProvider {
             backend: Box::new(backend),
         }
     }
-}
 
-impl Provider for EmailProvider {
-    #[allow(clippy::unnecessary_literal_bound)]
-    fn name(&self) -> &str {
-        "email"
-    }
-
-    #[instrument(skip(self, action), fields(action_id = %action.id, provider = "email"))]
-    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+    /// Shared dispatch logic for both `execute` and `execute_with_context`.
+    ///
+    /// Deserializes the payload, maps resolved attachments to
+    /// [`EmailAttachment`]s, sends through the backend, and builds the
+    /// provider response.
+    async fn dispatch_email(
+        &self,
+        action: &Action,
+        resolved: &[ResolvedAttachment],
+    ) -> Result<ProviderResponse, ProviderError> {
         debug!("deserializing email payload");
         let payload: EmailPayload = serde_json::from_value(action.payload.clone())
             .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+        let attachments: Vec<EmailAttachment> = resolved
+            .iter()
+            .map(|r| EmailAttachment {
+                filename: r.filename.clone(),
+                content_type: r.content_type.clone(),
+                data: r.data.clone(),
+            })
+            .collect();
+
+        let attachment_count = attachments.len();
 
         let message = EmailMessage {
             from: self.from_address.clone(),
@@ -120,12 +132,13 @@ impl Provider for EmailProvider {
             cc: payload.cc.clone(),
             bcc: payload.bcc.clone(),
             reply_to: payload.reply_to.clone(),
-            attachments: Vec::new(),
+            attachments,
         };
 
         debug!(
             to = %message.to,
             subject = %message.subject,
+            attachment_count,
             backend = self.backend.backend_name(),
             "sending email"
         );
@@ -134,6 +147,7 @@ impl Provider for EmailProvider {
 
         info!(
             to = %payload.to,
+            attachment_count,
             backend = self.backend.backend_name(),
             "email sent successfully"
         );
@@ -145,11 +159,27 @@ impl Provider for EmailProvider {
             "backend": self.backend.backend_name()
         });
 
+        if attachment_count > 0 {
+            response["attachment_count"] = serde_json::json!(attachment_count);
+        }
+
         if let Some(ref msg_id) = result.message_id {
             response["message_id"] = serde_json::Value::String(msg_id.clone());
         }
 
         Ok(ProviderResponse::success(response))
+    }
+}
+
+impl Provider for EmailProvider {
+    #[allow(clippy::unnecessary_literal_bound)]
+    fn name(&self) -> &str {
+        "email"
+    }
+
+    #[instrument(skip(self, action), fields(action_id = %action.id, provider = "email"))]
+    async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+        self.dispatch_email(action, &[]).await
     }
 
     #[instrument(skip(self), fields(provider = "email"))]
@@ -167,62 +197,7 @@ impl Provider for EmailProvider {
         action: &Action,
         ctx: &DispatchContext,
     ) -> Result<ProviderResponse, ProviderError> {
-        debug!("deserializing email payload (with attachments)");
-        let payload: EmailPayload = serde_json::from_value(action.payload.clone())
-            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
-
-        let attachments: Vec<EmailAttachment> = ctx
-            .attachments
-            .iter()
-            .map(|resolved| EmailAttachment {
-                filename: resolved.filename.clone(),
-                content_type: resolved.content_type.clone(),
-                data: resolved.data.clone(),
-            })
-            .collect();
-
-        let message = EmailMessage {
-            from: self.from_address.clone(),
-            to: payload.to.clone(),
-            subject: payload.subject.clone(),
-            body: payload.body.clone(),
-            html_body: payload.html_body.clone(),
-            cc: payload.cc.clone(),
-            bcc: payload.bcc.clone(),
-            reply_to: payload.reply_to.clone(),
-            attachments,
-        };
-
-        debug!(
-            to = %message.to,
-            subject = %message.subject,
-            attachment_count = message.attachments.len(),
-            backend = self.backend.backend_name(),
-            "sending email with attachments"
-        );
-
-        let result = self.backend.send(&message).await?;
-
-        info!(
-            to = %payload.to,
-            attachment_count = ctx.attachments.len(),
-            backend = self.backend.backend_name(),
-            "email with attachments sent successfully"
-        );
-
-        let mut response = serde_json::json!({
-            "to": payload.to,
-            "subject": payload.subject,
-            "status": result.status,
-            "backend": self.backend.backend_name(),
-            "attachment_count": ctx.attachments.len()
-        });
-
-        if let Some(ref msg_id) = result.message_id {
-            response["message_id"] = serde_json::Value::String(msg_id.clone());
-        }
-
-        Ok(ProviderResponse::success(response))
+        self.dispatch_email(action, &ctx.attachments).await
     }
 }
 

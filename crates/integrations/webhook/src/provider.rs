@@ -119,6 +119,46 @@ impl WebhookProvider {
             HttpMethod::Delete => self.client.delete(&self.config.url),
         }
     }
+
+    /// Interpret the HTTP response from the webhook endpoint, handling
+    /// status codes, headers, and response body parsing.
+    async fn interpret_response(
+        &self,
+        response: reqwest::Response,
+    ) -> Result<ProviderResponse, ProviderError> {
+        let status = response.status();
+        let status_code = status.as_u16();
+
+        let response_headers: std::collections::HashMap<String, String> = response
+            .headers()
+            .iter()
+            .filter_map(|(k, v)| v.to_str().ok().map(|val| (k.to_string(), val.to_owned())))
+            .collect();
+
+        if status_code == 429 {
+            warn!("webhook endpoint returned 429");
+            return Err(WebhookError::RateLimited.into());
+        }
+
+        let response_text = response.text().await.unwrap_or_default();
+        let response_body: serde_json::Value =
+            serde_json::from_str(&response_text).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "status_code": status_code,
+                    "body": response_text,
+                })
+            });
+
+        if self.is_success_status(status_code) {
+            let mut provider_response = ProviderResponse::success(response_body);
+            provider_response.headers = response_headers;
+            Ok(provider_response)
+        } else {
+            let mut provider_response = ProviderResponse::failure(response_body);
+            provider_response.headers = response_headers;
+            Ok(provider_response)
+        }
+    }
 }
 
 impl Provider for WebhookProvider {
@@ -161,46 +201,11 @@ impl Provider for WebhookProvider {
         let response = request.send().await.map_err(|e| {
             if e.is_timeout() {
                 warn!("webhook request timed out");
-                WebhookError::Http(e)
-            } else {
-                WebhookError::Http(e)
             }
+            WebhookError::Http(e)
         })?;
 
-        let status = response.status();
-        let status_code = status.as_u16();
-
-        // Collect response headers.
-        let response_headers: std::collections::HashMap<String, String> = response
-            .headers()
-            .iter()
-            .filter_map(|(k, v)| v.to_str().ok().map(|val| (k.to_string(), val.to_owned())))
-            .collect();
-
-        if status_code == 429 {
-            warn!("webhook endpoint returned 429");
-            return Err(WebhookError::RateLimited.into());
-        }
-
-        // Parse response body (best-effort JSON, fallback to text).
-        let response_text = response.text().await.unwrap_or_default();
-        let response_body: serde_json::Value =
-            serde_json::from_str(&response_text).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "status_code": status_code,
-                    "body": response_text,
-                })
-            });
-
-        if self.is_success_status(status_code) {
-            let mut provider_response = ProviderResponse::success(response_body);
-            provider_response.headers = response_headers;
-            Ok(provider_response)
-        } else {
-            let mut provider_response = ProviderResponse::failure(response_body);
-            provider_response.headers = response_headers;
-            Ok(provider_response)
-        }
+        self.interpret_response(response).await
     }
 
     fn supports_attachments(&self) -> bool {
@@ -258,38 +263,7 @@ impl Provider for WebhookProvider {
             WebhookError::Http(e)
         })?;
 
-        let status = response.status();
-        let status_code = status.as_u16();
-
-        let response_headers: std::collections::HashMap<String, String> = response
-            .headers()
-            .iter()
-            .filter_map(|(k, v)| v.to_str().ok().map(|val| (k.to_string(), val.to_owned())))
-            .collect();
-
-        if status_code == 429 {
-            warn!("webhook endpoint returned 429");
-            return Err(WebhookError::RateLimited.into());
-        }
-
-        let response_text = response.text().await.unwrap_or_default();
-        let response_body: serde_json::Value =
-            serde_json::from_str(&response_text).unwrap_or_else(|_| {
-                serde_json::json!({
-                    "status_code": status_code,
-                    "body": response_text,
-                })
-            });
-
-        if self.is_success_status(status_code) {
-            let mut provider_response = ProviderResponse::success(response_body);
-            provider_response.headers = response_headers;
-            Ok(provider_response)
-        } else {
-            let mut provider_response = ProviderResponse::failure(response_body);
-            provider_response.headers = response_headers;
-            Ok(provider_response)
-        }
+        self.interpret_response(response).await
     }
 
     #[instrument(skip(self), fields(provider = %self.provider_name))]
