@@ -214,6 +214,7 @@ impl ActeonClientBuilder {
             c
         } else {
             let mut builder = Client::builder()
+                .use_rustls_tls()
                 .timeout(self.timeout)
                 .danger_accept_invalid_certs(self.danger_accept_invalid_certs);
 
