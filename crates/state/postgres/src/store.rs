@@ -11,6 +11,45 @@ use acteon_state::store::{CasResult, StateStore};
 use crate::config::PostgresConfig;
 use crate::migrations;
 
+/// Build `PgConnectOptions` from a [`PostgresConfig`], applying SSL settings
+/// when configured.
+pub(crate) fn build_connect_options(
+    config: &PostgresConfig,
+) -> Result<sqlx::postgres::PgConnectOptions, StateError> {
+    let mut options: sqlx::postgres::PgConnectOptions = config
+        .url
+        .parse()
+        .map_err(|e: sqlx::Error| StateError::Connection(e.to_string()))?;
+
+    if let Some(ref mode) = config.ssl_mode {
+        let ssl_mode = match mode.as_str() {
+            "disable" => sqlx::postgres::PgSslMode::Disable,
+            "prefer" => sqlx::postgres::PgSslMode::Prefer,
+            "require" => sqlx::postgres::PgSslMode::Require,
+            "verify-ca" => sqlx::postgres::PgSslMode::VerifyCa,
+            "verify-full" => sqlx::postgres::PgSslMode::VerifyFull,
+            other => {
+                return Err(StateError::Connection(format!("unknown ssl_mode: {other}")));
+            }
+        };
+        options = options.ssl_mode(ssl_mode);
+    }
+
+    if let Some(ref path) = config.ssl_root_cert {
+        options = options.ssl_root_cert(path);
+    }
+
+    if let Some(ref path) = config.ssl_cert {
+        options = options.ssl_client_cert(path);
+    }
+
+    if let Some(ref path) = config.ssl_key {
+        options = options.ssl_client_key(path);
+    }
+
+    Ok(options)
+}
+
 /// PostgreSQL-backed implementation of [`StateStore`].
 ///
 /// Uses `sqlx::PgPool` for connection pooling. TTL is handled via an
@@ -32,9 +71,10 @@ impl PostgresStateStore {
     /// Returns [`StateError::Connection`] if pool creation fails, or
     /// [`StateError::Backend`] if migrations fail.
     pub async fn new(config: PostgresConfig) -> Result<Self, StateError> {
+        let connect_options = build_connect_options(&config)?;
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(config.pool_size)
-            .connect(&config.url)
+            .connect_with(connect_options)
             .await
             .map_err(|e| StateError::Connection(e.to_string()))?;
 

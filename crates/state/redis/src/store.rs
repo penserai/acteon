@@ -30,7 +30,8 @@ impl RedisStateStore {
     ///
     /// Returns [`StateError::Connection`] if the pool cannot be created.
     pub fn new(config: &RedisConfig) -> Result<Self, StateError> {
-        let cfg = Config::from_url(&config.url);
+        let effective_url = config.effective_url();
+        let cfg = Config::from_url(&effective_url);
         let pool = cfg
             .builder()
             .map(|b| {

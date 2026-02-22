@@ -6,14 +6,22 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+tls = ["dep:rustls", "dep:rustls-pemfile", "dep:webpki-roots", "dep:reqwest"]
+
 [dependencies]
 aes-gcm = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 regex = { workspace = true }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
 secrecy = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+webpki-roots = { workspace = true, optional = true }
 zeroize = { workspace = true }
 
 [lints]
