@@ -49,11 +49,16 @@ acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-embedding = { workspace = true }
-acteon-crypto = { workspace = true }
+acteon-crypto = { workspace = true, features = ["tls"] }
 acteon-wasm-runtime = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
 futures = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
 chrono = { workspace = true }
 chrono-tz = { workspace = true }
 clap = { workspace = true }
@@ -88,7 +93,6 @@ uuid = { workspace = true }
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
 axum-test = { workspace = true }
-reqwest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

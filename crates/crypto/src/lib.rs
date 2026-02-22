@@ -9,6 +9,9 @@
 //! Decrypted values are returned as [`SecretString`] to prevent accidental
 //! logging. The [`MasterKey`] wrapper zeroizes key material on drop.
 
+#[cfg(feature = "tls")]
+pub mod tls;
+
 use std::fmt;
 use std::sync::LazyLock;
 

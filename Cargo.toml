@@ -161,7 +161,7 @@ dashmap = "6"
 moka = { version = "0.12", features = ["future"] }
 
 # Redis
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script", "tokio-rustls-comp"] }
 deadpool-redis = "0.18"
 
 # AWS
@@ -177,7 +177,7 @@ aws-sdk-autoscaling = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 
 # PostgreSQL
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "tls-rustls"] }
 
 # ClickHouse
 clickhouse = "0.13"
@@ -186,7 +186,7 @@ clickhouse = "0.13"
 lettre = { version = "0.11", features = ["tokio1-native-tls", "smtp-transport"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }
+reqwest = { version = "0.12", features = ["json", "multipart", "stream", "rustls-tls"] }
 
 # URL-encoded forms
 serde_urlencoded = "0.7"
@@ -202,6 +202,8 @@ minijinja = { version = "2", features = ["fuel", "loader"] }
 
 # HTTP server
 axum = "0.8"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
@@ -244,6 +246,12 @@ croner = "2"
 # MCP
 rmcp = { version = "0.15", features = ["server", "transport-io"] }
 schemars = "1"
+
+# TLS
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+tokio-rustls = "0.26"
 
 # WASM
 wasmtime = "29"

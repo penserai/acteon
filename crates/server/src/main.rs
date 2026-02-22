@@ -111,12 +111,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         exec_config.max_concurrent = concurrent;
     }
 
+    // Build a shared HTTP client with TLS config for all outbound calls.
+    let shared_http_client = if config.tls.enabled {
+        acteon_crypto::tls::build_reqwest_client(
+            config.tls.client.cert_path.as_deref(),
+            config.tls.client.key_path.as_deref(),
+            config.tls.client.ca_bundle_path.as_deref(),
+            config.tls.client.danger_accept_invalid_certs,
+        )
+        .map_err(|e| format!("TLS HTTP client: {e}"))?
+    } else {
+        reqwest::Client::new()
+    };
+
     // Create the state backend.
     let (store, lock) = acteon_server::state_factory::create_state(&config.state).await?;
 
     // Create the audit store if enabled.
     let audit_store = if config.audit.enabled {
-        let store = acteon_server::audit_factory::create_audit_store(&config.audit).await?;
+        let store = acteon_server::audit_factory::create_audit_store(
+            &config.audit,
+            Some(&shared_http_client),
+        )
+        .await?;
         info!(backend = %config.audit.backend, "audit store initialized");
         Some(store)
     } else {
@@ -603,7 +620,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 })?;
                 let mut wp =
-                    acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url);
+                    acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url)
+                        .with_client(shared_http_client.clone());
                 if !provider_cfg.headers.is_empty() {
                     wp = wp.with_headers(provider_cfg.headers.clone());
                 }
@@ -628,7 +646,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref from) = provider_cfg.from_number {
                     twilio_config = twilio_config.with_from_number(from);
                 }
-                std::sync::Arc::new(acteon_twilio::TwilioProvider::new(twilio_config))
+                std::sync::Arc::new(acteon_twilio::TwilioProvider::with_client(
+                    twilio_config,
+                    shared_http_client.clone(),
+                ))
             }
             "teams" => {
                 let webhook_url = provider_cfg
@@ -642,7 +663,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         )
                     })?;
                 let teams_config = acteon_teams::TeamsConfig::new(webhook_url);
-                std::sync::Arc::new(acteon_teams::TeamsProvider::new(teams_config))
+                std::sync::Arc::new(acteon_teams::TeamsProvider::with_client(
+                    teams_config,
+                    shared_http_client.clone(),
+                ))
             }
             "discord" => {
                 let webhook_url = provider_cfg
@@ -659,7 +683,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref username) = provider_cfg.default_channel {
                     discord_config = discord_config.with_default_username(username);
                 }
-                std::sync::Arc::new(acteon_discord::DiscordProvider::new(discord_config))
+                std::sync::Arc::new(acteon_discord::DiscordProvider::with_client(
+                    discord_config,
+                    shared_http_client.clone(),
+                ))
             }
             "email" => {
                 let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
@@ -1706,12 +1733,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("{host}:{port}");
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!(address = %addr, "acteon-server listening");
 
     // Serve with graceful shutdown on SIGINT / SIGTERM.
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    if config.tls.enabled
+        && config.tls.server.cert_path.is_some()
+        && config.tls.server.key_path.is_some()
+    {
+        let cert_path = config.tls.server.cert_path.as_deref().unwrap();
+        let key_path = config.tls.server.key_path.as_deref().unwrap();
+        let min_version = acteon_crypto::tls::MinTlsVersion::parse(&config.tls.server.min_version)
+            .unwrap_or_default();
+
+        let tls_config = acteon_crypto::tls::build_server_config(
+            cert_path,
+            key_path,
+            config.tls.server.client_ca_path.as_deref(),
+            min_version,
+        )
+        .map_err(|e| format!("TLS server config: {e}"))?;
+
+        info!(
+            address = %addr,
+            cert = cert_path,
+            mtls = config.tls.server.client_ca_path.is_some(),
+            "acteon-server listening (HTTPS)"
+        );
+
+        serve_tls(listener, app, tls_config, shutdown_signal()).await?;
+    } else {
+        info!(address = %addr, "acteon-server listening");
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+    }
 
     // Wait for pending audit tasks to complete (with configurable timeout).
     let shutdown_timeout = Duration::from_secs(config.server.shutdown_timeout_seconds);
@@ -1763,7 +1817,7 @@ async fn run_migrate(config: &ActeonConfig) -> Result<(), Box<dyn std::error::Er
 
     if config.audit.enabled {
         info!(backend = %config.audit.backend, "running audit backend migrations...");
-        let _audit = acteon_server::audit_factory::create_audit_store(&config.audit).await?;
+        let _audit = acteon_server::audit_factory::create_audit_store(&config.audit, None).await?;
         info!(backend = %config.audit.backend, "audit backend migrations complete");
     } else {
         info!("audit disabled, skipping audit migrations");
@@ -1790,6 +1844,71 @@ fn run_encrypt() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Wait for SIGINT (Ctrl+C) or SIGTERM, then return to trigger graceful shutdown.
+/// Serve HTTPS connections using `tokio-rustls` with graceful shutdown.
+async fn serve_tls(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    tls_config: std::sync::Arc<rustls::ServerConfig>,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tower::ServiceExt;
+
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls_config);
+
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (tcp_stream, remote_addr) = result?;
+                let acceptor = tls_acceptor.clone();
+                let app = app.clone();
+
+                tokio::spawn(async move {
+                    let tls_stream = match acceptor.accept(tcp_stream).await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::debug!(
+                                addr = %remote_addr,
+                                error = %e,
+                                "TLS handshake failed"
+                            );
+                            return;
+                        }
+                    };
+
+                    let io = hyper_util::rt::TokioIo::new(tls_stream);
+                    let tower_service = app;
+                    let hyper_service = hyper::service::service_fn(
+                        move |request: hyper::Request<hyper::body::Incoming>| {
+                            tower_service.clone().oneshot(request)
+                        },
+                    );
+
+                    if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                        hyper_util::rt::TokioExecutor::new(),
+                    )
+                    .serve_connection(io, hyper_service)
+                    .await
+                    {
+                        tracing::debug!(
+                            addr = %remote_addr,
+                            error = %e,
+                            "connection error"
+                        );
+                    }
+                });
+            }
+            () = &mut shutdown => {
+                tracing::info!("TLS server shutting down");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         tokio::signal::ctrl_c()

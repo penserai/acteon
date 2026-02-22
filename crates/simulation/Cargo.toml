@@ -9,7 +9,7 @@ description = "Simulation and testing framework for Acteon"
 
 [dependencies]
 acteon-core.workspace = true
-acteon-crypto.workspace = true
+acteon-crypto = { workspace = true, features = ["tls"] }
 acteon-gateway.workspace = true
 acteon-state.workspace = true
 acteon-state-memory.workspace = true
@@ -32,6 +32,11 @@ acteon-server.workspace = true
 
 tokio.workspace = true
 axum.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+tower.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait.workspace = true
@@ -48,6 +53,7 @@ rand = "0.8"
 [dev-dependencies]
 criterion.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+rcgen = "0.13"
 
 [features]
 default = []
@@ -170,6 +176,10 @@ name = "ec2_simulation"
 
 [[example]]
 name = "template_simulation"
+# No required-features - uses in-memory backends
+
+[[example]]
+name = "mtls_simulation"
 # No required-features - uses in-memory backends
 
 [lints]

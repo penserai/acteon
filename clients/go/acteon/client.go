@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +45,54 @@ func WithAPIKey(apiKey string) ClientOption {
 func WithHTTPClient(httpClient *http.Client) ClientOption {
 	return func(c *Client) {
 		c.httpClient = httpClient
+	}
+}
+
+// TLSConfig configures TLS for the Acteon client.
+type TLSConfig struct {
+	// CACertPath is the path to a custom CA certificate file (PEM) for server verification.
+	// If empty, the system root CAs are used.
+	CACertPath string
+
+	// ClientCertPath is the path to the client certificate file (PEM) for mTLS.
+	ClientCertPath string
+
+	// ClientKeyPath is the path to the client private key file (PEM) for mTLS.
+	ClientKeyPath string
+
+	// InsecureSkipVerify disables certificate verification (dev/test only).
+	InsecureSkipVerify bool
+}
+
+// WithTLS configures the client with TLS settings including custom CAs and client certificates.
+func WithTLS(cfg TLSConfig) ClientOption {
+	return func(c *Client) {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: cfg.InsecureSkipVerify,
+		}
+
+		if cfg.CACertPath != "" {
+			caCert, err := os.ReadFile(cfg.CACertPath)
+			if err == nil {
+				caCertPool := x509.NewCertPool()
+				caCertPool.AppendCertsFromPEM(caCert)
+				tlsConfig.RootCAs = caCertPool
+			}
+		}
+
+		if cfg.ClientCertPath != "" && cfg.ClientKeyPath != "" {
+			cert, err := tls.LoadX509KeyPair(cfg.ClientCertPath, cfg.ClientKeyPath)
+			if err == nil {
+				tlsConfig.Certificates = []tls.Certificate{cert}
+			}
+		}
+
+		c.httpClient = &http.Client{
+			Timeout: c.httpClient.Timeout,
+			Transport: &http.Transport{
+				TLSClientConfig: tlsConfig,
+			},
+		}
 	}
 }
 

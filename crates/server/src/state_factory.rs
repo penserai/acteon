@@ -50,6 +50,8 @@ fn create_redis(config: &StateConfig) -> Result<StatePair, ServerError> {
     let redis_config = RedisConfig {
         url: url.to_owned(),
         prefix: config.prefix.clone().unwrap_or_else(|| "acteon".to_owned()),
+        tls_enabled: config.tls_enabled.unwrap_or(false),
+        tls_insecure: config.tls_insecure.unwrap_or(false),
         ..RedisConfig::default()
     };
     let store = Arc::new(
@@ -75,6 +77,10 @@ async fn create_postgres(config: &StateConfig) -> Result<StatePair, ServerError>
             .prefix
             .clone()
             .unwrap_or_else(|| "acteon_".to_owned()),
+        ssl_mode: config.ssl_mode.clone(),
+        ssl_root_cert: config.ssl_root_cert.clone(),
+        ssl_cert: config.ssl_cert.clone(),
+        ssl_key: config.ssl_key.clone(),
         ..PostgresConfig::default()
     };
     let store = Arc::new(

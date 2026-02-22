@@ -16,8 +16,15 @@ use crate::config::AuditConfig;
 use crate::error::ServerError;
 
 /// Create an audit store from the given configuration.
-#[allow(clippy::unused_async)]
-pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditStore>, ServerError> {
+///
+/// When an `http_client` is provided, backends that use HTTP (e.g.
+/// `Elasticsearch`) will share the TLS-configured client instead of creating
+/// their own.
+#[allow(clippy::unused_async, unused_variables)]
+pub async fn create_audit_store(
+    config: &AuditConfig,
+    http_client: Option<&reqwest::Client>,
+) -> Result<Arc<dyn AuditStore>, ServerError> {
     let store: Arc<dyn AuditStore> = match config.backend.as_str() {
         "memory" => Arc::new(MemoryAuditStore::new()),
         #[cfg(feature = "postgres")]
@@ -26,9 +33,22 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
                 ServerError::Config("audit postgres backend requires [audit] url".into())
             })?;
 
-            let pg_config = PostgresAuditConfig::new(url)
+            let mut pg_config = PostgresAuditConfig::new(url)
                 .with_prefix(&config.prefix)
                 .with_cleanup_interval(config.cleanup_interval_seconds);
+
+            if let Some(ref mode) = config.ssl_mode {
+                pg_config = pg_config.with_ssl_mode(mode);
+            }
+            if let Some(ref path) = config.ssl_root_cert {
+                pg_config = pg_config.with_ssl_root_cert(path);
+            }
+            if let Some(ref path) = config.ssl_cert {
+                pg_config = pg_config.with_ssl_cert(path);
+            }
+            if let Some(ref path) = config.ssl_key {
+                pg_config = pg_config.with_ssl_key(path);
+            }
 
             let store = PostgresAuditStore::new(&pg_config)
                 .await
@@ -87,9 +107,15 @@ pub async fn create_audit_store(config: &AuditConfig) -> Result<Arc<dyn AuditSto
 
             let es_config = ElasticsearchAuditConfig::new(url).with_index_prefix(&config.prefix);
 
-            let store = ElasticsearchAuditStore::new(&es_config)
-                .await
-                .map_err(|e| ServerError::Config(format!("audit elasticsearch: {e}")))?;
+            let store = if let Some(client) = http_client {
+                ElasticsearchAuditStore::from_client(&es_config, client.clone())
+                    .await
+                    .map_err(|e| ServerError::Config(format!("audit elasticsearch: {e}")))?
+            } else {
+                ElasticsearchAuditStore::new(&es_config)
+                    .await
+                    .map_err(|e| ServerError::Config(format!("audit elasticsearch: {e}")))?
+            };
 
             Arc::new(store)
         }

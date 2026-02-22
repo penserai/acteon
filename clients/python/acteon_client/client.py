@@ -1,7 +1,7 @@
 """HTTP client for the Acteon action gateway."""
 
 from collections.abc import AsyncIterator
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Union
 import httpx
 
 from .errors import ActeonError, ConnectionError, HttpError, ApiError
@@ -104,6 +104,10 @@ class ActeonClient:
         *,
         timeout: float = 30.0,
         api_key: Optional[str] = None,
+        ca_cert_path: Optional[str] = None,
+        client_cert_path: Optional[str] = None,
+        client_key_path: Optional[str] = None,
+        verify_ssl: bool = True,
     ):
         """Create a new Acteon client.
 
@@ -111,10 +115,21 @@ class ActeonClient:
             base_url: Base URL of the Acteon server (e.g., "http://localhost:8080").
             timeout: Request timeout in seconds.
             api_key: Optional API key for authentication.
+            ca_cert_path: Path to a custom CA certificate file (PEM) for server
+                verification. When provided, this CA is used instead of system CAs.
+            client_cert_path: Path to a client certificate file (PEM) for mTLS.
+                Must be paired with ``client_key_path``.
+            client_key_path: Path to a client private key file (PEM) for mTLS.
+                Must be paired with ``client_cert_path``.
+            verify_ssl: Set to ``False`` to skip certificate verification
+                (for development/testing only). Ignored when ``ca_cert_path``
+                is provided.
         """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.Client(timeout=timeout)
+        verify: Union[bool, str] = ca_cert_path if ca_cert_path else verify_ssl
+        cert = (client_cert_path, client_key_path) if client_cert_path and client_key_path else None
+        self._client = httpx.Client(timeout=timeout, verify=verify, cert=cert)
 
     def __enter__(self):
         return self
@@ -2111,10 +2126,32 @@ class AsyncActeonClient:
         *,
         timeout: float = 30.0,
         api_key: Optional[str] = None,
+        ca_cert_path: Optional[str] = None,
+        client_cert_path: Optional[str] = None,
+        client_key_path: Optional[str] = None,
+        verify_ssl: bool = True,
     ):
+        """Create a new async Acteon client.
+
+        Args:
+            base_url: Base URL of the Acteon server (e.g., "http://localhost:8080").
+            timeout: Request timeout in seconds.
+            api_key: Optional API key for authentication.
+            ca_cert_path: Path to a custom CA certificate file (PEM) for server
+                verification. When provided, this CA is used instead of system CAs.
+            client_cert_path: Path to a client certificate file (PEM) for mTLS.
+                Must be paired with ``client_key_path``.
+            client_key_path: Path to a client private key file (PEM) for mTLS.
+                Must be paired with ``client_cert_path``.
+            verify_ssl: Set to ``False`` to skip certificate verification
+                (for development/testing only). Ignored when ``ca_cert_path``
+                is provided.
+        """
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
-        self._client = httpx.AsyncClient(timeout=timeout)
+        verify: Union[bool, str] = ca_cert_path if ca_cert_path else verify_ssl
+        cert = (client_cert_path, client_key_path) if client_cert_path and client_key_path else None
+        self._client = httpx.AsyncClient(timeout=timeout, verify=verify, cert=cert)
 
     async def __aenter__(self):
         return self

@@ -8,6 +8,45 @@ use acteon_audit::store::AuditStore;
 use crate::config::PostgresAuditConfig;
 use crate::migrations;
 
+/// Build `PgConnectOptions` from a [`PostgresAuditConfig`], applying SSL
+/// settings when configured.
+fn build_audit_connect_options(
+    config: &PostgresAuditConfig,
+) -> Result<sqlx::postgres::PgConnectOptions, AuditError> {
+    let mut options: sqlx::postgres::PgConnectOptions = config
+        .url
+        .parse()
+        .map_err(|e: sqlx::Error| AuditError::Storage(e.to_string()))?;
+
+    if let Some(ref mode) = config.ssl_mode {
+        let ssl_mode = match mode.as_str() {
+            "disable" => sqlx::postgres::PgSslMode::Disable,
+            "prefer" => sqlx::postgres::PgSslMode::Prefer,
+            "require" => sqlx::postgres::PgSslMode::Require,
+            "verify-ca" => sqlx::postgres::PgSslMode::VerifyCa,
+            "verify-full" => sqlx::postgres::PgSslMode::VerifyFull,
+            other => {
+                return Err(AuditError::Storage(format!("unknown ssl_mode: {other}")));
+            }
+        };
+        options = options.ssl_mode(ssl_mode);
+    }
+
+    if let Some(ref path) = config.ssl_root_cert {
+        options = options.ssl_root_cert(path);
+    }
+
+    if let Some(ref path) = config.ssl_cert {
+        options = options.ssl_client_cert(path);
+    }
+
+    if let Some(ref path) = config.ssl_key {
+        options = options.ssl_client_key(path);
+    }
+
+    Ok(options)
+}
+
 /// Postgres-backed audit store using `sqlx`.
 pub struct PostgresAuditStore {
     pool: PgPool,
@@ -17,7 +56,9 @@ pub struct PostgresAuditStore {
 impl PostgresAuditStore {
     /// Create a new store, connecting to Postgres and running migrations.
     pub async fn new(config: &PostgresAuditConfig) -> Result<Self, AuditError> {
-        let pool = PgPool::connect(&config.url)
+        let connect_options = build_audit_connect_options(config)?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_with(connect_options)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 

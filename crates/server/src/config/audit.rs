@@ -33,6 +33,23 @@ pub struct AuditConfig {
     /// `DynamoDB` table name for the audit backend.
     #[serde(default)]
     pub table_name: Option<String>,
+
+    // ---- Postgres SSL fields ----
+    /// SSL mode for `PostgreSQL` audit connections.
+    #[serde(default)]
+    pub ssl_mode: Option<String>,
+
+    /// Path to the CA certificate for `PostgreSQL` SSL verification.
+    #[serde(default)]
+    pub ssl_root_cert: Option<String>,
+
+    /// Path to the client certificate for `PostgreSQL` mTLS.
+    #[serde(default)]
+    pub ssl_cert: Option<String>,
+
+    /// Path to the client private key for `PostgreSQL` mTLS.
+    #[serde(default)]
+    pub ssl_key: Option<String>,
 }
 
 /// Configuration for redacting sensitive fields from audit payloads.
@@ -78,6 +95,10 @@ impl Default for AuditConfig {
             redact: AuditRedactConfig::default(),
             region: None,
             table_name: None,
+            ssl_mode: None,
+            ssl_root_cert: None,
+            ssl_cert: None,
+            ssl_key: None,
         }
     }
 }

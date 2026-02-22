@@ -12,6 +12,7 @@ mod server;
 mod snapshot;
 mod state;
 mod telemetry;
+mod tls;
 
 #[cfg(test)]
 mod tests;
@@ -30,6 +31,7 @@ pub use server::*;
 pub use snapshot::*;
 pub use state::*;
 pub use telemetry::*;
+pub use tls::*;
 
 use serde::Deserialize;
 
@@ -93,6 +95,9 @@ pub struct ActeonConfig {
     /// Payload template configuration.
     #[serde(default)]
     pub templates: TemplateServerConfig,
+    /// TLS configuration for inbound HTTPS and outbound mTLS.
+    #[serde(default)]
+    pub tls: TlsConfig,
     /// Attachment size and count limits.
     #[serde(default)]
     pub attachments: AttachmentConfig,

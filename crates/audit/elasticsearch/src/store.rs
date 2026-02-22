@@ -31,6 +31,16 @@ impl ElasticsearchAuditStore {
             .build()
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
+        Self::from_client(config, client).await
+    }
+
+    /// Create a new store with a custom `reqwest::Client`.
+    ///
+    /// Useful for sharing a TLS-configured client across components.
+    pub async fn from_client(
+        config: &ElasticsearchAuditConfig,
+        client: reqwest::Client,
+    ) -> Result<Self, AuditError> {
         let base_url = config.url.trim_end_matches('/').to_owned();
         let index = config.index_name();
 
