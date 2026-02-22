@@ -5,9 +5,12 @@ import com.acteon.client.models.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -18,6 +21,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import javax.net.ssl.KeyManager;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 
 /**
  * HTTP client for the Acteon action gateway.
@@ -65,6 +74,26 @@ public class ActeonClient implements AutoCloseable {
             .build();
     }
 
+    /**
+     * Creates a new Acteon client with TLS configuration for mTLS.
+     */
+    public ActeonClient(String baseUrl, String apiKey, Duration timeout, TlsConfig tlsConfig) {
+        this.baseUrl = baseUrl.replaceAll("/$", "");
+        this.apiKey = apiKey;
+        this.objectMapper = new ObjectMapper();
+
+        HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(timeout);
+        if (tlsConfig != null) {
+            try {
+                SSLContext sslContext = buildSslContext(tlsConfig);
+                builder.sslContext(sslContext);
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to configure TLS: " + e.getMessage(), e);
+            }
+        }
+        this.httpClient = builder.build();
+    }
+
     private HttpRequest.Builder requestBuilder(String path) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
             .uri(URI.create(baseUrl + path))
@@ -88,6 +117,62 @@ public class ActeonClient implements AutoCloseable {
     @Override
     public void close() {
         // HttpClient doesn't need explicit closing in Java 11+
+    }
+
+    /**
+     * TLS configuration for connecting to an mTLS-enabled Acteon server.
+     */
+    public static class TlsConfig {
+        private final String caCertPath;
+        private final String clientCertPath;
+        private final String clientKeyPath;
+        private final boolean trustAllCerts;
+
+        private TlsConfig(Builder builder) {
+            this.caCertPath = builder.caCertPath;
+            this.clientCertPath = builder.clientCertPath;
+            this.clientKeyPath = builder.clientKeyPath;
+            this.trustAllCerts = builder.trustAllCerts;
+        }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        public static class Builder {
+            private String caCertPath;
+            private String clientCertPath;
+            private String clientKeyPath;
+            private boolean trustAllCerts = false;
+
+            /** Set path to custom CA certificate file (PEM) for server verification. */
+            public Builder caCertPath(String path) {
+                this.caCertPath = path;
+                return this;
+            }
+
+            /** Set path to client certificate file (PEM) for mTLS. */
+            public Builder clientCertPath(String path) {
+                this.clientCertPath = path;
+                return this;
+            }
+
+            /** Set path to client private key file (PEM) for mTLS. */
+            public Builder clientKeyPath(String path) {
+                this.clientKeyPath = path;
+                return this;
+            }
+
+            /** Skip certificate verification (dev/test only). */
+            public Builder trustAllCerts(boolean trustAll) {
+                this.trustAllCerts = trustAll;
+                return this;
+            }
+
+            public TlsConfig build() {
+                return new TlsConfig(this);
+            }
+        }
     }
 
     // =========================================================================
@@ -2387,5 +2472,58 @@ public class ActeonClient implements AutoCloseable {
             Thread.currentThread().interrupt();
             throw new ConnectionException("Request interrupted", e);
         }
+    }
+
+    private static SSLContext buildSslContext(TlsConfig config) throws Exception {
+        KeyManager[] keyManagers = null;
+        TrustManager[] trustManagers = null;
+
+        // Client certificate (mTLS)
+        if (config.clientCertPath != null && config.clientKeyPath != null) {
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            keyStore.load(null, null);
+
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            try (InputStream certStream = new FileInputStream(config.clientCertPath)) {
+                java.security.cert.Certificate cert = cf.generateCertificate(certStream);
+
+                // Read the private key - for simplicity, load via KeyStore
+                // Java's standard library doesn't directly read PEM keys,
+                // so we load them into a PKCS12 keystore.
+                KeyStore clientStore = KeyStore.getInstance("PKCS12");
+                try (InputStream p12Stream = new FileInputStream(config.clientKeyPath)) {
+                    clientStore.load(p12Stream, new char[0]);
+                }
+                KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+                kmf.init(clientStore, new char[0]);
+                keyManagers = kmf.getKeyManagers();
+            }
+        }
+
+        // Custom CA or trust-all
+        if (config.trustAllCerts) {
+            trustManagers = new TrustManager[]{
+                new X509TrustManager() {
+                    public void checkClientTrusted(java.security.cert.X509Certificate[] chain, String authType) {}
+                    public void checkServerTrusted(java.security.cert.X509Certificate[] chain, String authType) {}
+                    public java.security.cert.X509Certificate[] getAcceptedIssuers() { return new java.security.cert.X509Certificate[0]; }
+                }
+            };
+        } else if (config.caCertPath != null) {
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            trustStore.load(null, null);
+            try (InputStream caStream = new FileInputStream(config.caCertPath)) {
+                java.security.cert.Certificate caCert = cf.generateCertificate(caStream);
+                trustStore.setCertificateEntry("custom-ca", caCert);
+            }
+            TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(trustStore);
+            trustManagers = tmf.getTrustManagers();
+        }
+
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(keyManagers, trustManagers, null);
+        return sslContext;
     }
 }

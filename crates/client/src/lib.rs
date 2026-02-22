@@ -128,6 +128,10 @@ pub struct ActeonClientBuilder {
     timeout: Duration,
     api_key: Option<String>,
     client: Option<Client>,
+    ca_cert_path: Option<String>,
+    client_cert_path: Option<String>,
+    client_key_path: Option<String>,
+    danger_accept_invalid_certs: bool,
 }
 
 impl ActeonClientBuilder {
@@ -138,6 +142,10 @@ impl ActeonClientBuilder {
             timeout: DEFAULT_TIMEOUT,
             api_key: None,
             client: None,
+            ca_cert_path: None,
+            client_cert_path: None,
+            client_key_path: None,
+            danger_accept_invalid_certs: false,
         }
     }
 
@@ -155,6 +163,42 @@ impl ActeonClientBuilder {
         self
     }
 
+    /// Set a custom CA certificate file (PEM) for server verification.
+    ///
+    /// When set, only certificates signed by this CA will be trusted.
+    /// If not set, the system's default root certificates are used.
+    #[must_use]
+    pub fn ca_cert_path(mut self, path: impl Into<String>) -> Self {
+        self.ca_cert_path = Some(path.into());
+        self
+    }
+
+    /// Set client certificate and key files (PEM) for mTLS.
+    ///
+    /// Both paths must be provided for client certificate authentication.
+    #[must_use]
+    pub fn client_cert(
+        mut self,
+        cert_path: impl Into<String>,
+        key_path: impl Into<String>,
+    ) -> Self {
+        self.client_cert_path = Some(cert_path.into());
+        self.client_key_path = Some(key_path.into());
+        self
+    }
+
+    /// Skip certificate verification (dev/test only).
+    ///
+    /// # Warning
+    ///
+    /// This completely disables TLS certificate validation. Only use in
+    /// development or testing environments.
+    #[must_use]
+    pub fn danger_accept_invalid_certs(mut self, accept: bool) -> Self {
+        self.danger_accept_invalid_certs = accept;
+        self
+    }
+
     /// Use a custom reqwest Client.
     ///
     /// Useful for configuring TLS, proxies, or other advanced settings.
@@ -166,12 +210,42 @@ impl ActeonClientBuilder {
 
     /// Build the client.
     pub fn build(self) -> Result<ActeonClient, Error> {
-        let client = match self.client {
-            Some(c) => c,
-            None => Client::builder()
+        let client = if let Some(c) = self.client {
+            c
+        } else {
+            let mut builder = Client::builder()
                 .timeout(self.timeout)
+                .danger_accept_invalid_certs(self.danger_accept_invalid_certs);
+
+            if let Some(ref ca_path) = self.ca_cert_path {
+                let ca_pem = std::fs::read(ca_path).map_err(|e| {
+                    Error::Configuration(format!("failed to read CA cert {ca_path}: {e}"))
+                })?;
+                let ca_cert = reqwest::Certificate::from_pem(&ca_pem)
+                    .map_err(|e| Error::Configuration(format!("invalid CA cert: {e}")))?;
+                builder = builder.add_root_certificate(ca_cert);
+            }
+
+            if let (Some(cert_path), Some(key_path)) =
+                (&self.client_cert_path, &self.client_key_path)
+            {
+                let cert_pem = std::fs::read(cert_path).map_err(|e| {
+                    Error::Configuration(format!("failed to read client cert {cert_path}: {e}"))
+                })?;
+                let key_pem = std::fs::read(key_path).map_err(|e| {
+                    Error::Configuration(format!("failed to read client key {key_path}: {e}"))
+                })?;
+                let mut combined = cert_pem;
+                combined.push(b'\n');
+                combined.extend_from_slice(&key_pem);
+                let identity = reqwest::Identity::from_pem(&combined)
+                    .map_err(|e| Error::Configuration(format!("invalid client identity: {e}")))?;
+                builder = builder.identity(identity);
+            }
+
+            builder
                 .build()
-                .map_err(|e| Error::Configuration(e.to_string()))?,
+                .map_err(|e| Error::Configuration(e.to_string()))?
         };
 
         Ok(ActeonClient {

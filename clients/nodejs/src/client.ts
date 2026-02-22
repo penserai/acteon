@@ -129,6 +129,8 @@ import {
   parseRenderPreviewResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
+import { readFileSync } from "node:fs";
+import { Agent as HttpsAgent } from "node:https";
 
 /**
  * Configuration options for the Acteon client.
@@ -138,6 +140,14 @@ export interface ActeonClientOptions {
   timeout?: number;
   /** Optional API key for authentication. */
   apiKey?: string;
+  /** Path to a custom CA certificate file (PEM) for server verification. */
+  caCertPath?: string;
+  /** Path to client certificate file (PEM) for mTLS. */
+  clientCertPath?: string;
+  /** Path to client private key file (PEM) for mTLS. */
+  clientKeyPath?: string;
+  /** Skip certificate verification (dev/test only). Default: true. */
+  rejectUnauthorized?: boolean;
 }
 
 /**
@@ -164,11 +174,28 @@ export class ActeonClient {
   private readonly baseUrl: string;
   private readonly timeout: number;
   private readonly apiKey?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readonly dispatcher?: any;
 
   constructor(baseUrl: string, options: ActeonClientOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, "");
     this.timeout = options.timeout ?? 30000;
     this.apiKey = options.apiKey;
+
+    if (options.caCertPath || options.clientCertPath || options.rejectUnauthorized === false) {
+      const agentOptions: Record<string, unknown> = { keepAlive: true };
+      if (options.caCertPath) {
+        agentOptions.ca = readFileSync(options.caCertPath);
+      }
+      if (options.clientCertPath && options.clientKeyPath) {
+        agentOptions.cert = readFileSync(options.clientCertPath);
+        agentOptions.key = readFileSync(options.clientKeyPath);
+      }
+      if (options.rejectUnauthorized === false) {
+        agentOptions.rejectUnauthorized = false;
+      }
+      this.dispatcher = new HttpsAgent(agentOptions);
+    }
   }
 
   private headers(): Record<string, string> {
@@ -198,12 +225,16 @@ export class ActeonClient {
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
-      const response = await fetch(url, {
+      const fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method,
         headers: this.headers(),
         body: options?.body ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
-      });
+      };
+      if (this.dispatcher) {
+        (fetchOptions as Record<string, unknown>).dispatcher = this.dispatcher;
+      }
+      const response = await fetch(url, fetchOptions);
       return response;
     } catch (error) {
       if (error instanceof Error) {
