@@ -8,8 +8,6 @@ use acteon_core::analytics::{
     AnalyticsTopEntry,
 };
 
-use crate::store::ClickHouseAuditStore;
-
 /// Map an `AnalyticsInterval` to the `ClickHouse` time-truncation function.
 fn interval_to_ch_func(interval: AnalyticsInterval) -> &'static str {
     match interval {
@@ -20,14 +18,23 @@ fn interval_to_ch_func(interval: AnalyticsInterval) -> &'static str {
     }
 }
 
-/// Escape a string for safe interpolation in `ClickHouse` SQL.
-fn escape_ch(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'")
+/// Bind value types for parameterized `ClickHouse` queries.
+enum BindValue {
+    Str(String),
+    Millis(i64),
 }
 
-/// Build a WHERE clause from the analytics query with inline-escaped values.
-fn build_analytics_where(query: &AnalyticsQuery, from: DateTime<Utc>, to: DateTime<Utc>) -> String {
+/// Build a parameterized WHERE clause from the analytics query.
+///
+/// Returns `(clause, binds)` where `clause` uses `?` placeholders and `binds`
+/// contains the values to bind in order.
+fn build_analytics_where(
+    query: &AnalyticsQuery,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> (String, Vec<BindValue>) {
     let mut conditions = Vec::new();
+    let mut binds = Vec::new();
 
     let string_filters: &[(&Option<String>, &str)] = &[
         (&query.namespace, "namespace"),
@@ -39,18 +46,57 @@ fn build_analytics_where(query: &AnalyticsQuery, from: DateTime<Utc>, to: DateTi
 
     for (value, col) in string_filters {
         if let Some(v) = value {
-            conditions.push(format!("{col} = '{}'", escape_ch(v)));
+            conditions.push(format!("{col} = ?"));
+            binds.push(BindValue::Str(v.clone()));
         }
     }
 
     // Time range: dispatched_at is stored as milliseconds since epoch.
-    conditions.push(format!("dispatched_at >= {}", from.timestamp_millis()));
-    conditions.push(format!("dispatched_at <= {}", to.timestamp_millis()));
+    conditions.push("dispatched_at >= ?".to_string());
+    binds.push(BindValue::Millis(from.timestamp_millis()));
+    conditions.push("dispatched_at <= ?".to_string());
+    binds.push(BindValue::Millis(to.timestamp_millis()));
 
-    if conditions.is_empty() {
+    let clause = if conditions.is_empty() {
         String::new()
     } else {
         format!("WHERE {}", conditions.join(" AND "))
+    };
+
+    (clause, binds)
+}
+
+/// Apply bind values to a `ClickHouse` query in order.
+fn apply_binds(mut q: clickhouse::query::Query, binds: &[BindValue]) -> clickhouse::query::Query {
+    for b in binds {
+        match b {
+            BindValue::Str(s) => q = q.bind(s.as_str()),
+            BindValue::Millis(ms) => q = q.bind(*ms),
+        }
+    }
+    q
+}
+
+/// Lightweight analytics store backed by a `ClickHouse` client.
+///
+/// Created via [`ClickHouseAuditStore::analytics()`] — shares the same client.
+pub struct ClickHouseAnalyticsStore {
+    client: clickhouse::Client,
+    table: String,
+}
+
+impl ClickHouseAnalyticsStore {
+    /// Create a new `ClickHouseAnalyticsStore`.
+    pub fn new(client: clickhouse::Client, table: String) -> Self {
+        Self { client, table }
+    }
+
+    fn client(&self) -> &clickhouse::Client {
+        &self.client
+    }
+
+    fn table_name(&self) -> &str {
+        &self.table
     }
 }
 
@@ -76,7 +122,7 @@ struct TopRow {
 }
 
 #[async_trait]
-impl AnalyticsStore for ClickHouseAuditStore {
+impl AnalyticsStore for ClickHouseAnalyticsStore {
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     async fn query_analytics(
         &self,
@@ -90,7 +136,7 @@ impl AnalyticsStore for ClickHouseAuditStore {
         let trunc_fn = interval_to_ch_func(query.interval);
         let top_n = query.top_n.unwrap_or(10);
 
-        let where_clause = build_analytics_where(query, from, to);
+        let (where_clause, binds) = build_analytics_where(query, from, to);
 
         // ClickHouse stores dispatched_at as Int64 (millis).
         // Convert to DateTime64 for truncation.
@@ -133,9 +179,8 @@ impl AnalyticsStore for ClickHouseAuditStore {
             table = self.table_name(),
         );
 
-        let rows: Vec<BucketRow> = self
-            .client()
-            .query(&sql)
+        let q = apply_binds(self.client().query(&sql), &binds);
+        let rows: Vec<BucketRow> = q
             .fetch_all::<BucketRow>()
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
@@ -202,9 +247,8 @@ impl AnalyticsStore for ClickHouseAuditStore {
                 table = self.table_name(),
             );
 
-            let top_rows: Vec<TopRow> = self
-                .client()
-                .query(&top_sql)
+            let tq = apply_binds(self.client().query(&top_sql), &binds);
+            let top_rows: Vec<TopRow> = tq
                 .fetch_all::<TopRow>()
                 .await
                 .map_err(|e| AuditError::Storage(e.to_string()))?;

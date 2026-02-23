@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sqlx::PgPool;
 
 use acteon_audit::analytics::AnalyticsStore;
 use acteon_audit::error::AuditError;
@@ -7,8 +8,6 @@ use acteon_core::analytics::{
     AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
     AnalyticsTopEntry,
 };
-
-use crate::store::PostgresAuditStore;
 
 /// Map an `AnalyticsInterval` to the Postgres `date_trunc` argument.
 fn interval_to_trunc(interval: AnalyticsInterval) -> &'static str {
@@ -69,6 +68,29 @@ fn build_analytics_where(
     (clause, binds, idx)
 }
 
+/// Lightweight analytics store backed by a Postgres connection pool.
+///
+/// Created via [`PostgresAuditStore::analytics()`] — shares the same pool.
+pub struct PostgresAnalyticsStore {
+    pool: PgPool,
+    table: String,
+}
+
+impl PostgresAnalyticsStore {
+    /// Create a new `PostgresAnalyticsStore`.
+    pub fn new(pool: PgPool, table: String) -> Self {
+        Self { pool, table }
+    }
+
+    fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    fn table_name(&self) -> &str {
+        &self.table
+    }
+}
+
 /// Row type for volume/outcome/error-rate bucket queries.
 #[derive(sqlx::FromRow)]
 struct BucketRow {
@@ -96,7 +118,7 @@ struct TopRow {
 }
 
 #[async_trait]
-impl AnalyticsStore for PostgresAuditStore {
+impl AnalyticsStore for PostgresAnalyticsStore {
     #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
     async fn query_analytics(
         &self,

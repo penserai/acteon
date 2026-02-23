@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 use acteon_crypto::PayloadEncryptor;
 
+use crate::analytics::AnalyticsStore;
 use crate::error::AuditError;
 use crate::record::{AuditPage, AuditQuery, AuditRecord};
 use crate::store::AuditStore;
@@ -109,6 +110,10 @@ impl AuditStore for EncryptingAuditStore {
 
     async fn cleanup_expired(&self) -> Result<u64, AuditError> {
         self.inner.cleanup_expired().await
+    }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        self.inner.analytics()
     }
 }
 

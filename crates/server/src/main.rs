@@ -1713,7 +1713,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the analytics store if audit is enabled.
     let analytics_store = if let Some(ref audit) = audit_store {
-        acteon_server::analytics_factory::create_analytics_store(&config.audit, audit).await
+        acteon_server::analytics_factory::create_analytics_store(audit).await
     } else {
         None
     };

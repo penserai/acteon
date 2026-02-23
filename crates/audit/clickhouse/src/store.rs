@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use acteon_audit::analytics::AnalyticsStore;
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
 
+use crate::analytics::ClickHouseAnalyticsStore;
 use crate::config::ClickHouseAuditConfig;
 use crate::migrations;
 
@@ -405,5 +409,12 @@ impl AuditStore for ClickHouseAuditStore {
         }
 
         Ok(count)
+    }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        Some(Arc::new(ClickHouseAnalyticsStore::new(
+            self.client.clone(),
+            self.table.clone(),
+        )))
     }
 }

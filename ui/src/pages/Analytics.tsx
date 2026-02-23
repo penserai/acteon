@@ -110,11 +110,12 @@ export function Analytics() {
     if (!data) return null
     const buckets = data.buckets
     const totalCount = data.total_count
-    const avgLatency = buckets.length > 0
-      ? buckets.reduce((sum, b) => sum + (b.avg_duration_ms ?? 0), 0) / buckets.length
+    const totalActions = buckets.reduce((sum, b) => sum + b.count, 0)
+    const avgLatency = totalActions > 0
+      ? buckets.reduce((sum, b) => sum + ((b.avg_duration_ms ?? 0) * b.count), 0) / totalActions
       : 0
-    const avgErrorRate = buckets.length > 0
-      ? buckets.reduce((sum, b) => sum + (b.error_rate ?? 0), 0) / buckets.length
+    const avgErrorRate = totalActions > 0
+      ? buckets.reduce((sum, b) => sum + ((b.error_rate ?? 0) * b.count), 0) / totalActions
       : 0
     const peakCount = buckets.length > 0
       ? Math.max(...buckets.map((b) => b.count))

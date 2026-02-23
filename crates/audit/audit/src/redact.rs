@@ -8,6 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::analytics::AnalyticsStore;
 use crate::error::AuditError;
 use crate::record::{AuditPage, AuditQuery, AuditRecord};
 use crate::store::AuditStore;
@@ -166,6 +167,10 @@ impl AuditStore for RedactingAuditStore {
 
     async fn cleanup_expired(&self) -> Result<u64, AuditError> {
         self.inner.cleanup_expired().await
+    }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        self.inner.analytics()
     }
 }
 
