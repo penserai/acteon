@@ -69,6 +69,10 @@ from .models import (
     ComplianceStatus,
     HashChainVerification,
     VerifyHashChainRequest,
+    AnalyticsQuery,
+    AnalyticsBucket,
+    AnalyticsTopEntry,
+    AnalyticsResponse,
 )
 
 __version__ = "0.1.0"
@@ -145,4 +149,8 @@ __all__ = [
     "ComplianceStatus",
     "HashChainVerification",
     "VerifyHashChainRequest",
+    "AnalyticsQuery",
+    "AnalyticsBucket",
+    "AnalyticsTopEntry",
+    "AnalyticsResponse",
 ]

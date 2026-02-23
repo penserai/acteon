@@ -11,6 +11,7 @@ rust-version.workspace = true
 acteon-ops = { workspace = true }
 acteon-core = { workspace = true }
 
+chrono = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 tokio = { workspace = true }

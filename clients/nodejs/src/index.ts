@@ -94,4 +94,8 @@ export {
   type ComplianceStatus,
   type HashChainVerification,
   type VerifyHashChainRequest,
+  type AnalyticsQuery,
+  type AnalyticsBucket,
+  type AnalyticsTopEntry,
+  type AnalyticsResponse,
 } from "./models.js";

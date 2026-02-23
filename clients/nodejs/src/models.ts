@@ -2104,6 +2104,139 @@ export function parseRenderPreviewResponse(data: Record<string, unknown>): Rende
 }
 
 // =============================================================================
+// Analytics Types
+// =============================================================================
+
+/** Query parameters for the analytics endpoint. */
+export interface AnalyticsQuery {
+  /** The metric to query (required). */
+  metric: "volume" | "outcome_breakdown" | "top_action_types" | "latency" | "error_rate";
+  /** Optional namespace filter. */
+  namespace?: string;
+  /** Optional tenant filter. */
+  tenant?: string;
+  /** Optional provider filter. */
+  provider?: string;
+  /** Optional action type filter. */
+  actionType?: string;
+  /** Optional outcome filter. */
+  outcome?: string;
+  /** Time bucket interval (default "daily"). */
+  interval?: "hourly" | "daily" | "weekly" | "monthly";
+  /** Optional start of time range (RFC 3339 datetime string). */
+  from?: string;
+  /** Optional end of time range (RFC 3339 datetime string). */
+  to?: string;
+  /** Optional grouping dimension (e.g., "provider", "action_type", "outcome"). */
+  groupBy?: string;
+  /** Optional limit for top-N queries. */
+  topN?: number;
+}
+
+/** A single time bucket in an analytics response. */
+export interface AnalyticsBucket {
+  /** ISO 8601 timestamp for the bucket start. */
+  timestamp: string;
+  /** Number of actions in this bucket. */
+  count: number;
+  /** Optional group label when group_by is used. */
+  group?: string | null;
+  /** Average action duration in milliseconds. */
+  avgDurationMs?: number | null;
+  /** 50th percentile duration in milliseconds. */
+  p50DurationMs?: number | null;
+  /** 95th percentile duration in milliseconds. */
+  p95DurationMs?: number | null;
+  /** 99th percentile duration in milliseconds. */
+  p99DurationMs?: number | null;
+  /** Fraction of actions that failed (0.0 to 1.0). */
+  errorRate?: number | null;
+}
+
+/** A single entry in a top-N analytics result. */
+export interface AnalyticsTopEntry {
+  /** The label for this entry (e.g., action type name). */
+  label: string;
+  /** Number of occurrences. */
+  count: number;
+  /** Percentage of total. */
+  percentage: number;
+}
+
+/** Response from the analytics endpoint. */
+export interface AnalyticsResponse {
+  /** The metric that was queried. */
+  metric: string;
+  /** The time interval used for bucketing. */
+  interval: string;
+  /** Start of the queried time range. */
+  from: string;
+  /** End of the queried time range. */
+  to: string;
+  /** List of time-series data buckets. */
+  buckets: AnalyticsBucket[];
+  /** List of top-N entries (for top_action_types metric). */
+  topEntries: AnalyticsTopEntry[];
+  /** Total count across all buckets. */
+  totalCount: number;
+}
+
+/** Convert AnalyticsQuery to URL search params. */
+export function analyticsQueryToParams(query: AnalyticsQuery): URLSearchParams {
+  const params = new URLSearchParams();
+  params.set("metric", query.metric);
+  if (query.namespace) params.set("namespace", query.namespace);
+  if (query.tenant) params.set("tenant", query.tenant);
+  if (query.provider) params.set("provider", query.provider);
+  if (query.actionType) params.set("action_type", query.actionType);
+  if (query.outcome) params.set("outcome", query.outcome);
+  if (query.interval) params.set("interval", query.interval);
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  if (query.groupBy) params.set("group_by", query.groupBy);
+  if (query.topN !== undefined) params.set("top_n", query.topN.toString());
+  return params;
+}
+
+/** Parse an AnalyticsBucket from a raw JSON object. */
+export function parseAnalyticsBucket(data: Record<string, unknown>): AnalyticsBucket {
+  return {
+    timestamp: data.timestamp as string,
+    count: data.count as number,
+    group: (data.group as string | null) ?? null,
+    avgDurationMs: (data.avg_duration_ms as number | null) ?? null,
+    p50DurationMs: (data.p50_duration_ms as number | null) ?? null,
+    p95DurationMs: (data.p95_duration_ms as number | null) ?? null,
+    p99DurationMs: (data.p99_duration_ms as number | null) ?? null,
+    errorRate: (data.error_rate as number | null) ?? null,
+  };
+}
+
+/** Parse an AnalyticsTopEntry from a raw JSON object. */
+export function parseAnalyticsTopEntry(data: Record<string, unknown>): AnalyticsTopEntry {
+  return {
+    label: data.label as string,
+    count: data.count as number,
+    percentage: data.percentage as number,
+  };
+}
+
+/** Parse an AnalyticsResponse from a raw JSON object. */
+export function parseAnalyticsResponse(data: Record<string, unknown>): AnalyticsResponse {
+  const buckets = (data.buckets as Record<string, unknown>[]) ?? [];
+  const topEntries = (data.top_entries as Record<string, unknown>[]) ?? [];
+  return {
+    metric: data.metric as string,
+    interval: data.interval as string,
+    from: data.from as string,
+    to: data.to as string,
+    buckets: buckets.map(parseAnalyticsBucket),
+    topEntries: topEntries.map(parseAnalyticsTopEntry),
+    totalCount: data.total_count as number,
+  };
+}
+
+// =============================================================================
 // Provider Payload Helpers
 // =============================================================================
 

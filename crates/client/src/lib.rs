@@ -63,6 +63,7 @@ pub mod stream;
 pub mod webhook;
 
 // Domain-specific modules containing `impl ActeonClient` blocks and model types.
+mod analytics;
 mod approvals;
 mod audit;
 mod chains;
@@ -88,6 +89,7 @@ pub use stream::{EventStream, StreamFilter, StreamItem};
 pub use acteon_core::Attachment;
 
 // Re-export all public types from domain modules so the public API is unchanged.
+pub use analytics::*;
 pub use approvals::*;
 pub use audit::*;
 pub use chains::*;

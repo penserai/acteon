@@ -1,10 +1,14 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use sqlx::PgPool;
 
+use acteon_audit::analytics::AnalyticsStore;
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
 
+use crate::analytics::PostgresAnalyticsStore;
 use crate::config::PostgresAuditConfig;
 use crate::migrations;
 
@@ -70,6 +74,16 @@ impl PostgresAuditStore {
             pool,
             table: format!("{}audit", config.prefix),
         })
+    }
+
+    /// Access the connection pool.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Access the table name.
+    pub fn table_name(&self) -> &str {
+        &self.table
     }
 
     /// Create from an existing pool (useful for testing).
@@ -254,6 +268,13 @@ impl AuditStore for PostgresAuditStore {
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
         Ok(result.rows_affected())
+    }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        Some(Arc::new(PostgresAnalyticsStore::new(
+            self.pool.clone(),
+            self.table.clone(),
+        )))
     }
 }
 

@@ -196,6 +196,14 @@ impl OpsClient {
             .await?)
     }
 
+    /// Query aggregated action analytics.
+    pub async fn query_analytics(
+        &self,
+        query: acteon_client::AnalyticsQuery,
+    ) -> Result<acteon_client::AnalyticsResponse, OpsError> {
+        Ok(self.inner.query_analytics(&query).await?)
+    }
+
     /// Reset a circuit breaker.
     pub async fn reset_circuit_breaker(
         &self,

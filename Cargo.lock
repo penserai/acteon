@@ -17,6 +17,7 @@ dependencies = [
  "tokio",
  "tracing",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]
@@ -24,6 +25,7 @@ name = "acteon-audit-clickhouse"
 version = "0.1.0"
 dependencies = [
  "acteon-audit",
+ "acteon-core",
  "async-trait",
  "chrono",
  "clickhouse",
@@ -77,6 +79,7 @@ name = "acteon-audit-postgres"
 version = "0.1.0"
 dependencies = [
  "acteon-audit",
+ "acteon-core",
  "async-trait",
  "chrono",
  "serde_json",
@@ -293,6 +296,7 @@ dependencies = [
  "acteon-core",
  "acteon-ops",
  "anyhow",
+ "chrono",
  "clap",
  "rmcp",
  "schemars",

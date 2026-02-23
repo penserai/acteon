@@ -1,3 +1,4 @@
+pub mod analytics_factory;
 pub mod api;
 pub mod audit_factory;
 pub mod auth;

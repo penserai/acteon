@@ -20,6 +20,7 @@ use tracing::warn;
 
 use acteon_core::compliance::{ComplianceConfig, HashChainVerification};
 
+use crate::analytics::AnalyticsStore;
 use crate::error::AuditError;
 use crate::record::{AuditPage, AuditQuery, AuditRecord};
 use crate::store::AuditStore;
@@ -277,6 +278,10 @@ impl AuditStore for HashChainAuditStore {
     async fn cleanup_expired(&self) -> Result<u64, AuditError> {
         self.inner.cleanup_expired().await
     }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        self.inner.analytics()
+    }
 }
 
 /// An audit store decorator that enforces compliance rules.
@@ -326,6 +331,10 @@ impl AuditStore for ComplianceAuditStore {
             return Ok(0);
         }
         self.inner.cleanup_expired().await
+    }
+
+    fn analytics(&self) -> Option<Arc<dyn AnalyticsStore>> {
+        self.inner.analytics()
     }
 }
 

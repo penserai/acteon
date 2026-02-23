@@ -841,3 +841,49 @@ export interface HashChainVerification {
   first_record_id: string | null
   last_record_id: string | null
 }
+
+// ---- Analytics ----
+
+export type AnalyticsMetric = 'volume' | 'outcome_breakdown' | 'top_action_types' | 'latency' | 'error_rate';
+export type AnalyticsInterval = 'hourly' | 'daily' | 'weekly' | 'monthly';
+
+export interface AnalyticsQuery {
+  metric: AnalyticsMetric;
+  namespace?: string;
+  tenant?: string;
+  provider?: string;
+  action_type?: string;
+  outcome?: string;
+  interval?: AnalyticsInterval;
+  from?: string;
+  to?: string;
+  group_by?: string;
+  top_n?: number;
+}
+
+export interface AnalyticsBucket {
+  timestamp: string;
+  count: number;
+  group?: string;
+  avg_duration_ms?: number;
+  p50_duration_ms?: number;
+  p95_duration_ms?: number;
+  p99_duration_ms?: number;
+  error_rate?: number;
+}
+
+export interface AnalyticsTopEntry {
+  label: string;
+  count: number;
+  percentage: number;
+}
+
+export interface AnalyticsResponse {
+  metric: AnalyticsMetric;
+  interval: AnalyticsInterval;
+  from: string;
+  to: string;
+  buckets: AnalyticsBucket[];
+  top_entries: AnalyticsTopEntry[];
+  total_count: number;
+}

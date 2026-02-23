@@ -1711,9 +1711,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_snapshot = ConfigSnapshot::from(&config);
 
+    // Build the analytics store if audit is enabled.
+    let analytics_store = if let Some(ref audit) = audit_store {
+        acteon_server::analytics_factory::create_analytics_store(audit).await
+    } else {
+        None
+    };
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,
+        analytics: analytics_store,
         auth: auth_provider,
         rate_limiter,
         embedding: embedding_bridge

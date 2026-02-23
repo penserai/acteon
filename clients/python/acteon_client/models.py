@@ -1870,6 +1870,166 @@ class ListProviderHealthResponse:
 
 
 # =============================================================================
+# Analytics Types
+# =============================================================================
+
+
+@dataclass
+class AnalyticsQuery:
+    """Query parameters for the analytics endpoint.
+
+    Attributes:
+        metric: The metric to query (required). One of "volume",
+            "outcome_breakdown", "top_action_types", "latency", "error_rate".
+        namespace: Optional namespace filter.
+        tenant: Optional tenant filter.
+        provider: Optional provider filter.
+        action_type: Optional action type filter.
+        outcome: Optional outcome filter.
+        interval: Time bucket interval (default "daily"). One of "hourly",
+            "daily", "weekly", "monthly".
+        from_time: Optional start of time range (RFC 3339 datetime string).
+        to_time: Optional end of time range (RFC 3339 datetime string).
+        group_by: Optional grouping dimension (e.g., "provider", "action_type",
+            "outcome").
+        top_n: Optional limit for top-N queries.
+    """
+    metric: str
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    provider: Optional[str] = None
+    action_type: Optional[str] = None
+    outcome: Optional[str] = None
+    interval: Optional[str] = None
+    from_time: Optional[str] = None
+    to_time: Optional[str] = None
+    group_by: Optional[str] = None
+    top_n: Optional[int] = None
+
+    def to_params(self) -> dict[str, str]:
+        """Convert to query parameter dictionary."""
+        params: dict[str, str] = {"metric": self.metric}
+        if self.namespace is not None:
+            params["namespace"] = self.namespace
+        if self.tenant is not None:
+            params["tenant"] = self.tenant
+        if self.provider is not None:
+            params["provider"] = self.provider
+        if self.action_type is not None:
+            params["action_type"] = self.action_type
+        if self.outcome is not None:
+            params["outcome"] = self.outcome
+        if self.interval is not None:
+            params["interval"] = self.interval
+        if self.from_time is not None:
+            params["from"] = self.from_time
+        if self.to_time is not None:
+            params["to"] = self.to_time
+        if self.group_by is not None:
+            params["group_by"] = self.group_by
+        if self.top_n is not None:
+            params["top_n"] = str(self.top_n)
+        return params
+
+
+@dataclass
+class AnalyticsBucket:
+    """A single time bucket in an analytics response.
+
+    Attributes:
+        timestamp: ISO 8601 timestamp for the bucket start.
+        count: Number of actions in this bucket.
+        group: Optional group label when group_by is used.
+        avg_duration_ms: Average action duration in milliseconds.
+        p50_duration_ms: 50th percentile duration in milliseconds.
+        p95_duration_ms: 95th percentile duration in milliseconds.
+        p99_duration_ms: 99th percentile duration in milliseconds.
+        error_rate: Fraction of actions that failed (0.0 to 1.0).
+    """
+    timestamp: str
+    count: int
+    group: Optional[str] = None
+    avg_duration_ms: Optional[float] = None
+    p50_duration_ms: Optional[float] = None
+    p95_duration_ms: Optional[float] = None
+    p99_duration_ms: Optional[float] = None
+    error_rate: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AnalyticsBucket":
+        return cls(
+            timestamp=data["timestamp"],
+            count=data["count"],
+            group=data.get("group"),
+            avg_duration_ms=data.get("avg_duration_ms"),
+            p50_duration_ms=data.get("p50_duration_ms"),
+            p95_duration_ms=data.get("p95_duration_ms"),
+            p99_duration_ms=data.get("p99_duration_ms"),
+            error_rate=data.get("error_rate"),
+        )
+
+
+@dataclass
+class AnalyticsTopEntry:
+    """A single entry in a top-N analytics result.
+
+    Attributes:
+        label: The label for this entry (e.g., action type name).
+        count: Number of occurrences.
+        percentage: Percentage of total.
+    """
+    label: str
+    count: int
+    percentage: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AnalyticsTopEntry":
+        return cls(
+            label=data["label"],
+            count=data["count"],
+            percentage=data["percentage"],
+        )
+
+
+@dataclass
+class AnalyticsResponse:
+    """Response from the analytics endpoint.
+
+    Attributes:
+        metric: The metric that was queried.
+        interval: The time interval used for bucketing.
+        from_time: Start of the queried time range.
+        to_time: End of the queried time range.
+        buckets: List of time-series data buckets.
+        top_entries: List of top-N entries (for top_action_types metric).
+        total_count: Total count across all buckets.
+    """
+    metric: str
+    interval: str
+    from_time: str
+    to_time: str
+    total_count: int
+    buckets: list["AnalyticsBucket"] = field(default_factory=list)
+    top_entries: list["AnalyticsTopEntry"] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AnalyticsResponse":
+        return cls(
+            metric=data["metric"],
+            interval=data["interval"],
+            from_time=data["from"],
+            to_time=data["to"],
+            total_count=data["total_count"],
+            buckets=[
+                AnalyticsBucket.from_dict(b) for b in data.get("buckets", [])
+            ],
+            top_entries=[
+                AnalyticsTopEntry.from_dict(e) for e in data.get("top_entries", [])
+            ],
+        )
+
+
+# =============================================================================
 # Provider Payload Helpers
 # =============================================================================
 
