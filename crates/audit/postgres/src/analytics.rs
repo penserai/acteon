@@ -70,7 +70,7 @@ fn build_analytics_where(
 
 /// Lightweight analytics store backed by a Postgres connection pool.
 ///
-/// Created via [`PostgresAuditStore::analytics()`] — shares the same pool.
+/// Created via the `analytics()` method on `PostgresAuditStore` — shares the same pool.
 pub struct PostgresAnalyticsStore {
     pool: PgPool,
     table: String,

@@ -79,7 +79,7 @@ fn apply_binds(mut q: clickhouse::query::Query, binds: &[BindValue]) -> clickhou
 
 /// Lightweight analytics store backed by a `ClickHouse` client.
 ///
-/// Created via [`ClickHouseAuditStore::analytics()`] — shares the same client.
+/// Created via the `analytics()` method on `ClickHouseAuditStore` — shares the same client.
 pub struct ClickHouseAnalyticsStore {
     client: clickhouse::Client,
     table: String,

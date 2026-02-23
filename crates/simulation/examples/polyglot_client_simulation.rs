@@ -59,6 +59,7 @@ impl TestServer {
         let app_state = acteon_server::api::AppState {
             gateway,
             audit: Some(audit),
+            analytics: None,
             auth: None,
             rate_limiter: None,
             embedding: None,
