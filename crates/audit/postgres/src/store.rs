@@ -72,6 +72,16 @@ impl PostgresAuditStore {
         })
     }
 
+    /// Access the connection pool.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Access the table name.
+    pub fn table_name(&self) -> &str {
+        &self.table
+    }
+
     /// Create from an existing pool (useful for testing).
     pub async fn from_pool(pool: PgPool, prefix: &str) -> Result<Self, AuditError> {
         migrations::run_migrations(&pool, prefix)

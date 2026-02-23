@@ -23,6 +23,7 @@ import { RetentionPolicies } from './pages/RetentionPolicies'
 import { RulePlayground } from './pages/RulePlayground'
 import { WasmPlugins } from './pages/WasmPlugins'
 import { Templates } from './pages/Templates'
+import { Analytics } from './pages/Analytics'
 import { ComplianceStatus } from './pages/ComplianceStatus'
 import { Settings } from './pages/Settings'
 
@@ -53,6 +54,7 @@ function App() {
           <Route path="retention" element={<RetentionPolicies />} />
           <Route path="wasm-plugins" element={<WasmPlugins />} />
           <Route path="templates" element={<Templates />} />
+          <Route path="analytics" element={<Analytics />} />
           <Route path="compliance" element={<ComplianceStatus />} />
           <Route path="settings/*" element={<Settings />} />
         </Route>

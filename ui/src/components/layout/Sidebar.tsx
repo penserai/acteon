@@ -6,7 +6,7 @@ import {
   LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
   PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart, Database, HeartPulse, Puzzle,
-  ShieldAlert, FileText,
+  ShieldAlert, FileText, BarChart3,
 } from 'lucide-react'
 import logoSvg from '../../assets/logo.svg'
 import styles from './Sidebar.module.css'
@@ -23,6 +23,7 @@ const mainItems = [
   { to: '/approvals', icon: ShieldCheck, label: 'Approvals', badge: true },
   { to: '/circuit-breakers', icon: Zap, label: 'Circuit Breakers' },
   { to: '/provider-health', icon: HeartPulse, label: 'Provider Health' },
+  { to: '/analytics', icon: BarChart3, label: 'Analytics' },
   { to: '/dlq', icon: AlertTriangle, label: 'Dead-Letter Queue' },
   { to: '/stream', icon: Rss, label: 'Stream' },
   { to: '/embeddings', icon: Brain, label: 'Embeddings' },

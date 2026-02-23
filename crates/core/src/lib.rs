@@ -1,4 +1,5 @@
 pub mod action;
+pub mod analytics;
 pub mod attachment;
 pub mod caller;
 pub mod chain;
@@ -22,6 +23,10 @@ pub mod template;
 pub mod types;
 
 pub use action::{Action, ActionMetadata};
+pub use analytics::{
+    AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
+    AnalyticsTopEntry,
+};
 pub use attachment::{Attachment, ResolvedAttachment};
 pub use caller::Caller;
 pub use chain::{

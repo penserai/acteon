@@ -170,6 +170,42 @@ pub struct ListCircuitBreakersParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueryAnalyticsParams {
+    /// Metric to compute: `volume`, `outcome_breakdown`, `top_action_types`, `latency`, `error_rate`.
+    pub metric: String,
+    /// Filter by namespace.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Filter by tenant.
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Filter by provider.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Filter by action type.
+    #[serde(default)]
+    pub action_type: Option<String>,
+    /// Filter by outcome.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// Time interval: "hourly", "daily", "weekly", "monthly" (default "daily").
+    #[serde(default)]
+    pub interval: Option<String>,
+    /// Start of time range (RFC 3339).
+    #[serde(default)]
+    pub from: Option<String>,
+    /// End of time range (RFC 3339).
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Dimension to group by (e.g. `provider`, `action_type`, `outcome`).
+    #[serde(default)]
+    pub group_by: Option<String>,
+    /// Number of top entries for `top_action_types` (default 10).
+    #[serde(default)]
+    pub top_n: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ManageCircuitBreakerParams {
     /// Provider name.
     pub provider: String,
@@ -515,6 +551,65 @@ impl ActeonMcpServer {
         match test_rules::run_test_suite(&self.ops, &fixture_file, p.filter.as_deref()).await {
             Ok(summary) => {
                 let json = serde_json::to_string_pretty(&summary).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// Query aggregated action analytics (volume, latency, error rate, etc.).
+    #[tool(
+        description = "Query aggregated action analytics. Metrics: volume, outcome_breakdown, top_action_types, latency, error_rate."
+    )]
+    async fn query_analytics(
+        &self,
+        Parameters(p): Parameters<QueryAnalyticsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let metric = match p.metric.as_str() {
+            "volume" => acteon_core::AnalyticsMetric::Volume,
+            "outcome_breakdown" => acteon_core::AnalyticsMetric::OutcomeBreakdown,
+            "top_action_types" => acteon_core::AnalyticsMetric::TopActionTypes,
+            "latency" => acteon_core::AnalyticsMetric::Latency,
+            "error_rate" => acteon_core::AnalyticsMetric::ErrorRate,
+            other => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Unknown metric: {other}. Valid: volume, outcome_breakdown, top_action_types, latency, error_rate"
+                ))]));
+            }
+        };
+
+        let interval = match p.interval.as_deref() {
+            Some("hourly") => acteon_core::AnalyticsInterval::Hourly,
+            Some("weekly") => acteon_core::AnalyticsInterval::Weekly,
+            Some("monthly") => acteon_core::AnalyticsInterval::Monthly,
+            _ => acteon_core::AnalyticsInterval::Daily,
+        };
+
+        let from = p
+            .from
+            .as_deref()
+            .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
+        let to =
+            p.to.as_deref()
+                .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok());
+
+        let query = acteon_core::AnalyticsQuery {
+            metric,
+            namespace: p.namespace,
+            tenant: p.tenant,
+            provider: p.provider,
+            action_type: p.action_type,
+            outcome: p.outcome,
+            interval,
+            from,
+            to,
+            group_by: p.group_by,
+            top_n: p.top_n,
+        };
+
+        match self.ops.query_analytics(query).await {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),

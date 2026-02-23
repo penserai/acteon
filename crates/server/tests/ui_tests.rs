@@ -36,6 +36,7 @@ async fn ui_serves_index_html() {
     let state = AppState {
         gateway: Arc::new(RwLock::new(gw)),
         audit: None,
+        analytics: None,
         auth: None,
         rate_limiter: None,
         embedding: None,

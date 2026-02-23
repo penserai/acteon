@@ -252,6 +252,16 @@ impl ClickHouseAuditStore {
         })
     }
 
+    /// Access the `ClickHouse` client.
+    pub fn client(&self) -> &clickhouse::Client {
+        &self.client
+    }
+
+    /// Access the table name.
+    pub fn table_name(&self) -> &str {
+        &self.table
+    }
+
     /// Create from an existing `clickhouse::Client` (useful for testing).
     pub async fn from_client(client: clickhouse::Client, prefix: &str) -> Result<Self, AuditError> {
         migrations::run_migrations(&client, prefix)

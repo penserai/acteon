@@ -2,8 +2,9 @@
 
 use acteon_audit::{AuditPage, AuditQuery, AuditRecord};
 use acteon_core::{
-    Action, ActionError, ActionMetadata, ActionOutcome, OverageBehavior, ProviderResponse,
-    QuotaUsage, QuotaWindow, ResponseStatus, TemplateProfileField,
+    Action, ActionError, ActionMetadata, ActionOutcome, AnalyticsBucket, AnalyticsInterval,
+    AnalyticsMetric, AnalyticsQuery, AnalyticsResponse, AnalyticsTopEntry, OverageBehavior,
+    ProviderResponse, QuotaUsage, QuotaWindow, ResponseStatus, TemplateProfileField,
 };
 
 use super::approvals::{
@@ -64,7 +65,8 @@ use acteon_core::{
         (name = "Retention", description = "Per-tenant data retention policy management"),
         (name = "Provider Health", description = "Per-provider health and performance monitoring"),
         (name = "Plugins", description = "WASM plugin management"),
-        (name = "Templates", description = "Payload template and profile management")
+        (name = "Templates", description = "Payload template and profile management"),
+        (name = "Analytics", description = "Aggregated action analytics and metrics")
     ),
     paths(
         super::health::health,
@@ -131,6 +133,7 @@ use acteon_core::{
         super::templates::update_profile,
         super::templates::delete_profile,
         super::templates::render_preview,
+        super::analytics::query_analytics,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -165,6 +168,8 @@ use acteon_core::{
         super::templates::ProfileResponse, super::templates::ListProfilesResponse,
         super::templates::RenderPreviewRequest, super::templates::RenderPreviewResponse,
         TemplateProfileField,
+        AnalyticsMetric, AnalyticsInterval, AnalyticsQuery, AnalyticsResponse,
+        AnalyticsBucket, AnalyticsTopEntry,
     ))
 )]
 pub struct ApiDoc;

@@ -2065,6 +2065,70 @@ func (c *Client) DlqDrain(ctx context.Context) (*DlqDrainResponse, error) {
 }
 
 // =============================================================================
+// Analytics
+// =============================================================================
+
+// QueryAnalytics queries analytics data from the Acteon server.
+func (c *Client) QueryAnalytics(ctx context.Context, query *AnalyticsQuery) (*AnalyticsResponse, error) {
+	path := "/v1/analytics"
+	if query != nil {
+		params := url.Values{}
+		if query.Metric != "" {
+			params.Set("metric", query.Metric)
+		}
+		if query.Namespace != "" {
+			params.Set("namespace", query.Namespace)
+		}
+		if query.Tenant != "" {
+			params.Set("tenant", query.Tenant)
+		}
+		if query.Provider != "" {
+			params.Set("provider", query.Provider)
+		}
+		if query.ActionType != "" {
+			params.Set("action_type", query.ActionType)
+		}
+		if query.Outcome != "" {
+			params.Set("outcome", query.Outcome)
+		}
+		if query.Interval != "" {
+			params.Set("interval", query.Interval)
+		}
+		if query.From != "" {
+			params.Set("from", query.From)
+		}
+		if query.To != "" {
+			params.Set("to", query.To)
+		}
+		if query.GroupBy != "" {
+			params.Set("group_by", query.GroupBy)
+		}
+		if query.TopN > 0 {
+			params.Set("top_n", strconv.Itoa(query.TopN))
+		}
+		if len(params) > 0 {
+			path += "?" + params.Encode()
+		}
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to query analytics"}
+	}
+
+	var result AnalyticsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// =============================================================================
 // Subscribe (SSE)
 // =============================================================================
 

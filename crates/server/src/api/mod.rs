@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
@@ -38,6 +39,7 @@ use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use acteon_audit::AnalyticsStore;
 use acteon_audit::store::AuditStore;
 use acteon_embedding::EmbeddingMetrics;
 use acteon_gateway::Gateway;
@@ -60,6 +62,8 @@ pub struct AppState {
     pub gateway: Arc<RwLock<Gateway>>,
     /// Optional audit store (None when audit is disabled).
     pub audit: Option<Arc<dyn AuditStore>>,
+    /// Optional analytics store (None when audit is disabled).
+    pub analytics: Option<Arc<dyn AnalyticsStore>>,
     /// Optional auth provider (None when auth is disabled).
     pub auth: Option<Arc<AuthProvider>>,
     /// Optional rate limiter (None when rate limiting is disabled).
@@ -111,6 +115,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/rules/reload", post(rules::reload_rules))
         .route("/v1/rules/{name}/enabled", put(rules::set_rule_enabled))
         .route("/v1/rules/evaluate", post(rules::evaluate_rules))
+        // Analytics
+        .route("/v1/analytics", get(analytics::query_analytics))
         // Audit
         .route("/v1/audit", get(audit::query_audit))
         .route("/v1/audit/replay", post(replay::replay_audit))

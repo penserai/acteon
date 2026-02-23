@@ -2382,6 +2382,84 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Analytics
+    // =========================================================================
+
+    /**
+     * Queries analytics data from the Acteon server.
+     *
+     * @param query analytics query parameters including the required metric
+     * @return analytics response with time-series buckets and/or top entries
+     */
+    public AnalyticsResponse queryAnalytics(AnalyticsQuery query) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/analytics");
+            List<String> params = new ArrayList<>();
+
+            if (query != null) {
+                if (query.getMetric() != null) {
+                    params.add("metric=" + URLEncoder.encode(query.getMetric(), StandardCharsets.UTF_8));
+                }
+                if (query.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (query.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (query.getProvider() != null) {
+                    params.add("provider=" + URLEncoder.encode(query.getProvider(), StandardCharsets.UTF_8));
+                }
+                if (query.getActionType() != null) {
+                    params.add("action_type=" + URLEncoder.encode(query.getActionType(), StandardCharsets.UTF_8));
+                }
+                if (query.getOutcome() != null) {
+                    params.add("outcome=" + URLEncoder.encode(query.getOutcome(), StandardCharsets.UTF_8));
+                }
+                if (query.getInterval() != null) {
+                    params.add("interval=" + URLEncoder.encode(query.getInterval(), StandardCharsets.UTF_8));
+                }
+                if (query.getFrom() != null) {
+                    params.add("from=" + URLEncoder.encode(query.getFrom(), StandardCharsets.UTF_8));
+                }
+                if (query.getTo() != null) {
+                    params.add("to=" + URLEncoder.encode(query.getTo(), StandardCharsets.UTF_8));
+                }
+                if (query.getGroupBy() != null) {
+                    params.add("group_by=" + URLEncoder.encode(query.getGroupBy(), StandardCharsets.UTF_8));
+                }
+                if (query.getTopN() != null) {
+                    params.add("top_n=" + query.getTopN());
+                }
+            }
+
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString())
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                Map<String, Object> data = objectMapper.readValue(
+                    response.body(),
+                    new TypeReference<Map<String, Object>>() {}
+                );
+                return AnalyticsResponse.fromMap(data);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to query analytics");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Stream (SSE -- General)
     // =========================================================================
 

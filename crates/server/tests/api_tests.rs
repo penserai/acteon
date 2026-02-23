@@ -80,6 +80,7 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
     AppState {
         gateway: Arc::new(RwLock::new(gw)),
         audit,
+        analytics: None,
         auth: None,
         rate_limiter: None,
         embedding: None,
@@ -808,6 +809,7 @@ fn build_approval_state_with_providers(
     AppState {
         gateway: Arc::new(RwLock::new(gw)),
         audit: None,
+        analytics: None,
         auth: None,
         rate_limiter: None,
         embedding: None,

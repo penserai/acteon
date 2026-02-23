@@ -127,6 +127,10 @@ import {
   RenderPreviewRequest,
   RenderPreviewResponse,
   parseRenderPreviewResponse,
+  AnalyticsQuery,
+  AnalyticsResponse,
+  analyticsQueryToParams,
+  parseAnalyticsResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 import { readFileSync } from "node:fs";
@@ -1543,6 +1547,28 @@ export class ActeonClient {
       throw new HttpError(404, "Dead-letter queue is not enabled");
     } else {
       throw new HttpError(response.status, "Failed to drain DLQ");
+    }
+  }
+
+  // =========================================================================
+  // Analytics
+  // =========================================================================
+
+  /**
+   * Query analytics data.
+   *
+   * @param query - Analytics query parameters including the required metric.
+   * @returns Analytics response with time-series buckets and/or top entries.
+   */
+  async queryAnalytics(query: AnalyticsQuery): Promise<AnalyticsResponse> {
+    const params = analyticsQueryToParams(query);
+    const response = await this.request("GET", "/v1/analytics", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseAnalyticsResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to query analytics");
     }
   }
 

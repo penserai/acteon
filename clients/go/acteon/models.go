@@ -1578,6 +1578,79 @@ func NewEc2DetachVolumePayloadWithOptions(volumeID, instanceID, device string, f
 	return p
 }
 
+// =============================================================================
+// Analytics Types
+// =============================================================================
+
+// AnalyticsQuery contains query parameters for the analytics endpoint.
+type AnalyticsQuery struct {
+	// Metric is the metric to query (required). One of "volume",
+	// "outcome_breakdown", "top_action_types", "latency", "error_rate".
+	Metric string
+
+	// Namespace is an optional namespace filter.
+	Namespace string
+
+	// Tenant is an optional tenant filter.
+	Tenant string
+
+	// Provider is an optional provider filter.
+	Provider string
+
+	// ActionType is an optional action type filter.
+	ActionType string
+
+	// Outcome is an optional outcome filter.
+	Outcome string
+
+	// Interval is the time bucket interval (default "daily"). One of "hourly",
+	// "daily", "weekly", "monthly".
+	Interval string
+
+	// From is an optional start of time range (RFC 3339 datetime string).
+	From string
+
+	// To is an optional end of time range (RFC 3339 datetime string).
+	To string
+
+	// GroupBy is an optional grouping dimension (e.g., "provider", "action_type",
+	// "outcome").
+	GroupBy string
+
+	// TopN is an optional limit for top-N queries.
+	TopN int
+}
+
+// AnalyticsBucket is a single time bucket in an analytics response.
+type AnalyticsBucket struct {
+	Timestamp     string   `json:"timestamp"`
+	Count         int      `json:"count"`
+	Group         *string  `json:"group,omitempty"`
+	AvgDurationMs *float64 `json:"avg_duration_ms,omitempty"`
+	P50DurationMs *float64 `json:"p50_duration_ms,omitempty"`
+	P95DurationMs *float64 `json:"p95_duration_ms,omitempty"`
+	P99DurationMs *float64 `json:"p99_duration_ms,omitempty"`
+	ErrorRate     *float64 `json:"error_rate,omitempty"`
+}
+
+// AnalyticsTopEntry is a single entry in a top-N analytics result.
+type AnalyticsTopEntry struct {
+	Label      string  `json:"label"`
+	Count      int     `json:"count"`
+	Percentage float64 `json:"percentage"`
+}
+
+// AnalyticsResponse is the response from the analytics endpoint.
+type AnalyticsResponse struct {
+	Metric     string              `json:"metric"`
+	Interval   string              `json:"interval"`
+	From       string              `json:"from"`
+	To         string              `json:"to"`
+	Buckets    []AnalyticsBucket   `json:"buckets"`
+	TopEntries []AnalyticsTopEntry `json:"top_entries"`
+	TotalCount int                 `json:"total_count"`
+}
+
 // NewEc2DescribeInstancesPayload creates a payload for the AWS EC2 describe-instances action.
 func NewEc2DescribeInstancesPayload(instanceIDs []string) map[string]any {
 	p := map[string]any{}

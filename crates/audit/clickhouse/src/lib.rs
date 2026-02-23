@@ -1,3 +1,4 @@
+pub mod analytics;
 pub mod config;
 pub mod migrations;
 pub mod store;

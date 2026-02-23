@@ -78,6 +78,7 @@ from .models import (
     DlqDrainResponse,
     SseEvent,
     _parse_sse_stream,
+    AnalyticsResponse,
 )
 
 
@@ -1978,6 +1979,79 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to drain DLQ")
 
     # =========================================================================
+    # Analytics
+    # =========================================================================
+
+    def query_analytics(
+        self,
+        metric: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        provider: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        interval: Optional[str] = None,
+        from_time: Optional[str] = None,
+        to_time: Optional[str] = None,
+        group_by: Optional[str] = None,
+        top_n: Optional[int] = None,
+    ) -> "AnalyticsResponse":
+        """Query analytics data.
+
+        Args:
+            metric: The metric to query (required). One of "volume",
+                "outcome_breakdown", "top_action_types", "latency", "error_rate".
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            provider: Optional provider filter.
+            action_type: Optional action type filter.
+            outcome: Optional outcome filter.
+            interval: Time bucket interval (default "daily"). One of "hourly",
+                "daily", "weekly", "monthly".
+            from_time: Optional start of time range (RFC 3339 datetime string).
+            to_time: Optional end of time range (RFC 3339 datetime string).
+            group_by: Optional grouping dimension (e.g., "provider", "action_type",
+                "outcome").
+            top_n: Optional limit for top-N queries.
+
+        Returns:
+            Analytics response with time-series buckets and/or top entries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {"metric": metric}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if interval is not None:
+            params["interval"] = interval
+        if from_time is not None:
+            params["from"] = from_time
+        if to_time is not None:
+            params["to"] = to_time
+        if group_by is not None:
+            params["group_by"] = group_by
+        if top_n is not None:
+            params["top_n"] = str(top_n)
+
+        response = self._request("GET", "/v1/analytics", params=params)
+
+        if response.status_code == 200:
+            return AnalyticsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to query analytics")
+
+    # =========================================================================
     # Subscribe (SSE)
     # =========================================================================
 
@@ -3142,6 +3216,79 @@ class AsyncActeonClient:
             raise HttpError(404, "Dead-letter queue is not enabled")
         else:
             raise HttpError(response.status_code, "Failed to drain DLQ")
+
+    # =========================================================================
+    # Analytics
+    # =========================================================================
+
+    async def query_analytics(
+        self,
+        metric: str,
+        *,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        provider: Optional[str] = None,
+        action_type: Optional[str] = None,
+        outcome: Optional[str] = None,
+        interval: Optional[str] = None,
+        from_time: Optional[str] = None,
+        to_time: Optional[str] = None,
+        group_by: Optional[str] = None,
+        top_n: Optional[int] = None,
+    ) -> "AnalyticsResponse":
+        """Query analytics data.
+
+        Args:
+            metric: The metric to query (required). One of "volume",
+                "outcome_breakdown", "top_action_types", "latency", "error_rate".
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            provider: Optional provider filter.
+            action_type: Optional action type filter.
+            outcome: Optional outcome filter.
+            interval: Time bucket interval (default "daily"). One of "hourly",
+                "daily", "weekly", "monthly".
+            from_time: Optional start of time range (RFC 3339 datetime string).
+            to_time: Optional end of time range (RFC 3339 datetime string).
+            group_by: Optional grouping dimension (e.g., "provider", "action_type",
+                "outcome").
+            top_n: Optional limit for top-N queries.
+
+        Returns:
+            Analytics response with time-series buckets and/or top entries.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {"metric": metric}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
+        if action_type is not None:
+            params["action_type"] = action_type
+        if outcome is not None:
+            params["outcome"] = outcome
+        if interval is not None:
+            params["interval"] = interval
+        if from_time is not None:
+            params["from"] = from_time
+        if to_time is not None:
+            params["to"] = to_time
+        if group_by is not None:
+            params["group_by"] = group_by
+        if top_n is not None:
+            params["top_n"] = str(top_n)
+
+        response = await self._request("GET", "/v1/analytics", params=params)
+
+        if response.status_code == 200:
+            return AnalyticsResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to query analytics")
 
     # =========================================================================
     # Subscribe (SSE)
