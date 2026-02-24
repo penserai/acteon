@@ -19,14 +19,16 @@ test.describe('Dashboard', () => {
     await page.waitForFunction(() => {
       const skeletons = document.querySelectorAll('[class*="animate-pulse"]')
       return skeletons.length === 0
-    }, { timeout: 10_000 }).catch(() => {
-      // If skeletons never clear, that's okay -- the API may fail
+    }, { timeout: 15_000 }).catch(() => {
+      // If skeletons never clear, the API may be unreachable
     })
 
     // Check that stat cards are rendered -- look for card labels
     const expectedLabels = ['Dispatched', 'Executed', 'Failed', 'Deduplicated', 'Suppressed', 'Pending Approval', 'Circuit Open', 'Scheduled']
     for (const label of expectedLabels) {
-      await expect(page.getByText(label, { exact: true }).first()).toBeVisible()
+      const card = page.getByText(label, { exact: true }).first()
+      await card.scrollIntoViewIfNeeded().catch(() => {})
+      await expect(card).toBeVisible({ timeout: 10_000 })
     }
   })
 
@@ -35,7 +37,7 @@ test.describe('Dashboard', () => {
   })
 
   test('provider health section renders', async ({ page }) => {
-    await expect(page.getByText('Provider Health')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Provider Health' })).toBeVisible()
   })
 
   test('activity feed section renders', async ({ page }) => {

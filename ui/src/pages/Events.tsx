@@ -7,10 +7,10 @@ import { Badge } from '../components/ui/Badge'
 import { Input } from '../components/ui/Input'
 import { Drawer } from '../components/ui/Drawer'
 import { Button } from '../components/ui/Button'
-import { Select } from '../components/ui/Select'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { EventState } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './Events.module.css'
 
 const col = createColumnHelper<EventState>()
@@ -71,22 +71,17 @@ export function Events() {
         {selected && (
           <div className={styles.drawerContent}>
             <div className={styles.detailsGrid}>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Fingerprint</span><span className={styles.detailValue}>{selected.fingerprint}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>State Machine</span><span>{selected.state_machine ?? '-'}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Current State</span><Badge>{selected.state}</Badge></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Updated</span><span>{selected.updated_at}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Transitioned By</span><span>{selected.transitioned_by}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Fingerprint</span><span className={shared.detailValue}>{selected.fingerprint}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>State Machine</span><span>{selected.state_machine ?? '-'}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Current State</span><Badge>{selected.state}</Badge></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Updated</span><span>{selected.updated_at}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Transitioned By</span><span>{selected.transitioned_by}</span></div>
             </div>
 
             <div className={styles.transitionSection}>
               <h3 className={styles.sectionTitle}>Manual Transition</h3>
               <div className={styles.transitionControls}>
-                <Select
-                  options={[{ value: '', label: 'Select target state' }]}
-                  value={targetState}
-                  onChange={(e) => setTargetState(e.target.value)}
-                />
-                <Input placeholder="Target state" value={targetState} onChange={(e) => setTargetState(e.target.value)} />
+                <Input placeholder="Target state (e.g. acknowledged, resolved)" value={targetState} onChange={(e) => setTargetState(e.target.value)} />
                 <Button size="sm" onClick={handleTransition} loading={transition.isPending} disabled={!targetState}>
                   Transition
                 </Button>

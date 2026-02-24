@@ -5,7 +5,10 @@ import type { EventState } from '../../types'
 export function useEvents(params: { namespace?: string; tenant?: string }) {
   return useQuery({
     queryKey: ['events', params],
-    queryFn: () => apiGet<EventState[]>('/v1/events', params),
+    queryFn: async () => {
+      const res = await apiGet<{ count: number; events: EventState[] }>('/v1/events', params)
+      return res.events
+    },
     enabled: !!params.namespace && !!params.tenant,
   })
 }

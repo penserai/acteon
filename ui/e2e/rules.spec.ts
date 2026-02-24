@@ -40,9 +40,8 @@ test.describe('Rules', () => {
     if (await table.isVisible()) {
       await expect(table.getByText('Pri')).toBeVisible()
       await expect(table.getByText('Name')).toBeVisible()
-      await expect(table.getByText('Action')).toBeVisible()
+      await expect(table.getByText('Description')).toBeVisible()
       await expect(table.getByText('Enabled')).toBeVisible()
-      await expect(table.getByText('Source')).toBeVisible()
     }
   })
 

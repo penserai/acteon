@@ -5,7 +5,10 @@ import type { ApprovalStatus } from '../../types'
 export function useApprovals(params: { namespace?: string; tenant?: string }) {
   return useQuery({
     queryKey: ['approvals', params],
-    queryFn: () => apiGet<ApprovalStatus[]>('/v1/approvals', params),
+    queryFn: async () => {
+      const res = await apiGet<{ approvals: ApprovalStatus[]; count: number }>('/v1/approvals', params)
+      return res.approvals
+    },
     refetchInterval: 10000,
   })
 }

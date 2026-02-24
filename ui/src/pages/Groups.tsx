@@ -13,6 +13,7 @@ import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { EventGroup } from '../types'
 import { Play, Trash2 } from 'lucide-react'
+import shared from '../styles/shared.module.css'
 import styles from './Groups.module.css'
 
 const col = createColumnHelper<EventGroup>()
@@ -108,10 +109,10 @@ export function Groups() {
         {selected && (
           <div className={styles.drawerContent}>
             <div className={styles.detailsGrid}>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>State</span><Badge>{selected.state}</Badge></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Events</span><span>{selected.events.length}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Notify At</span><span>{selected.notify_at}</span></div>
-              <div className={styles.detailRow}><span className={styles.detailLabel}>Created</span><span>{selected.created_at}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>State</span><Badge>{selected.state}</Badge></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Events</span><span>{selected.events.length}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Notify At</span><span>{selected.notify_at}</span></div>
+              <div className={styles.detailRow}><span className={shared.detailLabel}>Created</span><span>{selected.created_at}</span></div>
             </div>
             <div>
               <h3 className={styles.sectionTitle}>Labels</h3>

@@ -11,7 +11,9 @@ import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
+import { formatBytes } from '../lib/format'
 import type { Attachment, DispatchRequest, DispatchResponse } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './Dispatch.module.css'
 
 /**
@@ -245,7 +247,7 @@ export function Dispatch() {
 
       <div className={styles.container}>
         <div className={styles.formCard}>
-          <div className={styles.formGrid}>
+          <div className={shared.formGrid}>
             <SelectOrCustom
               label="Namespace *"
               value={ns}
@@ -277,8 +279,9 @@ export function Dispatch() {
           </div>
 
           <div>
-            <label className={styles.textareaLabel}>Payload (JSON) *</label>
+            <label className={shared.textareaLabel} htmlFor="dispatch-payload">Payload (JSON) *</label>
             <textarea
+              id="dispatch-payload"
               value={payload}
               onChange={(e) => setPayload(e.target.value)}
               className={styles.textarea}
@@ -289,7 +292,7 @@ export function Dispatch() {
           <Input label="Dedup Key" value={dedupKey} onChange={(e) => setDedupKey(e.target.value)} placeholder="Optional" />
 
           <div>
-            <label className={styles.textareaLabel}>Attachments</label>
+            <label className={shared.textareaLabel}>Attachments</label>
             <input
               ref={fileInputRef}
               type="file"
@@ -330,11 +333,7 @@ export function Dispatch() {
                     </div>
                     <span className={styles.attachmentName}>{a.file.name}</span>
                     <span className={styles.attachmentSize}>
-                      {a.file.size < 1024
-                        ? `${a.file.size} B`
-                        : a.file.size < 1024 * 1024
-                          ? `${(a.file.size / 1024).toFixed(1)} KB`
-                          : `${(a.file.size / (1024 * 1024)).toFixed(1)} MB`}
+                      {formatBytes(a.file.size)}
                     </span>
                     <button
                       type="button"

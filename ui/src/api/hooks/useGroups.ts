@@ -5,7 +5,10 @@ import type { EventGroup } from '../../types'
 export function useGroups(params: { namespace?: string; tenant?: string }) {
   return useQuery({
     queryKey: ['groups', params],
-    queryFn: () => apiGet<EventGroup[]>('/v1/groups', params),
+    queryFn: async () => {
+      const res = await apiGet<{ groups: EventGroup[]; total: number }>('/v1/groups', params)
+      return res.groups
+    },
     enabled: !!params.namespace && !!params.tenant,
   })
 }
