@@ -24,8 +24,8 @@ export function useEventDetail(fingerprint: string | undefined) {
 export function useTransitionEvent() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ fingerprint, targetState }: { fingerprint: string; targetState: string }) =>
-      apiPost(`/v1/events/${encodeURIComponent(fingerprint)}/transition`, { target_state: targetState }),
+    mutationFn: ({ fingerprint, namespace, tenant, to }: { fingerprint: string; namespace: string; tenant: string; to: string }) =>
+      apiPost(`/v1/events/${encodeURIComponent(fingerprint)}/transition`, { to, namespace, tenant }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['events'] }),
   })
 }

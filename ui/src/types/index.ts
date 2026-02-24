@@ -285,31 +285,20 @@ export interface DlqStats {
 
 // ---- Events ----
 export interface EventState {
-  state: string
   fingerprint: string
-  updated_at: string
-  transitioned_by: string
-  state_machine?: string
+  state: string
+  action_type?: string
+  updated_at?: string
 }
 
 // ---- Groups ----
-export interface GroupedEvent {
-  action_id: string
-  fingerprint?: string
-  status?: string
-  payload: Record<string, unknown>
-  received_at: string
-}
-
 export interface EventGroup {
   group_id: string
   group_key: string
-  labels: Record<string, string>
-  events: GroupedEvent[]
+  event_count: number
+  state: string
   notify_at: string
-  state: 'Pending' | 'Notified' | 'Resolved'
   created_at: string
-  updated_at: string
 }
 
 // ---- Stream ----
