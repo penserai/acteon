@@ -1,9 +1,9 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw } from 'lucide-react'
 import { useMetrics } from '../api/hooks/useHealth'
 import { useCircuitBreakers } from '../api/hooks/useCircuitBreakers'
-import { useStream } from '../api/hooks/useStream'
+import { useEventStore } from '../stores/events'
 import { PageHeader } from '../components/layout/PageHeader'
 import { StatCard } from '../components/charts/StatCard'
 import { TimeSeriesChart } from '../components/charts/TimeSeriesChart'
@@ -11,45 +11,22 @@ import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { StatCardSkeleton } from '../components/ui/Skeleton'
 import { shortTime } from '../lib/format'
-import type { StreamEvent, MetricsResponse } from '../types'
+import type { MetricsResponse } from '../types'
 import styles from './Dashboard.module.css'
 
 export function Dashboard() {
   const navigate = useNavigate()
   const { data: metrics, isLoading, refetch } = useMetrics()
   const { data: circuits } = useCircuitBreakers()
-  const [events, setEvents] = useState<StreamEvent[]>([])
-  const [history, setHistory] = useState<Record<string, unknown>[]>([])
-  const historyRef = useRef<Record<string, unknown>[]>([])
+  const allEvents = useEventStore((s) => s.events)
+  const events = allEvents.slice(0, 10)
+  const history = useEventStore((s) => s.metricsHistory)
 
-  // Accumulate time series in effect
+  // Push polled metrics into the event store for the time-series chart
+  const addMetricsPoint = useRef(useEventStore.getState().addMetricsPoint)
   useEffect(() => {
-    if (metrics) {
-      const now = new Date()
-      const point = {
-        time: shortTime(now),
-        executed: metrics.executed,
-        failed: metrics.failed,
-        suppressed: metrics.suppressed,
-        deduplicated: metrics.deduplicated,
-      }
-      const prev = historyRef.current
-      if (prev.length === 0 || prev[prev.length - 1].time !== point.time) {
-        const next = [...prev.slice(-59), point]
-        historyRef.current = next
-        setHistory(next)
-      }
-    }
+    if (metrics) addMetricsPoint.current(metrics)
   }, [metrics])
-
-  const handleEvent = useCallback((event: StreamEvent) => {
-    setEvents((prev) => [event, ...prev].slice(0, 20))
-  }, [])
-
-  useStream({
-    onEvent: handleEvent,
-    enabled: true,
-  })
 
   const statCards = metrics ? buildStatCards(metrics) : []
 

@@ -2,54 +2,12 @@ import { useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { cn } from '../../lib/cn'
 import { useUiStore } from '../../stores/ui'
+import { MAIN_NAV_ITEMS, SETTINGS_NAV_ITEMS, type NavItem } from '../../lib/navigation'
 import {
-  LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
-  Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
-  PanelLeftClose, PanelLeftOpen, X, ExternalLink, RefreshCw, PieChart, Database, HeartPulse, Puzzle,
-  ShieldAlert, FileText, BarChart3,
+  PanelLeftClose, PanelLeftOpen, X,
 } from 'lucide-react'
 import logoSvg from '../../assets/logo.svg'
 import styles from './Sidebar.module.css'
-
-const mainItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/dispatch', icon: Send, label: 'Dispatch' },
-  { to: '/rules', icon: BookOpen, label: 'Rules' },
-  { to: '/playground', icon: FlaskConical, label: 'Rule Playground' },
-  { to: '/audit', icon: ScrollText, label: 'Audit Trail' },
-  { to: '/events', icon: Radio, label: 'Events' },
-  { to: '/groups', icon: Layers, label: 'Groups' },
-  { to: '/chains', icon: Link2, label: 'Chains' },
-  { to: '/approvals', icon: ShieldCheck, label: 'Approvals', badge: true },
-  { to: '/circuit-breakers', icon: Zap, label: 'Circuit Breakers' },
-  { to: '/provider-health', icon: HeartPulse, label: 'Provider Health' },
-  { to: '/analytics', icon: BarChart3, label: 'Analytics' },
-  { to: '/dlq', icon: AlertTriangle, label: 'Dead-Letter Queue' },
-  { to: '/stream', icon: Rss, label: 'Stream' },
-  { to: '/embeddings', icon: Brain, label: 'Embeddings' },
-  { to: '/recurring', icon: RefreshCw, label: 'Recurring Actions' },
-  { to: '/quotas', icon: PieChart, label: 'Quotas' },
-  { to: '/retention', icon: Database, label: 'Retention' },
-  { to: '/wasm-plugins', icon: Puzzle, label: 'WASM Plugins' },
-  { to: '/templates', icon: FileText, label: 'Templates' },
-  { to: '/compliance', icon: ShieldAlert, label: 'Compliance' },
-  {
-    to: 'https://penserai.github.io/acteon',
-    icon: ExternalLink,
-    label: 'Documentation',
-    external: true,
-  },
-]
-
-const settingsItems = [
-  { to: '/settings/rate-limiting', icon: Gauge, label: 'Rate Limiting' },
-  { to: '/settings/auth', icon: Users, label: 'Auth & Users' },
-  { to: '/settings/providers', icon: Server, label: 'Providers' },
-  { to: '/settings/llm', icon: Cpu, label: 'LLM Guardrail' },
-  { to: '/settings/telemetry', icon: Eye, label: 'Telemetry' },
-  { to: '/settings/config', icon: Settings, label: 'Server Config' },
-  { to: '/settings/background', icon: Cpu, label: 'Background Tasks' },
-]
 
 export function Sidebar() {
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
@@ -89,11 +47,11 @@ export function Sidebar() {
       </div>
 
       <div className={styles.scrollContainer}>
-        <SidebarSection items={mainItems} collapsed={false} />
+        <SidebarSection items={MAIN_NAV_ITEMS} collapsed={false} />
         <div className={styles.settingsHeader}>
           <span className={styles.settingsLabel}>Settings</span>
         </div>
-        <SidebarSection items={settingsItems} collapsed={false} />
+        <SidebarSection items={SETTINGS_NAV_ITEMS} collapsed={false} />
       </div>
     </>
   )
@@ -123,14 +81,14 @@ export function Sidebar() {
         </div>
 
         <div className={styles.scrollContainer}>
-          <SidebarSection items={mainItems} collapsed={collapsed} />
+          <SidebarSection items={MAIN_NAV_ITEMS} collapsed={collapsed} />
           {!collapsed && (
             <div className={styles.settingsHeader}>
               <span className={styles.settingsLabel}>Settings</span>
             </div>
           )}
           {collapsed && <div className={styles.settingsDivider} />}
-          <SidebarSection items={settingsItems} collapsed={collapsed} />
+          <SidebarSection items={SETTINGS_NAV_ITEMS} collapsed={collapsed} />
         </div>
       </nav>
 
@@ -156,7 +114,7 @@ export function Sidebar() {
   )
 }
 
-function SidebarSection({ items, collapsed }: { items: (typeof mainItems[0] & { external?: boolean })[]; collapsed: boolean }) {
+function SidebarSection({ items, collapsed }: { items: NavItem[]; collapsed: boolean }) {
   return (
     <ul className={styles.sectionList}>
       {items.map((item) => (
@@ -179,7 +137,7 @@ function SidebarSection({ items, collapsed }: { items: (typeof mainItems[0] & { 
           ) : (
             <NavLink
               to={item.to}
-              end={item.to === '/'}
+              end={item.end}
               className={({ isActive }) =>
                 cn(
                   styles.navLink,

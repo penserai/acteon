@@ -1,7 +1,9 @@
+import { useEffect } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ToastProvider } from './components/ui/Toast'
 import { CommandPalette } from './components/command-palette/CommandPalette'
+import { connectEvents, disconnectEvents } from './stores/events'
 import { Dashboard } from './pages/Dashboard'
 import { Dispatch } from './pages/Dispatch'
 import { Rules } from './pages/Rules'
@@ -28,6 +30,11 @@ import { ComplianceStatus } from './pages/ComplianceStatus'
 import { Settings } from './pages/Settings'
 
 function App() {
+  useEffect(() => {
+    connectEvents()
+    return () => disconnectEvents()
+  }, [])
+
   return (
     <ToastProvider>
       <CommandPalette />
