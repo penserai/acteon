@@ -15,6 +15,7 @@ import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { AuditRecord, AuditQuery } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './Actions.module.css'
 
 const col = createColumnHelper<AuditRecord>()
@@ -78,7 +79,7 @@ export function Actions() {
     <div>
       <PageHeader title="Audit Trail" />
 
-      <div className={styles.filterBar}>
+      <div className={shared.filterBar}>
         <div className={styles.searchInput}>
           <Input
             placeholder="Search by ID..."
@@ -150,9 +151,9 @@ export function Actions() {
                   ...(selected.previous_hash ? { 'Previous Hash': selected.previous_hash } : {}),
                   ...(selected.sequence_number != null ? { 'Sequence Number': String(selected.sequence_number) } : {}),
                 }).map(([k, v]) => (
-                  <div key={k} className={styles.detailRow}>
-                    <span className={styles.detailLabel}>{k}</span>
-                    <span className={styles.detailValue}>{v}</span>
+                  <div key={k} className={shared.detailRow}>
+                    <span className={shared.detailLabel}>{k}</span>
+                    <span className={shared.detailValue}>{v}</span>
                   </div>
                 ))}
               </div>

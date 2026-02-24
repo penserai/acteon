@@ -24,14 +24,6 @@
   @apply flex justify-between;
 }
 
-.detailLabel {
-  @apply text-gray-500;
-}
-
-.detailValue {
-  @apply font-mono text-xs;
-}
-
 .transitionSection {
   @apply pt-4 border-t;
   border-color: var(--border-default);

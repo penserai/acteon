@@ -11,6 +11,7 @@ import { useToast } from '../components/ui/useToast'
 import { cn } from '../lib/cn'
 import type { CircuitBreakerStatus } from '../types'
 import { Zap, RotateCcw, Server } from 'lucide-react'
+import shared from '../styles/shared.module.css'
 import styles from './Providers.module.css'
 
 export function Providers() {
@@ -90,24 +91,24 @@ export function Providers() {
               <h3 className={styles.sectionTitle}>Circuit Breaker</h3>
               <div className={styles.detailsGrid}>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>State</span>
+                  <span className={shared.detailLabel}>State</span>
                   <Badge size="md">{selected.state}</Badge>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Failure Threshold</span>
+                  <span className={shared.detailLabel}>Failure Threshold</span>
                   <span>{selected.failure_threshold}</span>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Success Threshold</span>
+                  <span className={shared.detailLabel}>Success Threshold</span>
                   <span>{selected.success_threshold}</span>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Recovery Timeout</span>
+                  <span className={shared.detailLabel}>Recovery Timeout</span>
                   <span>{selected.recovery_timeout_seconds}s</span>
                 </div>
                 {selected.fallback_provider && (
                   <div className={styles.detailRow}>
-                    <span className={styles.detailLabel}>Fallback</span>
+                    <span className={shared.detailLabel}>Fallback</span>
                     <span className={styles.fallbackValue}>{selected.fallback_provider}</span>
                   </div>
                 )}

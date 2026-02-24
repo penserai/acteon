@@ -18,10 +18,11 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Modal } from '../components/ui/Modal'
+import { DeleteConfirmModal } from '../components/ui/DeleteConfirmModal'
 import { Drawer } from '../components/ui/Drawer'
 import { Tabs } from '../components/ui/Tabs'
 import { useToast } from '../components/ui/useToast'
-import { relativeTime } from '../lib/format'
+import { relativeTime, capitalize, parseLabels, labelsToText } from '../lib/format'
 import type {
   QuotaPolicy,
   QuotaUsage,
@@ -30,6 +31,7 @@ import type {
   CreateQuotaRequest,
   UpdateQuotaRequest,
 } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './Quotas.module.css'
 
 // ---- Helpers ----
@@ -57,9 +59,6 @@ function behaviorVariant(behavior: OverageBehavior): 'error' | 'warning' | 'info
   }
 }
 
-function capitalize(w: string): string {
-  return w.charAt(0).toUpperCase() + w.slice(1)
-}
 
 // ---- Progress bar component ----
 
@@ -145,15 +144,15 @@ export function Quotas() {
   const columns = [
     col.accessor('tenant', {
       header: 'Tenant',
-      cell: (info) => <span className={styles.detailValue}>{info.getValue()}</span>,
+      cell: (info) => <span className={shared.detailValue}>{info.getValue()}</span>,
     }),
     col.accessor('namespace', {
       header: 'Namespace',
-      cell: (info) => <span className={styles.detailValue}>{info.getValue()}</span>,
+      cell: (info) => <span className={shared.detailValue}>{info.getValue()}</span>,
     }),
     col.accessor('max_actions', {
       header: 'Limit',
-      cell: (info) => <span className={styles.detailValue}>{info.getValue().toLocaleString()}</span>,
+      cell: (info) => <span className={shared.detailValue}>{info.getValue().toLocaleString()}</span>,
     }),
     col.accessor('window', {
       header: 'Window',
@@ -190,7 +189,7 @@ export function Quotas() {
         const row = info.row.original
         return (
           <div
-            className={styles.actionsCell}
+            className={shared.actionsCell}
             onClick={(e) => e.stopPropagation()}
             role="group"
             aria-label="Row actions"
@@ -234,7 +233,7 @@ export function Quotas() {
         }
       />
 
-      <div className={styles.filterBar}>
+      <div className={shared.filterBar}>
         <Input
           placeholder="Namespace"
           value={ns}
@@ -327,32 +326,14 @@ export function Quotas() {
       </Drawer>
 
       {/* Delete confirmation modal */}
-      <Modal
+      <DeleteConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        loading={deleteMutation.isPending}
         title="Delete Quota"
-        size="sm"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>Cancel</Button>
-            <Button
-              variant="danger"
-              loading={deleteMutation.isPending}
-              onClick={handleDelete}
-            >
-              Delete
-            </Button>
-          </>
-        }
-      >
-        <p className={styles.deleteWarning}>
-          Are you sure you want to delete the quota for{' '}
-          <span className={styles.deleteName}>
-            {deleteTarget?.tenant}/{deleteTarget?.namespace}
-          </span>
-          ? This cannot be undone.
-        </p>
-      </Modal>
+        name={deleteTarget ? `${deleteTarget.tenant}/${deleteTarget.namespace}` : ''}
+      />
     </div>
   )
 }
@@ -375,37 +356,14 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
   const [enabled, setEnabled] = useState(initial?.enabled ?? true)
   const [description, setDescription] = useState(initial?.description ?? '')
   const [labelsText, setLabelsText] = useState(
-    initial?.labels ? Object.entries(initial.labels).map(([k, v]) => `${k}=${v}`).join('\n') : '',
+    initial?.labels ? labelsToText(initial.labels) : '',
   )
 
   // Reset form when initial changes (opening edit modal for different item)
   const initialId = initial?.id
-  useState(() => {
-    if (initial) {
-      setFormNs(initial.namespace)
-      setFormTenant(initial.tenant)
-      setMaxActions(initial.max_actions.toString())
-      setWindow(initial.window)
-      setBehavior(initial.overage_behavior)
-      setEnabled(initial.enabled)
-      setDescription(initial.description ?? '')
-      setLabelsText(
-        Object.entries(initial.labels).map(([k, v]) => `${k}=${v}`).join('\n'),
-      )
-    }
-  })
 
   const handleSubmit = () => {
-    const labels: Record<string, string> = {}
-    for (const line of labelsText.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx > 0) {
-        labels[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim()
-      }
-    }
-
+    const labels = parseLabels(labelsText)
     onSubmit({
       namespace: formNs,
       tenant: formTenant,
@@ -442,8 +400,8 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
         </>
       }
     >
-      <div className={styles.formSection}>
-        <div className={styles.formGrid}>
+      <div className={shared.formSection}>
+        <div className={shared.formGrid}>
           <Input
             label="Namespace *"
             value={formNs}
@@ -460,7 +418,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
           />
         </div>
 
-        <div className={styles.formGrid}>
+        <div className={shared.formGrid}>
           <Input
             label="Max Actions *"
             type="number"
@@ -477,7 +435,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
           />
         </div>
 
-        <div className={styles.formGrid}>
+        <div className={shared.formGrid}>
           <Select
             label="Overage Behavior *"
             options={BEHAVIOR_OPTIONS}
@@ -503,7 +461,7 @@ function QuotaFormModal({ open, onClose, onSubmit, loading, title, initial }: {
         />
 
         <div>
-          <label className={styles.textareaLabel} htmlFor="quota-labels">Labels (key=value, one per line)</label>
+          <label className={shared.textareaLabel} htmlFor="quota-labels">Labels (key=value, one per line)</label>
           <textarea
             id="quota-labels"
             value={labelsText}
@@ -564,8 +522,8 @@ function QuotaDetailView({ quota, usage, tab, onTabChange, onEdit, onDelete }: {
             'Created': relativeTime(quota.created_at),
             'Updated': relativeTime(quota.updated_at),
           }).map(([k, v]) => (
-            <div key={k} className={styles.detailRow}>
-              <span className={styles.detailLabel}>{k}</span>
+            <div key={k} className={shared.detailRow}>
+              <span className={shared.detailLabel}>{k}</span>
               <span className={styles.detailValueWrap}>{v}</span>
             </div>
           ))}
@@ -574,9 +532,9 @@ function QuotaDetailView({ quota, usage, tab, onTabChange, onEdit, onDelete }: {
             <div>
               <h3 className={styles.sectionTitle}>Labels</h3>
               {Object.entries(quota.labels).map(([k, v]) => (
-                <div key={k} className={styles.detailRow}>
-                  <span className={styles.detailLabel}>{k}</span>
-                  <span className={styles.detailValue}>{v}</span>
+                <div key={k} className={shared.detailRow}>
+                  <span className={shared.detailLabel}>{k}</span>
+                  <span className={shared.detailValue}>{v}</span>
                 </div>
               ))}
             </div>
@@ -602,24 +560,24 @@ function QuotaDetailView({ quota, usage, tab, onTabChange, onEdit, onDelete }: {
                 <span>{usage.remaining.toLocaleString()} remaining</span>
                 <span>{usage.limit.toLocaleString()} limit</span>
               </div>
-              <div className={styles.detailContent} style={{ marginTop: '1rem' }}>
-                <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Resets At</span>
+              <div className={`${styles.detailContent} ${styles.usageDetailSpacing}`}>
+                <div className={shared.detailRow}>
+                  <span className={shared.detailLabel}>Resets At</span>
                   <span className={styles.detailValueWrap}>{relativeTime(usage.resets_at)}</span>
                 </div>
-                <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Utilization</span>
+                <div className={shared.detailRow}>
+                  <span className={shared.detailLabel}>Utilization</span>
                   <span className={styles.detailValueWrap}>{usedPct.toFixed(1)}%</span>
                 </div>
               </div>
             </div>
           ) : (
-            <p className={styles.detailLabel}>No usage data available.</p>
+            <p className={shared.detailLabel}>No usage data available.</p>
           )}
         </div>
       )}
 
-      <div className={styles.actionButtons}>
+      <div className={shared.actionButtons}>
         <Button
           variant="secondary"
           size="sm"

@@ -16,25 +16,15 @@ import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Modal } from '../components/ui/Modal'
+import { DeleteConfirmModal } from '../components/ui/DeleteConfirmModal'
 import { Drawer } from '../components/ui/Drawer'
 import { Tabs } from '../components/ui/Tabs'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
-import { relativeTime } from '../lib/format'
+import { relativeTime, formatBytes, formatCount } from '../lib/format'
 import type { WasmPlugin, WasmTestResponse } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './WasmPlugins.module.css'
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(0)} MB`
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${bytes} B`
-}
-
-function formatCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
-  return n.toString()
-}
 
 // ---- Column definition ----
 
@@ -126,7 +116,7 @@ export function WasmPlugins() {
         const row = info.row.original
         return (
           <div
-            className={styles.actionsCell}
+            className={shared.actionsCell}
             onClick={(e) => e.stopPropagation()}
             role="group"
             aria-label="Row actions"
@@ -209,30 +199,15 @@ export function WasmPlugins() {
       </Drawer>
 
       {/* Delete confirmation modal */}
-      <Modal
+      <DeleteConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        loading={deleteMutation.isPending}
         title="Delete Plugin"
-        size="sm"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>Cancel</Button>
-            <Button
-              variant="danger"
-              loading={deleteMutation.isPending}
-              onClick={handleDelete}
-            >
-              Delete
-            </Button>
-          </>
-        }
-      >
-        <p className={styles.deleteWarning}>
-          Are you sure you want to delete the plugin{' '}
-          <span className={styles.deleteName}>{deleteTarget?.name}</span>?
-          This will unload the WASM module and any rules referencing it will fail.
-        </p>
-      </Modal>
+        name={deleteTarget?.name ?? ''}
+        warning="This will unload the WASM module and any rules referencing it will fail."
+      />
     </div>
   )
 }
@@ -285,7 +260,7 @@ function RegisterPluginModal({ open, onClose, onSubmit, loading }: {
         </>
       }
     >
-      <div className={styles.formSection}>
+      <div className={shared.formSection}>
         <Input
           label="Plugin Name *"
           value={name}
@@ -311,7 +286,7 @@ function RegisterPluginModal({ open, onClose, onSubmit, loading }: {
           placeholder="A brief description of what this plugin does"
         />
 
-        <div className={styles.formGrid}>
+        <div className={shared.formGrid}>
           <Input
             label="Memory Limit (bytes)"
             type="number"
@@ -366,13 +341,13 @@ function PluginDetailView({ plugin, tab, onTabChange, onDelete }: {
             'Last Invoked': plugin.last_invoked_at ? relativeTime(plugin.last_invoked_at) : 'Never',
             'Registered': relativeTime(plugin.registered_at),
           }).map(([k, v]) => (
-            <div key={k} className={styles.detailRow}>
-              <span className={styles.detailLabel}>{k}</span>
+            <div key={k} className={shared.detailRow}>
+              <span className={shared.detailLabel}>{k}</span>
               <span className={styles.detailValueWrap}>{v}</span>
             </div>
           ))}
 
-          <div className={styles.actionButtons}>
+          <div className={shared.actionButtons}>
             <Button
               variant="danger"
               size="sm"
@@ -438,8 +413,8 @@ function TestInvocationPanel({ pluginName }: { pluginName: string }) {
         placeholder="evaluate"
       />
 
-      <div style={{ marginTop: '0.75rem' }}>
-        <label className={styles.textareaLabel}>Input (JSON)</label>
+      <div className={styles.testFieldSpacing}>
+        <label className={shared.textareaLabel}>Input (JSON)</label>
         <textarea
           value={inputJson}
           onChange={(e) => setInputJson(e.target.value)}
@@ -447,7 +422,7 @@ function TestInvocationPanel({ pluginName }: { pluginName: string }) {
         />
       </div>
 
-      <div style={{ marginTop: '0.75rem' }}>
+      <div className={styles.testFieldSpacing}>
         <Button
           icon={<Play className="h-3.5 w-3.5" />}
           loading={testMutation.isPending}
@@ -461,14 +436,14 @@ function TestInvocationPanel({ pluginName }: { pluginName: string }) {
       {result && (
         <div className={styles.testResultCard}>
           <div className={styles.testResultRow}>
-            <span className={styles.detailLabel}>Verdict</span>
+            <span className={shared.detailLabel}>Verdict</span>
             <span className={result.verdict ? styles.verdictPass : styles.verdictFail}>
               {result.verdict ? 'PASS (true)' : 'FAIL (false)'}
             </span>
           </div>
           <div className={styles.testResultRow}>
-            <span className={styles.detailLabel}>Duration</span>
-            <span className={styles.detailValue}>{result.duration_us}us</span>
+            <span className={shared.detailLabel}>Duration</span>
+            <span className={shared.detailValue}>{result.duration_us}us</span>
           </div>
           {result.message && (
             <div className={styles.testMessage}>

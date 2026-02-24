@@ -32,9 +32,6 @@
   @apply flex justify-between;
 }
 
-.detailLabel {
-  @apply text-gray-500;
-}
 
 .sectionTitle {
   @apply text-sm font-medium mb-2;

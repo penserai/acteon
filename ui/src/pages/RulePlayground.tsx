@@ -7,7 +7,9 @@ import { Button } from '../components/ui/Button'
 import { Badge } from '../components/ui/Badge'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
+import { tryParseJson, formatDurationMicros } from '../lib/format'
 import type { EvaluateRulesResponse, RuleTraceEntry } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './RulePlayground.module.css'
 
 function resultBadgeClass(result: RuleTraceEntry['result']): string {
@@ -28,20 +30,6 @@ function verdictClass(verdict: string): string {
   return styles.verdictError
 }
 
-function formatDuration(us: number): string {
-  if (us < 1000) return `${us}us`
-  if (us < 1_000_000) return `${(us / 1000).toFixed(1)}ms`
-  return `${(us / 1_000_000).toFixed(2)}s`
-}
-
-function tryParseJson(text: string): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
-  try {
-    const parsed = JSON.parse(text)
-    return { ok: true, value: parsed }
-  } catch (e) {
-    return { ok: false, error: (e as Error).message }
-  }
-}
 
 export function RulePlayground() {
   const evaluateMutation = useEvaluateRules()
@@ -150,7 +138,7 @@ export function RulePlayground() {
         <div className={styles.layout}>
           {/* Form panel */}
           <div className={styles.formCard}>
-            <div className={styles.formGrid}>
+            <div className={shared.formGrid}>
               <Input
                 label="Namespace *"
                 value={ns}
@@ -178,7 +166,7 @@ export function RulePlayground() {
             </div>
 
             <div>
-              <label className={styles.textareaLabel}>Payload (JSON) *</label>
+              <label className={shared.textareaLabel}>Payload (JSON) *</label>
               <textarea
                 value={payload}
                 onChange={(e) => {
@@ -191,7 +179,7 @@ export function RulePlayground() {
             </div>
 
             <div>
-              <label className={styles.textareaLabel}>Metadata (JSON)</label>
+              <label className={shared.textareaLabel}>Metadata (JSON)</label>
               <textarea
                 value={metadata}
                 onChange={(e) => {
@@ -232,7 +220,7 @@ export function RulePlayground() {
             />
 
             <div>
-              <label className={styles.textareaLabel}>Mock State (JSON)</label>
+              <label className={shared.textareaLabel}>Mock State (JSON)</label>
               <textarea
                 value={mockState}
                 onChange={(e) => {
@@ -288,7 +276,7 @@ export function RulePlayground() {
                     Skipped: <span className={styles.summaryItemValue}>{result.total_rules_skipped}</span>
                   </div>
                   <div className={styles.summaryItem}>
-                    Time: <span className={styles.summaryItemValue}>{formatDuration(result.evaluation_duration_us)}</span>
+                    Time: <span className={styles.summaryItemValue}>{formatDurationMicros(result.evaluation_duration_us)}</span>
                   </div>
                 </div>
 
@@ -349,19 +337,19 @@ export function RulePlayground() {
                         {JSON.stringify(result.context.time, null, 2)}
                       </div>
                       {result.context.effective_timezone && (
-                        <div style={{ marginTop: '0.5rem' }}>
+                        <div className={styles.contextSpacing}>
                           <span className={styles.contextLabel}>Timezone</span>
                           <p>{result.context.effective_timezone}</p>
                         </div>
                       )}
                       {result.context.environment_keys.length > 0 && (
-                        <div style={{ marginTop: '0.5rem' }}>
+                        <div className={styles.contextSpacing}>
                           <span className={styles.contextLabel}>Environment Keys</span>
                           <p>{result.context.environment_keys.join(', ')}</p>
                         </div>
                       )}
                       {result.context.accessed_state_keys && result.context.accessed_state_keys.length > 0 && (
-                        <div style={{ marginTop: '0.5rem' }}>
+                        <div className={styles.contextSpacing}>
                           <span className={styles.contextLabel}>Accessed State Keys</span>
                           <p>{result.context.accessed_state_keys.join(', ')}</p>
                         </div>
@@ -397,7 +385,7 @@ function TraceRow({ entry, expanded, onToggle }: {
 }) {
   return (
     <>
-      <tr onClick={onToggle} style={{ cursor: 'pointer' }}>
+      <tr onClick={onToggle} className={styles.traceRowClickable}>
         <td>
           {expanded
             ? <ChevronDown className="h-3.5 w-3.5" />
@@ -412,7 +400,7 @@ function TraceRow({ entry, expanded, onToggle }: {
           </span>
         </td>
         <td><Badge>{entry.action}</Badge></td>
-        <td className={styles.durationCell}>{formatDuration(entry.evaluation_duration_us)}</td>
+        <td className={styles.durationCell}>{formatDurationMicros(entry.evaluation_duration_us)}</td>
         <td className={styles.sourceCell}>{entry.source}</td>
       </tr>
       {expanded && (

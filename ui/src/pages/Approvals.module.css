@@ -30,9 +30,6 @@
   @apply space-y-1 text-sm mb-3;
 }
 
-.detailLabel {
-  @apply text-gray-500;
-}
 
 .metadataRow {
   @apply flex gap-4 text-xs text-gray-500 mb-3;

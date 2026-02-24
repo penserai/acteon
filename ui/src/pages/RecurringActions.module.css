@@ -1,9 +1,5 @@
 @reference "../index.css";
 
-.filterBar {
-  @apply flex flex-wrap gap-3 mb-4;
-}
-
 .cronCell {
   @apply font-mono text-xs;
 }
@@ -20,19 +16,7 @@
   @apply tabular-nums text-xs;
 }
 
-.actionsCell {
-  @apply flex items-center gap-1;
-}
-
 /* Create / Edit modal */
-.formGrid {
-  @apply grid grid-cols-2 gap-4;
-}
-
-.formSection {
-  @apply space-y-4;
-}
-
 .cronPresetRow {
   @apply flex gap-3 items-end;
 }
@@ -48,11 +32,6 @@
 
 .cronHintError {
   @apply text-xs mt-1 text-error-500;
-}
-
-.textareaLabel {
-  @apply block text-sm font-medium mb-1;
-  color: var(--text-secondary);
 }
 
 .textarea {
@@ -85,19 +64,6 @@
   @apply space-y-3 text-sm;
 }
 
-.detailRow {
-  @apply flex justify-between py-1 border-b;
-  border-color: var(--border-default);
-}
-
-.detailLabel {
-  @apply text-gray-500;
-}
-
-.detailValue {
-  @apply font-mono text-xs;
-}
-
 .detailValueWrap {
   @apply font-mono text-xs text-right max-w-xs break-all;
 }
@@ -111,17 +77,7 @@
   @apply text-sm font-medium mb-2;
 }
 
-.actionButtons {
-  @apply mt-6 flex gap-2;
-}
-
-/* Delete confirmation */
-.deleteWarning {
-  @apply text-sm mb-4;
-  color: var(--text-secondary);
-}
-
-.deleteName {
-  @apply font-semibold;
-  color: var(--text-primary);
+/* Subsection spacing in detail drawer */
+.subsection {
+  @apply mt-4;
 }

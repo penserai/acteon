@@ -17,34 +17,20 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Modal } from '../components/ui/Modal'
+import { DeleteConfirmModal } from '../components/ui/DeleteConfirmModal'
 import { Drawer } from '../components/ui/Drawer'
 import { Tabs } from '../components/ui/Tabs'
 import { useToast } from '../components/ui/useToast'
-import { relativeTime } from '../lib/format'
+import { relativeTime, formatDurationSeconds, parseLabels, labelsToText } from '../lib/format'
 import type {
   RetentionPolicy,
   CreateRetentionRequest,
   UpdateRetentionRequest,
 } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './RetentionPolicies.module.css'
 
 // ---- Helpers ----
-
-function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined) return 'Not set'
-  if (seconds === 0) return 'Immediate'
-
-  const days = Math.floor(seconds / 86400)
-  const hours = Math.floor((seconds % 86400) / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-
-  const parts = []
-  if (days > 0) parts.push(`${days}d`)
-  if (hours > 0) parts.push(`${hours}h`)
-  if (minutes > 0) parts.push(`${minutes}m`)
-
-  return parts.length > 0 ? parts.join(' ') : `${seconds}s`
-}
 
 // ---- Column definition ----
 
@@ -100,23 +86,23 @@ export function RetentionPolicies() {
   const columns = [
     col.accessor('tenant', {
       header: 'Tenant',
-      cell: (info) => <span className={styles.detailValue}>{info.getValue()}</span>,
+      cell: (info) => <span className={shared.detailValue}>{info.getValue()}</span>,
     }),
     col.accessor('namespace', {
       header: 'Namespace',
-      cell: (info) => <span className={styles.detailValue}>{info.getValue()}</span>,
+      cell: (info) => <span className={shared.detailValue}>{info.getValue()}</span>,
     }),
     col.accessor('audit_ttl_seconds', {
       header: 'Audit TTL',
-      cell: (info) => <span className={styles.ttlValue}>{formatDuration(info.getValue())}</span>,
+      cell: (info) => <span className={styles.ttlValue}>{formatDurationSeconds(info.getValue())}</span>,
     }),
     col.accessor('state_ttl_seconds', {
       header: 'State TTL',
-      cell: (info) => <span className={styles.ttlValue}>{formatDuration(info.getValue())}</span>,
+      cell: (info) => <span className={styles.ttlValue}>{formatDurationSeconds(info.getValue())}</span>,
     }),
     col.accessor('event_ttl_seconds', {
       header: 'Event TTL',
-      cell: (info) => <span className={styles.ttlValue}>{formatDuration(info.getValue())}</span>,
+      cell: (info) => <span className={styles.ttlValue}>{formatDurationSeconds(info.getValue())}</span>,
     }),
     col.accessor('compliance_hold', {
       header: 'Compliance Hold',
@@ -141,7 +127,7 @@ export function RetentionPolicies() {
         const row = info.row.original
         return (
           <div
-            className={styles.actionsCell}
+            className={shared.actionsCell}
             onClick={(e) => e.stopPropagation()}
             role="group"
             aria-label="Row actions"
@@ -185,7 +171,7 @@ export function RetentionPolicies() {
         }
       />
 
-      <div className={styles.filterBar}>
+      <div className={shared.filterBar}>
         <Input
           placeholder="Namespace"
           value={ns}
@@ -278,32 +264,14 @@ export function RetentionPolicies() {
       </Drawer>
 
       {/* Delete confirmation modal */}
-      <Modal
+      <DeleteConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        loading={deleteMutation.isPending}
         title="Delete Retention Policy"
-        size="sm"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>Cancel</Button>
-            <Button
-              variant="danger"
-              loading={deleteMutation.isPending}
-              onClick={handleDelete}
-            >
-              Delete
-            </Button>
-          </>
-        }
-      >
-        <p className={styles.deleteWarning}>
-          Are you sure you want to delete the retention policy for{' '}
-          <span className={styles.deleteName}>
-            {deleteTarget?.tenant}/{deleteTarget?.namespace}
-          </span>
-          ? This cannot be undone.
-        </p>
-      </Modal>
+        name={deleteTarget ? `${deleteTarget.tenant}/${deleteTarget.namespace}` : ''}
+      />
     </div>
   )
 }
@@ -327,38 +295,14 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
   const [enabled, setEnabled] = useState(initial?.enabled ?? true)
   const [description, setDescription] = useState(initial?.description ?? '')
   const [labelsText, setLabelsText] = useState(
-    initial?.labels ? Object.entries(initial.labels).map(([k, v]) => `${k}=${v}`).join('\n') : '',
+    initial?.labels ? labelsToText(initial.labels) : '',
   )
 
   // Reset form when initial changes (opening edit modal for different item)
   const initialId = initial?.id
-  useState(() => {
-    if (initial) {
-      setFormNs(initial.namespace)
-      setFormTenant(initial.tenant)
-      setAuditTtl(initial.audit_ttl_seconds?.toString() ?? '')
-      setStateTtl(initial.state_ttl_seconds?.toString() ?? '')
-      setEventTtl(initial.event_ttl_seconds?.toString() ?? '')
-      setComplianceHold(initial.compliance_hold)
-      setEnabled(initial.enabled)
-      setDescription(initial.description ?? '')
-      setLabelsText(
-        Object.entries(initial.labels).map(([k, v]) => `${k}=${v}`).join('\n'),
-      )
-    }
-  })
 
   const handleSubmit = () => {
-    const labels: Record<string, string> = {}
-    for (const line of labelsText.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx > 0) {
-        labels[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim()
-      }
-    }
-
+    const labels = parseLabels(labelsText)
     onSubmit({
       namespace: formNs,
       tenant: formTenant,
@@ -396,8 +340,8 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
         </>
       }
     >
-      <div className={styles.formSection}>
-        <div className={styles.formGrid}>
+      <div className={shared.formSection}>
+        <div className={shared.formGrid}>
           <Input
             label="Namespace *"
             value={formNs}
@@ -414,7 +358,7 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
           />
         </div>
 
-        <div className={styles.formGrid}>
+        <div className={shared.formGrid}>
           <Input
             label="Audit TTL (seconds)"
             type="number"
@@ -433,7 +377,7 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
           />
         </div>
 
-        <div className={styles.formGrid}>
+        <div className={shared.formGrid}>
           <Input
             label="Event TTL (seconds)"
             type="number"
@@ -471,7 +415,7 @@ function RetentionFormModal({ open, onClose, onSubmit, loading, title, initial }
         />
 
         <div>
-          <label className={styles.textareaLabel} htmlFor="retention-labels">Labels (key=value, one per line)</label>
+          <label className={shared.textareaLabel} htmlFor="retention-labels">Labels (key=value, one per line)</label>
           <textarea
             id="retention-labels"
             value={labelsText}
@@ -513,17 +457,17 @@ function RetentionDetailView({ policy, tab, onTabChange, onEdit, onDelete }: {
             'ID': policy.id,
             'Namespace': policy.namespace,
             'Tenant': policy.tenant,
-            'Audit TTL': formatDuration(policy.audit_ttl_seconds),
-            'State TTL': formatDuration(policy.state_ttl_seconds),
-            'Event TTL': formatDuration(policy.event_ttl_seconds),
+            'Audit TTL': formatDurationSeconds(policy.audit_ttl_seconds),
+            'State TTL': formatDurationSeconds(policy.state_ttl_seconds),
+            'Event TTL': formatDurationSeconds(policy.event_ttl_seconds),
             'Compliance Hold': policy.compliance_hold ? 'Enabled' : 'Disabled',
             'Status': policy.enabled ? 'Enabled' : 'Disabled',
             'Description': policy.description ?? '-',
             'Created': relativeTime(policy.created_at),
             'Updated': relativeTime(policy.updated_at),
           }).map(([k, v]) => (
-            <div key={k} className={styles.detailRow}>
-              <span className={styles.detailLabel}>{k}</span>
+            <div key={k} className={shared.detailRow}>
+              <span className={shared.detailLabel}>{k}</span>
               <span className={styles.detailValueWrap}>{v}</span>
             </div>
           ))}
@@ -532,9 +476,9 @@ function RetentionDetailView({ policy, tab, onTabChange, onEdit, onDelete }: {
             <div>
               <h3 className={styles.sectionTitle}>Labels</h3>
               {Object.entries(policy.labels).map(([k, v]) => (
-                <div key={k} className={styles.detailRow}>
-                  <span className={styles.detailLabel}>{k}</span>
-                  <span className={styles.detailValue}>{v}</span>
+                <div key={k} className={shared.detailRow}>
+                  <span className={shared.detailLabel}>{k}</span>
+                  <span className={shared.detailValue}>{v}</span>
                 </div>
               ))}
             </div>
@@ -542,7 +486,7 @@ function RetentionDetailView({ policy, tab, onTabChange, onEdit, onDelete }: {
         </div>
       )}
 
-      <div className={styles.actionButtons}>
+      <div className={shared.actionButtons}>
         <Button
           variant="secondary"
           size="sm"
