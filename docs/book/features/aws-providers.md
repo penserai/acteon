@@ -2,6 +2,34 @@
 
 Acteon ships with native AWS provider integrations for **SNS**, **Lambda**, **EventBridge**, **SQS**, **S3**, **SES** (via the email provider), **EC2**, and **Auto Scaling**. All eight are first-class citizens -- they implement the same `Provider` trait, participate in circuit breaking, health checks, and per-provider metrics, and require no external plugins.
 
+## Compile-Time Feature Selection
+
+AWS providers are **not compiled by default**. Each provider maps to a feature flag on `acteon-server`, so you only compile the AWS SDKs you need:
+
+```bash
+# Only SNS and Lambda
+cargo build -p acteon-server --features "aws-sns,aws-lambda"
+
+# All eight AWS providers
+cargo build -p acteon-server --features aws-all
+```
+
+| Server Feature | AWS SDK Crate |
+|---------------|---------------|
+| `aws-sns` | `aws-sdk-sns` |
+| `aws-lambda` | `aws-sdk-lambda` |
+| `aws-eventbridge` | `aws-sdk-eventbridge` |
+| `aws-sqs` | `aws-sdk-sqs` |
+| `aws-ses` | `aws-sdk-sesv2` |
+| `aws-s3` | `aws-sdk-s3` |
+| `aws-ec2` | `aws-sdk-ec2` |
+| `aws-autoscaling` | `aws-sdk-autoscaling` |
+| `aws-all` | All of the above |
+
+This feature gating reduces a default `cargo build` from ~688 dependencies to ~480, cutting clean build time roughly in half. If you are not using any AWS providers, you pay zero compile cost for them.
+
+The `acteon-aws` crate uses the same pattern internally — each provider is behind a matching feature flag (`sns`, `lambda`, etc.), and provider registration in `main.rs` is guarded by `#[cfg(feature = "aws-*")]`.
+
 ## Overview
 
 | Provider | AWS Service | Action Types | Use Case |

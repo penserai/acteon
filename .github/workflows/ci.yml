@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   check:
@@ -22,6 +24,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
 
@@ -38,6 +41,7 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --no-deps -- -D warnings
 
@@ -53,8 +57,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace --lib --bins --tests
+      - name: Test AWS providers
+        run: cargo nextest run -p acteon-aws --features full --lib --tests
+      - name: Run doctests
+        run: cargo test --workspace --doc
 
   fmt:
     name: Format
@@ -86,6 +96,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps
         env:
@@ -107,6 +118,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
       # Run integration tests only for backends with running services.
       # Redis is the only service configured in this CI job.

@@ -25,6 +25,9 @@ cd ui && npm run lint && npm run build && cd ..
 cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && (cd ui && npm run lint && npm run build)
 ```
 
+> **Note:** The default build excludes AWS providers. To match CI parity (which tests AWS separately), run:
+> `cargo test -p acteon-aws --features full --lib --tests`
+
 ## Testing Notes
 
 - **Default**: Use `--lib --bins --tests` to skip doctest compilation, which re-links the entire dependency tree per doctest and adds minutes of wall-clock time.
@@ -77,6 +80,15 @@ When implementing a new feature (provider, capability, etc.), follow this layere
 10. **Documentation** – Update `docs/book/` pages (concepts, API reference, examples)
 11. **Simulation example** – Add a simulation example in `crates/simulation/examples/`
 12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && (cd ui && npm run lint && npm run build)`
+
+## AWS Feature Gating Convention
+
+AWS providers in `acteon-server` are behind individual feature flags (`aws-sns`, `aws-lambda`, etc.). When adding a new AWS provider:
+
+1. Add a feature to `crates/aws/Cargo.toml` gating the SDK dependency
+2. Add a matching `aws-*` feature to `crates/server/Cargo.toml` forwarding to `acteon-aws/<feature>`
+3. Add it to the `aws-all` feature group in both crates
+4. Guard the provider registration in `main.rs` with `#[cfg(feature = "aws-*")]`
 
 ## Common Clippy Fixes
 

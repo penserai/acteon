@@ -1,0 +1,44 @@
+# cargo-nextest configuration
+# See: https://nexte.st/docs/configuration/
+
+[store]
+dir = "target/nextest"
+
+[profile.default]
+retries = 0
+fail-fast = true
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[profile.ci]
+retries = 2
+fail-fast = false
+slow-timeout = { period = "120s", terminate-after = 3 }
+
+# Limit concurrency for integration tests that spin up HTTP servers,
+# as running too many in parallel causes resource contention and slowdowns.
+[test-groups.http-integration]
+max-threads = 4
+
+[[profile.default.overrides]]
+filter = "package(acteon-webhook) & test(provider::)"
+test-group = "http-integration"
+
+[[profile.default.overrides]]
+filter = "package(acteon-slack) & test(provider::)"
+test-group = "http-integration"
+
+[[profile.default.overrides]]
+filter = "package(acteon-pagerduty) & test(provider::)"
+test-group = "http-integration"
+
+[[profile.default.overrides]]
+filter = "package(acteon-teams) & test(provider::)"
+test-group = "http-integration"
+
+[[profile.default.overrides]]
+filter = "package(acteon-discord) & test(provider::)"
+test-group = "http-integration"
+
+[[profile.default.overrides]]
+filter = "package(acteon-twilio) & test(provider::)"
+test-group = "http-integration"

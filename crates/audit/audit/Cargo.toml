@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+openapi = ["utoipa"]
+
 [dependencies]
 acteon-core = { workspace = true }
 acteon-crypto = { workspace = true }
@@ -17,7 +21,7 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true }
-utoipa = { workspace = true }
+utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

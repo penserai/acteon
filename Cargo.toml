@@ -128,7 +128,7 @@ acteon-cli = { path = "crates/cli" }
 nom = "7"
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "signal"] }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 
 # Serialization
@@ -261,6 +261,34 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 
 # Testing
 axum-test = "16"
+
+# ---------------------------------------------------------------------------
+# Build profiles
+# ---------------------------------------------------------------------------
+
+# Optimize heavy dependencies even in dev/test builds.
+# These crates are slow at opt-level 0 (especially wasmtime's JIT compiler
+# and ring's crypto). Compiling them with -O2 makes incremental builds and
+# test runs significantly faster at the cost of a slightly longer clean build.
+[profile.dev.package.wasmtime]
+opt-level = 2
+[profile.dev.package.cranelift-codegen]
+opt-level = 2
+[profile.dev.package.wasmtime-cranelift]
+opt-level = 2
+[profile.dev.package.regalloc2]
+opt-level = 2
+[profile.dev.package.ring]
+opt-level = 2
+[profile.dev.package.rustls]
+opt-level = 2
+[profile.dev.package.webpki-roots]
+opt-level = 1
+
+# Fast proc-macro / build-script compilation
+[profile.dev.build-override]
+opt-level = 0
+codegen-units = 256
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
