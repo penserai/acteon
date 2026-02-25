@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiGet, apiPost, apiDelete } from '../client'
+import { apiGet, apiDelete } from '../client'
 import type { EventGroup } from '../../types'
 
 export function useGroups(params: { namespace?: string; tenant?: string }) {
@@ -25,7 +25,7 @@ export function useFlushGroup() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (groupKey: string) =>
-      apiPost(`/v1/groups/${encodeURIComponent(groupKey)}`),
+      apiDelete(`/v1/groups/${encodeURIComponent(groupKey)}`),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['groups'] }),
   })
 }
