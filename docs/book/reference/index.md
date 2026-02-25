@@ -24,4 +24,9 @@ Throughput benchmarks, latency characteristics, and optimization tips.
 Production deployment patterns, Docker, and operational guidance.
 </div>
 
+<div class="card" markdown>
+### [Build Optimization](build-optimization.md)
+Feature flags, profile overrides, nextest, and CI caching for fast builds.
+</div>
+
 </div>

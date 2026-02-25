@@ -34,6 +34,33 @@ cargo build -p acteon-server --features "postgres,elasticsearch"
 | `elasticsearch` | Elasticsearch audit backend |
 | `all-backends` | All backends enabled |
 
+#### AWS Provider Features
+
+AWS providers are **not compiled by default**. Each provider has its own feature flag, so you only pay the compile cost for the SDKs you actually use:
+
+```bash
+# Single AWS provider
+cargo build -p acteon-server --features aws-sns
+
+# A few providers
+cargo build -p acteon-server --features "aws-sns,aws-lambda,aws-s3"
+
+# All AWS providers
+cargo build -p acteon-server --features aws-all
+```
+
+| Feature | AWS Service |
+|---------|------------|
+| `aws-sns` | Simple Notification Service |
+| `aws-lambda` | Lambda |
+| `aws-eventbridge` | EventBridge |
+| `aws-sqs` | Simple Queue Service |
+| `aws-ses` | Simple Email Service |
+| `aws-s3` | Simple Storage Service |
+| `aws-ec2` | EC2 |
+| `aws-autoscaling` | Auto Scaling |
+| `aws-all` | All eight AWS providers |
+
 ### Running the Server
 
 ```bash
@@ -105,6 +132,24 @@ open http://localhost:8080/swagger-ui/
 # Fetch OpenAPI spec
 curl http://localhost:8080/api-doc/openapi.json
 ```
+
+## Build Performance
+
+For day-to-day development you can skip AWS providers entirely, which removes ~8 heavy SDK crates from compilation:
+
+```bash
+# Fast local build (no AWS)
+cargo build -p acteon-server
+
+# Full build matching CI
+cargo build -p acteon-server --features aws-all
+```
+
+Additional tips:
+
+- Use `cargo nextest run` instead of `cargo test` for parallel test execution — see [Build Optimization Guide](../reference/build-optimization.md)
+- Skip doctests locally with `--lib --bins --tests` (they re-link the full dependency tree per doctest)
+- Profile overrides in `Cargo.toml` optimize wasmtime and ring in dev builds automatically
 
 ## What's Next?
 

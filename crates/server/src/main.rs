@@ -752,6 +752,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            #[cfg(feature = "aws-sns")]
             "aws-sns" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
                 let mut sns_config = acteon_aws::SnsConfig::new(region);
@@ -772,6 +773,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_aws::SnsProvider::new(sns_config).await)
             }
+            #[cfg(feature = "aws-lambda")]
             "aws-lambda" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
                 let mut lambda_config = acteon_aws::LambdaConfig::new(region);
@@ -795,6 +797,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_aws::LambdaProvider::new(lambda_config).await)
             }
+            #[cfg(feature = "aws-eventbridge")]
             "aws-eventbridge" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
                 let mut eb_config = acteon_aws::EventBridgeConfig::new(region);
@@ -815,6 +818,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_aws::EventBridgeProvider::new(eb_config).await)
             }
+            #[cfg(feature = "aws-sqs")]
             "aws-sqs" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
                 let mut sqs_config = acteon_aws::SqsConfig::new(region);
@@ -835,6 +839,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_aws::SqsProvider::new(sqs_config).await)
             }
+            #[cfg(feature = "aws-s3")]
             "aws-s3" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
                 let mut s3_config = acteon_aws::S3Config::new(region);
@@ -858,6 +863,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::sync::Arc::new(acteon_aws::S3Provider::new(s3_config).await)
             }
+            #[cfg(feature = "aws-ec2")]
             "aws-ec2" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
                 let mut ec2_config = acteon_aws::Ec2Config::new(region);
@@ -890,6 +896,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 ec2
             }
+            #[cfg(feature = "aws-autoscaling")]
             "aws-autoscaling" => {
                 let region = provider_cfg.aws_region.as_deref().unwrap_or("us-east-1");
                 let mut asg_config = acteon_aws::AutoScalingConfig::new(region);
@@ -915,10 +922,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 asg
             }
             other => {
+                // Check if the user requested an AWS provider that's not compiled in.
+                let aws_hint = match other {
+                    "aws-sns" | "aws-lambda" | "aws-eventbridge" | "aws-sqs" | "aws-s3"
+                    | "aws-ec2" | "aws-autoscaling" => {
+                        format!(
+                            ". Hint: enable the '{other}' feature on acteon-server \
+                             (cargo build --features {other})"
+                        )
+                    }
+                    _ => String::new(),
+                };
                 return Err(format!(
-                    "provider '{}': unknown type '{other}' (expected 'webhook', 'log', 'twilio', \
-                         'teams', 'discord', 'email', 'aws-sns', 'aws-lambda', 'aws-eventbridge', \
-                         'aws-sqs', 'aws-s3', 'aws-ec2', or 'aws-autoscaling')",
+                    "provider '{}': unknown type '{other}'{aws_hint}",
                     provider_cfg.name
                 )
                 .into());

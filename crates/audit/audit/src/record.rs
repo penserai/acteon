@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 /// A single audit record capturing the full lifecycle of a dispatched action.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditRecord {
     /// Unique identifier for this audit record (UUID v7).
     pub id: String,
@@ -81,7 +81,8 @@ pub struct AuditRecord {
 }
 
 /// Query parameters for searching audit records.
-#[derive(Debug, Default, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditQuery {
     /// Filter by namespace.
     pub namespace: Option<String>,
@@ -129,7 +130,8 @@ impl AuditQuery {
 }
 
 /// A paginated page of audit records.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditPage {
     /// The records matching the query.
     pub records: Vec<AuditRecord>,

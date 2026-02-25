@@ -22,9 +22,19 @@ clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
 dynamodb = ["dep:acteon-state-dynamodb", "dep:acteon-audit-dynamodb"]
 elasticsearch = ["dep:acteon-audit-elasticsearch"]
 all-backends = ["redis", "postgres", "clickhouse", "dynamodb", "elasticsearch"]
+# AWS provider features — only compile the SDKs you need
+aws-sns = ["acteon-aws/sns"]
+aws-lambda = ["acteon-aws/lambda"]
+aws-eventbridge = ["acteon-aws/eventbridge"]
+aws-sqs = ["acteon-aws/sqs"]
+aws-ses = ["acteon-aws/ses"]
+aws-s3 = ["acteon-aws/s3"]
+aws-ec2 = ["acteon-aws/ec2"]
+aws-autoscaling = ["acteon-aws/autoscaling"]
+aws-all = ["aws-sns", "aws-lambda", "aws-eventbridge", "aws-sqs", "aws-ses", "aws-s3", "aws-ec2", "aws-autoscaling"]
 
 [dependencies]
-acteon-audit = { workspace = true }
+acteon-audit = { workspace = true, features = ["openapi"] }
 acteon-audit-memory = { workspace = true }
 acteon-audit-postgres = { workspace = true, optional = true }
 acteon-audit-clickhouse = { workspace = true, optional = true }
@@ -41,7 +51,7 @@ acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true, features = ["webhook"] }
 acteon-email = { workspace = true, features = ["ses"] }
-acteon-aws = { workspace = true, features = ["full"] }
+acteon-aws = { workspace = true }
 acteon-twilio = { workspace = true }
 acteon-teams = { workspace = true }
 acteon-discord = { workspace = true }
