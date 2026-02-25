@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { createColumnHelper } from '@tanstack/react-table'
 import { RotateCcw } from 'lucide-react'
-import { useAudit, useReplayAction } from '../api/hooks/useAudit'
+import { useAudit, useAuditRecord, useReplayAction } from '../api/hooks/useAudit'
 import { PageHeader } from '../components/layout/PageHeader'
 import { DataTable } from '../components/ui/DataTable'
 import { Badge } from '../components/ui/Badge'
@@ -15,6 +15,7 @@ import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { AuditRecord, AuditQuery } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './Actions.module.css'
 
 const col = createColumnHelper<AuditRecord>()
@@ -28,6 +29,8 @@ export function Actions() {
   const [selected, setSelected] = useState<AuditRecord | null>(null)
   const [detailTab, setDetailTab] = useState('overview')
 
+  const searchId = searchParams.get('action_id') ?? ''
+
   const query: AuditQuery = useMemo(() => ({
     namespace: searchParams.get('namespace') ?? undefined,
     tenant: searchParams.get('tenant') ?? undefined,
@@ -38,6 +41,13 @@ export function Actions() {
   }), [searchParams])
 
   const { data, isLoading } = useAudit(query)
+  const { data: searchResult, isLoading: searchLoading } = useAuditRecord(searchId || undefined)
+
+  // When searching by ID, show only that record; otherwise show full list
+  const displayRecords = searchId
+    ? (searchResult ? [searchResult] : [])
+    : (data?.records ?? [])
+  const displayLoading = searchId ? searchLoading : isLoading
 
   const setFilter = (key: string, val: string) => {
     const next = new URLSearchParams(searchParams)
@@ -78,7 +88,7 @@ export function Actions() {
     <div>
       <PageHeader title="Audit Trail" />
 
-      <div className={styles.filterBar}>
+      <div className={shared.filterBar}>
         <div className={styles.searchInput}>
           <Input
             placeholder="Search by ID..."
@@ -104,14 +114,14 @@ export function Actions() {
       </div>
 
       <DataTable
-        data={data?.records ?? []}
+        data={displayRecords}
         columns={columns}
-        loading={isLoading}
+        loading={displayLoading}
         onRowClick={setSelected}
         emptyTitle="No audit records"
         emptyDescription="Actions are recorded when audit is enabled. Dispatch actions to see records here."
-        serverTotal={data?.total}
-        serverOffset={data?.offset}
+        serverTotal={searchId ? undefined : data?.total}
+        serverOffset={searchId ? undefined : data?.offset}
         onPageChange={(offset) => setFilter('offset', String(offset))}
       />
 
@@ -150,9 +160,9 @@ export function Actions() {
                   ...(selected.previous_hash ? { 'Previous Hash': selected.previous_hash } : {}),
                   ...(selected.sequence_number != null ? { 'Sequence Number': String(selected.sequence_number) } : {}),
                 }).map(([k, v]) => (
-                  <div key={k} className={styles.detailRow}>
-                    <span className={styles.detailLabel}>{k}</span>
-                    <span className={styles.detailValue}>{v}</span>
+                  <div key={k} className={shared.detailRow}>
+                    <span className={shared.detailLabel}>{k}</span>
+                    <span className={shared.detailValue}>{v}</span>
                   </div>
                 ))}
               </div>

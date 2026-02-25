@@ -10,7 +10,6 @@ import { Toggle } from '../components/ui/Toggle'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Drawer } from '../components/ui/Drawer'
-import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import type { RuleSummary } from '../types'
 import styles from './Rules.module.css'
@@ -23,7 +22,6 @@ export function Rules() {
   const toggleRule = useToggleRule()
   const { toast } = useToast()
   const [search, setSearch] = useState('')
-  const [filterAction, setFilterAction] = useState('')
   const [filterEnabled, setFilterEnabled] = useState('')
   const [selected, setSelected] = useState<RuleSummary | null>(null)
 
@@ -42,19 +40,15 @@ export function Rules() {
 
   const filtered = (rules ?? []).filter((r) => {
     if (search && !r.name.toLowerCase().includes(search.toLowerCase())) return false
-    if (filterAction && r.action_type !== filterAction) return false
     if (filterEnabled === 'true' && !r.enabled) return false
     if (filterEnabled === 'false' && r.enabled) return false
     return true
   })
 
-  const actionTypes = [...new Set((rules ?? []).map((r) => r.action_type))].sort()
-
   const columns = [
     col.accessor('priority', { header: 'Pri', cell: (info) => <span className={styles.priorityCell}>{info.getValue()}</span> }),
     col.accessor('name', { header: 'Name', cell: (info) => <span className={styles.ruleNameCell}>{info.getValue()}</span> }),
     col.accessor('description', { header: 'Description', cell: (info) => <span className={styles.descriptionCell}>{info.getValue() ?? '-'}</span> }),
-    col.accessor('action_type', { header: 'Action', cell: (info) => <Badge>{info.getValue()}</Badge> }),
     col.accessor('enabled', {
       header: 'Enabled',
       cell: (info) => (
@@ -65,7 +59,6 @@ export function Rules() {
         />
       ),
     }),
-    col.accessor('source', { header: 'Source', cell: (info) => <span className={styles.sourceCell}>{info.getValue()}</span> }),
   ]
 
   return (
@@ -89,11 +82,6 @@ export function Rules() {
         <div className={styles.searchContainer}>
           <Input placeholder="Search rules..." value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-        <Select
-          options={[{ value: '', label: 'All Actions' }, ...actionTypes.map((a) => ({ value: a, label: a }))]}
-          value={filterAction}
-          onChange={(e) => setFilterAction(e.target.value)}
-        />
         <Select
           options={[
             { value: '', label: 'All' },
@@ -119,9 +107,7 @@ export function Rules() {
           <div className={styles.detailContent}>
             <div className={styles.metadataGrid}>
               <div><span className={styles.descriptionLabel}>Priority:</span> <span className="font-medium">{selected.priority}</span></div>
-              <div><span className={styles.descriptionLabel}>Source:</span> <span className="font-medium">{selected.source}</span></div>
               <div><span className={styles.descriptionLabel}>Enabled:</span> <Badge>{selected.enabled ? 'Yes' : 'No'}</Badge></div>
-              <div><span className={styles.descriptionLabel}>Action:</span> <Badge>{selected.action_type}</Badge></div>
             </div>
             {selected.description && (
               <div>
@@ -129,12 +115,6 @@ export function Rules() {
                 <p className={styles.descriptionSection}>{selected.description}</p>
               </div>
             )}
-            <div>
-              <span className={styles.actionDetailsLabel}>Action Details:</span>
-              <div className={styles.actionDetailsSection}>
-                <JsonViewer data={selected.action_details} />
-              </div>
-            </div>
           </div>
         )}
       </Drawer>

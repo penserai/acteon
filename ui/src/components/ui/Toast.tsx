@@ -1,16 +1,9 @@
-import { useCallback, useState, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-react'
 import { cn } from '../../lib/cn'
-import { ToastContext, type Severity } from './useToast'
+import { useToastStore, type Severity } from '../../stores/toast'
 import styles from './Toast.module.css'
-
-interface Toast {
-  id: number
-  severity: Severity
-  title: string
-  description?: string
-}
 
 const icons: Record<Severity, ReactNode> = {
   success: <CheckCircle2 className={styles.iconSuccess} />,
@@ -26,25 +19,12 @@ const borders: Record<Severity, string> = {
   info: styles.info,
 }
 
-let nextId = 0
-
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<Toast[]>([])
-
-  const addToast = useCallback((severity: Severity, title: string, description?: string) => {
-    const id = nextId++
-    setToasts((prev) => [...prev.slice(-4), { id, severity, title, description }])
-    if (severity !== 'error') {
-      setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000)
-    }
-  }, [])
-
-  const dismiss = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id))
-  }, [])
+  const toasts = useToastStore((s) => s.toasts)
+  const dismiss = useToastStore((s) => s.dismiss)
 
   return (
-    <ToastContext.Provider value={{ toast: addToast }}>
+    <>
       {children}
       <div className={styles.container} aria-live="polite">
         <AnimatePresence>
@@ -79,6 +59,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           ))}
         </AnimatePresence>
       </div>
-    </ToastContext.Provider>
+    </>
   )
 }

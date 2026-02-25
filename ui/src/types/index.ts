@@ -13,7 +13,24 @@ export interface MetricsResponse {
   chains_failed: number
   chains_cancelled: number
   circuit_open?: number
+  circuit_transitions?: number
+  circuit_fallbacks?: number
   scheduled?: number
+  llm_guardrail_allowed?: number
+  llm_guardrail_denied?: number
+  llm_guardrail_errors?: number
+  recurring_dispatched?: number
+  recurring_errors?: number
+  recurring_skipped?: number
+  quota_exceeded?: number
+  quota_warned?: number
+  quota_degraded?: number
+  quota_notified?: number
+  retention_deleted_state?: number
+  retention_skipped_compliance?: number
+  retention_errors?: number
+  wasm_invocations?: number
+  wasm_errors?: number
   embedding?: EmbeddingMetrics
 }
 
@@ -68,10 +85,6 @@ export interface RuleSummary {
   priority: number
   description?: string
   enabled: boolean
-  action_type: string
-  action_details: Record<string, unknown>
-  source: string
-  version?: number
 }
 
 // ---- Audit ----
@@ -227,20 +240,13 @@ export interface DagResponse {
 
 // ---- Approvals ----
 export interface ApprovalStatus {
-  approval_id: string
-  action_id: string
+  token: string
   status: string
   rule: string
   message?: string
   created_at: string
   expires_at: string
-  decided_by?: string
   decided_at?: string
-  namespace?: string
-  tenant?: string
-  action_type?: string
-  provider?: string
-  payload?: Record<string, unknown>
 }
 
 // ---- Circuit Breakers ----
@@ -279,31 +285,20 @@ export interface DlqStats {
 
 // ---- Events ----
 export interface EventState {
-  state: string
   fingerprint: string
-  updated_at: string
-  transitioned_by: string
-  state_machine?: string
+  state: string
+  action_type?: string
+  updated_at?: string
 }
 
 // ---- Groups ----
-export interface GroupedEvent {
-  action_id: string
-  fingerprint?: string
-  status?: string
-  payload: Record<string, unknown>
-  received_at: string
-}
-
 export interface EventGroup {
   group_id: string
   group_key: string
-  labels: Record<string, string>
-  events: GroupedEvent[]
+  event_count: number
+  state: string
   notify_at: string
-  state: 'Pending' | 'Notified' | 'Resolved'
   created_at: string
-  updated_at: string
 }
 
 // ---- Stream ----
@@ -500,7 +495,7 @@ export interface WasmPlugin {
 
 export interface WasmPluginListResponse {
   plugins: WasmPlugin[]
-  count: number
+  total: number
 }
 
 export interface WasmTestRequest {
@@ -598,10 +593,17 @@ export interface ConfigResponse {
     enable_timeout_processing: boolean
     enable_approval_retry: boolean
     enable_scheduled_actions: boolean
+    enable_recurring_actions: boolean
+    enable_retention_reaper: boolean
+    enable_template_sync: boolean
     group_flush_interval_seconds: number
     timeout_check_interval_seconds: number
     cleanup_interval_seconds: number
     scheduled_check_interval_seconds: number
+    recurring_check_interval_seconds: number
+    retention_check_interval_seconds: number
+    template_sync_interval_seconds: number
+    max_recurring_actions_per_tenant: number
   }
   telemetry: {
     enabled: boolean
@@ -617,7 +619,12 @@ export interface ConfigResponse {
     completed_chain_ttl_seconds: number
     definitions: Array<{ name: string; steps_count: number; timeout_seconds: number | null }>
   }
-  providers: Array<{ name: string; provider_type: string; url: string | null; header_count: number }>
+  providers: Array<{ name: string; provider_type: string; url: string | null; header_count: number; has_token?: boolean; has_auth_token?: boolean; has_webhook_url?: boolean; email_backend?: string; aws_region?: string }>
+  ui: { enabled: boolean; dist_path: string }
+  encryption: { enabled: boolean }
+  wasm: { enabled: boolean; plugin_dir: string | null; default_memory_limit_bytes: number; default_timeout_ms: number }
+  compliance: { mode: string; immutable_audit: boolean; hash_chain: boolean; sync_audit_writes: boolean }
+  attachments: { max_attachments_per_action: number; max_inline_bytes: number }
 }
 
 // ---- Quotas ----

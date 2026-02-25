@@ -1,13 +1,5 @@
 @reference "../index.css";
 
-.filterBar {
-  @apply flex flex-wrap gap-3 mb-4;
-}
-
-.actionsCell {
-  @apply flex items-center gap-1;
-}
-
 /* Progress bar */
 .usageCell {
   @apply flex items-center gap-2 min-w-32;
@@ -40,19 +32,6 @@
 }
 
 /* Create / Edit modal */
-.formGrid {
-  @apply grid grid-cols-2 gap-4;
-}
-
-.formSection {
-  @apply space-y-4;
-}
-
-.textareaLabel {
-  @apply block text-sm font-medium mb-1;
-  color: var(--text-secondary);
-}
-
 .textarea {
   @apply w-full h-24 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
   background: var(--bg-surface);
@@ -69,19 +48,6 @@
   @apply space-y-3 text-sm;
 }
 
-.detailRow {
-  @apply flex justify-between py-1 border-b;
-  border-color: var(--border-default);
-}
-
-.detailLabel {
-  @apply text-gray-500;
-}
-
-.detailValue {
-  @apply font-mono text-xs;
-}
-
 .detailValueWrap {
   @apply font-mono text-xs text-right max-w-xs break-all;
 }
@@ -90,19 +56,9 @@
   @apply text-sm font-medium mb-2;
 }
 
-.actionButtons {
-  @apply mt-6 flex gap-2;
-}
-
-/* Delete confirmation */
-.deleteWarning {
-  @apply text-sm mb-4;
-  color: var(--text-secondary);
-}
-
-.deleteName {
-  @apply font-semibold;
-  color: var(--text-primary);
+/* Usage detail spacing */
+.usageDetailSpacing {
+  @apply mt-4;
 }
 
 /* Usage detail in drawer */

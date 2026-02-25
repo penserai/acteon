@@ -8,6 +8,7 @@ import { Skeleton } from '../components/ui/Skeleton'
 import { cn } from '../lib/cn'
 import type { ProviderHealthStatus } from '../types'
 import { HeartPulse } from 'lucide-react'
+import shared from '../styles/shared.module.css'
 import styles from './ProviderHealth.module.css'
 
 function formatLatency(ms: number): string {
@@ -131,18 +132,18 @@ export function ProviderHealth() {
               <h3 className={styles.sectionTitle}>Health Status</h3>
               <div className={styles.detailsGrid}>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Status</span>
+                  <span className={shared.detailLabel}>Status</span>
                   {healthBadge(selected)}
                 </div>
                 {selected.health_check_error && (
                   <div className={styles.detailRow}>
-                    <span className={styles.detailLabel}>Error</span>
+                    <span className={shared.detailLabel}>Error</span>
                     <span className={styles.detailValue}>{selected.health_check_error}</span>
                   </div>
                 )}
                 {selected.circuit_breaker_state && (
                   <div className={styles.detailRow}>
-                    <span className={styles.detailLabel}>Circuit Breaker</span>
+                    <span className={shared.detailLabel}>Circuit Breaker</span>
                     <Badge size="md">{selected.circuit_breaker_state}</Badge>
                   </div>
                 )}
@@ -156,15 +157,15 @@ export function ProviderHealth() {
               </div>
               <div className={styles.detailsGrid}>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Total Requests</span>
+                  <span className={shared.detailLabel}>Total Requests</span>
                   <span className={styles.detailValue}>{selected.total_requests.toLocaleString()}</span>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Successes</span>
+                  <span className={shared.detailLabel}>Successes</span>
                   <span className={styles.detailValue}>{selected.successes.toLocaleString()}</span>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Failures</span>
+                  <span className={shared.detailLabel}>Failures</span>
                   <span className={styles.detailValue}>{selected.failures.toLocaleString()}</span>
                 </div>
               </div>
@@ -174,19 +175,19 @@ export function ProviderHealth() {
               <h3 className={styles.sectionTitle}>Latency</h3>
               <div className={styles.detailsGrid}>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>Average</span>
+                  <span className={shared.detailLabel}>Average</span>
                   <span className={styles.detailValue}>{formatLatency(selected.avg_latency_ms)}</span>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>p50 (Median)</span>
+                  <span className={shared.detailLabel}>p50 (Median)</span>
                   <span className={styles.detailValue}>{formatLatency(selected.p50_latency_ms)}</span>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>p95</span>
+                  <span className={shared.detailLabel}>p95</span>
                   <span className={styles.detailValue}>{formatLatency(selected.p95_latency_ms)}</span>
                 </div>
                 <div className={styles.detailRow}>
-                  <span className={styles.detailLabel}>p99</span>
+                  <span className={shared.detailLabel}>p99</span>
                   <span className={styles.detailValue}>{formatLatency(selected.p99_latency_ms)}</span>
                 </div>
               </div>

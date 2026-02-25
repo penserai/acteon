@@ -89,10 +89,6 @@
   @apply flex justify-between items-center;
 }
 
-.detailLabel {
-  color: var(--text-muted);
-}
-
 .detailValue {
   @apply font-mono text-xs tabular-nums;
   color: var(--text-default);

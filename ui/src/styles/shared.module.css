@@ -1,0 +1,70 @@
+@reference "../index.css";
+
+/* Shared styles extracted from page-level CSS modules */
+
+.filterBar {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+.formGrid {
+  @apply grid grid-cols-2 gap-4;
+}
+
+.formSection {
+  @apply space-y-4;
+}
+
+.actionsCell {
+  @apply flex items-center gap-1;
+}
+
+.detailRow {
+  @apply flex justify-between py-1 border-b;
+  border-color: var(--border-default);
+}
+
+.detailLabel {
+  color: var(--text-muted);
+}
+
+.detailValue {
+  @apply font-mono text-xs;
+}
+
+.detailValueWrap {
+  @apply text-sm text-right;
+  color: var(--text-primary);
+}
+
+.deleteWarning {
+  @apply text-sm mb-4;
+  color: var(--text-secondary);
+}
+
+.deleteName {
+  @apply font-semibold;
+  color: var(--text-primary);
+}
+
+.actionButtons {
+  @apply mt-6 flex gap-2;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2;
+  color: var(--text-secondary);
+}
+
+.textareaLabel {
+  @apply block text-sm font-medium mb-1;
+  color: var(--text-secondary);
+}
+
+.textarea {
+  @apply w-full rounded-md border px-3 py-2 text-sm font-mono;
+  background: var(--bg-input);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+  min-height: 80px;
+  resize: vertical;
+}

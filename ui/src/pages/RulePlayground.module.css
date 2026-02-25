@@ -16,15 +16,6 @@
   border-color: var(--border-default);
 }
 
-.formGrid {
-  @apply grid grid-cols-2 gap-4;
-}
-
-.textareaLabel {
-  @apply block text-sm font-medium mb-1;
-  color: var(--text-secondary);
-}
-
 .textarea {
   @apply w-full h-32 rounded-md border px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-primary-400/20 focus:border-primary-400;
   background: var(--bg-surface);
@@ -308,6 +299,16 @@
 
 .similarityFail {
   @apply bg-red-500;
+}
+
+/* Context spacing */
+.contextSpacing {
+  @apply mt-2;
+}
+
+/* Clickable trace row */
+.traceRowClickable {
+  cursor: pointer;
 }
 
 /* JSON detail sub-sections in trace rows */

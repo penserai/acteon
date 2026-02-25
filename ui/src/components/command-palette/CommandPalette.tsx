@@ -3,24 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { Command } from 'cmdk'
 import { AnimatePresence, motion } from 'framer-motion'
 import {
-  LayoutDashboard, Send, BookOpen, ScrollText, Link2, ShieldCheck, ShieldAlert, Rss,
-  Sun, Search, RefreshCw,
+  Sun, Search,
 } from 'lucide-react'
 import { useUiStore } from '../../stores/ui'
 import { useThemeStore } from '../../stores/theme'
+import { MAIN_NAV_ITEMS } from '../../lib/navigation'
 import styles from './CommandPalette.module.css'
-
-const navItems = [
-  { label: 'Dashboard', to: '/', icon: LayoutDashboard, shortcut: '1' },
-  { label: 'Rules', to: '/rules', icon: BookOpen, shortcut: '2' },
-  { label: 'Chains', to: '/chains', icon: Link2, shortcut: '3' },
-  { label: 'Audit Trail', to: '/audit', icon: ScrollText, shortcut: '4' },
-  { label: 'Approvals', to: '/approvals', icon: ShieldCheck, shortcut: '5' },
-  { label: 'Event Stream', to: '/stream', icon: Rss },
-  { label: 'Recurring Actions', to: '/recurring', icon: RefreshCw },
-  { label: 'Dispatch Action', to: '/dispatch', icon: Send },
-  { label: 'Compliance', to: '/compliance', icon: ShieldAlert },
-]
 
 export function CommandPalette() {
   const open = useUiStore((s) => s.commandPaletteOpen)
@@ -81,7 +69,7 @@ export function CommandPalette() {
                 </Command.Empty>
 
                 <Command.Group heading="Navigation" className={styles.group}>
-                  {navItems.map((item) => (
+                  {MAIN_NAV_ITEMS.filter(item => !item.external).map((item) => (
                     <Command.Item
                       key={item.to}
                       onSelect={() => goTo(item.to)}

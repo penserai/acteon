@@ -18,12 +18,14 @@ import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Modal } from '../components/ui/Modal'
+import { DeleteConfirmModal } from '../components/ui/DeleteConfirmModal'
 import { Drawer } from '../components/ui/Drawer'
 import { Tabs } from '../components/ui/Tabs'
 import { JsonViewer } from '../components/ui/JsonViewer'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime } from '../lib/format'
 import type { RecurringAction, RecurringActionSummary, CreateRecurringActionRequest } from '../types'
+import shared from '../styles/shared.module.css'
 import styles from './RecurringActions.module.css'
 
 // ---- Cron description helper ----
@@ -174,7 +176,7 @@ export function RecurringActions() {
     col.accessor('description', {
       header: 'Name',
       cell: (info) => (
-        <span className={styles.detailValue}>
+        <span className={shared.detailValue}>
           {info.getValue() || info.row.original.id.slice(0, 12) + '...'}
         </span>
       ),
@@ -218,7 +220,7 @@ export function RecurringActions() {
     }),
     col.accessor('provider', {
       header: 'Provider',
-      cell: (info) => <span className={styles.detailValue}>{info.getValue()}</span>,
+      cell: (info) => <span className={shared.detailValue}>{info.getValue()}</span>,
     }),
     col.display({
       id: 'actions',
@@ -227,7 +229,7 @@ export function RecurringActions() {
         const row = info.row.original
         return (
           <div
-            className={styles.actionsCell}
+            className={shared.actionsCell}
             onClick={(e) => e.stopPropagation()}
             role="group"
             aria-label="Row actions"
@@ -271,7 +273,7 @@ export function RecurringActions() {
         }
       />
 
-      <div className={styles.filterBar}>
+      <div className={shared.filterBar}>
         <Input
           placeholder="Namespace"
           value={ns}
@@ -342,32 +344,15 @@ export function RecurringActions() {
       </Drawer>
 
       {/* Delete confirmation modal */}
-      <Modal
+      <DeleteConfirmModal
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
+        onConfirm={handleDelete}
+        loading={deleteMutation.isPending}
         title="Delete Recurring Action"
-        size="sm"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>Cancel</Button>
-            <Button
-              variant="danger"
-              loading={deleteMutation.isPending}
-              onClick={handleDelete}
-            >
-              Delete
-            </Button>
-          </>
-        }
-      >
-        <p className={styles.deleteWarning}>
-          Are you sure you want to delete{' '}
-          <span className={styles.deleteName}>
-            {deleteTarget?.description || deleteTarget?.id.slice(0, 12)}
-          </span>
-          ? This will stop all future executions and cannot be undone.
-        </p>
-      </Modal>
+        name={deleteTarget?.description || deleteTarget?.id.slice(0, 12) || ''}
+        warning="This will stop all future executions and cannot be undone."
+      />
     </div>
   )
 }
@@ -445,8 +430,8 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
         </>
       }
     >
-      <div className={styles.formSection}>
-        <div className={styles.formGrid}>
+      <div className={shared.formSection}>
+        <div className={shared.formGrid}>
           <Input label="Namespace *" value={ns} onChange={(e) => setNs(e.target.value)} placeholder="prod" />
           <Input label="Tenant *" value={tenant} onChange={(e) => setTenant(e.target.value)} placeholder="acme" />
         </div>
@@ -480,13 +465,13 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
           onChange={(e) => setTimezone(e.target.value)}
         />
 
-        <div className={styles.formGrid}>
+        <div className={shared.formGrid}>
           <Input label="Provider *" value={provider} onChange={(e) => setProvider(e.target.value)} placeholder="email" />
           <Input label="Action Type *" value={actionType} onChange={(e) => setActionType(e.target.value)} placeholder="send-notification" />
         </div>
 
         <div>
-          <label className={styles.textareaLabel} htmlFor="recurring-payload">Payload (JSON) *</label>
+          <label className={shared.textareaLabel} htmlFor="recurring-payload">Payload (JSON) *</label>
           <textarea
             id="recurring-payload"
             value={payload}
@@ -505,7 +490,7 @@ function CreateRecurringModal({ open, onClose, onSubmit, loading }: {
 
         <div className={styles.optionalSection}>
           <span className={styles.optionalLabel}>Optional Settings</span>
-          <div className={styles.formGrid}>
+          <div className={shared.formGrid}>
             <Input
               label="End Date"
               type="datetime-local"
@@ -570,8 +555,8 @@ function RecurringDetailView({ action, tab, onTabChange, onPauseResume, onDelete
             'End Date': action.ends_at ?? 'None',
             'Description': action.description ?? '-',
           }).map(([k, v]) => (
-            <div key={k} className={styles.detailRow}>
-              <span className={styles.detailLabel}>{k}</span>
+            <div key={k} className={shared.detailRow}>
+              <span className={shared.detailLabel}>{k}</span>
               <span className={styles.detailValueWrap}>{v}</span>
             </div>
           ))}
@@ -580,9 +565,9 @@ function RecurringDetailView({ action, tab, onTabChange, onPauseResume, onDelete
             <div>
               <h3 className={styles.sectionTitle}>Labels</h3>
               {Object.entries(action.labels).map(([k, v]) => (
-                <div key={k} className={styles.detailRow}>
-                  <span className={styles.detailLabel}>{k}</span>
-                  <span className={styles.detailValue}>{v}</span>
+                <div key={k} className={shared.detailRow}>
+                  <span className={shared.detailLabel}>{k}</span>
+                  <span className={shared.detailValue}>{v}</span>
                 </div>
               ))}
             </div>
@@ -597,7 +582,7 @@ function RecurringDetailView({ action, tab, onTabChange, onPauseResume, onDelete
             <JsonViewer data={action.payload} />
           </div>
           {action.metadata && Object.keys(action.metadata).length > 0 && (
-            <div style={{ marginTop: '1rem' }}>
+            <div className={styles.subsection}>
               <h3 className={styles.sectionTitle}>Metadata</h3>
               <div className={styles.jsonViewerCard}>
                 <JsonViewer data={action.metadata} />
@@ -605,15 +590,15 @@ function RecurringDetailView({ action, tab, onTabChange, onPauseResume, onDelete
             </div>
           )}
           {action.dedup_key && (
-            <div style={{ marginTop: '1rem' }}>
+            <div className={styles.subsection}>
               <h3 className={styles.sectionTitle}>Dedup Key Template</h3>
-              <p className={styles.detailValue}>{action.dedup_key}</p>
+              <p className={shared.detailValue}>{action.dedup_key}</p>
             </div>
           )}
         </div>
       )}
 
-      <div className={styles.actionButtons}>
+      <div className={shared.actionButtons}>
         <Button
           variant={action.enabled ? 'secondary' : 'success'}
           size="sm"
