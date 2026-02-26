@@ -162,11 +162,11 @@ pub struct Gateway {
     pub(crate) llm_policy: String,
     pub(crate) llm_policies: HashMap<String, String>,
     pub(crate) llm_fail_open: bool,
-    pub(crate) chains: HashMap<String, ChainConfig>,
-    /// Pre-computed step-name-to-index maps for each chain config, built once at
-    /// gateway construction time to avoid repeated `HashMap` allocations during
-    /// chain advancement.
-    pub(crate) chain_step_indices: HashMap<String, HashMap<String, usize>>,
+    pub(crate) chains: parking_lot::RwLock<HashMap<String, ChainConfig>>,
+    /// Pre-computed step-name-to-index maps for each chain config, built at
+    /// gateway construction time (and updated via runtime CRUD) to avoid
+    /// repeated `HashMap` allocations during chain advancement.
+    pub(crate) chain_step_indices: parking_lot::RwLock<HashMap<String, HashMap<String, usize>>>,
     pub(crate) completed_chain_ttl: Option<Duration>,
     pub(crate) embedding: Option<Arc<dyn acteon_rules::EmbeddingEvalSupport>>,
     pub(crate) default_timezone: Option<chrono_tz::Tz>,
@@ -837,8 +837,42 @@ impl Gateway {
     }
 
     /// Return the registered chain configurations.
-    pub fn chain_configs(&self) -> Vec<&ChainConfig> {
-        self.chains.values().collect()
+    pub fn chain_configs(&self) -> Vec<ChainConfig> {
+        self.chains.read().values().cloned().collect()
+    }
+
+    /// Return a single chain config by name.
+    pub fn chain_config(&self, name: &str) -> Option<ChainConfig> {
+        self.chains.read().get(name).cloned()
+    }
+
+    /// Add or replace a chain definition. Validates the config and the full graph
+    /// (cycles, dangling refs) before committing. Returns validation errors if invalid.
+    pub fn set_chain_config(&self, config: ChainConfig) -> Result<(), Vec<String>> {
+        let errors = config.validate();
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        let name = config.name.clone();
+        let index_map = config.step_index_map();
+        // Validate the full graph including the new/updated chain.
+        {
+            let mut chains = self.chains.write();
+            chains.insert(name.clone(), config);
+            let graph_errors = acteon_core::validate_chain_graph(&chains);
+            if !graph_errors.is_empty() {
+                chains.remove(&name);
+                return Err(graph_errors);
+            }
+        }
+        self.chain_step_indices.write().insert(name, index_map);
+        Ok(())
+    }
+
+    /// Remove a chain definition by name. Returns the removed config, or `None`.
+    pub fn remove_chain_config(&self, name: &str) -> Option<ChainConfig> {
+        self.chain_step_indices.write().remove(name);
+        self.chains.write().remove(name)
     }
 
     /// Enable a rule by name. Returns `true` if the rule was found.
@@ -2016,7 +2050,7 @@ impl Gateway {
         action: &Action,
         chain_name: &str,
     ) -> Result<ActionOutcome, GatewayError> {
-        let chain_config = self.chains.get(chain_name).ok_or_else(|| {
+        let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
             GatewayError::ChainError(format!("chain configuration not found: {chain_name}"))
         })?;
 
@@ -2201,19 +2235,25 @@ impl Gateway {
             return Ok(());
         }
 
-        let chain_config = self.chains.get(&chain_state.chain_name).ok_or_else(|| {
-            GatewayError::ChainError(format!(
-                "chain configuration not found: {}",
-                chain_state.chain_name
-            ))
-        })?;
+        let chain_config = self
+            .chains
+            .read()
+            .get(&chain_state.chain_name)
+            .cloned()
+            .ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "chain configuration not found: {}",
+                    chain_state.chain_name
+                ))
+            })?;
 
-        // Use the pre-computed step index map (built once at gateway construction).
-        let empty_index_map = HashMap::new();
+        // Use the pre-computed step index map (built at gateway construction).
         let step_index_map = self
             .chain_step_indices
+            .read()
             .get(&chain_state.chain_name)
-            .unwrap_or(&empty_index_map);
+            .cloned()
+            .unwrap_or_default();
 
         let step_idx = chain_state.current_step;
         let step_config = &chain_config.steps[step_idx];
@@ -2267,10 +2307,10 @@ impl Gateway {
                             chain_state.updated_at = Utc::now();
 
                             let next_step_idx = Self::resolve_next_step(
-                                chain_config,
+                                &chain_config,
                                 step_idx,
                                 &step_result,
-                                step_index_map,
+                                &step_index_map,
                             );
 
                             if let Some(next_idx) = next_step_idx {
@@ -2347,10 +2387,10 @@ impl Gateway {
                                 }
                                 acteon_core::chain::StepFailurePolicy::Skip => {
                                     let next_step_idx = Self::resolve_next_step(
-                                        chain_config,
+                                        &chain_config,
                                         step_idx,
                                         &step_result,
-                                        step_index_map,
+                                        &step_index_map,
                                     );
                                     if let Some(next_idx) = next_step_idx {
                                         chain_state.current_step = next_idx;
@@ -2442,9 +2482,9 @@ impl Gateway {
                     &pending_key,
                     step_idx,
                     step_config,
-                    chain_config,
+                    &chain_config,
                     &mut chain_state,
-                    step_index_map,
+                    &step_index_map,
                     guard,
                 )
                 .await;
@@ -2642,7 +2682,7 @@ impl Gateway {
 
                 // Determine next step using branch evaluation.
                 let next_step_idx =
-                    Self::resolve_next_step(chain_config, step_idx, &step_result, step_index_map);
+                    Self::resolve_next_step(&chain_config, step_idx, &step_result, &step_index_map);
 
                 if let Some(next_idx) = next_step_idx {
                     // Advance to the next step (may be non-sequential for branching).
@@ -2814,10 +2854,10 @@ impl Gateway {
                             .as_ref()
                             .expect("step result was just set");
                         let next_step_idx = Self::resolve_next_step(
-                            chain_config,
+                            &chain_config,
                             step_idx,
                             skip_result,
-                            step_index_map,
+                            &step_index_map,
                         );
 
                         if let Some(next_idx) = next_step_idx {
@@ -3872,11 +3912,16 @@ impl Gateway {
         step_idx: usize,
         sub_chain_name: &str,
     ) -> Result<String, GatewayError> {
-        let sub_config = self.chains.get(sub_chain_name).ok_or_else(|| {
-            GatewayError::ChainError(format!(
-                "sub-chain configuration not found: {sub_chain_name}"
-            ))
-        })?;
+        let sub_config = self
+            .chains
+            .read()
+            .get(sub_chain_name)
+            .cloned()
+            .ok_or_else(|| {
+                GatewayError::ChainError(format!(
+                    "sub-chain configuration not found: {sub_chain_name}"
+                ))
+            })?;
 
         if sub_config.steps.is_empty() {
             return Err(GatewayError::ChainError(format!(
@@ -4034,7 +4079,7 @@ impl Gateway {
                 )));
             }
 
-            let chain_config = self.chains.get(chain_name).ok_or_else(|| {
+            let chain_config = self.chains.read().get(chain_name).cloned().ok_or_else(|| {
                 GatewayError::ChainError(format!(
                     "chain configuration not found for DAG: {chain_name}"
                 ))
@@ -4752,8 +4797,9 @@ impl Gateway {
         info!(chain_id = %chain_id, "chain cancelled");
 
         // Dispatch a cancel notification through the gateway pipeline.
-        let chain_config = self.chains.get(&chain_state.chain_name);
+        let chain_config = self.chains.read().get(&chain_state.chain_name).cloned();
         let (notify_provider, notify_action_type) = chain_config
+            .as_ref()
             .and_then(|c| c.on_cancel.as_ref())
             .map_or(("webhook", "chain_cancelled"), |t| {
                 (t.provider.as_str(), t.action_type.as_str())

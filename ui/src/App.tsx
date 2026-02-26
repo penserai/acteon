@@ -25,6 +25,7 @@ import { RetentionPolicies } from './pages/RetentionPolicies'
 import { RulePlayground } from './pages/RulePlayground'
 import { WasmPlugins } from './pages/WasmPlugins'
 import { Templates } from './pages/Templates'
+import { ChainDefinitions } from './pages/ChainDefinitions'
 import { Analytics } from './pages/Analytics'
 import { ComplianceStatus } from './pages/ComplianceStatus'
 import { Settings } from './pages/Settings'
@@ -49,6 +50,7 @@ function App() {
           <Route path="groups" element={<Groups />} />
           <Route path="chains" element={<Chains />} />
           <Route path="chains/:chainId" element={<ChainDetail />} />
+          <Route path="chain-definitions" element={<ChainDefinitions />} />
           <Route path="approvals" element={<Approvals />} />
           <Route path="circuit-breakers" element={<Providers />} />
           <Route path="provider-health" element={<ProviderHealth />} />

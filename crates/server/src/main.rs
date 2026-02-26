@@ -8,8 +8,7 @@ use tracing::info;
 
 use acteon_core::{
     Action, BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy,
-    ChainNotificationTarget, ChainStepConfig, ParallelFailurePolicy, ParallelJoinPolicy,
-    ParallelStepGroup, StepFailurePolicy, StreamEvent, StreamEventType,
+    ChainNotificationTarget, ChainStepConfig, StepFailurePolicy, StreamEvent, StreamEventType,
 };
 use acteon_executor::ExecutorConfig;
 use acteon_gateway::GatewayBuilder;
@@ -51,72 +50,6 @@ enum Commands {
     Encrypt,
     /// Run database migrations for configured state and audit backends, then exit.
     Migrate,
-}
-
-/// Convert a TOML step config into a core `ChainStepConfig`.
-fn convert_step_toml(step_toml: &acteon_server::config::ChainStepConfigToml) -> ChainStepConfig {
-    let mut step = if let Some(ref parallel_toml) = step_toml.parallel {
-        let sub_steps: Vec<ChainStepConfig> =
-            parallel_toml.steps.iter().map(convert_step_toml).collect();
-        let join = match parallel_toml.join.as_deref() {
-            Some("any") => ParallelJoinPolicy::Any,
-            _ => ParallelJoinPolicy::All,
-        };
-        let on_failure = match parallel_toml.on_failure.as_deref() {
-            Some("best_effort") => ParallelFailurePolicy::BestEffort,
-            _ => ParallelFailurePolicy::FailFast,
-        };
-        let group = ParallelStepGroup {
-            steps: sub_steps,
-            join,
-            on_failure,
-            timeout_seconds: parallel_toml.timeout_seconds,
-            max_concurrency: parallel_toml.max_concurrency,
-        };
-        ChainStepConfig::new_parallel(&step_toml.name, group)
-    } else if let Some(ref sub_chain_name) = step_toml.sub_chain {
-        ChainStepConfig::new_sub_chain(&step_toml.name, sub_chain_name)
-    } else {
-        ChainStepConfig::new(
-            &step_toml.name,
-            step_toml.provider.as_deref().unwrap_or(""),
-            step_toml.action_type.as_deref().unwrap_or(""),
-            step_toml.payload_template.clone(),
-        )
-    };
-    if let Some(ref policy) = step_toml.on_failure {
-        let step_policy = match policy.as_str() {
-            "skip" => StepFailurePolicy::Skip,
-            "dlq" => StepFailurePolicy::Dlq,
-            _ => StepFailurePolicy::Abort,
-        };
-        step = step.with_on_failure(step_policy);
-    }
-    if let Some(delay) = step_toml.delay_seconds {
-        step = step.with_delay(delay);
-    }
-    for branch_toml in &step_toml.branches {
-        let operator = match branch_toml.operator.as_str() {
-            "neq" => BranchOperator::Neq,
-            "contains" => BranchOperator::Contains,
-            "exists" => BranchOperator::Exists,
-            "gt" => BranchOperator::Gt,
-            "lt" => BranchOperator::Lt,
-            "gte" => BranchOperator::Gte,
-            "lte" => BranchOperator::Lte,
-            _ => BranchOperator::Eq,
-        };
-        step = step.with_branch(BranchCondition::new(
-            &branch_toml.field,
-            operator,
-            branch_toml.value.clone(),
-            &branch_toml.target,
-        ));
-    }
-    if let Some(ref default_next) = step_toml.default_next {
-        step = step.with_default_next(default_next);
-    }
-    step
 }
 
 #[tokio::main]
@@ -572,7 +505,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
         for step_toml in &chain_toml.steps {
-            chain_config = chain_config.with_step(convert_step_toml(step_toml));
+            let mut step = if let Some(ref sub_chain_name) = step_toml.sub_chain {
+                ChainStepConfig::new_sub_chain(&step_toml.name, sub_chain_name)
+            } else {
+                ChainStepConfig::new(
+                    &step_toml.name,
+                    step_toml.provider.as_deref().unwrap_or(""),
+                    step_toml.action_type.as_deref().unwrap_or(""),
+                    step_toml.payload_template.clone(),
+                )
+            };
+            if let Some(ref policy) = step_toml.on_failure {
+                let step_policy = match policy.as_str() {
+                    "skip" => StepFailurePolicy::Skip,
+                    "dlq" => StepFailurePolicy::Dlq,
+                    _ => StepFailurePolicy::Abort,
+                };
+                step = step.with_on_failure(step_policy);
+            }
+            if let Some(delay) = step_toml.delay_seconds {
+                step = step.with_delay(delay);
+            }
+            for branch_toml in &step_toml.branches {
+                let operator = match branch_toml.operator.as_str() {
+                    "neq" => BranchOperator::Neq,
+                    "contains" => BranchOperator::Contains,
+                    "exists" => BranchOperator::Exists,
+                    "gt" => BranchOperator::Gt,
+                    "lt" => BranchOperator::Lt,
+                    "gte" => BranchOperator::Gte,
+                    "lte" => BranchOperator::Lte,
+                    _ => BranchOperator::Eq,
+                };
+                step = step.with_branch(BranchCondition::new(
+                    &branch_toml.field,
+                    operator,
+                    branch_toml.value.clone(),
+                    &branch_toml.target,
+                ));
+            }
+            if let Some(ref default_next) = step_toml.default_next {
+                step = step.with_default_next(default_next);
+            }
+            chain_config = chain_config.with_step(step);
         }
         builder = builder.chain(chain_config);
     }
@@ -1105,6 +1080,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to load template profiles from state store");
+        }
+    }
+
+    // Load chain definitions from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::ChainDefinition)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(config) = serde_json::from_str::<acteon_core::ChainConfig>(&value) {
+                    let _ = gateway.set_chain_config(config);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded chain definitions from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load chain definitions from state store");
         }
     }
 

@@ -199,13 +199,19 @@ export interface BranchCondition {
   target: string
 }
 
-export type ParallelJoinPolicy = 'all' | 'any'
-export type ParallelFailurePolicy = 'fail_fast' | 'best_effort'
+export interface ParallelSubStepConfig {
+  name: string
+  provider: string
+  action_type: string
+  payload_template: Record<string, unknown>
+  on_failure?: string
+  branches: BranchCondition[]
+}
 
 export interface ParallelStepGroup {
-  steps: ChainStepConfig[]
-  join: ParallelJoinPolicy
-  on_failure: ParallelFailurePolicy
+  steps: ParallelSubStepConfig[]
+  join: string
+  on_failure: string
   timeout_seconds?: number
   max_concurrency?: number
 }
@@ -221,6 +227,29 @@ export interface ChainStepConfig {
   default_next?: string
   sub_chain?: string
   parallel?: ParallelStepGroup
+}
+
+// ---- Chain Definitions ----
+export interface ChainDefinitionSummary {
+  name: string
+  steps_count: number
+  has_branches: boolean
+  has_parallel: boolean
+  has_sub_chains: boolean
+  on_failure: string
+  timeout_seconds?: number
+}
+
+export interface ChainDefinitionListResponse {
+  definitions: ChainDefinitionSummary[]
+}
+
+export interface ChainDefinition {
+  name: string
+  steps: ChainStepConfig[]
+  on_failure: string
+  timeout_seconds?: number
+  on_cancel?: { provider: string; action_type: string }
 }
 
 // ---- Chain DAG ----
