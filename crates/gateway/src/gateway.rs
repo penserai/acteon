@@ -3141,7 +3141,36 @@ impl Gateway {
     ) -> Result<(), GatewayError> {
         let group = step_config.parallel.as_ref().unwrap();
 
-        // --- Phase 2.1: Per-sub-step dedup keys ---
+        // Detect whether we are resuming after a crash. If `parallel_state` is
+        // already set for this step, sub-steps that already have results in
+        // `parallel_sub_results` can be skipped.
+        let is_resuming = chain_state
+            .parallel_state
+            .as_ref()
+            .is_some_and(|ps| ps.step_index == step_idx);
+
+        if is_resuming {
+            let completed = chain_state.parallel_sub_results.len();
+            let total = group.steps.len();
+            info!(
+                chain_id = %chain_id,
+                step = %step_config.name,
+                completed,
+                total,
+                "resuming parallel group — dispatching {remaining} pending sub-steps",
+                remaining = total - completed,
+            );
+        }
+
+        // Determine which sub-steps need dispatching (all on first entry,
+        // only missing on resumption).
+        let pending_sub_steps: Vec<&ChainStepConfig> = group
+            .steps
+            .iter()
+            .filter(|s| !chain_state.parallel_sub_results.contains_key(&s.name))
+            .collect();
+
+        // --- Per-sub-step dedup keys (only for pending sub-steps) ---
         let dedup_ttl = chain_state.expires_at.map_or(
             Duration::from_secs(86400), // 24h default
             |ea| {
@@ -3149,8 +3178,8 @@ impl Gateway {
                 Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
             },
         );
-        let mut sub_dedup_keys = Vec::with_capacity(group.steps.len());
-        for sub_step in &group.steps {
+        let mut sub_dedup_keys = Vec::with_capacity(pending_sub_steps.len());
+        for sub_step in &pending_sub_steps {
             let key = StateKey::new(
                 namespace,
                 tenant,
@@ -3166,35 +3195,37 @@ impl Gateway {
             sub_dedup_keys.push(key);
         }
 
-        // --- Phase 2.2: Persist ParallelExecutionState before execution ---
-        let parallel_state = acteon_core::chain::ParallelExecutionState {
-            step_name: step_config.name.clone(),
-            step_index: step_idx,
-            sub_steps: group
-                .steps
-                .iter()
-                .map(|s| {
-                    (
-                        s.name.clone(),
-                        acteon_core::chain::ParallelSubStepStatus::Pending,
-                    )
-                })
-                .collect(),
-            started_at: Utc::now(),
-            expires_at: group.timeout_seconds.map(|secs| {
-                Utc::now() + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
-            }),
-        };
-        chain_state.status = ChainStatus::WaitingParallel;
-        chain_state.parallel_state = Some(parallel_state);
-        chain_state.updated_at = Utc::now();
-        self.persist_chain_state(chain_key, chain_state, None)
-            .await?;
+        // --- Persist ParallelExecutionState (only on first entry) ---
+        if !is_resuming {
+            let parallel_state = acteon_core::chain::ParallelExecutionState {
+                step_name: step_config.name.clone(),
+                step_index: step_idx,
+                sub_steps: group
+                    .steps
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.name.clone(),
+                            acteon_core::chain::ParallelSubStepStatus::Pending,
+                        )
+                    })
+                    .collect(),
+                started_at: Utc::now(),
+                expires_at: group.timeout_seconds.map(|secs| {
+                    Utc::now() + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
+                }),
+            };
+            chain_state.status = ChainStatus::WaitingParallel;
+            chain_state.parallel_state = Some(parallel_state);
+            chain_state.updated_at = Utc::now();
+            self.persist_chain_state(chain_key, chain_state, None)
+                .await?;
+        }
 
-        // Resolve sub-step payloads and build futures, keeping payloads for auditing.
-        let mut sub_payloads: Vec<serde_json::Value> = Vec::with_capacity(group.steps.len());
-        let sub_step_futures: Vec<_> = group
-            .steps
+        // Resolve payloads and build futures only for pending sub-steps.
+        // `sub_payloads` is indexed in parallel with `pending_sub_steps`.
+        let mut sub_payloads: Vec<serde_json::Value> = Vec::with_capacity(pending_sub_steps.len());
+        let sub_step_futures: Vec<_> = pending_sub_steps
             .iter()
             .map(|sub_step| {
                 let sub_payload = crate::chain::resolve_template(
@@ -3224,9 +3255,26 @@ impl Gateway {
             })
             .collect();
 
-        let group_timeout = group
-            .timeout_seconds
-            .map_or(Duration::from_secs(300), Duration::from_secs);
+        // On resumption, honour the original deadline rather than starting a
+        // fresh full timeout. Falls back to the configured (or default) value
+        // when there is no persisted expiry.
+        let group_timeout = if is_resuming {
+            chain_state
+                .parallel_state
+                .as_ref()
+                .and_then(|ps| ps.expires_at)
+                .map(|ea| {
+                    let remaining = ea - Utc::now();
+                    Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
+                })
+        } else {
+            None
+        }
+        .unwrap_or_else(|| {
+            group
+                .timeout_seconds
+                .map_or(Duration::from_secs(300), Duration::from_secs)
+        });
 
         let Ok(results) = tokio::time::timeout(
             group_timeout,
@@ -3307,20 +3355,25 @@ impl Gateway {
             return Ok(());
         };
 
-        // --- Phase 1.1: Aggregate results and emit sub-step audit records ---
+        // --- Aggregate results and emit sub-step audit records ---
         let mut merged_body = serde_json::Map::new();
         let mut all_success = true;
         let mut any_success = false;
         let now = Utc::now();
 
-        // Build a lookup from sub-step name to its config index for audit payloads.
-        let sub_config_index: HashMap<&str, usize> = group
-            .steps
+        // Lookup from sub-step name → index into `pending_sub_steps` / `sub_payloads`
+        // (only the freshly-dispatched ones). Used to find the audit payload.
+        let pending_index: HashMap<&str, usize> = pending_sub_steps
             .iter()
             .enumerate()
             .map(|(i, s)| (s.name.as_str(), i))
             .collect();
 
+        // Full config lookup for provider info on any sub-step.
+        let full_config_index: HashMap<&str, &ChainStepConfig> =
+            group.steps.iter().map(|s| (s.name.as_str(), s)).collect();
+
+        // Process freshly-dispatched results.
         for (sub_name, outcome, elapsed) in &results {
             let (success, body, error) = match outcome {
                 ActionOutcome::Executed(resp) => (true, Some(resp.body.clone()), None),
@@ -3339,14 +3392,16 @@ impl Gateway {
                 .parallel_sub_results
                 .insert(sub_name.clone(), sub_result.clone());
 
-            // Emit sub-step audit record.
-            if let Some(&cfg_idx) = sub_config_index.get(sub_name.as_str()) {
-                let sub_config = &group.steps[cfg_idx];
+            // Emit sub-step audit record (only for freshly dispatched steps).
+            if let Some(sub_config) = full_config_index.get(sub_name.as_str()) {
                 let audit_outcome = if success {
                     "chain_step_completed"
                 } else {
                     "chain_step_failed"
                 };
+                let audit_payload = pending_index
+                    .get(sub_name.as_str())
+                    .and_then(|&i| sub_payloads.get(i));
                 self.emit_chain_step_audit(
                     chain_state,
                     sub_config,
@@ -3354,7 +3409,7 @@ impl Gateway {
                     audit_outcome,
                     &sub_result,
                     *elapsed,
-                    sub_payloads.get(cfg_idx),
+                    audit_payload,
                 );
             }
 
@@ -3362,6 +3417,25 @@ impl Gateway {
                 any_success = true;
                 if let Some(b) = body {
                     merged_body.insert(sub_name.clone(), b);
+                }
+            } else {
+                all_success = false;
+            }
+        }
+
+        // Fold in pre-existing results from a prior run (resumption case).
+        // These were already audited in the previous invocation — no new audit
+        // records are emitted for them.
+        for (sub_name, sr) in &chain_state.parallel_sub_results {
+            // Skip results we just processed above (already in merged_body /
+            // already counted towards all_success / any_success).
+            if results.iter().any(|(name, _, _)| name == sub_name) {
+                continue;
+            }
+            if sr.success {
+                any_success = true;
+                if let Some(ref b) = sr.response_body {
+                    merged_body.insert(sub_name.clone(), b.clone());
                 }
             } else {
                 all_success = false;
