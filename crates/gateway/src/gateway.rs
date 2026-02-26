@@ -3306,13 +3306,14 @@ impl Gateway {
                 .await?;
             self.metrics.increment_chains_failed();
             // Emit parent step audit + stream events for timeout.
-            self.emit_chain_step_audit(
+            self.emit_parallel_step_audit(
                 chain_state,
                 step_config,
                 step_idx,
                 "chain_step_failed",
                 &parent_result,
                 group_timeout,
+                None,
                 None,
             );
             self.emit_chain_terminal_audit(chain_state, "chain_failed");
@@ -3402,7 +3403,7 @@ impl Gateway {
                 let audit_payload = pending_index
                     .get(sub_name.as_str())
                     .and_then(|&i| sub_payloads.get(i));
-                self.emit_chain_step_audit(
+                self.emit_parallel_step_audit(
                     chain_state,
                     sub_config,
                     step_idx,
@@ -3410,6 +3411,7 @@ impl Gateway {
                     &sub_result,
                     *elapsed,
                     audit_payload,
+                    Some(&step_config.name),
                 );
             }
 
@@ -3490,7 +3492,7 @@ impl Gateway {
                     .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
                 self.state.index_chain_ready(pending_key, ready_at).await?;
                 // Parent step audit + stream events: success, more steps.
-                self.emit_chain_step_audit(
+                self.emit_parallel_step_audit(
                     chain_state,
                     step_config,
                     step_idx,
@@ -3498,6 +3500,7 @@ impl Gateway {
                     &parent_result,
                     parent_duration,
                     parent_audit_payload.as_ref(),
+                    None,
                 );
                 self.emit_stream_event(StreamEvent {
                     id: uuid::Uuid::now_v7().to_string(),
@@ -3523,7 +3526,7 @@ impl Gateway {
                     .await?;
                 self.metrics.increment_chains_completed();
                 // Parent step audit + stream events: success, chain completed.
-                self.emit_chain_step_audit(
+                self.emit_parallel_step_audit(
                     chain_state,
                     step_config,
                     step_idx,
@@ -3531,6 +3534,7 @@ impl Gateway {
                     &parent_result,
                     parent_duration,
                     parent_audit_payload.as_ref(),
+                    None,
                 );
                 self.emit_chain_terminal_audit(chain_state, "chain_completed");
                 self.emit_stream_event(StreamEvent {
@@ -3579,7 +3583,7 @@ impl Gateway {
                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                         .await?;
                     self.metrics.increment_chains_failed();
-                    self.emit_chain_step_audit(
+                    self.emit_parallel_step_audit(
                         chain_state,
                         step_config,
                         step_idx,
@@ -3587,6 +3591,7 @@ impl Gateway {
                         &parent_result,
                         parent_duration,
                         parent_audit_payload.as_ref(),
+                        None,
                     );
                     self.emit_chain_terminal_audit(chain_state, "chain_failed");
                     self.emit_stream_event(StreamEvent {
@@ -3643,7 +3648,7 @@ impl Gateway {
                             .delay_seconds
                             .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
                         self.state.index_chain_ready(pending_key, ready_at).await?;
-                        self.emit_chain_step_audit(
+                        self.emit_parallel_step_audit(
                             chain_state,
                             step_config,
                             step_idx,
@@ -3651,6 +3656,7 @@ impl Gateway {
                             &parent_result,
                             parent_duration,
                             parent_audit_payload.as_ref(),
+                            None,
                         );
                         self.emit_stream_event(StreamEvent {
                             id: uuid::Uuid::now_v7().to_string(),
@@ -3675,7 +3681,7 @@ impl Gateway {
                         self.cleanup_pending_chain(namespace, tenant, chain_id)
                             .await?;
                         self.metrics.increment_chains_completed();
-                        self.emit_chain_step_audit(
+                        self.emit_parallel_step_audit(
                             chain_state,
                             step_config,
                             step_idx,
@@ -3683,6 +3689,7 @@ impl Gateway {
                             &parent_result,
                             parent_duration,
                             parent_audit_payload.as_ref(),
+                            None,
                         );
                         self.emit_chain_terminal_audit(chain_state, "chain_completed");
                         self.emit_stream_event(StreamEvent {
@@ -3742,7 +3749,7 @@ impl Gateway {
                     self.cleanup_pending_chain(namespace, tenant, chain_id)
                         .await?;
                     self.metrics.increment_chains_failed();
-                    self.emit_chain_step_audit(
+                    self.emit_parallel_step_audit(
                         chain_state,
                         step_config,
                         step_idx,
@@ -3750,6 +3757,7 @@ impl Gateway {
                         &parent_result,
                         parent_duration,
                         parent_audit_payload.as_ref(),
+                        None,
                     );
                     self.emit_chain_terminal_audit(chain_state, "chain_failed");
                     self.emit_stream_event(StreamEvent {
@@ -4277,6 +4285,11 @@ impl Gateway {
     }
 
     /// Emit a step-level audit record for a chain step event.
+    ///
+    /// For parallel parent and sub-step audits, use
+    /// [`emit_parallel_step_audit`] instead — it enriches the record with
+    /// parallel-specific metadata (join policy, parent step name, sub-step
+    /// results).
     #[allow(clippy::too_many_arguments)]
     fn emit_chain_step_audit(
         &self,
@@ -4287,6 +4300,63 @@ impl Gateway {
         step_result: &StepResult,
         step_duration: std::time::Duration,
         step_payload: Option<&serde_json::Value>,
+    ) {
+        self.emit_chain_step_audit_inner(
+            chain_state,
+            step_config,
+            step_idx,
+            outcome,
+            step_result,
+            step_duration,
+            step_payload,
+            None,
+        );
+    }
+
+    /// Emit a step-level audit record for a parallel sub-step or parent
+    /// parallel step.
+    ///
+    /// `parent_step_name` identifies this record as a parallel sub-step audit
+    /// when `Some`. When `None` and `step_config.is_parallel()`, the record
+    /// is identified as a parallel parent step with join policy and sub-step
+    /// result summary.
+    #[allow(clippy::too_many_arguments)]
+    fn emit_parallel_step_audit(
+        &self,
+        chain_state: &ChainState,
+        step_config: &ChainStepConfig,
+        step_idx: usize,
+        outcome: &str,
+        step_result: &StepResult,
+        step_duration: std::time::Duration,
+        step_payload: Option<&serde_json::Value>,
+        parent_step_name: Option<&str>,
+    ) {
+        self.emit_chain_step_audit_inner(
+            chain_state,
+            step_config,
+            step_idx,
+            outcome,
+            step_result,
+            step_duration,
+            step_payload,
+            parent_step_name,
+        );
+    }
+
+    /// Inner implementation shared by [`emit_chain_step_audit`] and
+    /// [`emit_parallel_step_audit`].
+    #[allow(clippy::too_many_arguments)]
+    fn emit_chain_step_audit_inner(
+        &self,
+        chain_state: &ChainState,
+        step_config: &ChainStepConfig,
+        step_idx: usize,
+        outcome: &str,
+        step_result: &StepResult,
+        step_duration: std::time::Duration,
+        step_payload: Option<&serde_json::Value>,
+        parent_step_name: Option<&str>,
     ) {
         if let Some(ref audit) = self.audit {
             let mut outcome_details = serde_json::json!({
@@ -4300,6 +4370,53 @@ impl Gateway {
             if let Some(ref err) = step_result.error {
                 outcome_details["error"] = serde_json::Value::String(err.clone());
             }
+
+            // --- Gap 1 & 4: Parallel sub-step identification ---
+            if let Some(parent_name) = parent_step_name {
+                outcome_details["is_parallel_sub_step"] = serde_json::Value::Bool(true);
+                outcome_details["parent_step_name"] =
+                    serde_json::Value::String(parent_name.to_owned());
+                outcome_details["parent_step_index"] = serde_json::json!(step_idx);
+            }
+
+            // --- Gap 2, 4, 5: Parallel parent step identification ---
+            // Use "parallel" as provider and step name as action_type, include
+            // the join policy, and embed per-sub-step result summary.
+            let (provider, action_type) = if step_config.is_parallel() {
+                outcome_details["is_parallel_step"] = serde_json::Value::Bool(true);
+                if let Some(ref group) = step_config.parallel {
+                    let policy_str = match group.join {
+                        acteon_core::chain::ParallelJoinPolicy::All => "all",
+                        acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                    };
+                    outcome_details["parallel_join_policy"] =
+                        serde_json::Value::String(policy_str.to_owned());
+
+                    // Embed sub-step result summary for self-contained auditing.
+                    let sub_results: serde_json::Value = chain_state
+                        .parallel_sub_results
+                        .iter()
+                        .map(|(name, sr)| {
+                            let mut v = serde_json::json!({
+                                "step_name": name,
+                                "success": sr.success,
+                                "completed_at": sr.completed_at.to_rfc3339(),
+                            });
+                            if let Some(ref err) = sr.error {
+                                v["error"] = serde_json::Value::String(err.clone());
+                            }
+                            v
+                        })
+                        .collect();
+                    outcome_details["parallel_sub_step_results"] = sub_results;
+                }
+                ("parallel".to_owned(), step_config.name.clone())
+            } else {
+                (
+                    step_config.provider.clone(),
+                    step_config.action_type.clone(),
+                )
+            };
 
             #[allow(clippy::cast_possible_truncation)]
             let dispatched_at = step_result.completed_at
@@ -4322,8 +4439,8 @@ impl Gateway {
                 chain_id: Some(chain_state.chain_id.clone()),
                 namespace: chain_state.namespace.clone(),
                 tenant: chain_state.tenant.clone(),
-                provider: step_config.provider.clone(),
-                action_type: step_config.action_type.clone(),
+                provider,
+                action_type,
                 verdict: "chain".to_owned(),
                 matched_rule: None,
                 outcome: outcome.to_owned(),
@@ -4353,6 +4470,7 @@ impl Gateway {
     }
 
     /// Emit a terminal summary audit record for a chain lifecycle event.
+    #[allow(clippy::too_many_lines)]
     fn emit_chain_terminal_audit(&self, chain_state: &ChainState, outcome: &str) {
         if let Some(ref audit) = self.audit {
             let now = Utc::now();
@@ -4398,6 +4516,29 @@ impl Gateway {
             });
             if !chain_state.execution_path.is_empty() {
                 outcome_details["execution_path"] = serde_json::json!(chain_state.execution_path);
+            }
+
+            // --- Gap 3 & 6: Include parallel sub-step results breakdown ---
+            if !chain_state.parallel_sub_results.is_empty() {
+                let sub_results: serde_json::Value = chain_state
+                    .parallel_sub_results
+                    .iter()
+                    .map(|(name, sr)| {
+                        let mut v = serde_json::json!({
+                            "step_name": name,
+                            "success": sr.success,
+                            "completed_at": sr.completed_at.to_rfc3339(),
+                        });
+                        if let Some(ref body) = sr.response_body {
+                            v["response_body"] = body.clone();
+                        }
+                        if let Some(ref err) = sr.error {
+                            v["error"] = serde_json::Value::String(err.clone());
+                        }
+                        v
+                    })
+                    .collect();
+                outcome_details["parallel_sub_results"] = sub_results;
             }
 
             #[allow(clippy::cast_possible_wrap)]
