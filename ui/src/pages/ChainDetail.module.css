@@ -83,3 +83,30 @@
 .modalContent {
   @apply mt-2 text-gray-500;
 }
+
+.parallelStepsSection {
+  @apply mb-3 p-3 rounded-lg;
+  background: var(--bg-surface-secondary);
+}
+
+.parallelStepsHeader {
+  @apply flex items-center gap-2 mb-2;
+}
+
+.parallelStepsList {
+  @apply space-y-2;
+}
+
+.parallelStepItem {
+  @apply p-2 rounded border;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.parallelStepItemHeader {
+  @apply flex items-center justify-between mb-1;
+}
+
+.parallelStepError {
+  @apply text-xs text-error-500 mt-1;
+}

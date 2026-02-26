@@ -56,6 +56,9 @@ pub struct ChainStepStatus {
     /// ID of the child chain instance spawned by this step, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub child_chain_id: Option<String>,
+    /// Results from parallel sub-steps, if this is a parallel step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_sub_steps: Option<Vec<ChainStepStatus>>,
 }
 
 /// Detailed response for a single chain.
@@ -122,6 +125,12 @@ pub struct DagNode {
     /// Nested DAG for sub-chain expansion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub children: Option<Box<DagResponse>>,
+    /// Nested DAG nodes for parallel sub-steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_children: Option<Vec<DagNode>>,
+    /// Join policy for parallel groups (`"all"` or `"any"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel_join: Option<String>,
 }
 
 /// An edge in the chain DAG.

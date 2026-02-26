@@ -12,6 +12,7 @@ import '@xyflow/react/dist/style.css'
 import type { ChainDetailResponse, ChainStepConfig, BranchCondition, DagResponse, DagNode } from '../../types'
 import { StepNode } from './StepNode'
 import { SubChainNode } from './SubChainNode'
+import { ParallelNode } from './ParallelNode'
 import styles from './ChainDAG.module.css'
 
 interface ChainDAGProps {
@@ -23,7 +24,7 @@ interface ChainDAGProps {
   defaultExpandAll?: boolean
 }
 
-const nodeTypes = { step: StepNode, sub_chain: SubChainNode }
+const nodeTypes = { step: StepNode, sub_chain: SubChainNode, parallel: ParallelNode }
 
 export function ChainDAG({ chain, stepConfigs, dag, onSelectStep, onNavigateChain, defaultExpandAll }: ChainDAGProps) {
   const [expandedSubChains, setExpandedSubChains] = useState<Set<string>>(new Set())
@@ -159,6 +160,29 @@ function buildFromDag(
         nodeList.push(...childResult.nodes)
         edgeList.push(...childResult.edges)
       }
+    } else if (dagNode.node_type === 'parallel') {
+      const subSteps = (dagNode.parallel_children ?? []).map((child) => ({
+        name: child.name,
+        status: child.status ?? 'pending',
+        error: undefined as string | undefined,
+      }))
+
+      nodeList.push({
+        id: nodeId,
+        type: 'parallel',
+        position: { x: pos.x + offsetX, y: pos.y + offsetY },
+        data: {
+          label: dagNode.name,
+          status: dagNode.status ?? 'pending',
+          isActive,
+          isExecuted,
+          joinPolicy: dagNode.parallel_join ?? 'all',
+          subSteps,
+        },
+        sourcePosition: Position.Bottom,
+        targetPosition: Position.Top,
+        style: { width: 280 },
+      })
     } else {
       nodeList.push({
         id: nodeId,

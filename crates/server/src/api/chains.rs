@@ -97,6 +97,10 @@ pub struct ChainStepStatus {
     /// Running child chain execution ID (if this sub-chain step has spawned a child).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_chain_id: Option<String>,
+    /// Results from parallel sub-steps, if this is a parallel step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Object>>)]
+    pub parallel_sub_steps: Option<Vec<ChainStepStatus>>,
 }
 
 /// Full detail response for a chain execution.
@@ -146,6 +150,7 @@ fn parse_status_filter(s: &str) -> Option<ChainStatus> {
         "cancelled" => Some(ChainStatus::Cancelled),
         "timed_out" => Some(ChainStatus::TimedOut),
         "waiting_sub_chain" => Some(ChainStatus::WaitingSubChain),
+        "waiting_parallel" => Some(ChainStatus::WaitingParallel),
         _ => None,
     }
 }
@@ -158,6 +163,7 @@ fn status_to_string(s: &ChainStatus) -> String {
         ChainStatus::Cancelled => "cancelled".into(),
         ChainStatus::TimedOut => "timed_out".into(),
         ChainStatus::WaitingSubChain => "waiting_sub_chain".into(),
+        ChainStatus::WaitingParallel => "waiting_parallel".into(),
     }
 }
 
@@ -260,6 +266,39 @@ pub async fn get_chain(
                     } else {
                         ("pending".to_string(), None, None, None)
                     };
+                    // Build parallel sub-step statuses from parallel_sub_results
+                    // if this step has any matching entries.
+                    let parallel_sub_steps = if chain_state.parallel_sub_results.is_empty() {
+                        None
+                    } else if chain_state
+                        .parallel_state
+                        .as_ref()
+                        .is_some_and(|ps| ps.step_index == i)
+                    {
+                        let subs: Vec<ChainStepStatus> = chain_state
+                            .parallel_sub_results
+                            .iter()
+                            .map(|(name, sr)| ChainStepStatus {
+                                name: name.clone(),
+                                provider: String::new(),
+                                status: if sr.success {
+                                    "completed".to_string()
+                                } else {
+                                    "failed".to_string()
+                                },
+                                response_body: sr.response_body.clone(),
+                                error: sr.error.clone(),
+                                completed_at: Some(sr.completed_at),
+                                sub_chain: None,
+                                child_chain_id: None,
+                                parallel_sub_steps: None,
+                            })
+                            .collect();
+                        if subs.is_empty() { None } else { Some(subs) }
+                    } else {
+                        None
+                    };
+
                     ChainStepStatus {
                         name: step_name,
                         provider: String::new(),
@@ -269,6 +308,7 @@ pub async fn get_chain(
                         completed_at: completed,
                         sub_chain: None,
                         child_chain_id: None,
+                        parallel_sub_steps,
                     }
                 })
                 .collect();
@@ -497,6 +537,10 @@ fn build_dag_from_state(state: &acteon_core::ChainState) -> DagResponse {
             && state.status == acteon_core::ChainStatus::WaitingSubChain
         {
             Some("waiting_sub_chain".to_string())
+        } else if i == state.current_step
+            && state.status == acteon_core::ChainStatus::WaitingParallel
+        {
+            Some("waiting_parallel".to_string())
         } else if i == state.current_step && state.status == acteon_core::ChainStatus::Running {
             Some("running".to_string())
         } else {
@@ -514,6 +558,8 @@ fn build_dag_from_state(state: &acteon_core::ChainState) -> DagResponse {
             status,
             child_chain_id: None,
             children: None,
+            parallel_children: None,
+            parallel_join: None,
         });
 
         // Add edge to next step.

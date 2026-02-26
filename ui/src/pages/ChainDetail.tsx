@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { XCircle, ArrowUpRight, GitBranch } from 'lucide-react'
+import { XCircle, ArrowUpRight, GitBranch, Layers } from 'lucide-react'
 import { useChainDetail, useCancelChain, useChainDag } from '../api/hooks/useChains'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Badge } from '../components/ui/Badge'
@@ -57,7 +57,7 @@ export function ChainDetail() {
         actions={
           <div className={styles.headerActions}>
             <Badge size="md">{chain.status}</Badge>
-            {(chain.status === 'running' || chain.status === 'waiting_sub_chain') && (
+            {(chain.status === 'running' || chain.status === 'waiting_sub_chain' || chain.status === 'waiting_parallel') && (
               <Button
                 variant="danger"
                 size="sm"
@@ -132,6 +132,32 @@ export function ChainDetail() {
                   View child chain
                 </Link>
               )}
+            </div>
+          )}
+          {step.parallel_sub_steps && step.parallel_sub_steps.length > 0 && (
+            <div className={styles.parallelStepsSection}>
+              <div className={styles.parallelStepsHeader}>
+                <Layers className="h-4 w-4 text-primary-400" />
+                <span className="text-sm text-gray-500">Parallel sub-steps</span>
+              </div>
+              <ul className={styles.parallelStepsList}>
+                {step.parallel_sub_steps.map((sub) => (
+                  <li key={sub.name} className={styles.parallelStepItem}>
+                    <div className={styles.parallelStepItemHeader}>
+                      <span className="text-sm font-medium">{sub.name}</span>
+                      <Badge size="sm">{sub.status}</Badge>
+                    </div>
+                    {sub.error && (
+                      <p className={styles.parallelStepError}>{sub.error}</p>
+                    )}
+                    {sub.response_body && (
+                      <div className={styles.responseSection}>
+                        <JsonViewer data={sub.response_body} collapsed />
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
           {step.response_body && (

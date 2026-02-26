@@ -2,6 +2,8 @@ package com.acteon.client.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.List;
+
 /**
  * A node in the chain DAG.
  */
@@ -26,6 +28,12 @@ public class DagNode {
 
     private DagResponse children;
 
+    @JsonProperty("parallel_children")
+    private List<DagNode> parallelChildren;
+
+    @JsonProperty("parallel_join")
+    private String parallelJoin;
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
@@ -49,4 +57,10 @@ public class DagNode {
 
     public DagResponse getChildren() { return children; }
     public void setChildren(DagResponse children) { this.children = children; }
+
+    public List<DagNode> getParallelChildren() { return parallelChildren; }
+    public void setParallelChildren(List<DagNode> parallelChildren) { this.parallelChildren = parallelChildren; }
+
+    public String getParallelJoin() { return parallelJoin; }
+    public void setParallelJoin(String parallelJoin) { this.parallelJoin = parallelJoin; }
 }

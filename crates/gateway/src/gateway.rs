@@ -2067,6 +2067,8 @@ impl Gateway {
             parent_chain_id: None,
             parent_step_index: None,
             child_chain_ids: Vec::new(),
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
         };
 
         // Persist chain state.
@@ -2154,9 +2156,10 @@ impl Gateway {
         let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingChains, chain_id);
         self.state.remove_chain_ready_index(&pending_key).await?;
 
-        // Check if chain is still running (or waiting for a sub-chain).
+        // Check if chain is still running (or waiting for a sub-chain/parallel).
         if chain_state.status != ChainStatus::Running
             && chain_state.status != ChainStatus::WaitingSubChain
+            && chain_state.status != ChainStatus::WaitingParallel
         {
             guard
                 .release()
@@ -2406,7 +2409,9 @@ impl Gateway {
                                 .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
                             return Ok(());
                         }
-                        ChainStatus::Running | ChainStatus::WaitingSubChain => {
+                        ChainStatus::Running
+                        | ChainStatus::WaitingSubChain
+                        | ChainStatus::WaitingParallel => {
                             // Still running — re-schedule poll in 5 seconds.
                             chain_state.status = ChainStatus::WaitingSubChain;
                             chain_state.updated_at = Utc::now();
@@ -2426,6 +2431,25 @@ impl Gateway {
             }
         }
 
+        // --- Parallel step handling ---
+        if step_config.is_parallel() {
+            return self
+                .advance_chain_parallel(
+                    namespace,
+                    tenant,
+                    chain_id,
+                    &chain_key,
+                    &pending_key,
+                    step_idx,
+                    step_config,
+                    chain_config,
+                    &mut chain_state,
+                    step_index_map,
+                    guard,
+                )
+                .await;
+        }
+
         // Resolve the payload template.
         let payload = crate::chain::resolve_template(
             &step_config.payload_template,
@@ -2435,6 +2459,7 @@ impl Gateway {
             chain_id,
             step_idx,
             &chain_state.execution_path,
+            &chain_state.parallel_sub_results,
         );
 
         // Build and execute the synthetic action.
@@ -3094,6 +3119,245 @@ impl Gateway {
         Ok(None)
     }
 
+    /// Handle a parallel step: resolve sub-step payloads, dispatch concurrently,
+    /// aggregate results, and advance the chain.
+    ///
+    /// Extracted from `advance_chain()` to keep the async state machine smaller
+    /// (avoids stack overflows in debug builds).
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn advance_chain_parallel(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        chain_id: &str,
+        chain_key: &StateKey,
+        pending_key: &StateKey,
+        step_idx: usize,
+        step_config: &ChainStepConfig,
+        chain_config: &ChainConfig,
+        chain_state: &mut ChainState,
+        step_index_map: &HashMap<String, usize>,
+        guard: Box<dyn acteon_state::LockGuard>,
+    ) -> Result<(), GatewayError> {
+        let group = step_config.parallel.as_ref().unwrap();
+
+        // Build and execute all sub-steps concurrently.
+        let sub_step_futures: Vec<_> = group
+            .steps
+            .iter()
+            .map(|sub_step| {
+                let sub_payload = crate::chain::resolve_template(
+                    &sub_step.payload_template,
+                    &chain_state.origin_action,
+                    &chain_state.step_results,
+                    &chain_config.steps,
+                    chain_id,
+                    step_idx,
+                    &chain_state.execution_path,
+                    &chain_state.parallel_sub_results,
+                );
+                let sub_action = Action::new(
+                    namespace,
+                    tenant,
+                    sub_step.provider.as_str(),
+                    &sub_step.action_type,
+                    sub_payload,
+                );
+                let sub_name = sub_step.name.clone();
+                async move {
+                    let start = std::time::Instant::now();
+                    let outcome = self.execute_action(&sub_action).await;
+                    (sub_name, outcome, start.elapsed())
+                }
+            })
+            .collect();
+
+        let group_timeout = group
+            .timeout_seconds
+            .map_or(Duration::from_secs(300), Duration::from_secs);
+
+        let Ok(results) = tokio::time::timeout(
+            group_timeout,
+            self.execute_parallel_group(sub_step_futures, &group.join, &group.on_failure),
+        )
+        .await
+        else {
+            // Timeout — mark the parent step as failed.
+            let now = Utc::now();
+            chain_state.step_results[step_idx] = Some(StepResult {
+                step_name: step_config.name.clone(),
+                success: false,
+                response_body: None,
+                error: Some(format!("parallel group timed out after {group_timeout:?}")),
+                completed_at: now,
+            });
+            chain_state.status = ChainStatus::Failed;
+            chain_state.updated_at = now;
+            self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                .await?;
+            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                .await?;
+            self.metrics.increment_chains_failed();
+            self.emit_chain_terminal_audit(chain_state, "chain_failed");
+            guard
+                .release()
+                .await
+                .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            return Ok(());
+        };
+
+        // Aggregate results.
+        let mut merged_body = serde_json::Map::new();
+        let mut all_success = true;
+        let mut any_success = false;
+        let now = Utc::now();
+
+        for (sub_name, outcome, _elapsed) in &results {
+            let (success, body, error) = match outcome {
+                ActionOutcome::Executed(resp) => (true, Some(resp.body.clone()), None),
+                ActionOutcome::Failed(err) => (false, None, Some(err.message.clone())),
+                other => (false, None, Some(format!("{other:?}"))),
+            };
+
+            let sub_result = StepResult {
+                step_name: sub_name.clone(),
+                success,
+                response_body: body.clone(),
+                error,
+                completed_at: now,
+            };
+            chain_state
+                .parallel_sub_results
+                .insert(sub_name.clone(), sub_result);
+
+            if success {
+                any_success = true;
+                if let Some(b) = body {
+                    merged_body.insert(sub_name.clone(), b);
+                }
+            } else {
+                all_success = false;
+            }
+        }
+
+        let parent_success = match group.join {
+            acteon_core::chain::ParallelJoinPolicy::All => all_success,
+            acteon_core::chain::ParallelJoinPolicy::Any => any_success,
+        };
+
+        let parent_result = StepResult {
+            step_name: step_config.name.clone(),
+            success: parent_success,
+            response_body: Some(serde_json::Value::Object(merged_body)),
+            error: if parent_success {
+                None
+            } else {
+                Some("one or more parallel sub-steps failed".to_string())
+            },
+            completed_at: now,
+        };
+        chain_state.step_results[step_idx] = Some(parent_result.clone());
+
+        if parent_success {
+            // Evaluate branches on the parent parallel step.
+            let next_step_idx =
+                Self::resolve_next_step(chain_config, step_idx, &parent_result, step_index_map);
+
+            if let Some(next_idx) = next_step_idx {
+                chain_state.current_step = next_idx;
+                chain_state.updated_at = now;
+                chain_state
+                    .execution_path
+                    .push(chain_config.steps[next_idx].name.clone());
+                self.persist_chain_state(chain_key, chain_state, None)
+                    .await?;
+                let ready_at = chain_config.steps[next_idx]
+                    .delay_seconds
+                    .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                self.state.index_chain_ready(pending_key, ready_at).await?;
+            } else {
+                chain_state.status = ChainStatus::Completed;
+                chain_state.updated_at = now;
+                self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                    .await?;
+                self.cleanup_pending_chain(namespace, tenant, chain_id)
+                    .await?;
+                self.metrics.increment_chains_completed();
+                self.emit_chain_terminal_audit(chain_state, "chain_completed");
+            }
+        } else {
+            chain_state.status = ChainStatus::Failed;
+            chain_state.updated_at = now;
+            self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                .await?;
+            self.cleanup_pending_chain(namespace, tenant, chain_id)
+                .await?;
+            self.metrics.increment_chains_failed();
+            self.emit_chain_terminal_audit(chain_state, "chain_failed");
+        }
+
+        guard
+            .release()
+            .await
+            .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Execute a group of parallel sub-step futures according to join and failure policies.
+    ///
+    /// - `All` + `FailFast`: runs all concurrently, but short-circuits on the first failure
+    ///   (remaining futures are dropped/cancelled).
+    /// - `All` + `BestEffort`: runs all concurrently, collects all results regardless of failures.
+    /// - `Any`: returns as soon as the first success arrives (remaining futures are cancelled).
+    async fn execute_parallel_group<F>(
+        &self,
+        futures: Vec<F>,
+        join_policy: &acteon_core::chain::ParallelJoinPolicy,
+        failure_policy: &acteon_core::chain::ParallelFailurePolicy,
+    ) -> Vec<(String, ActionOutcome, Duration)>
+    where
+        F: std::future::Future<Output = (String, ActionOutcome, Duration)> + Send,
+    {
+        use acteon_core::chain::{ParallelFailurePolicy, ParallelJoinPolicy};
+        use futures::stream::{FuturesUnordered, StreamExt};
+
+        match (join_policy, failure_policy) {
+            (
+                ParallelJoinPolicy::All,
+                ParallelFailurePolicy::BestEffort | ParallelFailurePolicy::FailFast,
+            ) => {
+                // For fail_fast we use FuturesUnordered so we can stop early.
+                let is_fail_fast = matches!(failure_policy, ParallelFailurePolicy::FailFast);
+                let mut unordered: FuturesUnordered<_> = futures.into_iter().collect();
+                let mut results = Vec::new();
+
+                while let Some(result) = unordered.next().await {
+                    let failed = matches!(&result.1, ActionOutcome::Failed(_));
+                    results.push(result);
+                    if is_fail_fast && failed {
+                        // Drop remaining futures (they get cancelled).
+                        break;
+                    }
+                }
+                results
+            }
+            (ParallelJoinPolicy::Any, _) => {
+                // Return on first success, cancel the rest.
+                let mut unordered: FuturesUnordered<_> = futures.into_iter().collect();
+                let mut results = Vec::new();
+
+                while let Some(result) = unordered.next().await {
+                    let succeeded = matches!(&result.1, ActionOutcome::Executed(_));
+                    results.push(result);
+                    if succeeded {
+                        break;
+                    }
+                }
+                results
+            }
+        }
+    }
+
     /// Start a sub-chain as a child of the given parent chain.
     ///
     /// Creates a new `ChainState` for the child, links it to the parent, and
@@ -3152,6 +3416,8 @@ impl Gateway {
             parent_chain_id: Some(parent.chain_id.clone()),
             parent_step_index: Some(step_idx),
             child_chain_ids: Vec::new(),
+            parallel_state: None,
+            parallel_sub_results: HashMap::new(),
         };
 
         // Persist child chain state.
@@ -3288,10 +3554,13 @@ impl Gateway {
                         }
                     } else if s.current_step == i
                         && (s.status == ChainStatus::Running
-                            || s.status == ChainStatus::WaitingSubChain)
+                            || s.status == ChainStatus::WaitingSubChain
+                            || s.status == ChainStatus::WaitingParallel)
                     {
                         if step.is_sub_chain() && s.status == ChainStatus::WaitingSubChain {
                             "waiting_sub_chain".to_string()
+                        } else if step.is_parallel() && s.status == ChainStatus::WaitingParallel {
+                            "waiting_parallel".to_string()
                         } else {
                             "running".to_string()
                         }
@@ -3302,6 +3571,8 @@ impl Gateway {
 
                 let (node_type, sub_chain_name) = if step.is_sub_chain() {
                     ("sub_chain".to_string(), step.sub_chain.clone())
+                } else if step.is_parallel() {
+                    ("parallel".to_string(), None)
                 } else {
                     ("step".to_string(), None)
                 };
@@ -3337,6 +3608,53 @@ impl Gateway {
                     }
                 }
 
+                // Build parallel child DagNodes if this is a parallel step.
+                let (parallel_children, parallel_join) = if step.is_parallel() {
+                    let group = step.parallel.as_ref().unwrap();
+                    let p_children: Vec<acteon_core::DagNode> = group
+                        .steps
+                        .iter()
+                        .map(|sub_step| {
+                            let sub_status = chain_state.and_then(|s| {
+                                s.parallel_sub_results.get(&sub_step.name).map(|r| {
+                                    if r.success {
+                                        "completed".to_string()
+                                    } else {
+                                        "failed".to_string()
+                                    }
+                                })
+                            });
+                            acteon_core::DagNode {
+                                name: sub_step.name.clone(),
+                                node_type: "step".to_string(),
+                                provider: if sub_step.provider.is_empty() {
+                                    None
+                                } else {
+                                    Some(sub_step.provider.clone())
+                                },
+                                action_type: if sub_step.action_type.is_empty() {
+                                    None
+                                } else {
+                                    Some(sub_step.action_type.clone())
+                                },
+                                sub_chain_name: None,
+                                status: sub_status,
+                                child_chain_id: None,
+                                children: None,
+                                parallel_children: None,
+                                parallel_join: None,
+                            }
+                        })
+                        .collect();
+                    let join_str = match group.join {
+                        acteon_core::chain::ParallelJoinPolicy::All => "all",
+                        acteon_core::chain::ParallelJoinPolicy::Any => "any",
+                    };
+                    (Some(p_children), Some(join_str.to_string()))
+                } else {
+                    (None, None)
+                };
+
                 nodes.push(acteon_core::DagNode {
                     name: step.name.clone(),
                     node_type,
@@ -3354,6 +3672,8 @@ impl Gateway {
                     status: step_status,
                     child_chain_id,
                     children,
+                    parallel_children,
+                    parallel_join,
                 });
 
                 // Build edges: sequential edge to next step.
@@ -3414,6 +3734,7 @@ impl Gateway {
                 ChainStatus::Cancelled => "cancelled".to_string(),
                 ChainStatus::TimedOut => "timed_out".to_string(),
                 ChainStatus::WaitingSubChain => "waiting_sub_chain".to_string(),
+                ChainStatus::WaitingParallel => "waiting_parallel".to_string(),
             });
 
             Ok(acteon_core::DagResponse {
@@ -3566,6 +3887,7 @@ impl Gateway {
                 ChainStatus::Cancelled => "cancelled",
                 ChainStatus::TimedOut => "timed_out",
                 ChainStatus::WaitingSubChain => "waiting_sub_chain",
+                ChainStatus::WaitingParallel => "waiting_parallel",
             };
 
             let mut outcome_details = serde_json::json!({
@@ -3716,6 +4038,7 @@ impl Gateway {
 
         if chain_state.status != ChainStatus::Running
             && chain_state.status != ChainStatus::WaitingSubChain
+            && chain_state.status != ChainStatus::WaitingParallel
         {
             guard
                 .release()

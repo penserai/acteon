@@ -25,6 +25,12 @@ pub struct DagNode {
     /// Nested DAG for sub-chain nodes (expanded view).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Box<DagResponse>>,
+    /// Child nodes for parallel step groups (fan-out visualization).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_children: Option<Vec<DagNode>>,
+    /// Join policy label for parallel steps (e.g., `"all"`, `"any"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_join: Option<String>,
 }
 
 /// An edge in the chain DAG visualization.
@@ -80,6 +86,8 @@ mod tests {
                     status: Some("completed".into()),
                     child_chain_id: None,
                     children: None,
+                    parallel_children: None,
+                    parallel_join: None,
                 },
                 DagNode {
                     name: "invoke-notify".into(),
@@ -97,6 +105,8 @@ mod tests {
                         edges: vec![],
                         execution_path: vec![],
                     })),
+                    parallel_children: None,
+                    parallel_join: None,
                 },
             ],
             edges: vec![DagEdge {
@@ -131,6 +141,8 @@ mod tests {
                 status: None,
                 child_chain_id: None,
                 children: None,
+                parallel_children: None,
+                parallel_join: None,
             }],
             edges: vec![],
             execution_path: vec![],

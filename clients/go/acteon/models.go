@@ -817,14 +817,15 @@ type ListChainsResponse struct {
 
 // ChainStepStatus is the detailed status of a single chain step.
 type ChainStepStatus struct {
-	Name         string         `json:"name"`
-	Provider     string         `json:"provider"`
-	Status       string         `json:"status"`
-	ResponseBody map[string]any `json:"response_body,omitempty"`
-	Error        *string        `json:"error,omitempty"`
-	CompletedAt  *string        `json:"completed_at,omitempty"`
-	SubChain     *string        `json:"sub_chain,omitempty"`
-	ChildChainID *string        `json:"child_chain_id,omitempty"`
+	Name             string            `json:"name"`
+	Provider         string            `json:"provider"`
+	Status           string            `json:"status"`
+	ResponseBody     map[string]any    `json:"response_body,omitempty"`
+	Error            *string           `json:"error,omitempty"`
+	CompletedAt      *string           `json:"completed_at,omitempty"`
+	SubChain         *string           `json:"sub_chain,omitempty"`
+	ChildChainID     *string           `json:"child_chain_id,omitempty"`
+	ParallelSubSteps []ChainStepStatus `json:"parallel_sub_steps,omitempty"`
 }
 
 // ChainDetailResponse is the full detail response for a chain execution.
@@ -851,14 +852,16 @@ type ChainDetailResponse struct {
 
 // DagNode is a node in the chain DAG.
 type DagNode struct {
-	Name         string       `json:"name"`
-	NodeType     string       `json:"node_type"`
-	Provider     *string      `json:"provider,omitempty"`
-	ActionType   *string      `json:"action_type,omitempty"`
-	SubChainName *string      `json:"sub_chain_name,omitempty"`
-	Status       *string      `json:"status,omitempty"`
-	ChildChainID *string      `json:"child_chain_id,omitempty"`
-	Children     *DagResponse `json:"children,omitempty"`
+	Name             string       `json:"name"`
+	NodeType         string       `json:"node_type"`
+	Provider         *string      `json:"provider,omitempty"`
+	ActionType       *string      `json:"action_type,omitempty"`
+	SubChainName     *string      `json:"sub_chain_name,omitempty"`
+	Status           *string      `json:"status,omitempty"`
+	ChildChainID     *string      `json:"child_chain_id,omitempty"`
+	Children         *DagResponse `json:"children,omitempty"`
+	ParallelChildren []DagNode    `json:"parallel_children,omitempty"`
+	ParallelJoin     *string      `json:"parallel_join,omitempty"`
 }
 
 // DagEdge is an edge in the chain DAG.
