@@ -1465,7 +1465,9 @@ class ChainStepStatus:
     Attributes:
         name: Step name.
         provider: Provider used for this step.
-        status: Step status (pending, completed, failed, skipped).
+        status: Step status (pending, running, completed, failed, skipped,
+            waiting_sub_chain, waiting_parallel). Parallel sub-steps may also
+            report "cancelled".
         response_body: Response body from the provider (if completed).
         error: Error message (if failed).
         completed_at: When this step completed.

@@ -816,6 +816,9 @@ type ListChainsResponse struct {
 }
 
 // ChainStepStatus is the detailed status of a single chain step.
+// Status is one of: "pending", "running", "completed", "failed", "skipped",
+// "waiting_sub_chain", "waiting_parallel". Parallel sub-steps may also
+// report "cancelled".
 type ChainStepStatus struct {
 	Name             string            `json:"name"`
 	Provider         string            `json:"provider"`

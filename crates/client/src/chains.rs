@@ -39,7 +39,9 @@ pub struct ChainStepStatus {
     pub name: String,
     /// Target provider for this step.
     pub provider: String,
-    /// Step status (e.g., "pending", "running", "completed", "failed", "skipped").
+    /// Step status: `"pending"`, `"running"`, `"completed"`, `"failed"`,
+    /// `"skipped"`, `"waiting_sub_chain"`, or `"waiting_parallel"`. Parallel
+    /// sub-steps may also report `"cancelled"`.
     pub status: String,
     /// Response body from the provider, if completed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

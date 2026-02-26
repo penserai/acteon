@@ -82,7 +82,9 @@ pub struct ChainStepStatus {
     pub name: String,
     /// Provider used for this step.
     pub provider: String,
-    /// Step status: `"pending"`, `"completed"`, `"failed"`, `"skipped"`, `"waiting_sub_chain"`.
+    /// Step status: `"pending"`, `"running"`, `"completed"`, `"failed"`, `"skipped"`,
+    /// `"waiting_sub_chain"`, `"waiting_parallel"`. Parallel sub-steps may also report
+    /// `"cancelled"`.
     pub status: String,
     /// Response body from the provider (if completed).
     #[schema(value_type = Option<Object>)]

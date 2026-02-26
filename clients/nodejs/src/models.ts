@@ -1367,7 +1367,11 @@ export interface ChainStepStatus {
   name: string;
   /** Provider used for this step. */
   provider: string;
-  /** Step status: "pending", "completed", "failed", "skipped". */
+  /**
+   * Step status: "pending", "running", "completed", "failed", "skipped",
+   * "waiting_sub_chain", "waiting_parallel". Parallel sub-steps may also
+   * report "cancelled".
+   */
   status: string;
   /** Response body from the provider (if completed). */
   responseBody?: unknown;

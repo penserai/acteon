@@ -7,6 +7,10 @@ import java.util.Map;
 
 /**
  * Detailed status of a single chain step.
+ *
+ * <p>The {@code status} field is one of: "pending", "running", "completed",
+ * "failed", "skipped", "waiting_sub_chain", "waiting_parallel". Parallel
+ * sub-steps may also report "cancelled".
  */
 public class ChainStepStatus {
     private String name;
