@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use acteon_core::{Action, ProviderResponse};
 use acteon_provider::ProviderError;
 use acteon_provider::provider::Provider;
-use azure_messaging_eventhubs::{ProducerClient, SendEventOptions};
+use azure_messaging_eventhubs::{EventDataBatchOptions, ProducerClient, SendEventOptions};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
 
@@ -111,8 +111,12 @@ pub struct EventHubsSendPayload {
     /// Event body (JSON or plain text).
     pub body: serde_json::Value,
 
-    /// Optional partition ID for routing.
+    /// Optional partition ID for direct routing to a specific partition.
     pub partition_id: Option<String>,
+
+    /// Optional partition key for hash-based partition routing.
+    /// Mutually exclusive with `partition_id`.
+    pub partition_key: Option<String>,
 
     /// Optional application properties.
     #[serde(default)]
@@ -124,6 +128,10 @@ pub struct EventHubsSendPayload {
 pub struct EventHubsSendBatchPayload {
     /// Event Hub name. Overrides config default.
     pub event_hub_name: Option<String>,
+
+    /// Optional partition key for hash-based partition routing (applies to all events in batch).
+    /// Mutually exclusive with per-event `partition_id`.
+    pub partition_key: Option<String>,
 
     /// List of events to send.
     pub events: Vec<EventDataPayload>,
@@ -221,13 +229,22 @@ impl EventHubsProvider {
         let body_str = serde_json::to_string(&payload.body)
             .map_err(|e| ProviderError::Serialization(e.to_string()))?;
 
-        let event = azure_messaging_eventhubs::models::EventData::builder()
-            .with_body(body_str.into_bytes())
-            .build();
+        let mut builder = azure_messaging_eventhubs::models::EventData::builder()
+            .with_body(body_str.into_bytes());
 
-        let options = payload.partition_id.map(|pid| SendEventOptions {
-            partition_id: Some(pid),
-        });
+        for (k, v) in &payload.properties {
+            builder = builder.add_property(k.clone(), v.as_str());
+        }
+
+        let event = builder.build();
+
+        let options = if payload.partition_id.is_some() || payload.partition_key.is_some() {
+            Some(SendEventOptions {
+                partition_id: payload.partition_id,
+            })
+        } else {
+            None
+        };
 
         self.producer
             .send_event(event, options)
@@ -262,18 +279,38 @@ impl EventHubsProvider {
         let event_count = payload.events.len();
         debug!(event_hub_name = %event_hub_name, count = event_count, "sending batch to Event Hubs");
 
-        let batch = self.producer.create_batch(None).await.map_err(|e| {
-            let err_str = e.to_string();
-            error!(error = %err_str, "Event Hubs create_batch failed");
-            let azure_err: ProviderError = classify_azure_error(&err_str).into();
-            azure_err
-        })?;
+        let batch_options = if payload.partition_key.is_some() {
+            Some(EventDataBatchOptions {
+                partition_key: payload.partition_key,
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
+        let batch = self
+            .producer
+            .create_batch(batch_options)
+            .await
+            .map_err(|e| {
+                let err_str = e.to_string();
+                error!(error = %err_str, "Event Hubs create_batch failed");
+                let azure_err: ProviderError = classify_azure_error(&err_str).into();
+                azure_err
+            })?;
 
         for ed in &payload.events {
-            let body_str = serde_json::to_string(&ed.body).unwrap_or_default();
-            let event = azure_messaging_eventhubs::models::EventData::builder()
-                .with_body(body_str.into_bytes())
-                .build();
+            let body_str = serde_json::to_string(&ed.body)
+                .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+            let mut builder = azure_messaging_eventhubs::models::EventData::builder()
+                .with_body(body_str.into_bytes());
+
+            for (k, v) in &ed.properties {
+                builder = builder.add_property(k.clone(), v.as_str());
+            }
+
+            let event = builder.build();
 
             batch.try_add_event_data(event, None).map_err(|e| {
                 ProviderError::Serialization(format!("event too large for batch: {e}"))

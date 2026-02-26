@@ -1,11 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use acteon_core::{Action, ProviderResponse};
 use acteon_provider::ProviderError;
 use acteon_provider::provider::Provider;
-use azure_core::credentials::TokenCredential;
 use azure_storage_blob::BlobServiceClient;
+use azure_storage_blob::models::BlockBlobClientUploadOptions;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument};
@@ -152,15 +151,12 @@ pub struct BlobDeletePayload {
 pub struct BlobProvider {
     config: BlobConfig,
     service_client: BlobServiceClient,
-    credential: Arc<dyn TokenCredential>,
-    endpoint: String,
 }
 
 impl std::fmt::Debug for BlobProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlobProvider")
             .field("config", &self.config)
-            .field("endpoint", &self.endpoint)
             .finish_non_exhaustive()
     }
 }
@@ -182,14 +178,12 @@ impl BlobProvider {
             .clone()
             .unwrap_or_else(|| format!("https://{account_name}.blob.core.windows.net"));
 
-        let service_client = BlobServiceClient::new(&endpoint, Some(Arc::clone(&credential)), None)
+        let service_client = BlobServiceClient::new(&endpoint, Some(credential), None)
             .map_err(|e| ProviderError::Configuration(format!("blob client error: {e}")))?;
 
         Ok(Self {
             config,
             service_client,
-            credential,
-            endpoint,
         })
     }
 
@@ -271,8 +265,23 @@ impl BlobProvider {
         let blob_client = self.service_client.blob_client(container, &blob_name);
         let data: azure_core::Bytes = body_bytes.into();
 
+        let upload_options = if payload.content_type.is_some() || !payload.metadata.is_empty() {
+            let metadata = if payload.metadata.is_empty() {
+                None
+            } else {
+                Some(payload.metadata)
+            };
+            Some(BlockBlobClientUploadOptions {
+                blob_content_type: payload.content_type,
+                metadata,
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
         blob_client
-            .upload(data.into(), true, content_length, None)
+            .upload(data.into(), true, content_length, upload_options)
             .await
             .map_err(|e| {
                 let err_str = e.to_string();
@@ -307,14 +316,7 @@ impl BlobProvider {
 
         debug!(container = %container, blob_name = %blob_name, "downloading blob");
 
-        let blob_client = azure_storage_blob::BlobClient::new(
-            &self.endpoint,
-            container,
-            &blob_name,
-            Some(Arc::clone(&self.credential)),
-            None,
-        )
-        .map_err(|e| ProviderError::Configuration(format!("blob client error: {e}")))?;
+        let blob_client = self.service_client.blob_client(container, &blob_name);
 
         let response = blob_client.download(None).await.map_err(|e| {
             let err_str = e.to_string();

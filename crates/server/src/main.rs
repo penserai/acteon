@@ -944,7 +944,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     blob_config = blob_config.with_client_id(cid);
                 }
                 if let Some(ref cred) = provider_cfg.azure_client_credential {
-                    blob_config = blob_config.with_client_credential(cred);
+                    let decrypted = require_decrypt(cred, master_key.as_ref())?;
+                    blob_config = blob_config.with_client_credential(decrypted);
                 }
                 std::sync::Arc::new(
                     acteon_azure::BlobProvider::new(blob_config)
@@ -972,7 +973,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     eh_config = eh_config.with_client_id(cid);
                 }
                 if let Some(ref cred) = provider_cfg.azure_client_credential {
-                    eh_config = eh_config.with_client_credential(cred);
+                    let decrypted = require_decrypt(cred, master_key.as_ref())?;
+                    eh_config = eh_config.with_client_credential(decrypted);
                 }
                 std::sync::Arc::new(
                     acteon_azure::EventHubsProvider::new(eh_config)
