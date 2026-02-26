@@ -262,7 +262,16 @@ on_failure = "best_effort"
 
 ## Observability
 
-Each parallel sub-step produces its own audit record with timing, provider, and outcome details. The parent parallel step also gets an aggregate audit record. All paths (success, failure, timeout, skip, DLQ) emit `ChainStepCompleted` and `ChainCompleted` stream events, matching the behavior of regular chain steps.
+Each parallel sub-step produces its own audit record with timing, provider, and outcome details. The parent parallel step also gets an aggregate audit record (including the merged result body for debugging downstream branch logic). All paths (success, failure, timeout, skip, DLQ) emit `ChainStepCompleted` and `ChainCompleted` stream events, matching the behavior of regular chain steps.
+
+## Crash Recovery
+
+Parallel groups are resilient to infrastructure crashes (e.g., a gateway pod restarting mid-execution):
+
+- Before dispatching, the gateway persists a `ParallelExecutionState` with all sub-steps marked as `Pending` and sets per-sub-step dedup keys.
+- On restart, the chain advancer detects the existing parallel state and only dispatches sub-steps that are **not** already present in the persisted results. If 49 out of 50 sub-steps completed before a crash, only the 1 missing step is re-dispatched.
+- The timeout clock honours the original deadline rather than starting fresh, preventing groups from running longer than configured after a restart.
+- Pre-existing results are folded into the final aggregation without re-emitting duplicate audit records.
 
 ## V1 Restrictions
 
