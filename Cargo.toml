@@ -44,6 +44,9 @@ members = [
     # AWS providers
     "crates/aws",
 
+    # Azure providers
+    "crates/azure",
+
     # Integrations
     "crates/integrations/email",
     "crates/integrations/slack",
@@ -110,6 +113,9 @@ acteon-embedding = { path = "crates/embedding" }
 # AWS providers
 acteon-aws = { path = "crates/aws" }
 
+# Azure providers
+acteon-azure = { path = "crates/azure" }
+
 # Integrations
 acteon-email = { path = "crates/integrations/email" }
 acteon-slack = { path = "crates/integrations/slack" }
@@ -175,6 +181,12 @@ aws-sdk-s3 = "1"
 aws-sdk-ec2 = "1"
 aws-sdk-autoscaling = "1"
 aws-config = { version = "1", features = ["behavior-version-latest"] }
+
+# Azure
+azure_core = "0.32"
+azure_identity = "0.32"
+azure_storage_blob = "0.9"
+azure_messaging_eventhubs = "0.11"
 
 # PostgreSQL
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "tls-rustls"] }

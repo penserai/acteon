@@ -63,6 +63,8 @@ jobs:
       - run: cargo nextest run --workspace --lib --bins --tests
       - name: Test AWS providers
         run: cargo nextest run -p acteon-aws --features full --lib --tests
+      - name: Test Azure providers
+        run: cargo nextest run -p acteon-azure --features full --lib --tests
       - name: Run doctests
         run: cargo test --workspace --doc
 

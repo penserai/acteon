@@ -921,11 +921,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 asg
             }
+            #[cfg(feature = "azure-blob")]
+            "azure-blob" => {
+                let location = provider_cfg.azure_location.as_deref().unwrap_or("eastus");
+                let mut blob_config = acteon_azure::BlobConfig::new(location);
+                if let Some(ref name) = provider_cfg.azure_account_name {
+                    blob_config = blob_config.with_account_name(name);
+                }
+                if let Some(ref container) = provider_cfg.azure_container_name {
+                    blob_config = blob_config.with_container_name(container);
+                }
+                if let Some(ref prefix) = provider_cfg.azure_blob_prefix {
+                    blob_config = blob_config.with_prefix(prefix);
+                }
+                if let Some(ref url) = provider_cfg.azure_endpoint_url {
+                    blob_config = blob_config.with_endpoint_url(url);
+                }
+                if let Some(ref tid) = provider_cfg.azure_tenant_id {
+                    blob_config = blob_config.with_tenant_id(tid);
+                }
+                if let Some(ref cid) = provider_cfg.azure_client_id {
+                    blob_config = blob_config.with_client_id(cid);
+                }
+                if let Some(ref cred) = provider_cfg.azure_client_credential {
+                    blob_config = blob_config.with_client_credential(cred);
+                }
+                std::sync::Arc::new(
+                    acteon_azure::BlobProvider::new(blob_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
+            #[cfg(feature = "azure-eventhubs")]
+            "azure-eventhubs" => {
+                let location = provider_cfg.azure_location.as_deref().unwrap_or("eastus");
+                let mut eh_config = acteon_azure::EventHubsConfig::new(location);
+                if let Some(ref ns) = provider_cfg.azure_namespace {
+                    eh_config = eh_config.with_namespace(ns);
+                }
+                if let Some(ref name) = provider_cfg.azure_event_hub_name {
+                    eh_config = eh_config.with_event_hub_name(name);
+                }
+                if let Some(ref url) = provider_cfg.azure_endpoint_url {
+                    eh_config = eh_config.with_endpoint_url(url);
+                }
+                if let Some(ref tid) = provider_cfg.azure_tenant_id {
+                    eh_config = eh_config.with_tenant_id(tid);
+                }
+                if let Some(ref cid) = provider_cfg.azure_client_id {
+                    eh_config = eh_config.with_client_id(cid);
+                }
+                if let Some(ref cred) = provider_cfg.azure_client_credential {
+                    eh_config = eh_config.with_client_credential(cred);
+                }
+                std::sync::Arc::new(
+                    acteon_azure::EventHubsProvider::new(eh_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
             other => {
-                // Check if the user requested an AWS provider that's not compiled in.
-                let aws_hint = match other {
+                // Check if the user requested a provider that's not compiled in.
+                let feature_hint = match other {
                     "aws-sns" | "aws-lambda" | "aws-eventbridge" | "aws-sqs" | "aws-s3"
-                    | "aws-ec2" | "aws-autoscaling" => {
+                    | "aws-ec2" | "aws-autoscaling" | "azure-blob" | "azure-eventhubs" => {
                         format!(
                             ". Hint: enable the '{other}' feature on acteon-server \
                              (cargo build --features {other})"
@@ -934,7 +993,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => String::new(),
                 };
                 return Err(format!(
-                    "provider '{}': unknown type '{other}'{aws_hint}",
+                    "provider '{}': unknown type '{other}'{feature_hint}",
                     provider_cfg.name
                 )
                 .into());
