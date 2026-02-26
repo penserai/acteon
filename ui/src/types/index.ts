@@ -172,6 +172,7 @@ export interface ChainStepStatus {
   completed_at?: string
   sub_chain?: string
   child_chain_id?: string
+  parallel_sub_steps?: ChainStepStatus[]
 }
 
 export interface ChainDetailResponse {
@@ -198,6 +199,23 @@ export interface BranchCondition {
   target: string
 }
 
+export interface ParallelSubStepConfig {
+  name: string
+  provider: string
+  action_type: string
+  payload_template: Record<string, unknown>
+  on_failure?: string
+  branches: BranchCondition[]
+}
+
+export interface ParallelStepGroup {
+  steps: ParallelSubStepConfig[]
+  join: string
+  on_failure: string
+  timeout_seconds?: number
+  max_concurrency?: number
+}
+
 export interface ChainStepConfig {
   name: string
   provider: string
@@ -208,18 +226,44 @@ export interface ChainStepConfig {
   branches: BranchCondition[]
   default_next?: string
   sub_chain?: string
+  parallel?: ParallelStepGroup
+}
+
+// ---- Chain Definitions ----
+export interface ChainDefinitionSummary {
+  name: string
+  steps_count: number
+  has_branches: boolean
+  has_parallel: boolean
+  has_sub_chains: boolean
+  on_failure: string
+  timeout_seconds?: number
+}
+
+export interface ChainDefinitionListResponse {
+  definitions: ChainDefinitionSummary[]
+}
+
+export interface ChainDefinition {
+  name: string
+  steps: ChainStepConfig[]
+  on_failure: string
+  timeout_seconds?: number
+  on_cancel?: { provider: string; action_type: string }
 }
 
 // ---- Chain DAG ----
 export interface DagNode {
   name: string
-  node_type: 'step' | 'sub_chain'
+  node_type: 'step' | 'sub_chain' | 'parallel'
   provider?: string
   action_type?: string
   sub_chain_name?: string
   status?: string
   child_chain_id?: string
   children?: DagResponse
+  parallel_children?: DagNode[]
+  parallel_join?: string
 }
 
 export interface DagEdge {

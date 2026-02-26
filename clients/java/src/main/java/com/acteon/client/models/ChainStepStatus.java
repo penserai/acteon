@@ -2,10 +2,15 @@ package com.acteon.client.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.List;
 import java.util.Map;
 
 /**
  * Detailed status of a single chain step.
+ *
+ * <p>The {@code status} field is one of: "pending", "running", "completed",
+ * "failed", "skipped", "waiting_sub_chain", "waiting_parallel". Parallel
+ * sub-steps may also report "cancelled".
  */
 public class ChainStepStatus {
     private String name;
@@ -25,6 +30,9 @@ public class ChainStepStatus {
 
     @JsonProperty("child_chain_id")
     private String childChainId;
+
+    @JsonProperty("parallel_sub_steps")
+    private List<ChainStepStatus> parallelSubSteps;
 
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
@@ -49,4 +57,7 @@ public class ChainStepStatus {
 
     public String getChildChainId() { return childChainId; }
     public void setChildChainId(String childChainId) { this.childChainId = childChainId; }
+
+    public List<ChainStepStatus> getParallelSubSteps() { return parallelSubSteps; }
+    public void setParallelSubSteps(List<ChainStepStatus> parallelSubSteps) { this.parallelSubSteps = parallelSubSteps; }
 }

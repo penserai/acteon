@@ -1367,7 +1367,11 @@ export interface ChainStepStatus {
   name: string;
   /** Provider used for this step. */
   provider: string;
-  /** Step status: "pending", "completed", "failed", "skipped". */
+  /**
+   * Step status: "pending", "running", "completed", "failed", "skipped",
+   * "waiting_sub_chain", "waiting_parallel". Parallel sub-steps may also
+   * report "cancelled".
+   */
   status: string;
   /** Response body from the provider (if completed). */
   responseBody?: unknown;
@@ -1379,10 +1383,13 @@ export interface ChainStepStatus {
   subChain?: string;
   /** ID of the child chain instance spawned by this step, if any. */
   childChainId?: string;
+  /** Results from parallel sub-steps, if this is a parallel step. */
+  parallelSubSteps?: ChainStepStatus[];
 }
 
 /** Parse a ChainStepStatus from API response. */
 export function parseChainStepStatus(data: Record<string, unknown>): ChainStepStatus {
+  const rawSubs = data.parallel_sub_steps as Record<string, unknown>[] | undefined;
   return {
     name: data.name as string,
     provider: data.provider as string,
@@ -1392,6 +1399,7 @@ export function parseChainStepStatus(data: Record<string, unknown>): ChainStepSt
     completedAt: data.completed_at as string | undefined,
     subChain: data.sub_chain as string | undefined,
     childChainId: data.child_chain_id as string | undefined,
+    parallelSubSteps: rawSubs ? rawSubs.map(parseChainStepStatus) : undefined,
   };
 }
 
@@ -1472,6 +1480,10 @@ export interface DagNode {
   childChainId?: string;
   /** Nested DAG for sub-chain expansion. */
   children?: DagResponse;
+  /** Nested DAG nodes for parallel sub-steps. */
+  parallelChildren?: DagNode[];
+  /** Join policy for parallel groups ("all" or "any"). */
+  parallelJoin?: string;
 }
 
 /** An edge in the chain DAG. */
@@ -1505,6 +1517,7 @@ export interface DagResponse {
 /** Parse a DagNode from API response. */
 export function parseDagNode(data: Record<string, unknown>): DagNode {
   const children = data.children as Record<string, unknown> | undefined;
+  const rawParallel = data.parallel_children as Record<string, unknown>[] | undefined;
   return {
     name: data.name as string,
     nodeType: data.node_type as string,
@@ -1514,6 +1527,8 @@ export function parseDagNode(data: Record<string, unknown>): DagNode {
     status: data.status as string | undefined,
     childChainId: data.child_chain_id as string | undefined,
     children: children ? parseDagResponse(children) : undefined,
+    parallelChildren: rawParallel ? rawParallel.map(parseDagNode) : undefined,
+    parallelJoin: data.parallel_join as string | undefined,
   };
 }
 

@@ -273,13 +273,16 @@ fn build_chain_catchup(chain_state: &acteon_core::ChainState) -> Vec<Result<Even
     // If the chain is terminal, emit a ChainCompleted event.
     if chain_state.status != ChainStatus::Running
         && chain_state.status != ChainStatus::WaitingSubChain
+        && chain_state.status != ChainStatus::WaitingParallel
     {
         let status_str = match chain_state.status {
             ChainStatus::Completed => "completed",
             ChainStatus::Failed => "failed",
             ChainStatus::Cancelled => "cancelled",
             ChainStatus::TimedOut => "timed_out",
-            ChainStatus::Running | ChainStatus::WaitingSubChain => unreachable!(),
+            ChainStatus::Running | ChainStatus::WaitingSubChain | ChainStatus::WaitingParallel => {
+                unreachable!()
+            }
         };
         let event_type = StreamEventType::ChainCompleted {
             chain_id: chain_state.chain_id.clone(),
@@ -847,6 +850,8 @@ mod tests {
             parent_chain_id: None,
             parent_step_index: None,
             child_chain_ids: Vec::new(),
+            parallel_state: None,
+            parallel_sub_results: std::collections::HashMap::new(),
         }
     }
 

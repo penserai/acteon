@@ -31,7 +31,9 @@ pub use attachment::{Attachment, ResolvedAttachment};
 pub use caller::Caller;
 pub use chain::{
     BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy, ChainNotificationTarget,
-    ChainState, ChainStatus, ChainStepConfig, StepFailurePolicy, StepResult, validate_chain_graph,
+    ChainState, ChainStatus, ChainStepConfig, ParallelExecutionState, ParallelFailurePolicy,
+    ParallelJoinPolicy, ParallelStepGroup, ParallelSubStepStatus, StepFailurePolicy, StepResult,
+    validate_chain_graph,
 };
 pub use chain_dag::{DagEdge, DagNode, DagResponse};
 pub use circuit_breaker::{

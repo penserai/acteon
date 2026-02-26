@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
   RefreshCw, PieChart, Database, HeartPulse, Puzzle, ShieldAlert, FileText, BarChart3,
-  ExternalLink
+  ExternalLink, GitBranch,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -24,6 +24,7 @@ export const MAIN_NAV_ITEMS: NavItem[] = [
   { to: '/events', icon: Radio, label: 'Events' },
   { to: '/groups', icon: Layers, label: 'Groups' },
   { to: '/chains', icon: Link2, label: 'Chains', shortcut: '3' },
+  { to: '/chain-definitions', icon: GitBranch, label: 'Chain Definitions' },
   { to: '/approvals', icon: ShieldCheck, label: 'Approvals', shortcut: '5' },
   { to: '/circuit-breakers', icon: Zap, label: 'Circuit Breakers' },
   { to: '/provider-health', icon: HeartPulse, label: 'Provider Health' },

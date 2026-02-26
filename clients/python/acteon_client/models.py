@@ -1465,7 +1465,9 @@ class ChainStepStatus:
     Attributes:
         name: Step name.
         provider: Provider used for this step.
-        status: Step status (pending, completed, failed, skipped).
+        status: Step status (pending, running, completed, failed, skipped,
+            waiting_sub_chain, waiting_parallel). Parallel sub-steps may also
+            report "cancelled".
         response_body: Response body from the provider (if completed).
         error: Error message (if failed).
         completed_at: When this step completed.
@@ -1480,9 +1482,11 @@ class ChainStepStatus:
     completed_at: Optional[str] = None
     sub_chain: Optional[str] = None
     child_chain_id: Optional[str] = None
+    parallel_sub_steps: Optional[List["ChainStepStatus"]] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainStepStatus":
+        raw_subs = data.get("parallel_sub_steps")
         return cls(
             name=data["name"],
             provider=data["provider"],
@@ -1492,6 +1496,11 @@ class ChainStepStatus:
             completed_at=data.get("completed_at"),
             sub_chain=data.get("sub_chain"),
             child_chain_id=data.get("child_chain_id"),
+            parallel_sub_steps=(
+                [ChainStepStatus.from_dict(s) for s in raw_subs]
+                if raw_subs is not None
+                else None
+            ),
         )
 
 
@@ -1577,10 +1586,13 @@ class DagNode:
     status: Optional[str] = None
     child_chain_id: Optional[str] = None
     children: Optional["DagResponse"] = None
+    parallel_children: Optional[List["DagNode"]] = None
+    parallel_join: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DagNode":
         children_data = data.get("children")
+        raw_parallel = data.get("parallel_children")
         return cls(
             name=data["name"],
             node_type=data["node_type"],
@@ -1594,6 +1606,12 @@ class DagNode:
                 if children_data is not None
                 else None
             ),
+            parallel_children=(
+                [DagNode.from_dict(n) for n in raw_parallel]
+                if raw_parallel is not None
+                else None
+            ),
+            parallel_join=data.get("parallel_join"),
         )
 
 

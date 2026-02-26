@@ -26,6 +26,85 @@ pub enum StepFailurePolicy {
     Dlq,
 }
 
+/// Join policy for parallel step groups.
+///
+/// Determines when a parallel group is considered complete.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallelJoinPolicy {
+    /// Wait for all sub-steps to complete.
+    #[default]
+    All,
+    /// Return as soon as the first sub-step succeeds.
+    Any,
+}
+
+/// Failure handling policy for parallel step groups.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallelFailurePolicy {
+    /// Cancel remaining sub-steps on the first failure.
+    #[default]
+    FailFast,
+    /// Run all sub-steps and aggregate results, even if some fail.
+    BestEffort,
+}
+
+/// Configuration for a group of steps that execute concurrently within a
+/// single parent step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParallelStepGroup {
+    /// Sub-steps to execute concurrently.
+    pub steps: Vec<ChainStepConfig>,
+    /// When the group is considered complete.
+    #[serde(default)]
+    pub join: ParallelJoinPolicy,
+    /// How failures within the group are handled.
+    #[serde(default)]
+    pub on_failure: ParallelFailurePolicy,
+    /// Optional timeout in seconds for the entire parallel group.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// Optional maximum number of sub-steps executing concurrently.
+    ///
+    /// When set, sub-steps are dispatched in batches of this size using
+    /// bounded concurrency. `None` (default) means all sub-steps run at once.
+    #[serde(default)]
+    pub max_concurrency: Option<usize>,
+}
+
+/// Runtime tracking state for a parallel step group execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParallelExecutionState {
+    /// Name of the parent parallel step.
+    pub step_name: String,
+    /// Index of the parent step in the chain.
+    pub step_index: usize,
+    /// Status of each sub-step, keyed by sub-step name.
+    pub sub_steps: HashMap<String, ParallelSubStepStatus>,
+    /// When the parallel group started executing.
+    pub started_at: DateTime<Utc>,
+    /// When the parallel group will time out.
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Status of an individual sub-step within a parallel group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParallelSubStepStatus {
+    /// Sub-step has not started yet.
+    Pending,
+    /// Sub-step is currently executing.
+    Running,
+    /// Sub-step completed successfully.
+    Completed,
+    /// Sub-step failed.
+    Failed,
+    /// Sub-step was cancelled (e.g., due to `fail_fast` or `any` join).
+    Cancelled,
+}
+
 /// Comparison operator for branch conditions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -221,6 +300,13 @@ pub struct ChainStepConfig {
     /// the sub-chain's result. Mutually exclusive with `provider`.
     #[serde(default)]
     pub sub_chain: Option<String>,
+    /// Optional parallel step group that fans out to multiple sub-steps
+    /// concurrently. Mutually exclusive with `provider` and `sub_chain`.
+    ///
+    /// Boxed to keep `ChainStepConfig` small on the stack (avoids stack
+    /// overflows in debug builds with deeply nested async state machines).
+    #[serde(default)]
+    pub parallel: Option<Box<ParallelStepGroup>>,
 }
 
 impl ChainStepConfig {
@@ -242,6 +328,7 @@ impl ChainStepConfig {
             branches: Vec::new(),
             default_next: None,
             sub_chain: None,
+            parallel: None,
         }
     }
 
@@ -258,6 +345,24 @@ impl ChainStepConfig {
             branches: Vec::new(),
             default_next: None,
             sub_chain: Some(sub_chain_name.into()),
+            parallel: None,
+        }
+    }
+
+    /// Create a new parallel step that fans out to multiple sub-steps.
+    #[must_use]
+    pub fn new_parallel(name: impl Into<String>, group: ParallelStepGroup) -> Self {
+        Self {
+            name: name.into(),
+            provider: String::new(),
+            action_type: String::new(),
+            payload_template: serde_json::Value::Object(serde_json::Map::new()),
+            on_failure: None,
+            delay_seconds: None,
+            branches: Vec::new(),
+            default_next: None,
+            sub_chain: None,
+            parallel: Some(Box::new(group)),
         }
     }
 
@@ -265,6 +370,19 @@ impl ChainStepConfig {
     #[must_use]
     pub fn is_sub_chain(&self) -> bool {
         self.sub_chain.is_some()
+    }
+
+    /// Returns `true` if this step is a parallel fan-out group.
+    #[must_use]
+    pub fn is_parallel(&self) -> bool {
+        self.parallel.is_some()
+    }
+
+    /// Set the parallel step group.
+    #[must_use]
+    pub fn with_parallel(mut self, group: ParallelStepGroup) -> Self {
+        self.parallel = Some(Box::new(group));
+        self
     }
 
     /// Set the per-step failure policy.
@@ -392,6 +510,7 @@ impl ChainConfig {
     ///
     /// Returns a list of validation error messages. An empty list means valid.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
         let step_names: HashSet<&str> = self.steps.iter().map(|s| s.name.as_str()).collect();
@@ -413,6 +532,77 @@ impl ChainConfig {
                     "step `{}` has both `sub_chain` and `provider` set; they are mutually exclusive",
                     step.name
                 ));
+            }
+        }
+
+        // Check mutual exclusivity and validity of parallel steps.
+        for step in &self.steps {
+            if let Some(ref group) = step.parallel {
+                if !step.provider.is_empty() {
+                    errors.push(format!(
+                        "step `{}` has both `parallel` and `provider` set; they are mutually exclusive",
+                        step.name
+                    ));
+                }
+                if step.sub_chain.is_some() {
+                    errors.push(format!(
+                        "step `{}` has both `parallel` and `sub_chain` set; they are mutually exclusive",
+                        step.name
+                    ));
+                }
+                if group.steps.is_empty() {
+                    errors.push(format!(
+                        "parallel step `{}` must have at least one sub-step",
+                        step.name
+                    ));
+                }
+                let mut sub_step_names = HashSet::new();
+                for sub_step in &group.steps {
+                    // Reject nested parallel.
+                    if sub_step.parallel.is_some() {
+                        errors.push(format!(
+                            "nested parallel not allowed: sub-step `{}` in parallel step `{}`",
+                            sub_step.name, step.name
+                        ));
+                    }
+                    // Reject sub-chains inside parallel groups.
+                    if sub_step.sub_chain.is_some() {
+                        errors.push(format!(
+                            "sub-chains not allowed inside parallel groups: sub-step `{}` in parallel step `{}`",
+                            sub_step.name, step.name
+                        ));
+                    }
+                    // Reject branches on individual sub-steps.
+                    if sub_step.has_branches() {
+                        errors.push(format!(
+                            "branches not allowed on parallel sub-steps: sub-step `{}` in parallel step `{}`",
+                            sub_step.name, step.name
+                        ));
+                    }
+                    // Check for duplicate sub-step names within the group.
+                    if !sub_step_names.insert(&sub_step.name) {
+                        errors.push(format!(
+                            "duplicate sub-step name `{}` in parallel step `{}`",
+                            sub_step.name, step.name
+                        ));
+                    }
+                    // Check that sub-step names don't conflict with top-level step names.
+                    if step_names.contains(sub_step.name.as_str()) {
+                        errors.push(format!(
+                            "parallel sub-step `{}` conflicts with top-level step name in chain",
+                            sub_step.name
+                        ));
+                    }
+                }
+                // Validate max_concurrency.
+                if let Some(max) = group.max_concurrency
+                    && max == 0
+                {
+                    errors.push(format!(
+                        "parallel step `{}`: `max_concurrency` must be >= 1",
+                        step.name
+                    ));
+                }
             }
         }
 
@@ -506,6 +696,8 @@ pub enum ChainStatus {
     TimedOut,
     /// Chain is waiting for a sub-chain to complete.
     WaitingSubChain,
+    /// Chain is executing a parallel step group.
+    WaitingParallel,
 }
 
 /// Result of a single chain step execution.
@@ -572,6 +764,13 @@ pub struct ChainState {
     /// IDs of child chains spawned by sub-chain steps in this chain.
     #[serde(default)]
     pub child_chain_ids: Vec<String>,
+    /// Runtime state of a currently-executing parallel step group.
+    #[serde(default)]
+    pub parallel_state: Option<ParallelExecutionState>,
+    /// Results from sub-steps within a parallel group, keyed by sub-step name.
+    /// Accessible via `{{steps.SUB_STEP_NAME.body.*}}` templates.
+    #[serde(default)]
+    pub parallel_sub_results: HashMap<String, StepResult>,
 }
 
 /// DFS coloring for cycle detection.
@@ -726,6 +925,7 @@ mod tests {
             ChainStatus::Cancelled,
             ChainStatus::TimedOut,
             ChainStatus::WaitingSubChain,
+            ChainStatus::WaitingParallel,
         ];
         for status in &statuses {
             let json = serde_json::to_string(status).unwrap();
@@ -1566,5 +1766,426 @@ mod tests {
             let back: BranchOperator = serde_json::from_str(&json).unwrap();
             assert_eq!(&back, op, "deserialization mismatch for {expected_json}");
         }
+    }
+
+    // -- Parallel step tests ------------------------------------------------
+
+    #[test]
+    fn parallel_join_policy_defaults() {
+        assert_eq!(ParallelJoinPolicy::default(), ParallelJoinPolicy::All);
+    }
+
+    #[test]
+    fn parallel_failure_policy_defaults() {
+        assert_eq!(
+            ParallelFailurePolicy::default(),
+            ParallelFailurePolicy::FailFast
+        );
+    }
+
+    #[test]
+    fn parallel_step_constructor() {
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("notify_slack", "slack", "send", serde_json::json!({})),
+                ChainStepConfig::new("notify_email", "email", "send", serde_json::json!({})),
+            ],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: Some(30),
+            max_concurrency: None,
+        };
+        let step = ChainStepConfig::new_parallel("fan-out", group);
+        assert_eq!(step.name, "fan-out");
+        assert!(step.is_parallel());
+        assert!(!step.is_sub_chain());
+        assert!(step.provider.is_empty());
+        assert_eq!(step.parallel.as_ref().unwrap().steps.len(), 2);
+        assert_eq!(step.parallel.as_ref().unwrap().timeout_seconds, Some(30));
+    }
+
+    #[test]
+    fn parallel_step_is_parallel() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new("a", "p", "t", serde_json::json!({}))],
+            join: ParallelJoinPolicy::Any,
+            on_failure: ParallelFailurePolicy::BestEffort,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let step =
+            ChainStepConfig::new("test", "p", "t", serde_json::json!({})).with_parallel(group);
+        assert!(step.is_parallel());
+    }
+
+    #[test]
+    fn parallel_step_serde_roundtrip() {
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("a", "p1", "t1", serde_json::json!({"key": "val"})),
+                ChainStepConfig::new("b", "p2", "t2", serde_json::json!({})),
+            ],
+            join: ParallelJoinPolicy::Any,
+            on_failure: ParallelFailurePolicy::BestEffort,
+            timeout_seconds: Some(60),
+            max_concurrency: None,
+        };
+        let step = ChainStepConfig::new_parallel("parallel-step", group);
+        let json = serde_json::to_string(&step).unwrap();
+        let back: ChainStepConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.is_parallel());
+        let g = back.parallel.unwrap();
+        assert_eq!(g.steps.len(), 2);
+        assert_eq!(g.join, ParallelJoinPolicy::Any);
+        assert_eq!(g.on_failure, ParallelFailurePolicy::BestEffort);
+        assert_eq!(g.timeout_seconds, Some(60));
+    }
+
+    #[test]
+    fn backward_compatible_step_deserialization_no_parallel() {
+        let json = r#"{
+            "name": "old-step",
+            "provider": "p",
+            "action_type": "t",
+            "payload_template": {}
+        }"#;
+        let step: ChainStepConfig = serde_json::from_str(json).unwrap();
+        assert!(!step.is_parallel());
+        assert!(step.parallel.is_none());
+    }
+
+    #[test]
+    fn validate_rejects_empty_parallel_group() {
+        let group = ParallelStepGroup {
+            steps: vec![],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("at least one sub-step")));
+    }
+
+    #[test]
+    fn validate_rejects_nested_parallel() {
+        let inner = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new(
+                "inner",
+                "p",
+                "t",
+                serde_json::json!({}),
+            )],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let outer = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new_parallel("nested", inner)],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", outer));
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("nested parallel")));
+    }
+
+    #[test]
+    fn validate_rejects_sub_chain_in_parallel() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new_sub_chain("invoke", "other-chain")],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("sub-chains not allowed")));
+    }
+
+    #[test]
+    fn validate_rejects_branches_on_parallel_sub_step() {
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("a", "p", "t", serde_json::json!({})).with_default_next("b"),
+            ],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad")
+            .with_step(ChainStepConfig::new_parallel("p", group))
+            .with_step(ChainStepConfig::new("b", "p", "t", serde_json::json!({})));
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("branches not allowed")));
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_sub_step_names() {
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("dup", "p1", "t1", serde_json::json!({})),
+                ChainStepConfig::new("dup", "p2", "t2", serde_json::json!({})),
+            ],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("duplicate sub-step name")));
+    }
+
+    #[test]
+    fn validate_rejects_sub_step_name_conflict_with_chain_step() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new(
+                "conflicting",
+                "p1",
+                "t1",
+                serde_json::json!({}),
+            )],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad")
+            .with_step(ChainStepConfig::new_parallel("p", group))
+            .with_step(ChainStepConfig::new(
+                "conflicting",
+                "p",
+                "t",
+                serde_json::json!({}),
+            ));
+        let errors = config.validate();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("conflicts with top-level"))
+        );
+    }
+
+    #[test]
+    fn validate_allows_branches_on_parent_parallel_step() {
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("notify_slack", "slack", "send", serde_json::json!({})),
+                ChainStepConfig::new("notify_email", "email", "send", serde_json::json!({})),
+            ],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("good")
+            .with_step(
+                ChainStepConfig::new_parallel("fan-out", group)
+                    .with_branch(BranchCondition::new(
+                        "success",
+                        BranchOperator::Eq,
+                        Some(serde_json::Value::Bool(true)),
+                        "done",
+                    ))
+                    .with_default_next("fallback"),
+            )
+            .with_step(ChainStepConfig::new(
+                "done",
+                "p",
+                "t",
+                serde_json::json!({}),
+            ))
+            .with_step(ChainStepConfig::new(
+                "fallback",
+                "p",
+                "t",
+                serde_json::json!({}),
+            ));
+        assert!(
+            config.validate().is_empty(),
+            "parent parallel step with branches should be valid"
+        );
+    }
+
+    #[test]
+    fn parallel_execution_state_serde_roundtrip() {
+        let state = ParallelExecutionState {
+            step_name: "fan-out".into(),
+            step_index: 1,
+            sub_steps: HashMap::from([
+                ("a".into(), ParallelSubStepStatus::Completed),
+                ("b".into(), ParallelSubStepStatus::Running),
+            ]),
+            started_at: Utc::now(),
+            expires_at: None,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: ParallelExecutionState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.step_name, "fan-out");
+        assert_eq!(back.sub_steps.len(), 2);
+        assert_eq!(
+            back.sub_steps.get("a"),
+            Some(&ParallelSubStepStatus::Completed)
+        );
+    }
+
+    #[test]
+    fn chain_state_with_parallel_fields_serde_roundtrip() {
+        let json = serde_json::json!({
+            "chain_id": "abc",
+            "chain_name": "test",
+            "origin_action": {
+                "id": "id1",
+                "namespace": "ns",
+                "tenant": "t",
+                "provider": "p",
+                "action_type": "at",
+                "payload": {},
+                "created_at": "2026-01-01T00:00:00Z"
+            },
+            "current_step": 0,
+            "total_steps": 1,
+            "status": "waiting_parallel",
+            "step_results": [null],
+            "started_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "namespace": "ns",
+            "tenant": "t",
+            "parallel_sub_results": {
+                "notify_slack": {
+                    "step_name": "notify_slack",
+                    "success": true,
+                    "response_body": {"ok": true},
+                    "error": null,
+                    "completed_at": "2026-01-01T00:00:01Z"
+                }
+            }
+        });
+        let state: ChainState = serde_json::from_value(json).unwrap();
+        assert_eq!(state.status, ChainStatus::WaitingParallel);
+        assert_eq!(state.parallel_sub_results.len(), 1);
+        assert!(
+            state
+                .parallel_sub_results
+                .get("notify_slack")
+                .unwrap()
+                .success
+        );
+    }
+
+    #[test]
+    fn backward_compatible_chain_state_no_parallel_fields() {
+        // Old JSON without parallel_state or parallel_sub_results.
+        let json = serde_json::json!({
+            "chain_id": "abc",
+            "chain_name": "test",
+            "origin_action": {
+                "id": "id1",
+                "namespace": "ns",
+                "tenant": "t",
+                "provider": "p",
+                "action_type": "at",
+                "payload": {},
+                "created_at": "2026-01-01T00:00:00Z"
+            },
+            "current_step": 0,
+            "total_steps": 1,
+            "status": "running",
+            "step_results": [null],
+            "started_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "namespace": "ns",
+            "tenant": "t"
+        });
+        let state: ChainState = serde_json::from_value(json).unwrap();
+        assert!(state.parallel_state.is_none());
+        assert!(state.parallel_sub_results.is_empty());
+    }
+
+    #[test]
+    fn waiting_parallel_status_serde() {
+        let json = serde_json::to_string(&ChainStatus::WaitingParallel).unwrap();
+        assert_eq!(json, "\"waiting_parallel\"");
+        let back: ChainStatus = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ChainStatus::WaitingParallel);
+    }
+
+    #[test]
+    fn validate_rejects_parallel_with_provider() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new("a", "p", "t", serde_json::json!({}))],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad").with_step({
+            let mut step =
+                ChainStepConfig::new("s1", "provider-a", "action", serde_json::json!({}));
+            step.parallel = Some(Box::new(group));
+            step
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("parallel")
+            && e.contains("provider")
+            && e.contains("mutually exclusive")));
+    }
+
+    #[test]
+    fn validate_rejects_parallel_with_sub_chain() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new("a", "p", "t", serde_json::json!({}))],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let config = ChainConfig::new("bad").with_step({
+            let mut step = ChainStepConfig::new_sub_chain("s1", "other");
+            step.parallel = Some(Box::new(group));
+            step
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("parallel")
+            && e.contains("sub_chain")
+            && e.contains("mutually exclusive")));
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_concurrency() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new("a", "p", "t", serde_json::json!({}))],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: Some(0),
+        };
+        let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("max_concurrency")));
+    }
+
+    #[test]
+    fn validate_accepts_valid_max_concurrency() {
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("a", "p1", "t1", serde_json::json!({})),
+                ChainStepConfig::new("b", "p2", "t2", serde_json::json!({})),
+            ],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: Some(2),
+        };
+        let config = ChainConfig::new("good").with_step(ChainStepConfig::new_parallel("p", group));
+        let errors = config.validate();
+        assert!(errors.is_empty(), "expected no errors: {errors:?}");
     }
 }

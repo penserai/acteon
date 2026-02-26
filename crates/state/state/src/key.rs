@@ -48,6 +48,8 @@ pub enum KeyKind {
     Template,
     /// Template profile definition.
     TemplateProfile,
+    /// Chain definition (editable at runtime).
+    ChainDefinition,
     Custom(String),
 }
 
@@ -80,6 +82,7 @@ impl KeyKind {
             Self::Retention => "retention",
             Self::Template => "template",
             Self::TemplateProfile => "template_profile",
+            Self::ChainDefinition => "chain_def",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -174,6 +177,7 @@ mod tests {
         assert_eq!(KeyKind::Retention.as_str(), "retention");
         assert_eq!(KeyKind::Template.as_str(), "template");
         assert_eq!(KeyKind::TemplateProfile.as_str(), "template_profile");
+        assert_eq!(KeyKind::ChainDefinition.as_str(), "chain_def");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

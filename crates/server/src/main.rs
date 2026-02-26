@@ -1083,6 +1083,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Load chain definitions from state store on startup.
+    match store
+        .scan_keys_by_kind(acteon_state::KeyKind::ChainDefinition)
+        .await
+    {
+        Ok(entries) => {
+            let mut count = 0usize;
+            for (_key, value) in entries {
+                if let Ok(config) = serde_json::from_str::<acteon_core::ChainConfig>(&value) {
+                    let _ = gateway.set_chain_config(config);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                info!(count, "loaded chain definitions from state store");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load chain definitions from state store");
+        }
+    }
+
     // Pre-warm the embedding topic cache with topics from loaded rules.
     if let Some(ref bridge) = embedding_bridge {
         let topics: Vec<&str> = gateway

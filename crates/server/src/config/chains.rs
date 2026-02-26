@@ -93,6 +93,29 @@ pub struct ChainStepConfigToml {
     /// Mutually exclusive with `provider`.
     #[serde(default)]
     pub sub_chain: Option<String>,
+    /// Parallel step group that fans out to multiple sub-steps.
+    /// Mutually exclusive with `provider` and `sub_chain`.
+    #[serde(default)]
+    pub parallel: Option<Box<ParallelStepGroupToml>>,
+}
+
+/// A parallel step group loaded from TOML.
+#[derive(Debug, Deserialize)]
+pub struct ParallelStepGroupToml {
+    /// Sub-steps to execute concurrently.
+    pub steps: Vec<ChainStepConfigToml>,
+    /// Join policy: `"all"` (default) or `"any"`.
+    #[serde(default)]
+    pub join: Option<String>,
+    /// Failure policy: `"fail_fast"` (default) or `"best_effort"`.
+    #[serde(default)]
+    pub on_failure: Option<String>,
+    /// Optional timeout in seconds for the parallel group.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// Optional maximum number of sub-steps executing concurrently.
+    #[serde(default)]
+    pub max_concurrency: Option<usize>,
 }
 
 /// A branch condition in a chain step, loaded from TOML.
