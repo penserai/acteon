@@ -101,6 +101,7 @@ let chain = ChainConfig::new("incident-response")
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: Some(30),
+            max_concurrency: None,
         },
     ))
     .with_step(ChainStepConfig::new(
@@ -119,6 +120,7 @@ let chain = ChainConfig::new("incident-response")
 | `parallel.join` | string | No | Join policy: `"all"` (default) or `"any"` |
 | `parallel.on_failure` | string | No | Failure policy: `"fail_fast"` (default) or `"best_effort"` |
 | `parallel.timeout_seconds` | u64 | No | Timeout for the entire parallel group (default: 300s) |
+| `parallel.max_concurrency` | usize | No | Max sub-steps executing at once (`None` = unbounded) |
 | `branches` | array | No | Branch conditions evaluated on the merged result |
 | `default_next` | string | No | Default next step when no branch matches |
 
@@ -224,6 +226,43 @@ The DAG API represents parallel steps as nodes with `parallel_children`:
 ```
 
 The Admin UI renders parallel groups as side-by-side nodes with a join policy badge.
+
+## Bounded Concurrency
+
+When a parallel group has many sub-steps, you can limit the number executing simultaneously with `max_concurrency`:
+
+```toml
+[chains.steps.parallel]
+join = "all"
+max_concurrency = 3
+timeout_seconds = 60
+```
+
+With `max_concurrency = 3`, at most 3 sub-steps run at a time. The remaining sub-steps are queued and dispatched as earlier ones complete. This is useful for rate-limited providers or when resource consumption must be controlled.
+
+When omitted (the default), all sub-steps start concurrently.
+
+## Failure Policy on Parent Step
+
+The parent parallel step respects the per-step `on_failure` policy just like regular steps:
+
+- **`abort`** (default): Fail the chain immediately.
+- **`skip`**: Skip the failed parallel step and continue to the next step (or complete the chain).
+- **`dlq`**: Push the failure to the dead-letter queue, then fail the chain.
+
+```toml
+[[chains.steps]]
+name = "notify-all"
+on_failure = "skip"
+
+[chains.steps.parallel]
+join = "all"
+on_failure = "best_effort"
+```
+
+## Observability
+
+Each parallel sub-step produces its own audit record with timing, provider, and outcome details. The parent parallel step also gets an aggregate audit record. All paths (success, failure, timeout, skip, DLQ) emit `ChainStepCompleted` and `ChainCompleted` stream events, matching the behavior of regular chain steps.
 
 ## V1 Restrictions
 

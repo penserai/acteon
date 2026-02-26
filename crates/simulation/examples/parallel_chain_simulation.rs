@@ -102,6 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 join: ParallelJoinPolicy::All,
                 on_failure: ParallelFailurePolicy::FailFast,
                 timeout_seconds: Some(30),
+                max_concurrency: None,
             },
         ))
         .with_timeout(60);
@@ -189,6 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 join: ParallelJoinPolicy::All,
                 on_failure: ParallelFailurePolicy::FailFast,
                 timeout_seconds: Some(10),
+                max_concurrency: None,
             },
         ))
         .with_timeout(60);
@@ -258,6 +260,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 join: ParallelJoinPolicy::All,
                 on_failure: ParallelFailurePolicy::BestEffort,
                 timeout_seconds: Some(10),
+                max_concurrency: None,
             },
         ))
         .with_timeout(60);
@@ -349,6 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 join: ParallelJoinPolicy::Any,
                 on_failure: ParallelFailurePolicy::FailFast,
                 timeout_seconds: Some(10),
+                max_concurrency: None,
             },
         ))
         .with_timeout(60);
@@ -422,6 +426,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 join: ParallelJoinPolicy::All,
                 on_failure: ParallelFailurePolicy::FailFast,
                 timeout_seconds: Some(1), // 1 second timeout
+                max_concurrency: None,
             },
         ))
         .with_timeout(60);
@@ -520,6 +525,7 @@ rules:
                 join: ParallelJoinPolicy::All,
                 on_failure: ParallelFailurePolicy::FailFast,
                 timeout_seconds: Some(10),
+                max_concurrency: None,
             },
         ))
         .with_step(ChainStepConfig::new(
@@ -643,6 +649,7 @@ rules:
                     join: ParallelJoinPolicy::All,
                     on_failure: ParallelFailurePolicy::FailFast,
                     timeout_seconds: Some(10),
+                    max_concurrency: None,
                 },
             )
             // Branch on the merged parallel result body.
@@ -773,6 +780,7 @@ rules:
                 join: ParallelJoinPolicy::All,
                 on_failure: ParallelFailurePolicy::FailFast,
                 timeout_seconds: Some(10),
+                max_concurrency: None,
             },
         ))
         .with_timeout(60);

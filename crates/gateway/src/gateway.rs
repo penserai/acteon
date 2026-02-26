@@ -3141,7 +3141,58 @@ impl Gateway {
     ) -> Result<(), GatewayError> {
         let group = step_config.parallel.as_ref().unwrap();
 
-        // Build and execute all sub-steps concurrently.
+        // --- Phase 2.1: Per-sub-step dedup keys ---
+        let dedup_ttl = chain_state.expires_at.map_or(
+            Duration::from_secs(86400), // 24h default
+            |ea| {
+                let remaining = ea - Utc::now();
+                Duration::from_secs(remaining.num_seconds().max(1).cast_unsigned())
+            },
+        );
+        let mut sub_dedup_keys = Vec::with_capacity(group.steps.len());
+        for sub_step in &group.steps {
+            let key = StateKey::new(
+                namespace,
+                tenant,
+                KeyKind::Dedup,
+                format!(
+                    "chain-step:{chain_id}:{}:{}",
+                    step_config.name, sub_step.name
+                ),
+            );
+            self.state
+                .check_and_set(&key, "dispatched", Some(dedup_ttl))
+                .await?;
+            sub_dedup_keys.push(key);
+        }
+
+        // --- Phase 2.2: Persist ParallelExecutionState before execution ---
+        let parallel_state = acteon_core::chain::ParallelExecutionState {
+            step_name: step_config.name.clone(),
+            step_index: step_idx,
+            sub_steps: group
+                .steps
+                .iter()
+                .map(|s| {
+                    (
+                        s.name.clone(),
+                        acteon_core::chain::ParallelSubStepStatus::Pending,
+                    )
+                })
+                .collect(),
+            started_at: Utc::now(),
+            expires_at: group.timeout_seconds.map(|secs| {
+                Utc::now() + chrono::Duration::seconds(i64::try_from(secs).unwrap_or(i64::MAX))
+            }),
+        };
+        chain_state.status = ChainStatus::WaitingParallel;
+        chain_state.parallel_state = Some(parallel_state);
+        chain_state.updated_at = Utc::now();
+        self.persist_chain_state(chain_key, chain_state, None)
+            .await?;
+
+        // Resolve sub-step payloads and build futures, keeping payloads for auditing.
+        let mut sub_payloads: Vec<serde_json::Value> = Vec::with_capacity(group.steps.len());
         let sub_step_futures: Vec<_> = group
             .steps
             .iter()
@@ -3156,6 +3207,7 @@ impl Gateway {
                     &chain_state.execution_path,
                     &chain_state.parallel_sub_results,
                 );
+                sub_payloads.push(sub_payload.clone());
                 let sub_action = Action::new(
                     namespace,
                     tenant,
@@ -3178,27 +3230,76 @@ impl Gateway {
 
         let Ok(results) = tokio::time::timeout(
             group_timeout,
-            self.execute_parallel_group(sub_step_futures, &group.join, &group.on_failure),
+            self.execute_parallel_group(
+                sub_step_futures,
+                &group.join,
+                &group.on_failure,
+                group.max_concurrency,
+            ),
         )
         .await
         else {
             // Timeout — mark the parent step as failed.
             let now = Utc::now();
-            chain_state.step_results[step_idx] = Some(StepResult {
+            let parent_result = StepResult {
                 step_name: step_config.name.clone(),
                 success: false,
                 response_body: None,
                 error: Some(format!("parallel group timed out after {group_timeout:?}")),
                 completed_at: now,
-            });
+            };
+            chain_state.step_results[step_idx] = Some(parent_result.clone());
             chain_state.status = ChainStatus::Failed;
+            chain_state.parallel_state = None;
             chain_state.updated_at = now;
             self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
                 .await?;
             self.cleanup_pending_chain(namespace, tenant, chain_id)
                 .await?;
             self.metrics.increment_chains_failed();
+            // Emit parent step audit + stream events for timeout.
+            self.emit_chain_step_audit(
+                chain_state,
+                step_config,
+                step_idx,
+                "chain_step_failed",
+                &parent_result,
+                group_timeout,
+                None,
+            );
             self.emit_chain_terminal_audit(chain_state, "chain_failed");
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: now,
+                event_type: StreamEventType::ChainStepCompleted {
+                    chain_id: chain_id.to_string(),
+                    step_name: step_config.name.clone(),
+                    step_index: step_idx,
+                    success: false,
+                    next_step: None,
+                },
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_type: Some(step_config.action_type.clone()),
+                action_id: Some(chain_state.origin_action.id.to_string()),
+            });
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: now,
+                event_type: StreamEventType::ChainCompleted {
+                    chain_id: chain_id.to_string(),
+                    status: "failed".to_string(),
+                    execution_path: chain_state.execution_path.clone(),
+                },
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_type: Some(chain_state.chain_name.clone()),
+                action_id: Some(chain_state.origin_action.id.to_string()),
+            });
+            // Clean up dedup keys.
+            for key in &sub_dedup_keys {
+                let _ = self.state.delete(key).await;
+            }
             guard
                 .release()
                 .await
@@ -3206,13 +3307,21 @@ impl Gateway {
             return Ok(());
         };
 
-        // Aggregate results.
+        // --- Phase 1.1: Aggregate results and emit sub-step audit records ---
         let mut merged_body = serde_json::Map::new();
         let mut all_success = true;
         let mut any_success = false;
         let now = Utc::now();
 
-        for (sub_name, outcome, _elapsed) in &results {
+        // Build a lookup from sub-step name to its config index for audit payloads.
+        let sub_config_index: HashMap<&str, usize> = group
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.as_str(), i))
+            .collect();
+
+        for (sub_name, outcome, elapsed) in &results {
             let (success, body, error) = match outcome {
                 ActionOutcome::Executed(resp) => (true, Some(resp.body.clone()), None),
                 ActionOutcome::Failed(err) => (false, None, Some(err.message.clone())),
@@ -3228,7 +3337,26 @@ impl Gateway {
             };
             chain_state
                 .parallel_sub_results
-                .insert(sub_name.clone(), sub_result);
+                .insert(sub_name.clone(), sub_result.clone());
+
+            // Emit sub-step audit record.
+            if let Some(&cfg_idx) = sub_config_index.get(sub_name.as_str()) {
+                let sub_config = &group.steps[cfg_idx];
+                let audit_outcome = if success {
+                    "chain_step_completed"
+                } else {
+                    "chain_step_failed"
+                };
+                self.emit_chain_step_audit(
+                    chain_state,
+                    sub_config,
+                    step_idx,
+                    audit_outcome,
+                    &sub_result,
+                    *elapsed,
+                    sub_payloads.get(cfg_idx),
+                );
+            }
 
             if success {
                 any_success = true;
@@ -3257,6 +3385,18 @@ impl Gateway {
             completed_at: now,
         };
         chain_state.step_results[step_idx] = Some(parent_result.clone());
+        // Clear parallel execution state now that results are collected.
+        chain_state.parallel_state = None;
+        // Keep a reference to the merged body for the parent audit record so
+        // that downstream branching logic can be debugged from the audit trail.
+        let parent_audit_payload = parent_result.response_body.clone();
+
+        // Compute an approximate parent-step duration from the max sub-step elapsed.
+        let parent_duration = results
+            .iter()
+            .map(|(_, _, d)| *d)
+            .max()
+            .unwrap_or(Duration::ZERO);
 
         if parent_success {
             // Evaluate branches on the parent parallel step.
@@ -3275,6 +3415,31 @@ impl Gateway {
                     .delay_seconds
                     .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
                 self.state.index_chain_ready(pending_key, ready_at).await?;
+                // Parent step audit + stream events: success, more steps.
+                self.emit_chain_step_audit(
+                    chain_state,
+                    step_config,
+                    step_idx,
+                    "chain_step_completed",
+                    &parent_result,
+                    parent_duration,
+                    parent_audit_payload.as_ref(),
+                );
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: now,
+                    event_type: StreamEventType::ChainStepCompleted {
+                        chain_id: chain_id.to_string(),
+                        step_name: step_config.name.clone(),
+                        step_index: step_idx,
+                        success: true,
+                        next_step: Some(chain_config.steps[next_idx].name.clone()),
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(step_config.action_type.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
             } else {
                 chain_state.status = ChainStatus::Completed;
                 chain_state.updated_at = now;
@@ -3283,17 +3448,271 @@ impl Gateway {
                 self.cleanup_pending_chain(namespace, tenant, chain_id)
                     .await?;
                 self.metrics.increment_chains_completed();
+                // Parent step audit + stream events: success, chain completed.
+                self.emit_chain_step_audit(
+                    chain_state,
+                    step_config,
+                    step_idx,
+                    "chain_step_completed",
+                    &parent_result,
+                    parent_duration,
+                    parent_audit_payload.as_ref(),
+                );
                 self.emit_chain_terminal_audit(chain_state, "chain_completed");
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: now,
+                    event_type: StreamEventType::ChainStepCompleted {
+                        chain_id: chain_id.to_string(),
+                        step_name: step_config.name.clone(),
+                        step_index: step_idx,
+                        success: true,
+                        next_step: None,
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(step_config.action_type.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
+                self.emit_stream_event(StreamEvent {
+                    id: uuid::Uuid::now_v7().to_string(),
+                    timestamp: now,
+                    event_type: StreamEventType::ChainCompleted {
+                        chain_id: chain_id.to_string(),
+                        status: "completed".to_string(),
+                        execution_path: chain_state.execution_path.clone(),
+                    },
+                    namespace: namespace.to_string(),
+                    tenant: tenant.to_string(),
+                    action_type: Some(chain_state.chain_name.clone()),
+                    action_id: Some(chain_state.origin_action.id.to_string()),
+                });
+                info!(chain_id = %chain_id, "chain completed successfully");
             }
         } else {
-            chain_state.status = ChainStatus::Failed;
-            chain_state.updated_at = now;
-            self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
-                .await?;
-            self.cleanup_pending_chain(namespace, tenant, chain_id)
-                .await?;
-            self.metrics.increment_chains_failed();
-            self.emit_chain_terminal_audit(chain_state, "chain_failed");
+            // --- Phase 1.3: Respect parent step on_failure policy ---
+            let step_policy = step_config
+                .on_failure
+                .as_ref()
+                .unwrap_or(&acteon_core::chain::StepFailurePolicy::Abort);
+
+            match step_policy {
+                acteon_core::chain::StepFailurePolicy::Abort => {
+                    chain_state.status = ChainStatus::Failed;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                        .await?;
+                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                        .await?;
+                    self.metrics.increment_chains_failed();
+                    self.emit_chain_step_audit(
+                        chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_failed",
+                        &parent_result,
+                        parent_duration,
+                        parent_audit_payload.as_ref(),
+                    );
+                    self.emit_chain_terminal_audit(chain_state, "chain_failed");
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainStepCompleted {
+                            chain_id: chain_id.to_string(),
+                            step_name: step_config.name.clone(),
+                            step_index: step_idx,
+                            success: false,
+                            next_step: None,
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(step_config.action_type.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainCompleted {
+                            chain_id: chain_id.to_string(),
+                            status: "failed".to_string(),
+                            execution_path: chain_state.execution_path.clone(),
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(chain_state.chain_name.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                    warn!(
+                        chain_id = %chain_id,
+                        step = %step_config.name,
+                        "parallel step failed, aborting"
+                    );
+                }
+                acteon_core::chain::StepFailurePolicy::Skip => {
+                    let next_step_idx = Self::resolve_next_step(
+                        chain_config,
+                        step_idx,
+                        &parent_result,
+                        step_index_map,
+                    );
+
+                    if let Some(next_idx) = next_step_idx {
+                        chain_state.current_step = next_idx;
+                        chain_state.updated_at = now;
+                        chain_state
+                            .execution_path
+                            .push(chain_config.steps[next_idx].name.clone());
+                        self.persist_chain_state(chain_key, chain_state, None)
+                            .await?;
+                        let ready_at = chain_config.steps[next_idx]
+                            .delay_seconds
+                            .map_or(0, |d| now.timestamp_millis() + (d.cast_signed() * 1000));
+                        self.state.index_chain_ready(pending_key, ready_at).await?;
+                        self.emit_chain_step_audit(
+                            chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_skipped",
+                            &parent_result,
+                            parent_duration,
+                            parent_audit_payload.as_ref(),
+                        );
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: now,
+                            event_type: StreamEventType::ChainStepCompleted {
+                                chain_id: chain_id.to_string(),
+                                step_name: step_config.name.clone(),
+                                step_index: step_idx,
+                                success: false,
+                                next_step: Some(chain_config.steps[next_idx].name.clone()),
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(step_config.action_type.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
+                    } else {
+                        chain_state.status = ChainStatus::Completed;
+                        chain_state.updated_at = now;
+                        self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                            .await?;
+                        self.cleanup_pending_chain(namespace, tenant, chain_id)
+                            .await?;
+                        self.metrics.increment_chains_completed();
+                        self.emit_chain_step_audit(
+                            chain_state,
+                            step_config,
+                            step_idx,
+                            "chain_step_skipped",
+                            &parent_result,
+                            parent_duration,
+                            parent_audit_payload.as_ref(),
+                        );
+                        self.emit_chain_terminal_audit(chain_state, "chain_completed");
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: now,
+                            event_type: StreamEventType::ChainStepCompleted {
+                                chain_id: chain_id.to_string(),
+                                step_name: step_config.name.clone(),
+                                step_index: step_idx,
+                                success: false,
+                                next_step: None,
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(step_config.action_type.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
+                        self.emit_stream_event(StreamEvent {
+                            id: uuid::Uuid::now_v7().to_string(),
+                            timestamp: now,
+                            event_type: StreamEventType::ChainCompleted {
+                                chain_id: chain_id.to_string(),
+                                status: "completed".to_string(),
+                                execution_path: chain_state.execution_path.clone(),
+                            },
+                            namespace: namespace.to_string(),
+                            tenant: tenant.to_string(),
+                            action_type: Some(chain_state.chain_name.clone()),
+                            action_id: Some(chain_state.origin_action.id.to_string()),
+                        });
+                    }
+                }
+                acteon_core::chain::StepFailurePolicy::Dlq => {
+                    // Push a synthetic action representing the parallel step to the DLQ.
+                    if let Some(ref dlq) = self.dlq {
+                        let dlq_action = Action::new(
+                            namespace,
+                            tenant,
+                            step_config.provider.as_str(),
+                            &step_config.action_type,
+                            parent_result
+                                .response_body
+                                .clone()
+                                .unwrap_or(serde_json::Value::Null),
+                        );
+                        dlq.push(
+                            dlq_action,
+                            parent_result.error.clone().unwrap_or_default(),
+                            1,
+                        )
+                        .await;
+                    }
+                    chain_state.status = ChainStatus::Failed;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(chain_key, chain_state, self.completed_chain_ttl)
+                        .await?;
+                    self.cleanup_pending_chain(namespace, tenant, chain_id)
+                        .await?;
+                    self.metrics.increment_chains_failed();
+                    self.emit_chain_step_audit(
+                        chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_failed",
+                        &parent_result,
+                        parent_duration,
+                        parent_audit_payload.as_ref(),
+                    );
+                    self.emit_chain_terminal_audit(chain_state, "chain_failed");
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainStepCompleted {
+                            chain_id: chain_id.to_string(),
+                            step_name: step_config.name.clone(),
+                            step_index: step_idx,
+                            success: false,
+                            next_step: None,
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(step_config.action_type.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                    self.emit_stream_event(StreamEvent {
+                        id: uuid::Uuid::now_v7().to_string(),
+                        timestamp: now,
+                        event_type: StreamEventType::ChainCompleted {
+                            chain_id: chain_id.to_string(),
+                            status: "failed".to_string(),
+                            execution_path: chain_state.execution_path.clone(),
+                        },
+                        namespace: namespace.to_string(),
+                        tenant: tenant.to_string(),
+                        action_type: Some(chain_state.chain_name.clone()),
+                        action_id: Some(chain_state.origin_action.id.to_string()),
+                    });
+                }
+            }
+        }
+
+        // Clean up dedup keys after results have been persisted.
+        for key in &sub_dedup_keys {
+            let _ = self.state.delete(key).await;
         }
 
         guard
@@ -3309,44 +3728,47 @@ impl Gateway {
     ///   (remaining futures are dropped/cancelled).
     /// - `All` + `BestEffort`: runs all concurrently, collects all results regardless of failures.
     /// - `Any`: returns as soon as the first success arrives (remaining futures are cancelled).
+    ///
+    /// When `max_concurrency` is `Some(n)`, at most `n` sub-steps execute at a time
+    /// (bounded via `buffer_unordered`).
     async fn execute_parallel_group<F>(
         &self,
         futures: Vec<F>,
         join_policy: &acteon_core::chain::ParallelJoinPolicy,
         failure_policy: &acteon_core::chain::ParallelFailurePolicy,
+        max_concurrency: Option<usize>,
     ) -> Vec<(String, ActionOutcome, Duration)>
     where
         F: std::future::Future<Output = (String, ActionOutcome, Duration)> + Send,
     {
         use acteon_core::chain::{ParallelFailurePolicy, ParallelJoinPolicy};
-        use futures::stream::{FuturesUnordered, StreamExt};
+        use futures::stream::StreamExt;
+
+        let concurrency = max_concurrency.unwrap_or(futures.len()).max(1);
 
         match (join_policy, failure_policy) {
             (
                 ParallelJoinPolicy::All,
                 ParallelFailurePolicy::BestEffort | ParallelFailurePolicy::FailFast,
             ) => {
-                // For fail_fast we use FuturesUnordered so we can stop early.
                 let is_fail_fast = matches!(failure_policy, ParallelFailurePolicy::FailFast);
-                let mut unordered: FuturesUnordered<_> = futures.into_iter().collect();
+                let mut stream = futures::stream::iter(futures).buffer_unordered(concurrency);
                 let mut results = Vec::new();
 
-                while let Some(result) = unordered.next().await {
+                while let Some(result) = stream.next().await {
                     let failed = matches!(&result.1, ActionOutcome::Failed(_));
                     results.push(result);
                     if is_fail_fast && failed {
-                        // Drop remaining futures (they get cancelled).
                         break;
                     }
                 }
                 results
             }
             (ParallelJoinPolicy::Any, _) => {
-                // Return on first success, cancel the rest.
-                let mut unordered: FuturesUnordered<_> = futures.into_iter().collect();
+                let mut stream = futures::stream::iter(futures).buffer_unordered(concurrency);
                 let mut results = Vec::new();
 
-                while let Some(result) = unordered.next().await {
+                while let Some(result) = stream.next().await {
                     let succeeded = matches!(&result.1, ActionOutcome::Executed(_));
                     results.push(result);
                     if succeeded {

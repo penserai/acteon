@@ -207,6 +207,7 @@ export interface ParallelStepGroup {
   join: ParallelJoinPolicy
   on_failure: ParallelFailurePolicy
   timeout_seconds?: number
+  max_concurrency?: number
 }
 
 export interface ChainStepConfig {

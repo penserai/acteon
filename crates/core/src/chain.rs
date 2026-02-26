@@ -65,6 +65,12 @@ pub struct ParallelStepGroup {
     /// Optional timeout in seconds for the entire parallel group.
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// Optional maximum number of sub-steps executing concurrently.
+    ///
+    /// When set, sub-steps are dispatched in batches of this size using
+    /// bounded concurrency. `None` (default) means all sub-steps run at once.
+    #[serde(default)]
+    pub max_concurrency: Option<usize>,
 }
 
 /// Runtime tracking state for a parallel step group execution.
@@ -587,6 +593,15 @@ impl ChainConfig {
                             sub_step.name
                         ));
                     }
+                }
+                // Validate max_concurrency.
+                if let Some(max) = group.max_concurrency
+                    && max == 0
+                {
+                    errors.push(format!(
+                        "parallel step `{}`: `max_concurrency` must be >= 1",
+                        step.name
+                    ));
                 }
             }
         }
@@ -1778,6 +1793,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: Some(30),
+            max_concurrency: None,
         };
         let step = ChainStepConfig::new_parallel("fan-out", group);
         assert_eq!(step.name, "fan-out");
@@ -1795,6 +1811,7 @@ mod tests {
             join: ParallelJoinPolicy::Any,
             on_failure: ParallelFailurePolicy::BestEffort,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let step =
             ChainStepConfig::new("test", "p", "t", serde_json::json!({})).with_parallel(group);
@@ -1811,6 +1828,7 @@ mod tests {
             join: ParallelJoinPolicy::Any,
             on_failure: ParallelFailurePolicy::BestEffort,
             timeout_seconds: Some(60),
+            max_concurrency: None,
         };
         let step = ChainStepConfig::new_parallel("parallel-step", group);
         let json = serde_json::to_string(&step).unwrap();
@@ -1843,6 +1861,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
         let errors = config.validate();
@@ -1861,12 +1880,14 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let outer = ParallelStepGroup {
             steps: vec![ChainStepConfig::new_parallel("nested", inner)],
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", outer));
         let errors = config.validate();
@@ -1880,6 +1901,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
         let errors = config.validate();
@@ -1895,6 +1917,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad")
             .with_step(ChainStepConfig::new_parallel("p", group))
@@ -1913,6 +1936,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
         let errors = config.validate();
@@ -1931,6 +1955,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad")
             .with_step(ChainStepConfig::new_parallel("p", group))
@@ -1958,6 +1983,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("good")
             .with_step(
@@ -2098,6 +2124,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad").with_step({
             let mut step =
@@ -2118,6 +2145,7 @@ mod tests {
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
+            max_concurrency: None,
         };
         let config = ChainConfig::new("bad").with_step({
             let mut step = ChainStepConfig::new_sub_chain("s1", "other");
@@ -2128,5 +2156,36 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("parallel")
             && e.contains("sub_chain")
             && e.contains("mutually exclusive")));
+    }
+
+    #[test]
+    fn validate_rejects_zero_max_concurrency() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new("a", "p", "t", serde_json::json!({}))],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: Some(0),
+        };
+        let config = ChainConfig::new("bad").with_step(ChainStepConfig::new_parallel("p", group));
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("max_concurrency")));
+    }
+
+    #[test]
+    fn validate_accepts_valid_max_concurrency() {
+        let group = ParallelStepGroup {
+            steps: vec![
+                ChainStepConfig::new("a", "p1", "t1", serde_json::json!({})),
+                ChainStepConfig::new("b", "p2", "t2", serde_json::json!({})),
+            ],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: Some(2),
+        };
+        let config = ChainConfig::new("good").with_step(ChainStepConfig::new_parallel("p", group));
+        let errors = config.validate();
+        assert!(errors.is_empty(), "expected no errors: {errors:?}");
     }
 }

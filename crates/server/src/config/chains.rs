@@ -113,6 +113,9 @@ pub struct ParallelStepGroupToml {
     /// Optional timeout in seconds for the parallel group.
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
+    /// Optional maximum number of sub-steps executing concurrently.
+    #[serde(default)]
+    pub max_concurrency: Option<usize>,
 }
 
 /// A branch condition in a chain step, loaded from TOML.

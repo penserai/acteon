@@ -71,6 +71,7 @@ fn convert_step_toml(step_toml: &acteon_server::config::ChainStepConfigToml) -> 
             join,
             on_failure,
             timeout_seconds: parallel_toml.timeout_seconds,
+            max_concurrency: parallel_toml.max_concurrency,
         };
         ChainStepConfig::new_parallel(&step_toml.name, group)
     } else if let Some(ref sub_chain_name) = step_toml.sub_chain {

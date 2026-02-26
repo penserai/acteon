@@ -237,6 +237,7 @@ pub async fn list_chains(
         (status = 404, description = "Chain not found", body = ErrorResponse),
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn get_chain(
     State(state): State<AppState>,
     Path(chain_id): Path<String>,
@@ -266,15 +267,59 @@ pub async fn get_chain(
                     } else {
                         ("pending".to_string(), None, None, None)
                     };
-                    // Build parallel sub-step statuses from parallel_sub_results
-                    // if this step has any matching entries.
-                    let parallel_sub_steps = if chain_state.parallel_sub_results.is_empty() {
-                        None
-                    } else if chain_state
+                    // Build parallel sub-step statuses. When a parallel group
+                    // is in-flight (`parallel_state` present), include Pending
+                    // sub-steps alongside any already-completed results so the
+                    // UI can show a proper loading state for every sub-step.
+                    let parallel_sub_steps = if let Some(ps) = chain_state
                         .parallel_state
                         .as_ref()
-                        .is_some_and(|ps| ps.step_index == i)
+                        .filter(|ps| ps.step_index == i)
                     {
+                        let subs: Vec<ChainStepStatus> = ps
+                            .sub_steps
+                            .iter()
+                            .map(|(name, sub_status)| {
+                                if let Some(sr) = chain_state.parallel_sub_results.get(name) {
+                                    ChainStepStatus {
+                                        name: name.clone(),
+                                        provider: String::new(),
+                                        status: if sr.success {
+                                            "completed".to_string()
+                                        } else {
+                                            "failed".to_string()
+                                        },
+                                        response_body: sr.response_body.clone(),
+                                        error: sr.error.clone(),
+                                        completed_at: Some(sr.completed_at),
+                                        sub_chain: None,
+                                        child_chain_id: None,
+                                        parallel_sub_steps: None,
+                                    }
+                                } else {
+                                    ChainStepStatus {
+                                        name: name.clone(),
+                                        provider: String::new(),
+                                        status: format!("{sub_status:?}").to_lowercase(),
+                                        response_body: None,
+                                        error: None,
+                                        completed_at: None,
+                                        sub_chain: None,
+                                        child_chain_id: None,
+                                        parallel_sub_steps: None,
+                                    }
+                                }
+                            })
+                            .collect();
+                        if subs.is_empty() { None } else { Some(subs) }
+                    } else if !chain_state.parallel_sub_results.is_empty()
+                        && chain_state
+                            .step_results
+                            .get(i)
+                            .and_then(|r| r.as_ref())
+                            .is_some()
+                    {
+                        // Parallel group already finished: show completed results.
                         let subs: Vec<ChainStepStatus> = chain_state
                             .parallel_sub_results
                             .iter()
