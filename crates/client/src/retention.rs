@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::{ActeonClient, Error};
 
 /// Request to create a data retention policy.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRetentionRequest {
     /// Namespace.
     pub namespace: String,
@@ -30,7 +30,7 @@ pub struct CreateRetentionRequest {
 }
 
 /// Request to update a data retention policy.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateRetentionRequest {
     /// Updated enabled state.
     #[serde(skip_serializing_if = "Option::is_none")]

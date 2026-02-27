@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::dispatch::ErrorResponse;
 use crate::{ActeonClient, Error};
@@ -168,6 +169,33 @@ pub struct DagResponse {
     /// Ordered list of step names on the execution path (for instance DAGs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_path: Vec<String>,
+}
+
+/// Summary of a chain definition.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChainDefinitionSummary {
+    /// Chain name.
+    pub name: String,
+    /// Number of steps in the chain.
+    pub steps_count: usize,
+    /// Whether any step uses branching.
+    pub has_branches: bool,
+    /// Whether any step uses parallel execution.
+    pub has_parallel: bool,
+    /// Whether any step triggers a sub-chain.
+    pub has_sub_chains: bool,
+    /// Chain-level failure policy.
+    pub on_failure: String,
+    /// Optional timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+}
+
+/// Response from listing chain definitions.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ListChainDefinitionsResponse {
+    /// List of chain definition summaries.
+    pub definitions: Vec<ChainDefinitionSummary>,
 }
 
 impl ActeonClient {
@@ -433,6 +461,128 @@ impl ActeonClient {
             Err(Error::Http {
                 status: response.status().as_u16(),
                 message: format!("Failed to get chain definition DAG: {}", response.status()),
+            })
+        }
+    }
+
+    // =========================================================================
+    // Chain Definition CRUD
+    // =========================================================================
+
+    /// List all registered chain definitions.
+    pub async fn list_chain_definitions(&self) -> Result<ListChainDefinitionsResponse, Error> {
+        let url = format!("{}/v1/chains/definitions", self.base_url);
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ListChainDefinitionsResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to list chain definitions: {}", response.status()),
+            })
+        }
+    }
+
+    /// Get a chain definition by name (returns raw config JSON).
+    pub async fn get_chain_definition(&self, name: &str) -> Result<Value, Error> {
+        let url = format!("{}/v1/chains/definitions/{}", self.base_url, name);
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<Value>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(Error::Http {
+                status: 404,
+                message: format!("Chain definition not found: {name}"),
+            })
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to get chain definition: {}", response.status()),
+            })
+        }
+    }
+
+    /// Create or update a chain definition.
+    pub async fn put_chain_definition(&self, name: &str, config: &Value) -> Result<Value, Error> {
+        let url = format!("{}/v1/chains/definitions/{}", self.base_url, name);
+
+        let response = self
+            .add_auth(self.client.put(&url))
+            .json(config)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<Value>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else if response.status() == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+            let error = response
+                .json::<Value>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Err(Error::Api {
+                code: "VALIDATION_ERROR".into(),
+                message: error.to_string(),
+                retryable: false,
+            })
+        } else {
+            let error = response
+                .json::<ErrorResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Err(Error::Api {
+                code: error.code,
+                message: error.message,
+                retryable: error.retryable,
+            })
+        }
+    }
+
+    /// Delete a chain definition by name.
+    pub async fn delete_chain_definition(&self, name: &str) -> Result<(), Error> {
+        let url = format!("{}/v1/chains/definitions/{}", self.base_url, name);
+
+        let response = self
+            .add_auth(self.client.delete(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() || response.status() == reqwest::StatusCode::NO_CONTENT {
+            Ok(())
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(Error::Http {
+                status: 404,
+                message: format!("Chain definition not found: {name}"),
+            })
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to delete chain definition: {}", response.status()),
             })
         }
     }

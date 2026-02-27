@@ -54,7 +54,7 @@ pub struct TemplateProfileInfo {
 }
 
 /// Request to create a new template.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTemplateRequest {
     /// Template name.
     pub name: String,
@@ -73,7 +73,7 @@ pub struct CreateTemplateRequest {
 }
 
 /// Request to update an existing template.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateTemplateRequest {
     /// Updated template content.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,7 +87,7 @@ pub struct UpdateTemplateRequest {
 }
 
 /// Request to create a new template profile.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateProfileRequest {
     /// Profile name.
     pub name: String,
@@ -106,7 +106,7 @@ pub struct CreateProfileRequest {
 }
 
 /// Request to update an existing template profile.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateProfileRequest {
     /// Updated field-to-template mappings.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -138,7 +138,7 @@ pub struct ListProfilesResponse {
 }
 
 /// Request to render a template preview.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenderPreviewRequest {
     /// Profile name to render.
     pub profile: String,
