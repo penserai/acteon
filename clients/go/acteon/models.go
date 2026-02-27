@@ -1833,3 +1833,110 @@ func NewAzureEventHubsSendBatchPayloadWithOptions(events []map[string]any, event
 	}
 	return p
 }
+
+// =============================================================================
+// GCP Pub/Sub Provider Payload Helpers
+// =============================================================================
+
+// NewGcpPubSubPublishPayload creates a payload for the GCP Pub/Sub publish action.
+func NewGcpPubSubPublishPayload(data string) map[string]any {
+	return map[string]any{
+		"data": data,
+	}
+}
+
+// NewGcpPubSubPublishPayloadWithOptions creates a GCP Pub/Sub publish payload with optional fields.
+func NewGcpPubSubPublishPayloadWithOptions(data, topic, orderingKey string, attributes map[string]string) map[string]any {
+	p := NewGcpPubSubPublishPayload(data)
+	if topic != "" {
+		p["topic"] = topic
+	}
+	if orderingKey != "" {
+		p["ordering_key"] = orderingKey
+	}
+	if len(attributes) > 0 {
+		p["attributes"] = attributes
+	}
+	return p
+}
+
+// NewGcpPubSubPublishBatchPayload creates a payload for the GCP Pub/Sub publish-batch action.
+func NewGcpPubSubPublishBatchPayload(messages []map[string]any) map[string]any {
+	return map[string]any{
+		"messages": messages,
+	}
+}
+
+// NewGcpPubSubPublishBatchPayloadWithOptions creates a GCP Pub/Sub publish-batch payload with optional fields.
+func NewGcpPubSubPublishBatchPayloadWithOptions(messages []map[string]any, topic string) map[string]any {
+	p := NewGcpPubSubPublishBatchPayload(messages)
+	if topic != "" {
+		p["topic"] = topic
+	}
+	return p
+}
+
+// =============================================================================
+// GCP Cloud Storage Provider Payload Helpers
+// =============================================================================
+
+// NewGcpStorageUploadPayload creates a payload for the GCP Cloud Storage upload-object action.
+func NewGcpStorageUploadPayload(objectName, body string) map[string]any {
+	return map[string]any{
+		"object_name": objectName,
+		"body":        body,
+	}
+}
+
+// NewGcpStorageUploadPayloadWithOptions creates a GCP Cloud Storage upload payload with optional fields.
+func NewGcpStorageUploadPayloadWithOptions(objectName, bucket, body, bodyBase64, contentType string, metadata map[string]string) map[string]any {
+	p := map[string]any{"object_name": objectName}
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	if body != "" {
+		p["body"] = body
+	}
+	if bodyBase64 != "" {
+		p["body_base64"] = bodyBase64
+	}
+	if contentType != "" {
+		p["content_type"] = contentType
+	}
+	if len(metadata) > 0 {
+		p["metadata"] = metadata
+	}
+	return p
+}
+
+// NewGcpStorageDownloadPayload creates a payload for the GCP Cloud Storage download-object action.
+func NewGcpStorageDownloadPayload(objectName string) map[string]any {
+	return map[string]any{
+		"object_name": objectName,
+	}
+}
+
+// NewGcpStorageDownloadPayloadWithContainer creates a GCP Cloud Storage download payload with a bucket override.
+func NewGcpStorageDownloadPayloadWithContainer(objectName, bucket string) map[string]any {
+	p := NewGcpStorageDownloadPayload(objectName)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}
+
+// NewGcpStorageDeletePayload creates a payload for the GCP Cloud Storage delete-object action.
+func NewGcpStorageDeletePayload(objectName string) map[string]any {
+	return map[string]any{
+		"object_name": objectName,
+	}
+}
+
+// NewGcpStorageDeletePayloadWithContainer creates a GCP Cloud Storage delete payload with a bucket override.
+func NewGcpStorageDeletePayloadWithContainer(objectName, bucket string) map[string]any {
+	p := NewGcpStorageDeletePayload(objectName)
+	if bucket != "" {
+		p["bucket"] = bucket
+	}
+	return p
+}

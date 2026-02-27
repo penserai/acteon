@@ -982,11 +982,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
                 )
             }
+            #[cfg(feature = "gcp-pubsub")]
+            "gcp-pubsub" => {
+                let project_id = provider_cfg.gcp_project_id.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': gcp_project_id is required for gcp-pubsub",
+                        provider_cfg.name
+                    )
+                })?;
+                let mut ps_config = acteon_gcp::PubSubConfig::new(project_id);
+                if let Some(ref topic) = provider_cfg.gcp_topic {
+                    ps_config = ps_config.with_topic(topic);
+                }
+                if let Some(ref url) = provider_cfg.gcp_endpoint_url {
+                    ps_config = ps_config.with_endpoint_url(url);
+                }
+                if let Some(ref path) = provider_cfg.gcp_credentials_path {
+                    ps_config = ps_config.with_credentials_path(path);
+                }
+                std::sync::Arc::new(
+                    acteon_gcp::PubSubProvider::new(ps_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
+            #[cfg(feature = "gcp-storage")]
+            "gcp-storage" => {
+                let project_id = provider_cfg.gcp_project_id.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': gcp_project_id is required for gcp-storage",
+                        provider_cfg.name
+                    )
+                })?;
+                let mut storage_config = acteon_gcp::StorageConfig::new(project_id);
+                if let Some(ref bucket) = provider_cfg.gcp_bucket {
+                    storage_config = storage_config.with_bucket(bucket);
+                }
+                if let Some(ref prefix) = provider_cfg.gcp_object_prefix {
+                    storage_config = storage_config.with_prefix(prefix);
+                }
+                if let Some(ref url) = provider_cfg.gcp_endpoint_url {
+                    storage_config = storage_config.with_endpoint_url(url);
+                }
+                if let Some(ref path) = provider_cfg.gcp_credentials_path {
+                    storage_config = storage_config.with_credentials_path(path);
+                }
+                std::sync::Arc::new(
+                    acteon_gcp::StorageProvider::new(storage_config)
+                        .await
+                        .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
+                )
+            }
             other => {
                 // Check if the user requested a provider that's not compiled in.
                 let feature_hint = match other {
                     "aws-sns" | "aws-lambda" | "aws-eventbridge" | "aws-sqs" | "aws-s3"
-                    | "aws-ec2" | "aws-autoscaling" | "azure-blob" | "azure-eventhubs" => {
+                    | "aws-ec2" | "aws-autoscaling" | "azure-blob" | "azure-eventhubs"
+                    | "gcp-pubsub" | "gcp-storage" => {
                         format!(
                             ". Hint: enable the '{other}' feature on acteon-server \
                              (cargo build --features {other})"

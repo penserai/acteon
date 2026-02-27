@@ -23,7 +23,7 @@ pub struct ProviderConfig {
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
     /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
     /// `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
-    /// or `"azure-eventhubs"`.
+    /// `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -123,4 +123,18 @@ pub struct ProviderConfig {
     pub azure_namespace: Option<String>,
     /// Azure Event Hub name (used by `"azure-eventhubs"` type).
     pub azure_event_hub_name: Option<String>,
+
+    // ---- GCP provider fields ----
+    /// GCP project ID (used by all `"gcp-*"` types).
+    pub gcp_project_id: Option<String>,
+    /// Path to GCP service account JSON key file (used by `"gcp-*"` types).
+    pub gcp_credentials_path: Option<String>,
+    /// GCP endpoint URL override for emulators (used by `"gcp-*"` types).
+    pub gcp_endpoint_url: Option<String>,
+    /// Default `Pub/Sub` topic (used by `"gcp-pubsub"` type).
+    pub gcp_topic: Option<String>,
+    /// Default Cloud Storage bucket name (used by `"gcp-storage"` type).
+    pub gcp_bucket: Option<String>,
+    /// Cloud Storage object name prefix (used by `"gcp-storage"` type).
+    pub gcp_object_prefix: Option<String>,
 }

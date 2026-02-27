@@ -60,6 +60,7 @@
 pub mod aws;
 pub mod azure;
 mod error;
+pub mod gcp;
 pub mod stream;
 pub mod webhook;
 

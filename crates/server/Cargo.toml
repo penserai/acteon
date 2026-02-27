@@ -36,6 +36,10 @@ aws-all = ["aws-sns", "aws-lambda", "aws-eventbridge", "aws-sqs", "aws-ses", "aw
 azure-blob = ["acteon-azure/blob"]
 azure-eventhubs = ["acteon-azure/eventhubs"]
 azure-all = ["azure-blob", "azure-eventhubs"]
+# GCP provider features — only compile the SDKs you need
+gcp-pubsub = ["acteon-gcp/pubsub"]
+gcp-storage = ["acteon-gcp/storage"]
+gcp-all = ["gcp-pubsub", "gcp-storage"]
 
 [dependencies]
 acteon-audit = { workspace = true, features = ["openapi"] }
@@ -57,6 +61,7 @@ acteon-provider = { workspace = true, features = ["webhook"] }
 acteon-email = { workspace = true, features = ["ses"] }
 acteon-aws = { workspace = true }
 acteon-azure = { workspace = true }
+acteon-gcp = { workspace = true }
 acteon-twilio = { workspace = true }
 acteon-teams = { workspace = true }
 acteon-discord = { workspace = true }
