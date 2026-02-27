@@ -34,6 +34,8 @@ pub enum RulesCommand {
         #[arg(long)]
         filter: Option<String>,
     },
+    /// Reload rules from the YAML directory.
+    Reload,
 }
 
 pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> anyhow::Result<()> {
@@ -83,6 +85,23 @@ pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> an
 
             if summary.failed > 0 {
                 std::process::exit(1);
+            }
+        }
+        RulesCommand::Reload => {
+            let result = ops.reload_rules().await?;
+            match format {
+                OutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                OutputFormat::Text => {
+                    println!("Reloaded {} rules.", result.loaded);
+                    if !result.errors.is_empty() {
+                        println!("Errors:");
+                        for err in &result.errors {
+                            println!("  - {err}");
+                        }
+                    }
+                }
             }
         }
     }

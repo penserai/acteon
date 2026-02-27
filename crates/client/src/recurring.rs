@@ -4,7 +4,7 @@ use crate::dispatch::ErrorResponse;
 use crate::{ActeonClient, Error};
 
 /// Request to create a recurring action.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CreateRecurringAction {
     /// Namespace.
     pub namespace: String,
@@ -156,7 +156,7 @@ pub struct RecurringDetail {
 }
 
 /// Request to update a recurring action.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateRecurringAction {
     /// Namespace (required for key lookup).
     pub namespace: String,

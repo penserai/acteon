@@ -1,5 +1,16 @@
+pub mod approvals;
 pub mod audit;
+pub mod chains;
+pub mod compliance;
 pub mod dispatch;
+pub mod dlq;
 pub mod events;
+pub mod groups;
 pub mod health;
+pub mod plugins;
+pub mod providers;
+pub mod quotas;
+pub mod recurring;
+pub mod retention;
 pub mod rules;
+pub mod templates;

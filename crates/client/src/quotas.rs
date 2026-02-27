@@ -4,7 +4,7 @@ use crate::dispatch::ErrorResponse;
 use crate::{ActeonClient, Error};
 
 /// Request to create a quota policy.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CreateQuotaRequest {
     /// Namespace.
     pub namespace: String,
@@ -25,7 +25,7 @@ pub struct CreateQuotaRequest {
 }
 
 /// Request to update a quota policy.
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateQuotaRequest {
     /// Namespace (required for key lookup).
     pub namespace: String,
