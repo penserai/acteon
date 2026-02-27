@@ -58,6 +58,7 @@
 //! ```
 
 pub mod aws;
+pub mod azure;
 mod error;
 pub mod stream;
 pub mod webhook;

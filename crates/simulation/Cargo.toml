@@ -186,5 +186,9 @@ name = "mtls_simulation"
 name = "analytics_simulation"
 # No required-features - uses in-memory backends
 
+[[example]]
+name = "azure_simulation"
+# No required-features - uses in-memory backends
+
 [lints]
 workspace = true

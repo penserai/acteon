@@ -2765,3 +2765,113 @@ export function createAsgUpdateGroupPayload(
     payload.health_check_grace_period = options.healthCheckGracePeriod;
   return payload;
 }
+
+// =============================================================================
+// Azure Blob Storage Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the Azure Blob Storage upload-blob action. */
+export interface AzureBlobUploadPayload {
+  blob_name: string;
+  container?: string;
+  body?: string;
+  body_base64?: string;
+  content_type?: string;
+  metadata?: Record<string, string>;
+}
+
+/** Create a payload for the Azure Blob Storage upload-blob action. */
+export function createAzureBlobUploadPayload(
+  blobName: string,
+  options?: {
+    container?: string;
+    body?: string;
+    bodyBase64?: string;
+    contentType?: string;
+    metadata?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { blob_name: blobName };
+  if (options?.container) payload.container = options.container;
+  if (options?.body !== undefined) payload.body = options.body;
+  if (options?.bodyBase64) payload.body_base64 = options.bodyBase64;
+  if (options?.contentType) payload.content_type = options.contentType;
+  if (options?.metadata) payload.metadata = options.metadata;
+  return payload;
+}
+
+/** Payload for the Azure Blob Storage download-blob action. */
+export interface AzureBlobDownloadPayload {
+  blob_name: string;
+  container?: string;
+}
+
+/** Create a payload for the Azure Blob Storage download-blob action. */
+export function createAzureBlobDownloadPayload(
+  blobName: string,
+  options?: { container?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { blob_name: blobName };
+  if (options?.container) payload.container = options.container;
+  return payload;
+}
+
+/** Payload for the Azure Blob Storage delete-blob action. */
+export interface AzureBlobDeletePayload {
+  blob_name: string;
+  container?: string;
+}
+
+/** Create a payload for the Azure Blob Storage delete-blob action. */
+export function createAzureBlobDeletePayload(
+  blobName: string,
+  options?: { container?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { blob_name: blobName };
+  if (options?.container) payload.container = options.container;
+  return payload;
+}
+
+// =============================================================================
+// Azure Event Hubs Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the Azure Event Hubs send-event action. */
+export interface AzureEventHubsSendPayload {
+  body: unknown;
+  event_hub_name?: string;
+  partition_id?: string;
+  properties?: Record<string, string>;
+}
+
+/** Create a payload for the Azure Event Hubs send-event action. */
+export function createAzureEventHubsSendPayload(
+  body: unknown,
+  options?: {
+    eventHubName?: string;
+    partitionId?: string;
+    properties?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { body };
+  if (options?.eventHubName) payload.event_hub_name = options.eventHubName;
+  if (options?.partitionId) payload.partition_id = options.partitionId;
+  if (options?.properties) payload.properties = options.properties;
+  return payload;
+}
+
+/** Payload for the Azure Event Hubs send-batch action. */
+export interface AzureEventHubsSendBatchPayload {
+  events: Record<string, unknown>[];
+  event_hub_name?: string;
+}
+
+/** Create a payload for the Azure Event Hubs send-batch action. */
+export function createAzureEventHubsSendBatchPayload(
+  events: Record<string, unknown>[],
+  options?: { eventHubName?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { events };
+  if (options?.eventHubName) payload.event_hub_name = options.eventHubName;
+  return payload;
+}

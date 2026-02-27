@@ -22,7 +22,8 @@ pub struct ProviderConfig {
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
     /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
-    /// `"aws-s3"`, `"aws-ec2"`, or `"aws-autoscaling"`.
+    /// `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
+    /// or `"azure-eventhubs"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -96,4 +97,30 @@ pub struct ProviderConfig {
     pub default_subnet_id: Option<String>,
     /// Default key-pair name (used by `"aws-ec2"` type).
     pub default_key_name: Option<String>,
+
+    // ---- Azure provider fields ----
+    /// Azure AD tenant ID (used by `"azure-*"` types).
+    pub azure_tenant_id: Option<String>,
+    /// Azure AD client ID (used by `"azure-*"` types).
+    pub azure_client_id: Option<String>,
+    /// Azure AD client credential (used by `"azure-*"` types). Supports `ENC[...]`.
+    pub azure_client_credential: Option<String>,
+    /// Azure subscription ID (used by `"azure-*"` types).
+    pub azure_subscription_id: Option<String>,
+    /// Azure resource group (used by `"azure-*"` types).
+    pub azure_resource_group: Option<String>,
+    /// Azure region/location (used by `"azure-*"` types).
+    pub azure_location: Option<String>,
+    /// Azure endpoint URL override for `Azurite` (used by `"azure-*"` types).
+    pub azure_endpoint_url: Option<String>,
+    /// Azure Storage account name (used by `"azure-blob"` type).
+    pub azure_account_name: Option<String>,
+    /// Default Azure container name (used by `"azure-blob"` type).
+    pub azure_container_name: Option<String>,
+    /// Azure blob name prefix (used by `"azure-blob"` type).
+    pub azure_blob_prefix: Option<String>,
+    /// Azure Event Hubs namespace (used by `"azure-eventhubs"` type).
+    pub azure_namespace: Option<String>,
+    /// Azure Event Hub name (used by `"azure-eventhubs"` type).
+    pub azure_event_hub_name: Option<String>,
 }

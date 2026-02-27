@@ -1726,3 +1726,110 @@ func NewAsgUpdateGroupPayloadWithOptions(groupName string, minSize, maxSize, des
 	}
 	return p
 }
+
+// =============================================================================
+// Azure Blob Storage Provider Payload Helpers
+// =============================================================================
+
+// NewAzureBlobUploadPayload creates a payload for the Azure Blob Storage upload-blob action.
+func NewAzureBlobUploadPayload(blobName, body string) map[string]any {
+	return map[string]any{
+		"blob_name": blobName,
+		"body":      body,
+	}
+}
+
+// NewAzureBlobUploadPayloadWithOptions creates an Azure Blob upload payload with optional fields.
+func NewAzureBlobUploadPayloadWithOptions(blobName, container, body, bodyBase64, contentType string, metadata map[string]string) map[string]any {
+	p := map[string]any{"blob_name": blobName}
+	if container != "" {
+		p["container"] = container
+	}
+	if body != "" {
+		p["body"] = body
+	}
+	if bodyBase64 != "" {
+		p["body_base64"] = bodyBase64
+	}
+	if contentType != "" {
+		p["content_type"] = contentType
+	}
+	if len(metadata) > 0 {
+		p["metadata"] = metadata
+	}
+	return p
+}
+
+// NewAzureBlobDownloadPayload creates a payload for the Azure Blob Storage download-blob action.
+func NewAzureBlobDownloadPayload(blobName string) map[string]any {
+	return map[string]any{
+		"blob_name": blobName,
+	}
+}
+
+// NewAzureBlobDownloadPayloadWithContainer creates an Azure Blob download payload with a container override.
+func NewAzureBlobDownloadPayloadWithContainer(blobName, container string) map[string]any {
+	p := NewAzureBlobDownloadPayload(blobName)
+	if container != "" {
+		p["container"] = container
+	}
+	return p
+}
+
+// NewAzureBlobDeletePayload creates a payload for the Azure Blob Storage delete-blob action.
+func NewAzureBlobDeletePayload(blobName string) map[string]any {
+	return map[string]any{
+		"blob_name": blobName,
+	}
+}
+
+// NewAzureBlobDeletePayloadWithContainer creates an Azure Blob delete payload with a container override.
+func NewAzureBlobDeletePayloadWithContainer(blobName, container string) map[string]any {
+	p := NewAzureBlobDeletePayload(blobName)
+	if container != "" {
+		p["container"] = container
+	}
+	return p
+}
+
+// =============================================================================
+// Azure Event Hubs Provider Payload Helpers
+// =============================================================================
+
+// NewAzureEventHubsSendPayload creates a payload for the Azure Event Hubs send-event action.
+func NewAzureEventHubsSendPayload(body any) map[string]any {
+	return map[string]any{
+		"body": body,
+	}
+}
+
+// NewAzureEventHubsSendPayloadWithOptions creates an Azure Event Hubs send payload with optional fields.
+func NewAzureEventHubsSendPayloadWithOptions(body any, eventHubName, partitionID string, properties map[string]string) map[string]any {
+	p := NewAzureEventHubsSendPayload(body)
+	if eventHubName != "" {
+		p["event_hub_name"] = eventHubName
+	}
+	if partitionID != "" {
+		p["partition_id"] = partitionID
+	}
+	if len(properties) > 0 {
+		p["properties"] = properties
+	}
+	return p
+}
+
+// NewAzureEventHubsSendBatchPayload creates a payload for the Azure Event Hubs send-batch action.
+func NewAzureEventHubsSendBatchPayload(events []map[string]any) map[string]any {
+	return map[string]any{
+		"events": events,
+	}
+}
+
+// NewAzureEventHubsSendBatchPayloadWithOptions creates an Azure Event Hubs send-batch payload with optional fields.
+func NewAzureEventHubsSendBatchPayloadWithOptions(events []map[string]any, eventHubName string) map[string]any {
+	p := NewAzureEventHubsSendBatchPayload(events)
+	if eventHubName != "" {
+		p["event_hub_name"] = eventHubName
+	}
+	return p
+}

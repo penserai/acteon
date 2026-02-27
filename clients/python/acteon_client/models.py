@@ -3149,3 +3149,142 @@ def autoscaling_update_group_payload(
     if health_check_grace_period is not None:
         payload["health_check_grace_period"] = health_check_grace_period
     return payload
+
+
+# =============================================================================
+# Azure Blob Storage Provider Payload Helpers
+# =============================================================================
+
+
+def azure_blob_upload_payload(
+    blob_name: str,
+    *,
+    container: Optional[str] = None,
+    body: Optional[str] = None,
+    body_base64: Optional[str] = None,
+    content_type: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Blob Storage upload action.
+
+    Args:
+        blob_name: Name of the blob to upload.
+        container: Override the container name configured on the provider.
+        body: Blob body as a UTF-8 string.
+        body_base64: Blob body as base64-encoded bytes.
+        content_type: Content type (e.g., ``"application/json"``).
+        metadata: Blob metadata as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-blob``
+        provider with action type ``upload_blob``.
+    """
+    payload: dict[str, Any] = {"blob_name": blob_name}
+    if container is not None:
+        payload["container"] = container
+    if body is not None:
+        payload["body"] = body
+    if body_base64 is not None:
+        payload["body_base64"] = body_base64
+    if content_type is not None:
+        payload["content_type"] = content_type
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
+
+
+def azure_blob_download_payload(
+    blob_name: str,
+    *,
+    container: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Blob Storage download action.
+
+    Args:
+        blob_name: Name of the blob to download.
+        container: Override the container name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-blob``
+        provider with action type ``download_blob``.
+    """
+    payload: dict[str, Any] = {"blob_name": blob_name}
+    if container is not None:
+        payload["container"] = container
+    return payload
+
+
+def azure_blob_delete_payload(
+    blob_name: str,
+    *,
+    container: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Blob Storage delete action.
+
+    Args:
+        blob_name: Name of the blob to delete.
+        container: Override the container name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-blob``
+        provider with action type ``delete_blob``.
+    """
+    payload: dict[str, Any] = {"blob_name": blob_name}
+    if container is not None:
+        payload["container"] = container
+    return payload
+
+
+# =============================================================================
+# Azure Event Hubs Provider Payload Helpers
+# =============================================================================
+
+
+def azure_eventhubs_send_payload(
+    body: Any,
+    *,
+    event_hub_name: Optional[str] = None,
+    partition_id: Optional[str] = None,
+    properties: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Event Hubs send action.
+
+    Args:
+        body: Event body as a JSON-serializable value.
+        event_hub_name: Override the Event Hub name configured on the provider.
+        partition_id: Target a specific partition.
+        properties: Application properties as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-eventhubs``
+        provider with action type ``send_event``.
+    """
+    payload: dict[str, Any] = {"body": body}
+    if event_hub_name is not None:
+        payload["event_hub_name"] = event_hub_name
+    if partition_id is not None:
+        payload["partition_id"] = partition_id
+    if properties is not None:
+        payload["properties"] = properties
+    return payload
+
+
+def azure_eventhubs_send_batch_payload(
+    events: List[dict[str, Any]],
+    *,
+    event_hub_name: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for an Azure Event Hubs send-batch action.
+
+    Args:
+        events: List of event objects to send as a batch.
+        event_hub_name: Override the Event Hub name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``azure-eventhubs``
+        provider with action type ``send_batch``.
+    """
+    payload: dict[str, Any] = {"events": events}
+    if event_hub_name is not None:
+        payload["event_hub_name"] = event_hub_name
+    return payload

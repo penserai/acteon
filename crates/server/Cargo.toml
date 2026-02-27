@@ -32,6 +32,10 @@ aws-s3 = ["acteon-aws/s3"]
 aws-ec2 = ["acteon-aws/ec2"]
 aws-autoscaling = ["acteon-aws/autoscaling"]
 aws-all = ["aws-sns", "aws-lambda", "aws-eventbridge", "aws-sqs", "aws-ses", "aws-s3", "aws-ec2", "aws-autoscaling"]
+# Azure provider features — only compile the SDKs you need
+azure-blob = ["acteon-azure/blob"]
+azure-eventhubs = ["acteon-azure/eventhubs"]
+azure-all = ["azure-blob", "azure-eventhubs"]
 
 [dependencies]
 acteon-audit = { workspace = true, features = ["openapi"] }
@@ -52,6 +56,7 @@ acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true, features = ["webhook"] }
 acteon-email = { workspace = true, features = ["ses"] }
 acteon-aws = { workspace = true }
+acteon-azure = { workspace = true }
 acteon-twilio = { workspace = true }
 acteon-teams = { workspace = true }
 acteon-discord = { workspace = true }
