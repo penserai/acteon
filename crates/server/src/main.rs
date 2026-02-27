@@ -998,7 +998,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ps_config = ps_config.with_endpoint_url(url);
                 }
                 if let Some(ref path) = provider_cfg.gcp_credentials_path {
-                    ps_config = ps_config.with_credentials_path(path);
+                    let decrypted = require_decrypt(path, master_key.as_ref())?;
+                    ps_config = ps_config.with_credentials_path(decrypted);
                 }
                 std::sync::Arc::new(
                     acteon_gcp::PubSubProvider::new(ps_config)
@@ -1025,7 +1026,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     storage_config = storage_config.with_endpoint_url(url);
                 }
                 if let Some(ref path) = provider_cfg.gcp_credentials_path {
-                    storage_config = storage_config.with_credentials_path(path);
+                    let decrypted = require_decrypt(path, master_key.as_ref())?;
+                    storage_config = storage_config.with_credentials_path(decrypted);
                 }
                 std::sync::Arc::new(
                     acteon_gcp::StorageProvider::new(storage_config)

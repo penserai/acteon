@@ -249,13 +249,19 @@ impl StorageProvider {
         let bucket_path = Self::bucket_path(bucket);
         debug!(bucket = %bucket, object_name = %object_name, size = content_length, "uploading object");
 
-        Box::pin(
-            self.storage
-                .write_object(&bucket_path, &object_name, bytes::Bytes::from(body_bytes))
-                .send_buffered(),
-        )
-        .await
-        .map_err(|e| {
+        let mut write_request = self.storage.write_object(&bucket_path, &object_name, bytes::Bytes::from(body_bytes));
+
+        if let Some(ref content_type) = payload.content_type {
+            write_request = write_request.set_content_type(content_type);
+        }
+
+        if !payload.metadata.is_empty() {
+            write_request = write_request.set_metadata(payload.metadata);
+        }
+
+        Box::pin(write_request.send_buffered())
+            .await
+            .map_err(|e| {
             let err_str = e.to_string();
             error!(error = %err_str, "Cloud Storage upload failed");
             let gcp_err: ProviderError = classify_gcp_error(&err_str).into();

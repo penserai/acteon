@@ -4,6 +4,7 @@ use std::sync::Arc;
 use acteon_core::{Action, ProviderResponse};
 use acteon_provider::ProviderError;
 use acteon_provider::provider::Provider;
+use dashmap::DashMap;
 use google_cloud_auth::credentials::Credentials;
 use google_cloud_pubsub::client::Publisher;
 use serde::{Deserialize, Serialize};
@@ -117,6 +118,7 @@ pub struct PubSubPublishBatchPayload {
 pub struct PubSubProvider {
     config: PubSubConfig,
     credentials: Option<Credentials>,
+    publishers: DashMap<String, Publisher>,
 }
 
 impl std::fmt::Debug for PubSubProvider {
@@ -137,11 +139,16 @@ impl PubSubProvider {
         Ok(Self {
             config,
             credentials,
+            publishers: DashMap::new(),
         })
     }
 
-    /// Build a [`Publisher`] for the given fully-qualified topic path.
-    async fn build_publisher(&self, topic_path: &str) -> Result<Publisher, ProviderError> {
+    /// Build a [`Publisher`] for the given fully-qualified topic path, or return a cached one.
+    async fn get_or_build_publisher(&self, topic_path: &str) -> Result<Publisher, ProviderError> {
+        if let Some(publisher) = self.publishers.get(topic_path) {
+            return Ok(publisher.clone());
+        }
+
         let mut builder = Publisher::builder(topic_path);
         if let Some(ref endpoint) = self.config.gcp.endpoint_url {
             builder = builder.with_endpoint(endpoint);
@@ -149,10 +156,15 @@ impl PubSubProvider {
         if let Some(ref creds) = self.credentials {
             builder = builder.with_credentials(creds.clone());
         }
-        builder
+
+        let publisher = builder
             .build()
             .await
-            .map_err(|e| ProviderError::Configuration(format!("Pub/Sub publisher error: {e}")))
+            .map_err(|e| ProviderError::Configuration(format!("Pub/Sub publisher error: {e}")))?;
+
+        self.publishers
+            .insert(topic_path.to_owned(), publisher.clone());
+        Ok(publisher)
     }
 
     /// Resolve the topic name from the payload or config default.
@@ -225,7 +237,7 @@ impl Provider for PubSubProvider {
         // are invalid, this will fail.
         if let Some(topic) = self.config.topic.as_deref() {
             let topic_path = self.topic_path(topic);
-            let _publisher = self.build_publisher(&topic_path).await?;
+            let _publisher = self.get_or_build_publisher(&topic_path).await?;
         }
         info!("Pub/Sub health check passed");
         Ok(())
@@ -255,7 +267,7 @@ impl PubSubProvider {
             payload.ordering_key.as_deref(),
         );
 
-        let publisher = self.build_publisher(&topic_path).await?;
+        let publisher = self.get_or_build_publisher(&topic_path).await?;
         let message_id =
             publisher
                 .publish(msg)
@@ -291,7 +303,7 @@ impl PubSubProvider {
         let topic_path = self.topic_path(topic_name);
         debug!(topic = %topic_name, count = msg_count, "publishing batch to Pub/Sub");
 
-        let publisher = self.build_publisher(&topic_path).await?;
+        let publisher = self.get_or_build_publisher(&topic_path).await?;
 
         // Publish all messages and collect their futures.
         let mut publish_futures = Vec::with_capacity(msg_count);
