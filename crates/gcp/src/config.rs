@@ -14,6 +14,11 @@ pub struct GcpBaseConfig {
     #[serde(default)]
     pub credentials_path: Option<String>,
 
+    /// Inline service account JSON key.
+    /// Supports `ENC[...]` values.
+    #[serde(default)]
+    pub credentials_json: Option<String>,
+
     /// Optional endpoint URL override for local development
     /// (e.g. `Pub/Sub` emulator, `fake-gcs-server`).
     #[serde(default)]
@@ -28,6 +33,10 @@ impl std::fmt::Debug for GcpBaseConfig {
                 "credentials_path",
                 &self.credentials_path.as_ref().map(|_| "[REDACTED]"),
             )
+            .field(
+                "credentials_json",
+                &self.credentials_json.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("endpoint_url", &self.endpoint_url)
             .finish()
     }
@@ -39,6 +48,7 @@ impl GcpBaseConfig {
         Self {
             project_id: project_id.into(),
             credentials_path: None,
+            credentials_json: None,
             endpoint_url: None,
         }
     }
@@ -47,6 +57,13 @@ impl GcpBaseConfig {
     #[must_use]
     pub fn with_credentials_path(mut self, path: impl Into<String>) -> Self {
         self.credentials_path = Some(path.into());
+        self
+    }
+
+    /// Set the inline service account JSON key.
+    #[must_use]
+    pub fn with_credentials_json(mut self, json: impl Into<String>) -> Self {
+        self.credentials_json = Some(json.into());
         self
     }
 

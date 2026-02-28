@@ -304,6 +304,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bytes",
+ "dashmap",
  "google-cloud-auth",
  "google-cloud-pubsub",
  "google-cloud-storage",

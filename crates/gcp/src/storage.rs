@@ -119,11 +119,24 @@ pub struct StorageDeletePayload {
     pub object_name: String,
 }
 
+/// Payload for the `list_objects` action type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageListPayload {
+    /// Bucket name. Overrides config default.
+    pub bucket: Option<String>,
+
+    /// Optional prefix to filter objects.
+    pub prefix: Option<String>,
+
+    /// Maximum number of results to return.
+    pub max_results: Option<i32>,
+}
+
 /// GCP Cloud Storage provider for storing and retrieving objects.
 pub struct StorageProvider {
     config: StorageConfig,
     storage: Storage,
-    control: StorageControl,
+    storage_control: StorageControl,
 }
 
 impl std::fmt::Debug for StorageProvider {
@@ -137,12 +150,14 @@ impl std::fmt::Debug for StorageProvider {
 impl StorageProvider {
     /// Create a new `StorageProvider` by building Cloud Storage clients.
     pub async fn new(config: StorageConfig) -> Result<Self, ProviderError> {
-        let credentials =
-            crate::auth::build_gcp_credentials(config.gcp.credentials_path.as_deref())
-                .await
-                .map_err(|e| ProviderError::Configuration(e.to_string()))?;
+        let credentials = crate::auth::build_gcp_credentials(
+            config.gcp.credentials_path.as_deref(),
+            config.gcp.credentials_json.as_deref(),
+        )
+        .await
+        .map_err(|e| ProviderError::Configuration(e.to_string()))?;
 
-        // Build the Storage client (for read/write operations).
+        // Build the Storage client (read/write operations).
         let mut storage_builder = Storage::builder();
         if let Some(ref endpoint) = config.gcp.endpoint_url {
             storage_builder = storage_builder.with_endpoint(endpoint);
@@ -154,7 +169,7 @@ impl StorageProvider {
             ProviderError::Configuration(format!("Cloud Storage client error: {e}"))
         })?;
 
-        // Build the StorageControl client (for delete/list operations).
+        // Build the StorageControl client (delete/list/metadata operations).
         let mut control_builder = StorageControl::builder();
         if let Some(ref endpoint) = config.gcp.endpoint_url {
             control_builder = control_builder.with_endpoint(endpoint);
@@ -162,14 +177,14 @@ impl StorageProvider {
         if let Some(ref creds) = credentials {
             control_builder = control_builder.with_credentials(creds.clone());
         }
-        let control = control_builder.build().await.map_err(|e| {
+        let storage_control = control_builder.build().await.map_err(|e| {
             ProviderError::Configuration(format!("Cloud Storage control client error: {e}"))
         })?;
 
         Ok(Self {
             config,
             storage,
-            control,
+            storage_control,
         })
     }
 
@@ -201,11 +216,12 @@ impl Provider for StorageProvider {
     #[instrument(skip(self, action), fields(action_id = %action.id, provider = "gcp-storage"))]
     async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
         match action.action_type.as_str() {
-            "upload_object" => Box::pin(self.upload_object(action)).await,
+            "upload_object" => self.upload_object(action).await,
             "download_object" => self.download_object(action).await,
             "delete_object" => self.delete_object(action).await,
+            "list_objects" => self.list_objects(action).await,
             other => Err(ProviderError::Configuration(format!(
-                "unknown Cloud Storage action type '{other}' (expected 'upload_object', 'download_object', or 'delete_object')"
+                "unknown Cloud Storage action type '{other}' (expected 'upload_object', 'download_object', 'delete_object', or 'list_objects')"
             ))),
         }
     }
@@ -213,8 +229,20 @@ impl Provider for StorageProvider {
     #[instrument(skip(self), fields(provider = "gcp-storage"))]
     async fn health_check(&self) -> Result<(), ProviderError> {
         debug!("performing Cloud Storage health check");
-        // The Storage client validates connectivity on build; a lightweight
-        // check is sufficient here since we verified at construction time.
+        // Verify connectivity by listing objects (limited to 1).
+        if let Some(bucket) = self.config.bucket.as_deref() {
+            let bucket_path = Self::bucket_path(bucket);
+            self.storage_control
+                .list_objects()
+                .set_parent(&bucket_path)
+                .set_page_size(1_i32)
+                .send()
+                .await
+                .map_err(|e| {
+                    error!(error = %e, bucket = %bucket, "Cloud Storage health check failed");
+                    ProviderError::Connection(format!("Cloud Storage health check failed: {e}"))
+                })?;
+        }
         info!("Cloud Storage health check passed");
         Ok(())
     }
@@ -351,7 +379,7 @@ impl StorageProvider {
 
         debug!(bucket = %bucket, object_name = %object_name, "deleting object");
 
-        self.control
+        self.storage_control
             .delete_object()
             .set_bucket(&bucket_path)
             .set_object(&object_name)
@@ -370,6 +398,64 @@ impl StorageProvider {
             "bucket": bucket,
             "object_name": object_name,
             "status": "deleted"
+        })))
+    }
+
+    async fn list_objects(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+        debug!("deserializing Cloud Storage list_objects payload");
+        let payload: StorageListPayload = serde_json::from_value(action.payload.clone())
+            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+
+        let bucket = self
+            .resolve_bucket(payload.bucket.as_deref())
+            .ok_or_else(|| {
+                ProviderError::Configuration("no bucket in payload or provider config".to_owned())
+            })?;
+
+        let prefix = match (payload.prefix.as_deref(), self.config.prefix.as_deref()) {
+            (Some(p), Some(base)) => format!("{base}{p}"),
+            (Some(p), None) => p.to_owned(),
+            (None, Some(base)) => base.to_owned(),
+            (None, None) => String::new(),
+        };
+
+        let bucket_path = Self::bucket_path(bucket);
+        debug!(bucket = %bucket, prefix = %prefix, "listing objects");
+
+        let mut request = self.storage_control.list_objects().set_parent(&bucket_path);
+        if !prefix.is_empty() {
+            request = request.set_prefix(&prefix);
+        }
+        if let Some(max) = payload.max_results {
+            request = request.set_page_size(max);
+        }
+
+        let response = request.send().await.map_err(|e| {
+            let err_str = e.to_string();
+            error!(error = %err_str, "Cloud Storage list failed");
+            let gcp_err: ProviderError = classify_gcp_error(&err_str).into();
+            gcp_err
+        })?;
+
+        let objects: Vec<_> = response
+            .objects
+            .into_iter()
+            .map(|obj| {
+                serde_json::json!({
+                    "name": obj.name,
+                    "size": obj.size,
+                    "content_type": obj.content_type,
+                    "update_time": obj.update_time.map(|t| t.seconds()),
+                })
+            })
+            .collect();
+
+        info!(bucket = %bucket, count = objects.len(), "objects listed");
+
+        Ok(ProviderResponse::success(serde_json::json!({
+            "bucket": bucket,
+            "prefix": prefix,
+            "objects": objects
         })))
     }
 }

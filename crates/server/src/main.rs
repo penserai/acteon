@@ -1001,6 +1001,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let decrypted = require_decrypt(path, master_key.as_ref())?;
                     ps_config = ps_config.with_credentials_path(decrypted);
                 }
+                if let Some(ref json) = provider_cfg.gcp_credentials_json {
+                    let decrypted = require_decrypt(json, master_key.as_ref())?;
+                    ps_config = ps_config.with_credentials_json(decrypted);
+                }
                 std::sync::Arc::new(
                     acteon_gcp::PubSubProvider::new(ps_config)
                         .await
@@ -1028,6 +1032,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref path) = provider_cfg.gcp_credentials_path {
                     let decrypted = require_decrypt(path, master_key.as_ref())?;
                     storage_config = storage_config.with_credentials_path(decrypted);
+                }
+                if let Some(ref json) = provider_cfg.gcp_credentials_json {
+                    let decrypted = require_decrypt(json, master_key.as_ref())?;
+                    storage_config = storage_config.with_credentials_json(decrypted);
                 }
                 std::sync::Arc::new(
                     acteon_gcp::StorageProvider::new(storage_config)

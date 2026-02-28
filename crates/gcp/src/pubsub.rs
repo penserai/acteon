@@ -4,6 +4,7 @@ use std::sync::Arc;
 use acteon_core::{Action, ProviderResponse};
 use acteon_provider::ProviderError;
 use acteon_provider::provider::Provider;
+use base64::Engine;
 use dashmap::DashMap;
 use google_cloud_auth::credentials::Credentials;
 use google_cloud_pubsub::client::Publisher;
@@ -132,9 +133,12 @@ impl std::fmt::Debug for PubSubProvider {
 impl PubSubProvider {
     /// Create a new `PubSubProvider` by resolving GCP credentials.
     pub async fn new(config: PubSubConfig) -> Result<Self, ProviderError> {
-        let credentials = build_gcp_credentials(config.gcp.credentials_path.as_deref())
-            .await
-            .map_err(|e| ProviderError::Configuration(e.to_string()))?;
+        let credentials = build_gcp_credentials(
+            config.gcp.credentials_path.as_deref(),
+            config.gcp.credentials_json.as_deref(),
+        )
+        .await
+        .map_err(|e| ProviderError::Configuration(e.to_string()))?;
 
         Ok(Self {
             config,
@@ -186,7 +190,8 @@ impl PubSubProvider {
         data_base64: Option<&str>,
     ) -> Result<Vec<u8>, ProviderError> {
         if let Some(b64) = data_base64 {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64)
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
                 .map_err(|e| ProviderError::Serialization(format!("invalid base64 data: {e}")))
         } else if let Some(text) = data {
             Ok(text.as_bytes().to_vec())
@@ -233,11 +238,11 @@ impl Provider for PubSubProvider {
     #[instrument(skip(self), fields(provider = "gcp-pubsub"))]
     async fn health_check(&self) -> Result<(), ProviderError> {
         debug!("performing Pub/Sub health check");
-        // Build a publisher to verify connectivity. If credentials or endpoint
-        // are invalid, this will fail.
+        // Verify connectivity by building a publisher for the default topic.
+        // Building a publisher validates credentials and endpoint reachability.
         if let Some(topic) = self.config.topic.as_deref() {
             let topic_path = self.topic_path(topic);
-            let _publisher = self.get_or_build_publisher(&topic_path).await?;
+            self.get_or_build_publisher(&topic_path).await?;
         }
         info!("Pub/Sub health check passed");
         Ok(())

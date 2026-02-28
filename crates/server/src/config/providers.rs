@@ -129,6 +129,8 @@ pub struct ProviderConfig {
     pub gcp_project_id: Option<String>,
     /// Path to GCP service account JSON key file (used by `"gcp-*"` types).
     pub gcp_credentials_path: Option<String>,
+    /// Inline GCP service account JSON key (used by `"gcp-*"` types). Supports `ENC[...]`.
+    pub gcp_credentials_json: Option<String>,
     /// GCP endpoint URL override for emulators (used by `"gcp-*"` types).
     pub gcp_endpoint_url: Option<String>,
     /// Default `Pub/Sub` topic (used by `"gcp-pubsub"` type).
