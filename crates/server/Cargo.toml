@@ -59,9 +59,9 @@ acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true, features = ["webhook"] }
 acteon-email = { workspace = true, features = ["ses"] }
-acteon-aws = { workspace = true }
-acteon-azure = { workspace = true }
-acteon-gcp = { workspace = true }
+acteon-aws = { workspace = true, optional = true }
+acteon-azure = { workspace = true, optional = true }
+acteon-gcp = { workspace = true, optional = true }
 acteon-twilio = { workspace = true }
 acteon-teams = { workspace = true }
 acteon-discord = { workspace = true }
