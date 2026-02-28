@@ -2875,3 +2875,116 @@ export function createAzureEventHubsSendBatchPayload(
   if (options?.eventHubName) payload.event_hub_name = options.eventHubName;
   return payload;
 }
+
+// =============================================================================
+// GCP Pub/Sub Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the GCP Pub/Sub publish action. */
+export interface GcpPubSubPublishPayload {
+  data: string;
+  data_base64?: string;
+  attributes?: Record<string, string>;
+  ordering_key?: string;
+  topic?: string;
+}
+
+/** Create a payload for the GCP Pub/Sub publish action. */
+export function createGcpPubSubPublishPayload(
+  data: string,
+  options?: {
+    dataBase64?: string;
+    attributes?: Record<string, string>;
+    orderingKey?: string;
+    topic?: string;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { data };
+  if (options?.dataBase64) payload.data_base64 = options.dataBase64;
+  if (options?.attributes) payload.attributes = options.attributes;
+  if (options?.orderingKey) payload.ordering_key = options.orderingKey;
+  if (options?.topic) payload.topic = options.topic;
+  return payload;
+}
+
+/** Payload for the GCP Pub/Sub publish-batch action. */
+export interface GcpPubSubPublishBatchPayload {
+  messages: Record<string, unknown>[];
+  topic?: string;
+}
+
+/** Create a payload for the GCP Pub/Sub publish-batch action. */
+export function createGcpPubSubPublishBatchPayload(
+  messages: Record<string, unknown>[],
+  options?: { topic?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { messages };
+  if (options?.topic) payload.topic = options.topic;
+  return payload;
+}
+
+// =============================================================================
+// GCP Cloud Storage Provider Payload Helpers
+// =============================================================================
+
+/** Payload for the GCP Cloud Storage upload-object action. */
+export interface GcpStorageUploadPayload {
+  object_name: string;
+  bucket?: string;
+  body?: string;
+  body_base64?: string;
+  content_type?: string;
+  metadata?: Record<string, string>;
+}
+
+/** Create a payload for the GCP Cloud Storage upload-object action. */
+export function createGcpStorageUploadPayload(
+  objectName: string,
+  options?: {
+    bucket?: string;
+    body?: string;
+    bodyBase64?: string;
+    contentType?: string;
+    metadata?: Record<string, string>;
+  }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { object_name: objectName };
+  if (options?.bucket) payload.bucket = options.bucket;
+  if (options?.body !== undefined) payload.body = options.body;
+  if (options?.bodyBase64) payload.body_base64 = options.bodyBase64;
+  if (options?.contentType) payload.content_type = options.contentType;
+  if (options?.metadata) payload.metadata = options.metadata;
+  return payload;
+}
+
+/** Payload for the GCP Cloud Storage download-object action. */
+export interface GcpStorageDownloadPayload {
+  object_name: string;
+  bucket?: string;
+}
+
+/** Create a payload for the GCP Cloud Storage download-object action. */
+export function createGcpStorageDownloadPayload(
+  objectName: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { object_name: objectName };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}
+
+/** Payload for the GCP Cloud Storage delete-object action. */
+export interface GcpStorageDeletePayload {
+  object_name: string;
+  bucket?: string;
+}
+
+/** Create a payload for the GCP Cloud Storage delete-object action. */
+export function createGcpStorageDeletePayload(
+  objectName: string,
+  options?: { bucket?: string }
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = { object_name: objectName };
+  if (options?.bucket) payload.bucket = options.bucket;
+  return payload;
+}

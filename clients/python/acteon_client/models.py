@@ -3288,3 +3288,146 @@ def azure_eventhubs_send_batch_payload(
     if event_hub_name is not None:
         payload["event_hub_name"] = event_hub_name
     return payload
+
+
+# =============================================================================
+# GCP Pub/Sub Provider Payload Helpers
+# =============================================================================
+
+
+def gcp_pubsub_publish_payload(
+    data: str,
+    *,
+    data_base64: Optional[str] = None,
+    attributes: Optional[dict[str, str]] = None,
+    ordering_key: Optional[str] = None,
+    topic: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Pub/Sub publish action.
+
+    Args:
+        data: Message data as a UTF-8 string.
+        data_base64: Message data as base64-encoded bytes.
+        attributes: Message attributes as key-value pairs.
+        ordering_key: Ordering key for ordered delivery.
+        topic: Override the topic configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-pubsub``
+        provider with action type ``publish``.
+    """
+    payload: dict[str, Any] = {"data": data}
+    if data_base64 is not None:
+        payload["data_base64"] = data_base64
+    if attributes is not None:
+        payload["attributes"] = attributes
+    if ordering_key is not None:
+        payload["ordering_key"] = ordering_key
+    if topic is not None:
+        payload["topic"] = topic
+    return payload
+
+
+def gcp_pubsub_publish_batch_payload(
+    messages: List[dict[str, Any]],
+    *,
+    topic: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Pub/Sub publish-batch action.
+
+    Args:
+        messages: List of message objects to publish as a batch.
+        topic: Override the topic configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-pubsub``
+        provider with action type ``publish_batch``.
+    """
+    payload: dict[str, Any] = {"messages": messages}
+    if topic is not None:
+        payload["topic"] = topic
+    return payload
+
+
+# =============================================================================
+# GCP Cloud Storage Provider Payload Helpers
+# =============================================================================
+
+
+def gcp_storage_upload_payload(
+    object_name: str,
+    *,
+    bucket: Optional[str] = None,
+    body: Optional[str] = None,
+    body_base64: Optional[str] = None,
+    content_type: Optional[str] = None,
+    metadata: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Cloud Storage upload action.
+
+    Args:
+        object_name: Name of the object to upload.
+        bucket: Override the bucket name configured on the provider.
+        body: Object body as a UTF-8 string.
+        body_base64: Object body as base64-encoded bytes.
+        content_type: Content type (e.g., ``"application/json"``).
+        metadata: Object metadata as key-value pairs.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-storage``
+        provider with action type ``upload_object``.
+    """
+    payload: dict[str, Any] = {"object_name": object_name}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    if body is not None:
+        payload["body"] = body
+    if body_base64 is not None:
+        payload["body_base64"] = body_base64
+    if content_type is not None:
+        payload["content_type"] = content_type
+    if metadata is not None:
+        payload["metadata"] = metadata
+    return payload
+
+
+def gcp_storage_download_payload(
+    object_name: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Cloud Storage download action.
+
+    Args:
+        object_name: Name of the object to download.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-storage``
+        provider with action type ``download_object``.
+    """
+    payload: dict[str, Any] = {"object_name": object_name}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
+
+
+def gcp_storage_delete_payload(
+    object_name: str,
+    *,
+    bucket: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a payload for a GCP Cloud Storage delete action.
+
+    Args:
+        object_name: Name of the object to delete.
+        bucket: Override the bucket name configured on the provider.
+
+    Returns:
+        Payload dictionary suitable for an Action targeting the ``gcp-storage``
+        provider with action type ``delete_object``.
+    """
+    payload: dict[str, Any] = {"object_name": object_name}
+    if bucket is not None:
+        payload["bucket"] = bucket
+    return payload
