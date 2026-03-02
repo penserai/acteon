@@ -1,0 +1,7 @@
+# Downloaded TLA+ tooling
+.tools/
+
+# TLC model checker output
+states/
+*.dot
+*.dump
