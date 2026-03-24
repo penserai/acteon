@@ -1,0 +1,10 @@
+{
+  "name": "acteon-swarm-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Thin bridge between acteon-swarm (Rust) and the Claude Agent SDK",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0"
+  }
+}

@@ -669,6 +669,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-swarm"
+version = "0.1.0"
+dependencies = [
+ "acteon-client",
+ "acteon-core",
+ "acteon-ops",
+ "anyhow",
+ "chrono",
+ "clap",
+ "futures",
+ "md-5",
+ "minijinja",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "acteon-teams"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,16 @@
+[acteon]
+endpoint = "http://127.0.0.1:8090"
+namespace = "swarm"
+
+[tesserai]
+endpoint = "http://127.0.0.1:8091"
+tenant_id = "news-demo"
+
+[defaults]
+max_agents = 4
+max_duration_minutes = 30
+subtask_timeout_seconds = 600
+quota_max_actions = 500
+
+[safety]
+require_plan_approval = false

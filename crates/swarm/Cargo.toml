@@ -1,0 +1,40 @@
+[package]
+name = "acteon-swarm"
+description = "Generic multi-agent swarm orchestrator for Acteon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "acteon-swarm"
+path = "src/main.rs"
+
+[[bin]]
+name = "acteon-swarm-hook"
+path = "src/hook_main.rs"
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-client = { workspace = true }
+acteon-ops = { workspace = true }
+
+tokio = { workspace = true, features = ["process"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+toml = { workspace = true }
+futures = { workspace = true }
+minijinja = { workspace = true }
+anyhow = "1"
+md-5 = "0.10"
+
+[lints]
+workspace = true
