@@ -255,6 +255,46 @@ async fn execute_subtasks(
             Ok(result) => {
                 update_agent_metrics(&result, run);
 
+                // Store episodic memory of what the agent did.
+                let result_summary = extract_result_text(&result.result_text);
+                if let Err(e) = crate::memory::semantic::record_action(
+                    ctx.tesserai,
+                    ctx.run_id,
+                    &session.id,
+                    &role.name,
+                    &result_summary,
+                    vec![
+                        task.name.clone(),
+                        subtask.name.clone(),
+                        role.name.clone(),
+                    ],
+                    None,
+                )
+                .await
+                {
+                    tracing::debug!("failed to store episodic memory: {e}");
+                } else {
+                    run.metrics.memories_stored += 1;
+                }
+
+                // Store the agent output as a semantic finding if it produced meaningful content.
+                if result_summary.len() > 100 {
+                    if let Err(e) = crate::memory::semantic::store_finding(
+                        ctx.tesserai,
+                        ctx.run_id,
+                        &session.id,
+                        &result_summary,
+                        vec![task.name.clone(), role.name.clone()],
+                        0.8,
+                    )
+                    .await
+                    {
+                        tracing::debug!("failed to store finding: {e}");
+                    } else {
+                        run.metrics.memories_stored += 1;
+                    }
+                }
+
                 // Run refiner.
                 let completed_refs: Vec<&str> =
                     completed_tasks.iter().map(String::as_str).collect();
@@ -366,4 +406,17 @@ fn update_agent_metrics(result: &AgentResult, run: &mut SwarmRun) {
         run.metrics.agents_failed += 1;
     }
     run.metrics.total_actions += 1;
+}
+
+/// Extract the readable result text from claude's JSON output.
+fn extract_result_text(raw: &str) -> String {
+    // claude -p --output-format json wraps result in {"result": "...", ...}
+    if let Some(result) = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|json| json.get("result").and_then(|v| v.as_str()).map(String::from))
+    {
+        return result;
+    }
+    // Fallback: use raw text, truncated.
+    raw.chars().take(2000).collect()
 }

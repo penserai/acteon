@@ -169,12 +169,13 @@ pub async fn wait_for_agent(
             let result_text = String::from_utf8_lossy(&output.stdout).to_string();
 
             // claude -p --output-format json always exits 0; check is_error in JSON.
-            if exit_code == 0 {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&result_text) {
-                    if json.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
-                        exit_code = 1;
-                    }
-                }
+            if exit_code == 0
+                && serde_json::from_str::<serde_json::Value>(&result_text)
+                    .ok()
+                    .and_then(|json| json.get("is_error").and_then(serde_json::Value::as_bool))
+                    .unwrap_or(false)
+            {
+                exit_code = 1;
             }
 
             Ok(AgentResult {

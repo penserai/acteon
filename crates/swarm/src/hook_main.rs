@@ -110,6 +110,7 @@ async fn main() -> Result<()> {
             // Best-effort: parse the tool output and store as episodic memory.
             let input: serde_json::Value = serde_json::from_str(&input_str).unwrap_or_default();
             let tool_name = input["tool_name"].as_str().unwrap_or("unknown");
+            let run_id = std::env::var("SWARM_RUN_ID").unwrap_or_default();
 
             let config = acteon_swarm::config::TesseraiConnectionConfig {
                 endpoint: tesserai_url,
@@ -120,6 +121,7 @@ async fn main() -> Result<()> {
             if let Ok(client) = acteon_swarm::memory::TesseraiClient::new(&config) {
                 let _ = acteon_swarm::memory::semantic::record_action(
                     &client,
+                    &run_id,
                     &agent_id,
                     tool_name,
                     &format!("Used tool: {tool_name}"),

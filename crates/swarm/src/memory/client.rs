@@ -40,64 +40,6 @@ pub struct TwinResponse {
     pub properties: Value,
 }
 
-// ── Semantic Memory types ────────────────────────────────────────────────────
-
-/// Request to create a semantic memory record.
-#[derive(Debug, Serialize)]
-pub struct CreateMemoryRequest {
-    pub memory_type: String,
-    pub record_type: String,
-    pub agent_id: String,
-    pub content: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub structured_data: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<String>,
-    #[serde(default)]
-    pub topics: Vec<String>,
-    #[serde(default)]
-    pub categories: Vec<String>,
-    #[serde(default = "default_confidence")]
-    pub confidence: f64,
-}
-
-/// Query for semantic memory search.
-#[derive(Debug, Serialize)]
-pub struct MemorySearchQuery {
-    pub query: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub memory_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min_confidence: Option<f64>,
-}
-
-/// A memory record returned from `TesseraiDB`.
-#[derive(Debug, Deserialize)]
-pub struct MemoryRecord {
-    pub id: String,
-    pub memory_type: String,
-    pub record_type: String,
-    pub agent_id: String,
-    pub content: String,
-    #[serde(default)]
-    pub topics: Vec<String>,
-    #[serde(default)]
-    pub confidence: f64,
-    #[serde(default)]
-    pub relevance_score: f64,
-}
-
-/// Default confidence value for memory records (used by serde).
-pub fn default_confidence() -> f64 {
-    1.0
-}
-
 // ── Client implementation ────────────────────────────────────────────────────
 
 impl TesseraiClient {
@@ -160,6 +102,46 @@ impl TesseraiClient {
         handle_response(resp).await
     }
 
+    /// List JSON twins with optional type and search filters.
+    pub async fn list_twins(
+        &self,
+        twin_type: Option<&str>,
+        search: Option<&str>,
+    ) -> Result<Vec<TwinResponse>, SwarmError> {
+        use std::fmt::Write as _;
+        let mut path = "/api/v1/twins/json?limit=100".to_string();
+        if let Some(t) = twin_type {
+            let _ = write!(path, "&type={t}");
+        }
+        if let Some(s) = search {
+            let _ = write!(path, "&search={s}");
+        }
+        let resp = self
+            .request(reqwest::Method::GET, &path)
+            .send()
+            .await?;
+
+        // The list endpoint returns {"data": [...], "total": N}
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| SwarmError::Tesserai(format!("failed to parse list response: {e}")))?;
+
+        let items = body
+            .get("data")
+            .and_then(|d| d.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        items
+            .into_iter()
+            .map(|v| {
+                serde_json::from_value(v)
+                    .map_err(|e| SwarmError::Tesserai(format!("failed to parse twin: {e}")))
+            })
+            .collect()
+    }
+
     /// Update a JSON twin's properties.
     pub async fn patch_twin(
         &self,
@@ -172,34 +154,6 @@ impl TesseraiClient {
                 &format!("/api/v1/twins/json/{twin_id}"),
             )
             .json(properties)
-            .send()
-            .await?;
-        handle_response(resp).await
-    }
-
-    // ── Semantic Memory operations ───────────────────────────────────────────
-
-    /// Store a semantic memory record.
-    pub async fn create_memory(
-        &self,
-        memory: &CreateMemoryRequest,
-    ) -> Result<MemoryRecord, SwarmError> {
-        let resp = self
-            .request(reqwest::Method::POST, "/api/v1/semantic-memory")
-            .json(memory)
-            .send()
-            .await?;
-        handle_response(resp).await
-    }
-
-    /// Search semantic memories.
-    pub async fn search_memories(
-        &self,
-        query: &MemorySearchQuery,
-    ) -> Result<Vec<MemoryRecord>, SwarmError> {
-        let resp = self
-            .request(reqwest::Method::POST, "/api/v1/semantic-memory/search")
-            .json(query)
             .send()
             .await?;
         handle_response(resp).await
