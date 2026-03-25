@@ -249,8 +249,10 @@ async fn execute_subtasks(
         )
         .await?;
 
-        // Wait for completion.
-        let timeout = subtask.timeout_seconds;
+        // Wait for completion. Use the larger of plan timeout vs config default.
+        let timeout = subtask
+            .timeout_seconds
+            .max(ctx.config.defaults.subtask_timeout_seconds);
         match wait_for_agent(child, &session.id, timeout).await {
             Ok(result) => {
                 update_agent_metrics(&result, run);

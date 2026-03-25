@@ -144,7 +144,7 @@ fn default_priority() -> u32 {
 }
 
 fn default_subtask_timeout() -> u64 {
-    600
+    900
 }
 
 #[cfg(test)]

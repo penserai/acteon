@@ -193,7 +193,7 @@ fn default_max_duration() -> u64 {
     120
 }
 fn default_subtask_timeout() -> u64 {
-    600
+    900
 }
 fn default_quota_max() -> u64 {
     500
