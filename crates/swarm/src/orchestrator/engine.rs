@@ -231,7 +231,21 @@ async fn execute_subtasks(
 
         run.metrics.agents_spawned += 1;
 
-        let system_prompt = crate::roles::prompt_builder::build_system_prompt(role, task, subtask);
+        // Retrieve prior findings from TesseraiDB and inject as context.
+        let prior_findings =
+            crate::memory::semantic::retrieve_prior_context(ctx.tesserai, 5, 2000).await;
+        let prior_context = crate::memory::semantic::format_prior_context(&prior_findings);
+
+        let base_prompt = crate::roles::prompt_builder::build_system_prompt(role, task, subtask);
+        let system_prompt = if prior_context.is_empty() {
+            base_prompt
+        } else {
+            tracing::info!(
+                count = prior_findings.len(),
+                "injecting prior findings into agent prompt"
+            );
+            format!("{base_prompt}{prior_context}")
+        };
 
         let allowed_tools = subtask
             .allowed_tools
@@ -256,46 +270,7 @@ async fn execute_subtasks(
         match wait_for_agent(child, &session.id, timeout).await {
             Ok(result) => {
                 update_agent_metrics(&result, run);
-
-                // Store episodic memory of what the agent did.
-                let result_summary = extract_result_text(&result.result_text);
-                if let Err(e) = crate::memory::semantic::record_action(
-                    ctx.tesserai,
-                    ctx.run_id,
-                    &session.id,
-                    &role.name,
-                    &result_summary,
-                    vec![
-                        task.name.clone(),
-                        subtask.name.clone(),
-                        role.name.clone(),
-                    ],
-                    None,
-                )
-                .await
-                {
-                    tracing::debug!("failed to store episodic memory: {e}");
-                } else {
-                    run.metrics.memories_stored += 1;
-                }
-
-                // Store the agent output as a semantic finding if it produced meaningful content.
-                if result_summary.len() > 100 {
-                    if let Err(e) = crate::memory::semantic::store_finding(
-                        ctx.tesserai,
-                        ctx.run_id,
-                        &session.id,
-                        &result_summary,
-                        vec![task.name.clone(), role.name.clone()],
-                        0.8,
-                    )
-                    .await
-                    {
-                        tracing::debug!("failed to store finding: {e}");
-                    } else {
-                        run.metrics.memories_stored += 1;
-                    }
-                }
+                store_agent_memories(ctx, run, &session, task, subtask, role, &result).await;
 
                 // Run refiner.
                 let completed_refs: Vec<&str> =
@@ -399,6 +374,58 @@ async fn finalize_run(run: &mut SwarmRun, tesserai: &TesseraiClient, run_id: &st
         agents_spawned = run.metrics.agents_spawned,
         "swarm run finished"
     );
+}
+
+/// Store episodic and semantic memories in `TesseraiDB` after an agent completes.
+async fn store_agent_memories(
+    ctx: &SwarmContext<'_>,
+    run: &mut SwarmRun,
+    session: &AgentSession,
+    task: &crate::types::plan::SwarmTask,
+    subtask: &crate::types::plan::SwarmSubtask,
+    role: &crate::types::agent::AgentRole,
+    result: &AgentResult,
+) {
+    let result_summary = extract_result_text(&result.result_text);
+
+    // Store episodic memory of what the agent did.
+    if let Err(e) = crate::memory::semantic::record_action(
+        ctx.tesserai,
+        ctx.run_id,
+        &session.id,
+        &role.name,
+        &result_summary,
+        vec![
+            task.name.clone(),
+            subtask.name.clone(),
+            role.name.clone(),
+        ],
+        None,
+    )
+    .await
+    {
+        tracing::debug!("failed to store episodic memory: {e}");
+    } else {
+        run.metrics.memories_stored += 1;
+    }
+
+    // Store as a semantic finding if it produced meaningful content.
+    if result_summary.len() > 100 {
+        if let Err(e) = crate::memory::semantic::store_finding(
+            ctx.tesserai,
+            ctx.run_id,
+            &session.id,
+            &result_summary,
+            vec![task.name.clone(), role.name.clone()],
+            0.8,
+        )
+        .await
+        {
+            tracing::debug!("failed to store finding: {e}");
+        } else {
+            run.metrics.memories_stored += 1;
+        }
+    }
 }
 
 fn update_agent_metrics(result: &AgentResult, run: &mut SwarmRun) {
