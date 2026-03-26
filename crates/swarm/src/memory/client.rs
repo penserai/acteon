@@ -159,6 +159,37 @@ impl TesseraiClient {
         handle_response(resp).await
     }
 
+    /// Create a relationship between two twins.
+    pub async fn create_relationship(
+        &self,
+        from_twin_id: &str,
+        rel_type: &str,
+        to_twin_id: &str,
+    ) -> Result<(), SwarmError> {
+        let body = serde_json::json!({
+            "type": rel_type,
+            "target": to_twin_id,
+            "properties": {},
+        });
+        let resp = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/api/v1/twins/json/{from_twin_id}/relationships"),
+            )
+            .json(&body)
+            .send()
+            .await?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            Err(SwarmError::Tesserai(format!(
+                "failed to create relationship: HTTP {status}: {body}"
+            )))
+        }
+    }
+
     /// Check if `TesseraiDB` is reachable.
     pub async fn health_check(&self) -> Result<(), SwarmError> {
         let resp = self

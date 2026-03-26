@@ -1,4 +1,5 @@
 pub mod client;
+pub mod graph;
 pub mod semantic;
 pub mod twins;
 

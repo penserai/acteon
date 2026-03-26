@@ -91,6 +91,9 @@ pub async fn execute_swarm(
 
     finalize_run(&mut run, &tesserai, &run_id).await;
 
+    // Build the digital twin graph: tasks, relationships, agent→memory links.
+    crate::memory::graph::build_swarm_graph(&tesserai, &run_id, plan, &run).await;
+
     Ok(run)
 }
 
