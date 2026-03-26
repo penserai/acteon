@@ -1,0 +1,86 @@
+graph TD
+  classDef run fill:#2563eb,color:#fff,stroke:#1d4ed8
+  classDef task fill:#7c3aed,color:#fff,stroke:#6d28d9
+  classDef agent fill:#059669,color:#fff,stroke:#047857
+  classDef episodic fill:#d97706,color:#fff,stroke:#b45309
+  classDef finding fill:#dc2626,color:#fff,stroke:#b91c1c
+
+  26ef3d["semantic finding"]:::finding
+  556767["semantic finding"]:::finding
+  326ff4["semantic finding"]:::finding
+  336af4["semantic finding"]:::finding
+  c4ace0["semantic finding"]:::finding
+  b3202e["semantic finding"]:::finding
+  e14c85["semantic finding"]:::finding
+  fe32c9["semantic finding"]:::finding
+  a216b4["semantic finding"]:::finding
+  c9206b["episodic memory"]:::episodic
+  1f8f7d["episodic memory"]:::episodic
+  428487["episodic memory"]:::episodic
+  87ce65["episodic memory"]:::episodic
+  ffe287["episodic memory"]:::episodic
+  2c2a24["episodic memory"]:::episodic
+  78274a["episodic memory"]:::episodic
+  3cb33c["episodic memory"]:::episodic
+  1cb86d["episodic memory"]:::episodic
+  06cf08["researcher agent (task-1-sub-1)"]:::agent
+  ab70b1["researcher agent (task-3-sub-2)"]:::agent
+  f9bc3f["researcher agent (task-2-sub-2)"]:::agent
+  6e7815["researcher agent (task-3-sub-1)"]:::agent
+  a72036["reviewer agent (task-5-sub-1)"]:::agent
+  499a2d["researcher agent (task-1-sub-2)"]:::agent
+  c4a0da["researcher agent (task-2-sub-1)"]:::agent
+  e83ad3["coder agent (task-4-sub-2)"]:::agent
+  3b8a31["coder agent (task-4-sub-1)"]:::agent
+  25816e["News Harvesting Run"]:::run
+  6cad6d["Research EU AI Act enforcement and implementation "]:::task
+  a35257["Research EU AI policy debates and new proposals [r"]:::task
+  597f35["Research industry and international reactions [res"]:::task
+  b0c1f5["Write the briefing document [coder]"]:::task
+  0e801a["Review and polish the briefing [reviewer]"]:::task
+
+  06cf08 -->|rel/discovered| e14c85
+  06cf08 -->|rel/produced| 78274a
+  ab70b1 -->|rel/discovered| 326ff4
+  ab70b1 -->|rel/produced| 1f8f7d
+  f9bc3f -->|rel/discovered| 336af4
+  f9bc3f -->|rel/produced| c9206b
+  6e7815 -->|rel/discovered| c4ace0
+  6e7815 -->|rel/produced| 3cb33c
+  a72036 -->|rel/discovered| 26ef3d
+  a72036 -->|rel/produced| 428487
+  499a2d -->|rel/discovered| fe32c9
+  499a2d -->|rel/produced| ffe287
+  c4a0da -->|rel/discovered| a216b4
+  c4a0da -->|rel/produced| 1cb86d
+  e83ad3 -->|rel/discovered| b3202e
+  e83ad3 -->|rel/produced| 87ce65
+  3b8a31 -->|rel/discovered| 556767
+  3b8a31 -->|rel/produced| 2c2a24
+  25816e -->|rel/hasAgent| 3b8a31
+  25816e -->|rel/hasAgent| e83ad3
+  25816e -->|rel/hasAgent| c4a0da
+  25816e -->|rel/hasAgent| 499a2d
+  25816e -->|rel/hasAgent| a72036
+  25816e -->|rel/hasAgent| 6e7815
+  25816e -->|rel/hasAgent| f9bc3f
+  25816e -->|rel/hasAgent| ab70b1
+  25816e -->|rel/hasAgent| 06cf08
+  25816e -->|rel/hasTask| 0e801a
+  25816e -->|rel/hasTask| b0c1f5
+  25816e -->|rel/hasTask| 597f35
+  25816e -->|rel/hasTask| a35257
+  25816e -->|rel/hasTask| 6cad6d
+  6cad6d -->|rel/assignedTo| 499a2d
+  6cad6d -->|rel/assignedTo| 06cf08
+  a35257 -->|rel/assignedTo| c4a0da
+  a35257 -->|rel/assignedTo| f9bc3f
+  597f35 -->|rel/assignedTo| 6e7815
+  597f35 -->|rel/assignedTo| ab70b1
+  b0c1f5 -->|rel/assignedTo| 3b8a31
+  b0c1f5 -->|rel/assignedTo| e83ad3
+  b0c1f5 -->|rel/dependsOn| 597f35
+  b0c1f5 -->|rel/dependsOn| a35257
+  b0c1f5 -->|rel/dependsOn| 6cad6d
+  0e801a -->|rel/assignedTo| a72036
+  0e801a -->|rel/dependsOn| b0c1f5

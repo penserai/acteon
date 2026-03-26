@@ -1,60 +1,56 @@
 # Swarm Example: Stock Market Analysis
 
-An agent swarm that analyzes Q4 2025 tech earnings (Apple, Microsoft, Google, Amazon) and their impact on related market sectors.
+An agent swarm that analyzes Q4 2025 tech earnings and their impact on related market sectors.
+
+## Swarm Digital Twin Graph
+
+![Swarm Graph](output/swarm-graph.png)
+
+**Legend**: Blue = SwarmRun, Purple = SwarmTask, Green = AgentSession, Orange = EpisodicMemory, Red = SemanticMemory
 
 ## Run Results
 
 | Metric | Value |
 |--------|-------|
 | Status | Completed |
-| Agents spawned | 21 |
-| Agents completed | 21 / 21 |
-| Duration | ~46 minutes |
+| Agents spawned | 20 |
+| Agents completed | 13 / 20 |
+| Duration | ~34 minutes |
 | Model | Sonnet |
-| TesseraiDB entities | 94 (2 runs, 31 agents, 30 episodic memories, 29 findings) |
+| TesseraiDB entities | 90 twins |
+| RDF triples | 356KB |
+| Relationships | 91 edges |
 
-## Output (9 files, 176KB)
+## Output
 
 ```
 output/analysis/
-  README.md                  114 lines   Executive summary
-  correlations.md            297 lines   Cross-company correlation analysis
   companies/
-    apple.md                 149 lines   Apple Q4 FY2025 earnings
-    microsoft.md             171 lines   Microsoft Q4 2025 earnings
-    google.md                184 lines   Alphabet Q4 2025 earnings
-    amazon.md                187 lines   Amazon Q4 2025 earnings
+    apple.md        Apple Q4 FY2025 earnings analysis
+    microsoft.md    Microsoft Q4 2025 earnings analysis
+    google.md       Alphabet Q4 2025 earnings analysis
+    amazon.md       Amazon Q4 2025 earnings analysis
   sectors/
-    semiconductors.md        181 lines   Semiconductor sector impact
-    cloud.md                 200 lines   Cloud provider sector impact
-    ad-tech.md               177 lines   Ad tech sector impact
+    semiconductors.md   Semiconductor sector impact report
 ```
 
-## Task Decomposition (auto-generated, 11 tasks)
+## Knowledge Graph Artifacts
 
-1. **Setup directories** (executor)
-2. **Research Apple earnings** (researcher)
-3. **Research Microsoft earnings** (researcher)
-4. **Research Google earnings** (researcher)
-5. **Research Amazon earnings** (researcher)
-6. **Write per-company analyses** (coder) — 4 subtasks
-7. **Research semiconductor sector** (researcher)
-8. **Research cloud sector** (researcher)
-9. **Research ad tech sector** (researcher)
-10. **Write sector reports + correlations** (coder) — 4 subtasks
-11. **Write executive summary** (coder) — compiled README.md
+| File | Description |
+|------|-------------|
+| `output/swarm-graph.png` | Visual graph of all agent interactions |
+| `output/swarm-graph.mmd` | Mermaid source for the graph |
+| `output/knowledge-graph.ttl` | Full RDF triples in Turtle format (356KB) |
 
-## How to Reproduce
+## Twin Types in Graph
 
-```bash
-# Start Acteon and TesseraiDB (see news-harvesting example)
-
-mkdir /tmp/stocks-demo && cp examples/swarm-stock-analysis/swarm.toml /tmp/stocks-demo/
-cd /tmp/stocks-demo
-acteon-swarm run \
-  --prompt "Analyze how Q4 2025 earnings from Apple, Microsoft, Google, and Amazon affected related market sectors..." \
-  --auto-approve
-```
+| Type | Count | Description |
+|------|-------|-------------|
+| SwarmRun | 1 | Run metadata — objective, plan, roles |
+| SwarmTask | 8 | Task decomposition with dependencies |
+| AgentSession | 20 | Agent lifecycle — role, subtask, timestamps |
+| EpisodicMemory | 20 | Per-action records — full agent output |
+| SemanticMemory | 12 | Key findings — earnings data, sector analysis |
 
 ## Note
 

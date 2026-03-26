@@ -1,0 +1,160 @@
+graph TD
+  classDef run fill:#2563eb,color:#fff,stroke:#1d4ed8
+  classDef task fill:#7c3aed,color:#fff,stroke:#6d28d9
+  classDef agent fill:#059669,color:#fff,stroke:#047857
+  classDef episodic fill:#d97706,color:#fff,stroke:#b45309
+  classDef finding fill:#dc2626,color:#fff,stroke:#b91c1c
+
+  7d95f9["semantic finding"]:::finding
+  e71c08["semantic finding"]:::finding
+  6f9c7a["semantic finding"]:::finding
+  7d8cf2["semantic finding"]:::finding
+  e66199["semantic finding"]:::finding
+  d5199b["semantic finding"]:::finding
+  27cb85["semantic finding"]:::finding
+  6bd032["semantic finding"]:::finding
+  897af4["semantic finding"]:::finding
+  46df96["semantic finding"]:::finding
+  007ab7["semantic finding"]:::finding
+  dd0ac0["semantic finding"]:::finding
+  37fe60["episodic memory"]:::episodic
+  3e6c6e["episodic memory"]:::episodic
+  8189a0["episodic memory"]:::episodic
+  6c0ec1["episodic memory"]:::episodic
+  6d67df["episodic memory"]:::episodic
+  843f3b["episodic memory"]:::episodic
+  68abd2["episodic memory"]:::episodic
+  16c32d["episodic memory"]:::episodic
+  1d37c8["episodic memory"]:::episodic
+  5ba607["episodic memory"]:::episodic
+  7df400["episodic memory"]:::episodic
+  81e552["episodic memory"]:::episodic
+  c1c8c7["episodic memory"]:::episodic
+  20bddd["episodic memory"]:::episodic
+  fd7842["episodic memory"]:::episodic
+  fbd13d["episodic memory"]:::episodic
+  ef3643["episodic memory"]:::episodic
+  c05922["episodic memory"]:::episodic
+  292c9b["episodic memory"]:::episodic
+  f3b16a["episodic memory"]:::episodic
+  7f5086["coder agent (task-7-sub-1)"]:::agent
+  b0c849["researcher agent (task-1-sub-2)"]:::agent
+  0896af["coder agent (task-5-sub-4)"]:::agent
+  111c23["coder agent (task-8-sub-1)"]:::agent
+  e6775b["researcher agent (task-3-sub-1)"]:::agent
+  b217b7["researcher agent (task-4-sub-2)"]:::agent
+  d8f9f6["coder agent (task-7-sub-2)"]:::agent
+  37da31["coder agent (task-6-sub-3)"]:::agent
+  fcec8a["researcher agent (task-3-sub-2)"]:::agent
+  2cefc9["coder agent (task-6-sub-2)"]:::agent
+  1b91dc["researcher agent (task-2-sub-1)"]:::agent
+  8e1b47["researcher agent (task-4-sub-1)"]:::agent
+  5d7f5c["researcher agent (task-1-sub-1)"]:::agent
+  766466["coder agent (task-5-sub-1)"]:::agent
+  5e9f85["coder agent (task-8-sub-2)"]:::agent
+  b9356c["coder agent (task-5-sub-3)"]:::agent
+  24d30e["coder agent (task-5-sub-5)"]:::agent
+  0f66b9["researcher agent (task-2-sub-2)"]:::agent
+  9247ed["coder agent (task-5-sub-2)"]:::agent
+  2613bc["coder agent (task-6-sub-1)"]:::agent
+  2b8a7f["Stock Analysis Run"]:::run
+  d68370["Research Apple Q4 2025 Earnings [researcher]"]:::task
+  a906db["Research Microsoft Q4 2025 Earnings [researcher]"]:::task
+  afb8e8["Research Google Q4 2025 Earnings [researcher]"]:::task
+  a0b7bf["Research Amazon Q4 2025 Earnings [researcher]"]:::task
+  5424c4["Write Company Analysis Reports [coder]"]:::task
+  15a154["Write Sector Impact Reports [coder]"]:::task
+  71b09c["Write Cross-Company Correlations [coder]"]:::task
+  4bf905["Write Executive Summary README [coder]"]:::task
+
+  7f5086 -->|rel/produced| 6c0ec1
+  b0c849 -->|rel/discovered| 897af4
+  b0c849 -->|rel/produced| 1d37c8
+  0896af -->|rel/discovered| 27cb85
+  0896af -->|rel/produced| 20bddd
+  111c23 -->|rel/produced| 843f3b
+  e6775b -->|rel/discovered| d5199b
+  e6775b -->|rel/produced| fd7842
+  b217b7 -->|rel/discovered| dd0ac0
+  b217b7 -->|rel/produced| c05922
+  d8f9f6 -->|rel/produced| 16c32d
+  37da31 -->|rel/produced| 6d67df
+  fcec8a -->|rel/discovered| 007ab7
+  fcec8a -->|rel/produced| fbd13d
+  2cefc9 -->|rel/produced| c1c8c7
+  1b91dc -->|rel/discovered| 7d95f9
+  1b91dc -->|rel/produced| 7df400
+  8e1b47 -->|rel/discovered| 6f9c7a
+  8e1b47 -->|rel/produced| ef3643
+  5d7f5c -->|rel/discovered| 7d8cf2
+  5d7f5c -->|rel/produced| 5ba607
+  766466 -->|rel/produced| 3e6c6e
+  5e9f85 -->|rel/produced| f3b16a
+  b9356c -->|rel/discovered| 6bd032
+  b9356c -->|rel/produced| 81e552
+  24d30e -->|rel/discovered| 46df96
+  24d30e -->|rel/produced| 292c9b
+  0f66b9 -->|rel/discovered| e66199
+  0f66b9 -->|rel/produced| 8189a0
+  9247ed -->|rel/discovered| e71c08
+  9247ed -->|rel/produced| 37fe60
+  2613bc -->|rel/produced| 68abd2
+  2b8a7f -->|rel/hasAgent| 2613bc
+  2b8a7f -->|rel/hasAgent| 9247ed
+  2b8a7f -->|rel/hasAgent| 0f66b9
+  2b8a7f -->|rel/hasAgent| 24d30e
+  2b8a7f -->|rel/hasAgent| b9356c
+  2b8a7f -->|rel/hasAgent| 5e9f85
+  2b8a7f -->|rel/hasAgent| 766466
+  2b8a7f -->|rel/hasAgent| 5d7f5c
+  2b8a7f -->|rel/hasAgent| 8e1b47
+  2b8a7f -->|rel/hasAgent| 1b91dc
+  2b8a7f -->|rel/hasAgent| 2cefc9
+  2b8a7f -->|rel/hasAgent| fcec8a
+  2b8a7f -->|rel/hasAgent| 37da31
+  2b8a7f -->|rel/hasAgent| d8f9f6
+  2b8a7f -->|rel/hasAgent| b217b7
+  2b8a7f -->|rel/hasAgent| e6775b
+  2b8a7f -->|rel/hasAgent| 111c23
+  2b8a7f -->|rel/hasAgent| 0896af
+  2b8a7f -->|rel/hasAgent| b0c849
+  2b8a7f -->|rel/hasAgent| 7f5086
+  2b8a7f -->|rel/hasTask| 4bf905
+  2b8a7f -->|rel/hasTask| 71b09c
+  2b8a7f -->|rel/hasTask| 15a154
+  2b8a7f -->|rel/hasTask| 5424c4
+  2b8a7f -->|rel/hasTask| a0b7bf
+  2b8a7f -->|rel/hasTask| afb8e8
+  2b8a7f -->|rel/hasTask| a906db
+  2b8a7f -->|rel/hasTask| d68370
+  d68370 -->|rel/assignedTo| 5d7f5c
+  d68370 -->|rel/assignedTo| b0c849
+  a906db -->|rel/assignedTo| 0f66b9
+  a906db -->|rel/assignedTo| 1b91dc
+  afb8e8 -->|rel/assignedTo| fcec8a
+  afb8e8 -->|rel/assignedTo| e6775b
+  a0b7bf -->|rel/assignedTo| 8e1b47
+  a0b7bf -->|rel/assignedTo| b217b7
+  5424c4 -->|rel/assignedTo| 9247ed
+  5424c4 -->|rel/assignedTo| 24d30e
+  5424c4 -->|rel/assignedTo| b9356c
+  5424c4 -->|rel/assignedTo| 766466
+  5424c4 -->|rel/assignedTo| 0896af
+  5424c4 -->|rel/dependsOn| a0b7bf
+  5424c4 -->|rel/dependsOn| afb8e8
+  5424c4 -->|rel/dependsOn| a906db
+  5424c4 -->|rel/dependsOn| d68370
+  15a154 -->|rel/assignedTo| 2613bc
+  15a154 -->|rel/assignedTo| 2cefc9
+  15a154 -->|rel/assignedTo| 37da31
+  15a154 -->|rel/dependsOn| a0b7bf
+  15a154 -->|rel/dependsOn| afb8e8
+  15a154 -->|rel/dependsOn| a906db
+  15a154 -->|rel/dependsOn| d68370
+  71b09c -->|rel/assignedTo| d8f9f6
+  71b09c -->|rel/assignedTo| 7f5086
+  71b09c -->|rel/dependsOn| 15a154
+  71b09c -->|rel/dependsOn| 5424c4
+  4bf905 -->|rel/assignedTo| 5e9f85
+  4bf905 -->|rel/assignedTo| 111c23
+  4bf905 -->|rel/dependsOn| 71b09c
