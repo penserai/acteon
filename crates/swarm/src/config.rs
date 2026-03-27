@@ -92,6 +92,9 @@ pub struct SwarmDefaults {
     /// Working directory override (defaults to CWD).
     #[serde(default)]
     pub working_directory: Option<PathBuf>,
+    /// Enable the AI-powered plan refiner after each task completes.
+    #[serde(default = "default_true")]
+    pub enable_refiner: bool,
 }
 
 impl Default for SwarmDefaults {
@@ -103,6 +106,7 @@ impl Default for SwarmDefaults {
             quota_max_actions: default_quota_max(),
             quota_window_seconds: default_quota_window(),
             working_directory: None,
+            enable_refiner: true,
         }
     }
 }

@@ -1,8 +1,11 @@
+use std::process::Stdio;
+
 use crate::config::SwarmConfig;
 use crate::error::SwarmError;
+use crate::roles::RoleRegistry;
 use crate::types::plan::{SwarmPlan, SwarmTask};
 
-/// Result of plan refinement after a subtask completes.
+/// Result of plan refinement after a task completes.
 #[derive(Debug, Clone)]
 pub enum RefinementAction {
     /// No changes needed, continue as planned.
@@ -15,13 +18,14 @@ pub enum RefinementAction {
     Reprioritize(Vec<(String, u32)>),
 }
 
-/// Run the plan refiner after a subtask completes.
+/// Run the plan refiner after a task completes.
 ///
-/// Spawns a short `claude -p` session to evaluate the subtask result
-/// and recommend plan adjustments. The refiner is read-only — it
-/// analyzes but does not modify the codebase.
+/// Invokes `claude -p --model haiku` with a short analysis prompt.
+/// The refiner can add, skip, or reprioritize remaining tasks.
+/// Non-fatal: any failure defaults to `Continue`.
 pub async fn refine_plan(
-    _config: &SwarmConfig,
+    config: &SwarmConfig,
+    roles: &RoleRegistry,
     plan: &SwarmPlan,
     completed_task_id: &str,
     subtask_output: &str,
@@ -33,43 +37,143 @@ pub async fn refine_plan(
         .filter(|t| !completed_tasks.contains(&t.id.as_str()) && t.id != completed_task_id)
         .collect();
 
-    // If no remaining tasks, nothing to refine.
     if remaining.is_empty() {
         return Ok(RefinementAction::Continue);
     }
 
     let remaining_desc: Vec<String> = remaining
         .iter()
-        .map(|t| format!("- {} ({}): {}", t.id, t.name, t.description))
+        .map(|t| {
+            format!(
+                "- {} (role: {}, priority: {}): {}",
+                t.id, t.assigned_role, t.priority, t.description
+            )
+        })
         .collect();
 
-    let _prompt = format!(
-        r#"You are a plan refinement assistant. A subtask just completed. Evaluate whether the remaining plan should be adjusted.
+    // Build delegation rules from role registry.
+    let delegation_rules: Vec<String> = roles
+        .all()
+        .filter(|r| !r.can_delegate_to.is_empty())
+        .map(|r| format!("- {} can delegate to: {}", r.name, r.can_delegate_to.join(", ")))
+        .collect();
+
+    let delegation_section = if delegation_rules.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n## Delegation Rules\n{}\nYou may suggest adding tasks with these delegated roles.\n",
+            delegation_rules.join("\n")
+        )
+    };
+
+    // Truncate output to keep prompt small.
+    let truncated_output: String = subtask_output.chars().take(3000).collect();
+
+    let prompt = format!(
+        r"You are a plan refinement assistant. A task just completed in a multi-agent swarm. Evaluate whether the remaining plan should be adjusted.
 
 ## Completed Task
 ID: {completed_task_id}
 
-## Subtask Output (summary)
-{subtask_output}
+## Task Output (truncated)
+{truncated_output}
 
 ## Remaining Tasks
 {remaining}
-
+{delegation_section}
 ## Instructions
-Analyze the output. Respond with ONE of:
-1. "CONTINUE" — no changes needed
-2. "SKIP: task-id1, task-id2" — skip tasks that are no longer necessary
-3. "ADD: <JSON array of new SwarmTask objects>" — add recovery/follow-up tasks
-4. "REPRIORITIZE: task-id1=1, task-id2=5" — change execution order
+Analyze the output. Respond with EXACTLY ONE of these lines:
+1. CONTINUE
+2. SKIP: task-id1, task-id2
+3. REPRIORITIZE: task-id1=1, task-id2=5
 
-Respond with ONLY the action line, nothing else."#,
+Respond with ONLY the action line. No explanation.",
         remaining = remaining_desc.join("\n"),
     );
 
-    // TODO: invoke claude -p with the refinement prompt and parse response.
-    // For now, return Continue as the default (no refinement).
-    // This will be wired up in Phase 7 alongside the plan gathering.
-    Ok(RefinementAction::Continue)
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        tokio::process::Command::new("claude")
+            .arg("-p")
+            .arg(&prompt)
+            .arg("--model")
+            .arg("haiku")
+            .arg("--output-format")
+            .arg("text")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    )
+    .await;
+
+    let output = match result {
+        Ok(Ok(o)) if o.status.success() => o,
+        Ok(Ok(_)) => return Ok(RefinementAction::Continue),
+        Ok(Err(e)) => {
+            tracing::debug!("refiner spawn failed: {e}");
+            return Ok(RefinementAction::Continue);
+        }
+        Err(_) => {
+            tracing::debug!("refiner timed out");
+            return Ok(RefinementAction::Continue);
+        }
+    };
+
+    let response = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if response.is_empty() {
+        return Ok(RefinementAction::Continue);
+    }
+
+    Ok(parse_refinement_response(&response, config))
+}
+
+/// Parse the refiner's text response into a `RefinementAction`.
+fn parse_refinement_response(response: &str, _config: &SwarmConfig) -> RefinementAction {
+    // Find the first non-empty line.
+    let line = response
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("CONTINUE");
+
+    if line.eq_ignore_ascii_case("CONTINUE") {
+        return RefinementAction::Continue;
+    }
+
+    if let Some(ids) = line
+        .strip_prefix("SKIP:")
+        .or_else(|| line.strip_prefix("SKIP "))
+    {
+        let task_ids: Vec<String> = ids
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !task_ids.is_empty() {
+            return RefinementAction::SkipTasks(task_ids);
+        }
+    }
+
+    if let Some(pairs) = line
+        .strip_prefix("REPRIORITIZE:")
+        .or_else(|| line.strip_prefix("REPRIORITIZE "))
+    {
+        let priorities: Vec<(String, u32)> = pairs
+            .split(',')
+            .filter_map(|p| {
+                let mut parts = p.trim().splitn(2, '=');
+                let id = parts.next()?.trim().to_string();
+                let priority = parts.next()?.trim().parse::<u32>().ok()?;
+                Some((id, priority))
+            })
+            .collect();
+        if !priorities.is_empty() {
+            return RefinementAction::Reprioritize(priorities);
+        }
+    }
+
+    RefinementAction::Continue
 }
 
 /// Apply a refinement action to the plan's task list.
@@ -142,6 +246,45 @@ mod tests {
             estimated_actions: 10,
             created_at: Utc::now(),
             approved_at: None,
+        }
+    }
+
+    #[test]
+    fn test_parse_continue() {
+        let config = SwarmConfig::minimal();
+        assert!(matches!(
+            parse_refinement_response("CONTINUE", &config),
+            RefinementAction::Continue
+        ));
+        assert!(matches!(
+            parse_refinement_response("continue", &config),
+            RefinementAction::Continue
+        ));
+        assert!(matches!(
+            parse_refinement_response("unknown garbage", &config),
+            RefinementAction::Continue
+        ));
+    }
+
+    #[test]
+    fn test_parse_skip() {
+        let config = SwarmConfig::minimal();
+        match parse_refinement_response("SKIP: t1, t2", &config) {
+            RefinementAction::SkipTasks(ids) => {
+                assert_eq!(ids, vec!["t1", "t2"]);
+            }
+            other => panic!("expected SkipTasks, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_reprioritize() {
+        let config = SwarmConfig::minimal();
+        match parse_refinement_response("REPRIORITIZE: t1=5, t2=1", &config) {
+            RefinementAction::Reprioritize(p) => {
+                assert_eq!(p, vec![("t1".into(), 5), ("t2".into(), 1)]);
+            }
+            other => panic!("expected Reprioritize, got {other:?}"),
         }
     }
 

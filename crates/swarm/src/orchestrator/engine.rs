@@ -1,37 +1,51 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::pin::Pin;
 
 use chrono::Utc;
+use futures::stream::{FuturesUnordered, StreamExt};
+use futures::Future;
 use uuid::Uuid;
 
 use crate::config::SwarmConfig;
 use crate::error::SwarmError;
 use crate::memory::TesseraiClient;
-use crate::orchestrator::agent_spawner::{AgentResult, spawn_agent, wait_for_agent};
+use crate::orchestrator::agent_spawner::{spawn_agent, wait_for_agent, AgentResult};
 use crate::orchestrator::monitor::SwarmMonitor;
 use crate::orchestrator::refiner::{apply_refinement, refine_plan};
 use crate::roles::RoleRegistry;
-use crate::types::agent::{AgentSession, AgentSessionStatus};
-use crate::types::plan::SwarmPlan;
+use crate::types::agent::{AgentRole, AgentSession, AgentSessionStatus};
+use crate::types::plan::{SwarmPlan, SwarmSubtask, SwarmTask};
 use crate::types::run::{RunMetrics, SwarmRun, SwarmRunStatus, TaskRunStatus};
 
-/// Shared context for orchestration, grouping immutable references.
-struct SwarmContext<'a> {
-    config: &'a SwarmConfig,
-    roles: &'a RoleRegistry,
-    hooks_binary: &'a std::path::Path,
-    run_id: &'a str,
-    tesserai: &'a TesseraiClient,
+/// Owned context that can be cloned into `Send + 'static` task futures.
+#[derive(Clone)]
+struct SharedContext {
+    config: SwarmConfig,
+    roles: RoleRegistry,
+    hooks_binary: PathBuf,
+    run_id: String,
+    tesserai: TesseraiClient,
 }
 
-/// Execute an approved swarm plan.
+/// Result of executing a single task (returned from the parallel future).
+struct TaskResult {
+    task_id: String,
+    role_name: String,
+    success: bool,
+    subtask_outcomes: Vec<SubtaskOutcome>,
+}
+
+/// Outcome of a single subtask execution.
+struct SubtaskOutcome {
+    result: Option<AgentResult>,
+}
+
+/// Execute an approved swarm plan with parallel task execution.
 ///
-/// This is the main orchestration loop that:
-/// 1. Sets up Acteon quotas and safety rules
-/// 2. Creates `TesseraiDB` twins for tracking
-/// 3. Spawns agents for each subtask in dependency order
-/// 4. Monitors execution and handles completion/failure
-/// 5. Runs the refiner after each subtask
-/// 6. Cleans up resources
+/// Independent tasks (no dependency conflicts) run concurrently,
+/// bounded by `max_agents`. After each task completes, the refiner
+/// can add, skip, or reorder remaining tasks.
 pub async fn execute_swarm(
     plan: &mut SwarmPlan,
     config: &SwarmConfig,
@@ -43,12 +57,9 @@ pub async fn execute_swarm(
 
     tracing::info!(run_id = %run_id, objective = %plan.objective, "starting swarm run");
 
-    // Create TesseraiDB twin for the run.
     if let Err(e) = crate::memory::twins::create_run_twin(&tesserai, &run_id, plan).await {
         tracing::warn!("failed to create TesseraiDB run twin: {e}");
     }
-
-    // TODO (Phase 3): Create Acteon quota and deploy safety rules.
 
     let mut run = SwarmRun {
         id: run_id.clone(),
@@ -64,12 +75,12 @@ pub async fn execute_swarm(
         metrics: RunMetrics::default(),
     };
 
-    let ctx = SwarmContext {
-        config,
-        roles,
-        hooks_binary,
-        run_id: &run_id,
-        tesserai: &tesserai,
+    let shared = SharedContext {
+        config: config.clone(),
+        roles: roles.clone(),
+        hooks_binary: hooks_binary.to_path_buf(),
+        run_id: run_id.clone(),
+        tesserai: tesserai.clone(),
     };
 
     let mut monitor = SwarmMonitor::new();
@@ -79,173 +90,181 @@ pub async fn execute_swarm(
             i64::try_from(config.defaults.max_duration_minutes).unwrap_or(60),
         );
 
-    run_orchestration_loop(
-        plan,
-        &ctx,
-        &mut run,
-        &mut monitor,
-        &mut completed_tasks,
-        run_deadline,
-    )
-    .await?;
+    run_orchestration_loop(plan, &shared, &mut run, &mut monitor, &mut completed_tasks, run_deadline)
+        .await?;
 
     finalize_run(&mut run, &tesserai, &run_id).await;
-
-    // Build the digital twin graph: tasks, relationships, agent→memory links.
     crate::memory::graph::build_swarm_graph(&tesserai, &run_id, plan, &run).await;
 
     Ok(run)
 }
 
-/// Main orchestration loop: schedule and execute tasks until completion or timeout.
+// ── Parallel orchestration loop ──────────────────────────────────────────────
+
+/// Main loop: find ready tasks, run them concurrently, process completions.
 async fn run_orchestration_loop(
     plan: &mut SwarmPlan,
-    ctx: &SwarmContext<'_>,
+    shared: &SharedContext,
     run: &mut SwarmRun,
     monitor: &mut SwarmMonitor,
     completed_tasks: &mut HashSet<String>,
     run_deadline: chrono::DateTime<Utc>,
 ) -> Result<(), SwarmError> {
+    let mut in_flight: FuturesUnordered<
+        Pin<Box<dyn Future<Output = TaskResult> + Send>>,
+    > = FuturesUnordered::new();
+    let mut running_count: usize = 0;
+    let mut role_counts: HashMap<String, usize> = HashMap::new();
+
     loop {
-        // Check timeout.
         if Utc::now() > run_deadline {
-            tracing::warn!(run_id = %ctx.run_id, "swarm run timed out");
+            tracing::warn!(run_id = %shared.run_id, "swarm run timed out");
             run.status = SwarmRunStatus::TimedOut;
             break;
         }
 
-        // Find tasks whose dependencies are all complete.
-        let ready_tasks: Vec<String> = plan
-            .tasks
-            .iter()
-            .filter(|t| {
-                !completed_tasks.contains(&t.id)
-                    && !matches!(
-                        run.task_status.get(&t.id),
-                        Some(
-                            TaskRunStatus::Running
-                                | TaskRunStatus::Completed
-                                | TaskRunStatus::Failed(_)
-                                | TaskRunStatus::Skipped
-                        )
-                    )
-                    && t.depends_on.iter().all(|dep| completed_tasks.contains(dep))
-            })
-            .map(|t| t.id.clone())
-            .collect();
+        // Find ready tasks: dependencies met, not already running/done, within concurrency limits.
+        let max_agents = plan.scope.max_agents;
+        let available_slots = max_agents.saturating_sub(running_count);
 
-        if ready_tasks.is_empty()
-            && !run
-                .task_status
-                .values()
-                .any(|s| matches!(s, TaskRunStatus::Running))
-        {
-            // Nothing running and nothing ready — we're done.
+        let ready_tasks = find_ready_tasks(plan, completed_tasks, run, &role_counts, shared, available_slots);
+
+        // Spawn futures for each ready task.
+        for (task, role) in &ready_tasks {
+            run.task_status
+                .insert(task.id.clone(), TaskRunStatus::Running);
+            running_count += 1;
+            *role_counts.entry(role.name.clone()).or_insert(0) += 1;
+
+            run.metrics.agents_spawned += task.subtasks.len() as u64;
+
+            tracing::info!(
+                task_id = %task.id,
+                role = %role.name,
+                running = running_count,
+                "starting task (parallel)"
+            );
+
+            let ctx = shared.clone();
+            let task_owned = task.clone();
+            let role_owned = role.clone();
+            in_flight.push(Box::pin(async move {
+                execute_task_isolated(ctx, task_owned, role_owned).await
+            }));
+        }
+
+        // If nothing in flight and nothing spawned, we're done.
+        if in_flight.is_empty() {
             break;
         }
 
-        // Execute ready tasks (sequentially for now; Phase 6 will add concurrency).
-        for task_id in ready_tasks {
-            execute_single_task(plan, ctx, run, monitor, completed_tasks, &task_id).await?;
-        }
+        // Wait for the next task to complete.
+        if let Some(result) = in_flight.next().await {
+            running_count -= 1;
+            if let Some(count) = role_counts.get_mut(&result.role_name) {
+                *count = count.saturating_sub(1);
+            }
 
-        // Only exit if no tasks are running AND no tasks are ready to start.
-        let any_running = run
-            .task_status
-            .values()
-            .any(|s| matches!(s, TaskRunStatus::Running));
-        let any_newly_ready = plan.tasks.iter().any(|t| {
+            handle_task_completion(plan, shared, run, monitor, completed_tasks, result).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Find tasks whose dependencies are met, sorted by priority, respecting concurrency limits.
+fn find_ready_tasks(
+    plan: &SwarmPlan,
+    completed_tasks: &HashSet<String>,
+    run: &SwarmRun,
+    role_counts: &HashMap<String, usize>,
+    shared: &SharedContext,
+    available_slots: usize,
+) -> Vec<(SwarmTask, AgentRole)> {
+    if available_slots == 0 {
+        return Vec::new();
+    }
+
+    let mut candidates: Vec<&SwarmTask> = plan
+        .tasks
+        .iter()
+        .filter(|t| {
             !completed_tasks.contains(&t.id)
-                && matches!(
+                && !matches!(
                     run.task_status.get(&t.id),
-                    Some(TaskRunStatus::Pending) | None
+                    Some(
+                        TaskRunStatus::Running
+                            | TaskRunStatus::Completed
+                            | TaskRunStatus::Failed(_)
+                            | TaskRunStatus::Skipped
+                    )
                 )
                 && t.depends_on
                     .iter()
                     .all(|dep| completed_tasks.contains(dep))
-        });
-        if !any_running && !any_newly_ready {
+        })
+        .collect();
+
+    // Sort by priority (lower number = higher priority).
+    candidates.sort_by_key(|t| t.priority);
+
+    let mut result = Vec::new();
+    for task in candidates {
+        if result.len() >= available_slots {
             break;
         }
+
+        let Some(role) = shared.roles.get(&task.assigned_role) else {
+            continue;
+        };
+
+        // Enforce per-role concurrency limit.
+        let current_role_count = role_counts.get(&task.assigned_role).copied().unwrap_or(0);
+        if current_role_count >= role.max_concurrent_instances {
+            continue;
+        }
+
+        result.push((task.clone(), role.clone()));
     }
 
-    Ok(())
+    result
 }
 
-/// Execute a single task and all its subtasks, updating run state accordingly.
-async fn execute_single_task(
-    plan: &mut SwarmPlan,
-    ctx: &SwarmContext<'_>,
-    run: &mut SwarmRun,
-    monitor: &mut SwarmMonitor,
-    completed_tasks: &mut HashSet<String>,
-    task_id: &str,
-) -> Result<(), SwarmError> {
-    // Clone task data to avoid borrow conflicts with plan mutation in refiner.
-    let task = plan.tasks.iter().find(|t| t.id == task_id).unwrap().clone();
+// ── Isolated task execution (runs in parallel future) ────────────────────────
 
-    let role = ctx
-        .roles
-        .get(&task.assigned_role)
-        .ok_or_else(|| SwarmError::UnknownRole(task.assigned_role.clone()))?;
+/// Execute a task and all its subtasks. Pure async — no mutable shared state.
+/// Returns a `TaskResult` for the driver to process.
+async fn execute_task_isolated(
+    ctx: SharedContext,
+    task: SwarmTask,
+    role: AgentRole,
+) -> TaskResult {
+    let mut outcomes = Vec::new();
 
-    run.task_status
-        .insert(task_id.to_string(), TaskRunStatus::Running);
-    tracing::info!(task_id = %task_id, role = %role.name, "starting task");
-
-    let task_failed =
-        execute_subtasks(plan, ctx, run, completed_tasks, task_id, &task, role).await?;
-
-    if task_failed {
-        run.task_status.insert(
-            task_id.to_string(),
-            TaskRunStatus::Failed("subtask failed".into()),
-        );
-    } else {
-        run.task_status
-            .insert(task_id.to_string(), TaskRunStatus::Completed);
-        completed_tasks.insert(task_id.to_string());
-    }
-
-    monitor.remove_agent(task_id);
-
-    Ok(())
-}
-
-/// Execute all subtasks for a task. Returns `true` if any subtask failed.
-async fn execute_subtasks(
-    plan: &mut SwarmPlan,
-    ctx: &SwarmContext<'_>,
-    run: &mut SwarmRun,
-    completed_tasks: &HashSet<String>,
-    task_id: &str,
-    task: &crate::types::plan::SwarmTask,
-    role: &crate::types::agent::AgentRole,
-) -> Result<bool, SwarmError> {
     for subtask in &task.subtasks {
-        let session = build_agent_session(ctx, task_id, subtask, role);
+        let session = build_agent_session_owned(&ctx, &task.id, subtask, &role);
 
-        // Create TesseraiDB twin for the session.
+        // Create session twin.
         if let Err(e) =
-            crate::memory::twins::create_session_twin(ctx.tesserai, ctx.run_id, &session).await
+            crate::memory::twins::create_session_twin(&ctx.tesserai, &ctx.run_id, &session).await
         {
             tracing::warn!("failed to create session twin: {e}");
         }
 
-        run.metrics.agents_spawned += 1;
-
-        // Retrieve prior findings from TesseraiDB and inject as context.
+        // Retrieve prior findings.
         let prior_findings =
-            crate::memory::semantic::retrieve_prior_context(ctx.tesserai, 5, 2000).await;
+            crate::memory::semantic::retrieve_prior_context(&ctx.tesserai, 5, 2000).await;
         let prior_context = crate::memory::semantic::format_prior_context(&prior_findings);
 
-        let base_prompt = crate::roles::prompt_builder::build_system_prompt(role, task, subtask);
+        let base_prompt =
+            crate::roles::prompt_builder::build_system_prompt(&role, &task, subtask);
         let system_prompt = if prior_context.is_empty() {
             base_prompt
         } else {
             tracing::info!(
                 count = prior_findings.len(),
-                "injecting prior findings into agent prompt"
+                task = %task.id,
+                "injecting prior findings"
             );
             format!("{base_prompt}{prior_context}")
         };
@@ -255,72 +274,213 @@ async fn execute_subtasks(
             .as_ref()
             .unwrap_or(&role.allowed_tools);
 
-        // Spawn the agent.
-        let child: tokio::process::Child = spawn_agent(
-            ctx.config,
+        // Spawn and wait.
+        let child = match spawn_agent(
+            &ctx.config,
             &session,
             subtask,
             &system_prompt,
             allowed_tools,
-            ctx.hooks_binary,
+            &ctx.hooks_binary,
         )
-        .await?;
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(subtask = %subtask.id, error = %e, "agent spawn failed");
+                outcomes.push(SubtaskOutcome { result: None });
+                return TaskResult {
+                    task_id: task.id.clone(),
+                    role_name: role.name.clone(),
+                    success: false,
+                    subtask_outcomes: outcomes,
+                };
+            }
+        };
 
-        // Wait for completion. Use the larger of plan timeout vs config default.
         let timeout = subtask
             .timeout_seconds
             .max(ctx.config.defaults.subtask_timeout_seconds);
+
         match wait_for_agent(child, &session.id, timeout).await {
             Ok(result) => {
-                update_agent_metrics(&result, run);
-                store_agent_memories(ctx, run, &session, task, subtask, role, &result).await;
+                // Store memories immediately (from the future, using owned ctx).
+                store_memories_isolated(&ctx, &session, &task, subtask, &role, &result).await;
 
-                // Run refiner.
-                let completed_refs: Vec<&str> =
-                    completed_tasks.iter().map(String::as_str).collect();
-                match refine_plan(
-                    ctx.config,
-                    plan,
-                    task_id,
-                    &result.result_text,
-                    &completed_refs,
-                )
-                .await
-                {
-                    Ok(action) => {
-                        apply_refinement(plan, &action);
-                        if !matches!(
-                            action,
-                            crate::orchestrator::refiner::RefinementAction::Continue
-                        ) {
-                            run.metrics.refinements += 1;
-                        }
-                    }
-                    Err(e) => tracing::warn!("refiner failed: {e}"),
+                let failed = result.exit_code != 0;
+                outcomes.push(SubtaskOutcome {
+                    result: Some(result),
+                });
+
+                if failed {
+                    return TaskResult {
+                        task_id: task.id.clone(),
+                        role_name: role.name.clone(),
+                        success: false,
+                        subtask_outcomes: outcomes,
+                    };
                 }
             }
             Err(SwarmError::AgentTimeout { .. }) => {
                 tracing::warn!(subtask = %subtask.id, "agent timed out");
-                run.metrics.agents_failed += 1;
-                return Ok(true);
+                outcomes.push(SubtaskOutcome { result: None });
+                return TaskResult {
+                    task_id: task.id.clone(),
+                    role_name: role.name.clone(),
+                    success: false,
+                    subtask_outcomes: outcomes,
+                };
             }
             Err(e) => {
                 tracing::error!(subtask = %subtask.id, error = %e, "agent failed");
-                run.metrics.agents_failed += 1;
-                return Ok(true);
+                outcomes.push(SubtaskOutcome { result: None });
+                return TaskResult {
+                    task_id: task.id.clone(),
+                    role_name: role.name.clone(),
+                    success: false,
+                    subtask_outcomes: outcomes,
+                };
             }
         }
     }
 
-    Ok(false)
+    TaskResult {
+        task_id: task.id.clone(),
+        role_name: role.name.clone(),
+        success: true,
+        subtask_outcomes: outcomes,
+    }
 }
 
-/// Build an `AgentSession` for a subtask.
-fn build_agent_session(
-    ctx: &SwarmContext<'_>,
+/// Store episodic + semantic memories from inside the isolated future.
+async fn store_memories_isolated(
+    ctx: &SharedContext,
+    session: &AgentSession,
+    task: &SwarmTask,
+    subtask: &SwarmSubtask,
+    role: &AgentRole,
+    result: &AgentResult,
+) {
+    let summary = extract_result_text(&result.result_text);
+
+    let _ = crate::memory::semantic::record_action(
+        &ctx.tesserai,
+        &ctx.run_id,
+        &session.id,
+        &role.name,
+        &summary,
+        vec![task.name.clone(), subtask.name.clone(), role.name.clone()],
+        None,
+    )
+    .await;
+
+    if summary.len() > 100 {
+        let _ = crate::memory::semantic::store_finding(
+            &ctx.tesserai,
+            &ctx.run_id,
+            &session.id,
+            &summary,
+            vec![task.name.clone(), role.name.clone()],
+            0.8,
+        )
+        .await;
+    }
+}
+
+// ── Completion handling (runs in the driver, has mutable access) ──────────────
+
+/// Process a completed task: update metrics, run refiner, mark completed.
+async fn handle_task_completion(
+    plan: &mut SwarmPlan,
+    shared: &SharedContext,
+    run: &mut SwarmRun,
+    monitor: &mut SwarmMonitor,
+    completed_tasks: &mut HashSet<String>,
+    result: TaskResult,
+) -> Result<(), SwarmError> {
+    // Update metrics from subtask outcomes.
+    for outcome in &result.subtask_outcomes {
+        if let Some(ref agent_result) = outcome.result {
+            if agent_result.exit_code == 0 {
+                run.metrics.agents_completed += 1;
+            } else {
+                run.metrics.agents_failed += 1;
+            }
+            run.metrics.total_actions += 1;
+            run.metrics.memories_stored += 1; // episodic
+            if extract_result_text(&agent_result.result_text).len() > 100 {
+                run.metrics.memories_stored += 1; // semantic finding
+            }
+        } else {
+            run.metrics.agents_failed += 1;
+            run.metrics.total_actions += 1;
+        }
+    }
+
+    // Update task status.
+    if result.success {
+        run.task_status
+            .insert(result.task_id.clone(), TaskRunStatus::Completed);
+        completed_tasks.insert(result.task_id.clone());
+        tracing::info!(task_id = %result.task_id, "task completed");
+    } else {
+        run.task_status.insert(
+            result.task_id.clone(),
+            TaskRunStatus::Failed("subtask failed".into()),
+        );
+        tracing::warn!(task_id = %result.task_id, "task failed");
+    }
+
+    monitor.remove_agent(&result.task_id);
+
+    // Run refiner for the last subtask with output.
+    if let Some(output) = shared
+        .config
+        .defaults
+        .enable_refiner
+        .then(|| {
+            result
+                .subtask_outcomes
+                .iter()
+                .rev()
+                .find_map(|o| o.result.as_ref())
+        })
+        .flatten()
+        {
+            let completed_refs: Vec<&str> = completed_tasks.iter().map(String::as_str).collect();
+            match refine_plan(
+                &shared.config,
+                &shared.roles,
+                plan,
+                &result.task_id,
+                &output.result_text,
+                &completed_refs,
+            )
+            .await
+            {
+                Ok(action) => {
+                    apply_refinement(plan, &action);
+                    if !matches!(action, crate::orchestrator::refiner::RefinementAction::Continue)
+                    {
+                        run.metrics.refinements += 1;
+                        tracing::info!(action = ?action, "refiner adjusted plan");
+                    }
+                }
+                Err(e) => tracing::warn!("refiner failed: {e}"),
+            }
+        }
+
+    Ok(())
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Build an `AgentSession` from owned context.
+fn build_agent_session_owned(
+    ctx: &SharedContext,
     task_id: &str,
-    subtask: &crate::types::plan::SwarmSubtask,
-    role: &crate::types::agent::AgentRole,
+    subtask: &SwarmSubtask,
+    role: &AgentRole,
 ) -> AgentSession {
     AgentSession {
         id: Uuid::new_v4().to_string(),
@@ -359,7 +519,6 @@ async fn finalize_run(run: &mut SwarmRun, tesserai: &TesseraiClient, run_id: &st
 
     run.finished_at = Some(Utc::now());
 
-    // Update TesseraiDB run twin.
     let status_str = match run.status {
         SwarmRunStatus::Completed => "completed",
         SwarmRunStatus::Failed => "failed",
@@ -375,80 +534,18 @@ async fn finalize_run(run: &mut SwarmRun, tesserai: &TesseraiClient, run_id: &st
         run_id = %run_id,
         status = ?run.status,
         agents_spawned = run.metrics.agents_spawned,
+        agents_completed = run.metrics.agents_completed,
         "swarm run finished"
     );
 }
 
-/// Store episodic and semantic memories in `TesseraiDB` after an agent completes.
-async fn store_agent_memories(
-    ctx: &SwarmContext<'_>,
-    run: &mut SwarmRun,
-    session: &AgentSession,
-    task: &crate::types::plan::SwarmTask,
-    subtask: &crate::types::plan::SwarmSubtask,
-    role: &crate::types::agent::AgentRole,
-    result: &AgentResult,
-) {
-    let result_summary = extract_result_text(&result.result_text);
-
-    // Store episodic memory of what the agent did.
-    if let Err(e) = crate::memory::semantic::record_action(
-        ctx.tesserai,
-        ctx.run_id,
-        &session.id,
-        &role.name,
-        &result_summary,
-        vec![
-            task.name.clone(),
-            subtask.name.clone(),
-            role.name.clone(),
-        ],
-        None,
-    )
-    .await
-    {
-        tracing::debug!("failed to store episodic memory: {e}");
-    } else {
-        run.metrics.memories_stored += 1;
-    }
-
-    // Store as a semantic finding if it produced meaningful content.
-    if result_summary.len() > 100 {
-        if let Err(e) = crate::memory::semantic::store_finding(
-            ctx.tesserai,
-            ctx.run_id,
-            &session.id,
-            &result_summary,
-            vec![task.name.clone(), role.name.clone()],
-            0.8,
-        )
-        .await
-        {
-            tracing::debug!("failed to store finding: {e}");
-        } else {
-            run.metrics.memories_stored += 1;
-        }
-    }
-}
-
-fn update_agent_metrics(result: &AgentResult, run: &mut SwarmRun) {
-    if result.exit_code == 0 {
-        run.metrics.agents_completed += 1;
-    } else {
-        run.metrics.agents_failed += 1;
-    }
-    run.metrics.total_actions += 1;
-}
-
 /// Extract the readable result text from claude's JSON output.
 fn extract_result_text(raw: &str) -> String {
-    // claude -p --output-format json wraps result in {"result": "...", ...}
     if let Some(result) = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|json| json.get("result").and_then(|v| v.as_str()).map(String::from))
     {
         return result;
     }
-    // Fallback: use raw text, truncated.
     raw.chars().take(2000).collect()
 }
