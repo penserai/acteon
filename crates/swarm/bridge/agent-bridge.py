@@ -30,7 +30,12 @@ async def run_agent(args) -> None:
         options.allowed_tools = [t.strip() for t in args.allowed_tools.split(",") if t.strip()]
 
     if args.system_prompt:
-        options.system_prompt = args.system_prompt
+        # Append tool-use instructions so agents don't just answer as text.
+        options.system_prompt = args.system_prompt + (
+            "\n\nIMPORTANT: You MUST use tools to complete this task. "
+            "Use WebSearch/WebFetch for research. Use Write to create output files. "
+            "Use Bash to run commands. Do NOT just respond with text — take action."
+        )
 
     if args.model:
         options.model = args.model
@@ -91,7 +96,7 @@ async def main() -> None:
     parser.add_argument("--allowed-tools", default="", help="Comma-separated tool names")
     parser.add_argument("--cwd", default=".", help="Working directory")
     parser.add_argument("--model", default="sonnet", help="Model to use")
-    parser.add_argument("--max-turns", type=int, default=30, help="Max conversation turns")
+    parser.add_argument("--max-turns", type=int, default=100, help="Max conversation turns")
     args = parser.parse_args()
 
     try:

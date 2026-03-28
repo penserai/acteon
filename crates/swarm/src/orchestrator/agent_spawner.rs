@@ -64,8 +64,14 @@ pub async fn spawn_agent(
         setup_workspace_hooks(workspace, hooks_binary, config, &session.id).await?;
     }
 
-    // Try Agent SDK bridges in order: Python > Node.js > claude -p fallback.
-    let bridge = find_agent_bridge();
+    // Agent execution: claude -p is the default (supports multi-turn tool loops).
+    // The Agent SDK bridge can be opted in via SWARM_USE_SDK=1 env var, but
+    // it currently only supports single-turn tool calls (SDK limitation).
+    let bridge = if std::env::var("SWARM_USE_SDK").is_ok() {
+        find_agent_bridge()
+    } else {
+        None
+    };
 
     let tools_arg = allowed_tools.join(",");
     let swarm_env = [
@@ -84,12 +90,15 @@ pub async fn spawn_agent(
             cmd.arg(&path)
                 .arg("--prompt").arg(&subtask.prompt)
                 .arg("--system-prompt").arg(system_prompt)
-                .arg("--allowed-tools").arg(&tools_arg)
                 .arg("--cwd").arg(workspace)
-                .arg("--model").arg("sonnet")
-                .current_dir(workspace);
+                .arg("--model").arg("sonnet");
+            // Don't pass --allowed-tools to the SDK bridge: let the agent
+            // use all tools freely. Role restrictions are advisory; Acteon
+            // hooks enforce safety. Restricting tools causes ToolSearch
+            // overhead where the agent wastes turns discovering deferred tools.
             for (k, v) in &swarm_env { cmd.env(k, v); }
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped())
+                .current_dir(workspace)
                 .spawn()
                 .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Python bridge: {e}")))?
         }
