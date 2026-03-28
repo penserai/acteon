@@ -55,7 +55,13 @@ pub async fn refine_plan(
     let delegation_rules: Vec<String> = roles
         .all()
         .filter(|r| !r.can_delegate_to.is_empty())
-        .map(|r| format!("- {} can delegate to: {}", r.name, r.can_delegate_to.join(", ")))
+        .map(|r| {
+            format!(
+                "- {} can delegate to: {}",
+                r.name,
+                r.can_delegate_to.join(", ")
+            )
+        })
         .collect();
 
     let delegation_section = if delegation_rules.is_empty() {

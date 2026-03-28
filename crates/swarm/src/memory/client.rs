@@ -116,10 +116,7 @@ impl TesseraiClient {
         if let Some(s) = search {
             let _ = write!(path, "&search={s}");
         }
-        let resp = self
-            .request(reqwest::Method::GET, &path)
-            .send()
-            .await?;
+        let resp = self.request(reqwest::Method::GET, &path).send().await?;
 
         // The list endpoint returns {"data": [...], "total": N}
         let body: serde_json::Value = resp

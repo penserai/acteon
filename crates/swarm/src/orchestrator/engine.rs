@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use chrono::Utc;
-use futures::stream::{FuturesUnordered, StreamExt};
 use futures::Future;
+use futures::stream::{FuturesUnordered, StreamExt};
 use uuid::Uuid;
 
 use crate::config::SwarmConfig;
 use crate::error::SwarmError;
 use crate::memory::TesseraiClient;
-use crate::orchestrator::agent_spawner::{spawn_agent, wait_for_agent, AgentResult};
+use crate::orchestrator::agent_spawner::{AgentResult, spawn_agent, wait_for_agent};
 use crate::orchestrator::monitor::SwarmMonitor;
 use crate::orchestrator::refiner::{apply_refinement, refine_plan};
 use crate::roles::RoleRegistry;
@@ -90,8 +90,15 @@ pub async fn execute_swarm(
             i64::try_from(config.defaults.max_duration_minutes).unwrap_or(60),
         );
 
-    run_orchestration_loop(plan, &shared, &mut run, &mut monitor, &mut completed_tasks, run_deadline)
-        .await?;
+    run_orchestration_loop(
+        plan,
+        &shared,
+        &mut run,
+        &mut monitor,
+        &mut completed_tasks,
+        run_deadline,
+    )
+    .await?;
 
     finalize_run(&mut run, &tesserai, &run_id).await;
     crate::memory::graph::build_swarm_graph(&tesserai, &run_id, plan, &run).await;
@@ -110,9 +117,8 @@ async fn run_orchestration_loop(
     completed_tasks: &mut HashSet<String>,
     run_deadline: chrono::DateTime<Utc>,
 ) -> Result<(), SwarmError> {
-    let mut in_flight: FuturesUnordered<
-        Pin<Box<dyn Future<Output = TaskResult> + Send>>,
-    > = FuturesUnordered::new();
+    let mut in_flight: FuturesUnordered<Pin<Box<dyn Future<Output = TaskResult> + Send>>> =
+        FuturesUnordered::new();
     let mut running_count: usize = 0;
     let mut role_counts: HashMap<String, usize> = HashMap::new();
 
@@ -127,7 +133,14 @@ async fn run_orchestration_loop(
         let max_agents = plan.scope.max_agents;
         let available_slots = max_agents.saturating_sub(running_count);
 
-        let ready_tasks = find_ready_tasks(plan, completed_tasks, run, &role_counts, shared, available_slots);
+        let ready_tasks = find_ready_tasks(
+            plan,
+            completed_tasks,
+            run,
+            &role_counts,
+            shared,
+            available_slots,
+        );
 
         // Spawn futures for each ready task.
         for (task, role) in &ready_tasks {
@@ -199,9 +212,7 @@ fn find_ready_tasks(
                             | TaskRunStatus::Skipped
                     )
                 )
-                && t.depends_on
-                    .iter()
-                    .all(|dep| completed_tasks.contains(dep))
+                && t.depends_on.iter().all(|dep| completed_tasks.contains(dep))
         })
         .collect();
 
@@ -234,11 +245,7 @@ fn find_ready_tasks(
 
 /// Execute a task and all its subtasks. Pure async — no mutable shared state.
 /// Returns a `TaskResult` for the driver to process.
-async fn execute_task_isolated(
-    ctx: SharedContext,
-    task: SwarmTask,
-    role: AgentRole,
-) -> TaskResult {
+async fn execute_task_isolated(ctx: SharedContext, task: SwarmTask, role: AgentRole) -> TaskResult {
     let mut outcomes = Vec::new();
 
     for subtask in &task.subtasks {
@@ -256,8 +263,7 @@ async fn execute_task_isolated(
             crate::memory::semantic::retrieve_prior_context(&ctx.tesserai, 5, 2000).await;
         let prior_context = crate::memory::semantic::format_prior_context(&prior_findings);
 
-        let base_prompt =
-            crate::roles::prompt_builder::build_system_prompt(&role, &task, subtask);
+        let base_prompt = crate::roles::prompt_builder::build_system_prompt(&role, &task, subtask);
         let system_prompt = if prior_context.is_empty() {
             base_prompt
         } else {
@@ -446,35 +452,36 @@ async fn handle_task_completion(
                 .find_map(|o| o.result.as_ref())
         })
         .flatten()
+    {
+        let completed_refs: Vec<&str> = completed_tasks.iter().map(String::as_str).collect();
+        match refine_plan(
+            &shared.config,
+            &shared.roles,
+            plan,
+            &result.task_id,
+            &output.result_text,
+            &completed_refs,
+        )
+        .await
         {
-            let completed_refs: Vec<&str> = completed_tasks.iter().map(String::as_str).collect();
-            match refine_plan(
-                &shared.config,
-                &shared.roles,
-                plan,
-                &result.task_id,
-                &output.result_text,
-                &completed_refs,
-            )
-            .await
-            {
-                Ok(action) => {
-                    let skipped = apply_refinement(plan, &action);
-                    // Mark skipped tasks as completed so dependents can proceed.
-                    for id in &skipped {
-                        run.task_status
-                            .insert(id.clone(), TaskRunStatus::Skipped);
-                        completed_tasks.insert(id.clone());
-                    }
-                    if !matches!(action, crate::orchestrator::refiner::RefinementAction::Continue)
-                    {
-                        run.metrics.refinements += 1;
-                        tracing::info!(action = ?action, "refiner adjusted plan");
-                    }
+            Ok(action) => {
+                let skipped = apply_refinement(plan, &action);
+                // Mark skipped tasks as completed so dependents can proceed.
+                for id in &skipped {
+                    run.task_status.insert(id.clone(), TaskRunStatus::Skipped);
+                    completed_tasks.insert(id.clone());
                 }
-                Err(e) => tracing::warn!("refiner failed: {e}"),
+                if !matches!(
+                    action,
+                    crate::orchestrator::refiner::RefinementAction::Continue
+                ) {
+                    run.metrics.refinements += 1;
+                    tracing::info!(action = ?action, "refiner adjusted plan");
+                }
             }
+            Err(e) => tracing::warn!("refiner failed: {e}"),
         }
+    }
 
     Ok(())
 }
@@ -555,7 +562,11 @@ fn extract_result_text(raw: &str) -> String {
     // Try single JSON blob first (claude -p format).
     if let Some(result) = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
-        .and_then(|json| json.get("result").and_then(|v| v.as_str()).map(String::from))
+        .and_then(|json| {
+            json.get("result")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
     {
         return result;
     }

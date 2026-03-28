@@ -88,33 +88,49 @@ pub async fn spawn_agent(
             tracing::info!("using Python Agent SDK bridge");
             let mut cmd = Command::new("python3.10");
             cmd.arg(&path)
-                .arg("--prompt").arg(&subtask.prompt)
-                .arg("--system-prompt").arg(system_prompt)
-                .arg("--cwd").arg(workspace)
-                .arg("--model").arg("sonnet");
+                .arg("--prompt")
+                .arg(&subtask.prompt)
+                .arg("--system-prompt")
+                .arg(system_prompt)
+                .arg("--cwd")
+                .arg(workspace)
+                .arg("--model")
+                .arg("sonnet");
             // Don't pass --allowed-tools to the SDK bridge: let the agent
             // use all tools freely. Role restrictions are advisory; Acteon
             // hooks enforce safety. Restricting tools causes ToolSearch
             // overhead where the agent wastes turns discovering deferred tools.
-            for (k, v) in &swarm_env { cmd.env(k, v); }
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped())
+            for (k, v) in &swarm_env {
+                cmd.env(k, v);
+            }
+            cmd.stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .current_dir(workspace)
                 .spawn()
-                .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Python bridge: {e}")))?
+                .map_err(|e| {
+                    SwarmError::AgentSpawn(format!("failed to spawn Python bridge: {e}"))
+                })?
         }
         Some(BridgeKind::Node(path)) => {
             tracing::info!("using Node.js Agent SDK bridge");
             let mut cmd = Command::new("node");
             cmd.arg(&path)
-                .arg("--prompt").arg(&subtask.prompt)
-                .arg("--system-prompt").arg(system_prompt)
-                .arg("--allowed-tools").arg(&tools_arg)
-                .arg("--cwd").arg(workspace)
+                .arg("--prompt")
+                .arg(&subtask.prompt)
+                .arg("--system-prompt")
+                .arg(system_prompt)
+                .arg("--allowed-tools")
+                .arg(&tools_arg)
+                .arg("--cwd")
+                .arg(workspace)
                 .current_dir(workspace);
-            for (k, v) in &swarm_env { cmd.env(k, v); }
+            for (k, v) in &swarm_env {
+                cmd.env(k, v);
+            }
             cmd.env_optional("ACTEON_AGENT_KEY", config.acteon.api_key.as_deref())
                 .env_optional("TESSERAI_URL", Some(config.tesserai.endpoint.as_str()))
-                .stdout(Stdio::piped()).stderr(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Node bridge: {e}")))?
         }
@@ -122,13 +138,20 @@ pub async fn spawn_agent(
             tracing::warn!("Agent SDK bridge not found, falling back to `claude -p`");
             let full_prompt = format!("{system_prompt}\n\n## Task\n{}", subtask.prompt);
             let mut cmd = Command::new("claude");
-            cmd.arg("-p").arg(&full_prompt)
-                .arg("--model").arg("sonnet")
-                .arg("--allowedTools").arg(&tools_arg)
-                .arg("--output-format").arg("json")
+            cmd.arg("-p")
+                .arg(&full_prompt)
+                .arg("--model")
+                .arg("sonnet")
+                .arg("--allowedTools")
+                .arg(&tools_arg)
+                .arg("--output-format")
+                .arg("json")
                 .current_dir(workspace);
-            for (k, v) in &swarm_env { cmd.env(k, v); }
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped())
+            for (k, v) in &swarm_env {
+                cmd.env(k, v);
+            }
+            cmd.stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn claude: {e}")))?
         }
@@ -284,8 +307,14 @@ enum BridgeKind {
 /// Looks next to the binary, then in `bridge/` relative to CWD.
 fn find_agent_bridge() -> Option<BridgeKind> {
     let candidates = [
-        ("agent-bridge.py", BridgeKind::Python as fn(PathBuf) -> BridgeKind),
-        ("agent-bridge.mjs", BridgeKind::Node as fn(PathBuf) -> BridgeKind),
+        (
+            "agent-bridge.py",
+            BridgeKind::Python as fn(PathBuf) -> BridgeKind,
+        ),
+        (
+            "agent-bridge.mjs",
+            BridgeKind::Node as fn(PathBuf) -> BridgeKind,
+        ),
     ];
 
     for (filename, make) in &candidates {

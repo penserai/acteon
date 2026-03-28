@@ -67,10 +67,7 @@ pub async fn build_swarm_graph(
     }
 
     // 2. Link agents to their tasks and to the run.
-    let all_twins = client
-        .list_twins(None, None)
-        .await
-        .unwrap_or_default();
+    let all_twins = client.list_twins(None, None).await.unwrap_or_default();
 
     let agents: Vec<_> = all_twins
         .iter()
@@ -84,16 +81,12 @@ pub async fn build_swarm_graph(
             .await;
 
         // Get full agent twin to find task_id
-        let task_id = client
-            .get_twin(&agent.id)
-            .await
-            .ok()
-            .and_then(|full| {
-                full.properties
-                    .get("task_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-            });
+        let task_id = client.get_twin(&agent.id).await.ok().and_then(|full| {
+            full.properties
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
         if let Some(tid) = task_id {
             let task_twin_id = format!("swarm-task-{run_id}-{tid}");
             let _ = client
@@ -129,16 +122,12 @@ async fn link_memories_to_agents(
     rel_type: &str,
 ) {
     for mem in memories {
-        let agent_id = client
-            .get_twin(&mem.id)
-            .await
-            .ok()
-            .and_then(|full| {
-                full.properties
-                    .get("agent_id")
-                    .and_then(|v| v.as_str())
-                    .map(String::from)
-            });
+        let agent_id = client.get_twin(&mem.id).await.ok().and_then(|full| {
+            full.properties
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
         if let Some(aid) = agent_id {
             let agent_twin_id = format!("swarm-agent-{aid}");
             let _ = client
