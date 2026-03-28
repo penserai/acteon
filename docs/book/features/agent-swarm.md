@@ -1,10 +1,29 @@
 # Agent Swarm Orchestrator
 
-The `acteon-swarm` crate provides a generic multi-agent swarm system that decomposes complex objectives into tasks, assigns them to specialist agents, and executes them with full safety enforcement and knowledge sharing. It combines three systems:
+The `acteon-swarm` crate provides a generic multi-agent swarm system that decomposes complex objectives into tasks, assigns them to specialist agents, and executes them with **parallel task execution**, **AI-powered plan refinement**, and **cross-agent knowledge sharing**. It combines three systems:
 
 - **Acteon** — workflow orchestration, safety rules, quotas, and audit trail
-- **TesseraiDB** — knowledge graph and semantic memory for cross-agent coordination
-- **Claude Agent SDK** — programmatic agent execution using existing Claude Code authentication
+- **TesseraiDB** — knowledge graph, semantic memory, and digital twin modeling of the swarm
+- **Claude Code** — agent execution using existing Claude Code subscription (no API keys)
+
+### Key Capabilities
+
+| Feature | Description |
+|---------|-------------|
+| **Parallel execution** | Independent tasks run concurrently via `FuturesUnordered`, bounded by `max_agents` and per-role limits |
+| **AI refiner** | After each task, Haiku analyzes results and can skip, reprioritize, or add tasks mid-flight |
+| **Memory reuse** | Prior findings from TesseraiDB are injected into agent prompts — within and across runs |
+| **Digital twin graph** | Each run produces a full RDF knowledge graph with typed relationships |
+| **5 built-in roles** | Planner, Coder, Researcher, Reviewer, Executor — each with role-specific tools and prompts |
+
+### Example Runs
+
+| Use Case | Agents | Duration | Output |
+|----------|--------|----------|--------|
+| [News Harvesting](https://github.com/penserai/acteon/tree/main/examples/swarm-news-harvesting) | 9/9 | ~28 min | 16KB briefing on EU AI regulation |
+| [Stock Analysis](https://github.com/penserai/acteon/tree/main/examples/swarm-stock-analysis) | 12 | ~20 min | Per-company earnings analyses |
+| [Security Audit](https://github.com/penserai/acteon/tree/main/examples/swarm-pentest) | 28 | ~25 min | Vulnerability reports for Acteon itself |
+| [Framework Research](https://github.com/penserai/acteon/tree/main/examples/swarm-deep-research) | 16 | ~20 min | 7 open source agent framework analyses |
 
 ## How It Works
 
@@ -295,34 +314,56 @@ A `SwarmPlan` consists of tasks with dependencies, each containing subtasks assi
 }
 ```
 
-## Execution Flow
+## Execution Flow (Parallel)
 
 ```mermaid
 flowchart TB
     START([Plan Approved]) --> SETUP[Create quota + rules + twins]
     SETUP --> GRAPH[Build dependency graph]
     GRAPH --> READY{Ready tasks?}
-    READY -->|Yes| SPAWN[Spawn agents for subtasks]
-    SPAWN --> WAIT[Wait for completion]
-    WAIT --> REFINE[Run refiner]
-    REFINE --> UPDATE[Update task status]
+    READY -->|Yes| SPAWN["Spawn agents in parallel\n(up to max_agents)"]
+    SPAWN --> POLL["Poll FuturesUnordered\nfor next completion"]
+    POLL --> METRICS[Update metrics + store memories]
+    METRICS --> REFINE["Run AI refiner (Haiku)\nSKIP / REPRIORITIZE / ADD"]
+    REFINE --> UPDATE[Update task status + completed set]
     UPDATE --> TIMEOUT{Timeout?}
     TIMEOUT -->|No| READY
     TIMEOUT -->|Yes| CANCEL[Cancel running agents]
-    READY -->|No, all done| CLEANUP[Delete quota, update twins]
-    CANCEL --> CLEANUP
-    CLEANUP --> REPORT([Summary report])
+    READY -->|No, all done| GRAPH_BUILD[Build digital twin graph]
+    CANCEL --> GRAPH_BUILD
+    GRAPH_BUILD --> REPORT([Summary report])
 ```
 
-### Plan Refinement
+Independent tasks run concurrently via `FuturesUnordered`, bounded by:
+- `max_agents` (from `swarm.toml`, default 8)
+- Per-role `max_concurrent_instances` (e.g., coder: 3, researcher: 2)
+- Priority sorting (lower priority number = higher priority)
 
-After each subtask completes, the orchestrator runs a lightweight refiner that:
+### AI-Powered Plan Refinement
 
-1. Evaluates the subtask's output against the plan
-2. Checks if remaining tasks are still relevant
-3. Can skip tasks that are no longer needed
-4. Can add recovery tasks if something went wrong
-5. Can reprioritize remaining tasks based on discoveries
+After each task completes, the orchestrator invokes `claude --model haiku` with a 60-second timeout to analyze the output and decide:
+
+- **CONTINUE** — no changes needed
+- **SKIP: task-id1, task-id2** — remove tasks that are no longer necessary
+- **REPRIORITIZE: task-id=N** — reorder remaining tasks based on discoveries
+
+The refiner also sees `can_delegate_to` rules from the role registry, allowing it to suggest spawning new tasks for delegated roles (e.g., a coder's output triggers a researcher follow-up).
+
+Configurable via `enable_refiner = true/false` in `swarm.toml`.
+
+### Digital Twin Graph
+
+After the run completes, the orchestrator builds a full relationship graph in TesseraiDB:
+
+```
+SwarmRun ──hasTask──→ SwarmTask ──assignedTo──→ AgentSession
+    │                     │                         │
+    │                     └──dependsOn──→ SwarmTask  ├──produced──→ EpisodicMemory
+    │                                               └──discovered──→ SemanticMemory
+    └──hasAgent──→ AgentSession
+```
+
+Each entity is a typed twin with full properties. The graph is queryable via SPARQL and visualizable in TesseraiDB's UI.
 
 ## Tutorial: News Harvesting Swarm
 

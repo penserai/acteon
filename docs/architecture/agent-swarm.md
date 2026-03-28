@@ -6,11 +6,13 @@ The `acteon-swarm` crate implements a generic multi-agent orchestration system i
 
 ### Design Principles
 
-1. **No API keys** — agents run through the Claude Agent SDK, which uses the user's existing Claude Code authentication. The orchestrator never handles LLM credentials.
-2. **Safety by default** — every agent tool call is gated through Acteon before execution. Fail-closed: if Acteon is unreachable, the action is blocked.
-3. **Knowledge sharing, not message passing** — agents do not communicate directly. They share knowledge through TesseraiDB's semantic memory, queried by topic similarity rather than explicit addressing.
-4. **Plan-execute-refine** — plans are not fixed. A lightweight refiner runs after each subtask and can adjust the remaining plan based on results.
-5. **Orchestrator-driven** — the Rust binary drives all lifecycle decisions. Agents are stateless subprocesses that execute a single subtask and exit.
+1. **No API keys** — agents run through Claude Code using the user's existing subscription. The orchestrator never handles LLM credentials.
+2. **Parallel by default** — independent tasks execute concurrently via `FuturesUnordered`, bounded by `max_agents` and per-role concurrency limits.
+3. **Safety by default** — every agent tool call is gated through Acteon before execution. Fail-closed: if Acteon is unreachable, the action is blocked.
+4. **Knowledge sharing, not message passing** — agents share knowledge through TesseraiDB's semantic memory. Prior findings are automatically injected into agent prompts.
+5. **Plan-execute-refine** — after each task completes, an AI refiner (Haiku) can skip, reprioritize, or add tasks mid-flight.
+6. **Digital twin modeling** — each swarm run produces a full RDF knowledge graph with typed relationships in TesseraiDB.
+7. **Orchestrator-driven** — the Rust binary drives all lifecycle decisions. Agents are stateless subprocesses that execute a single subtask and exit.
 
 ## Component Architecture
 
