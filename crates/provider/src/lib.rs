@@ -10,7 +10,7 @@ pub mod resource_lookup;
 pub mod webhook;
 
 pub use context::DispatchContext;
-pub use error::ProviderError;
+pub use error::{ProviderError, truncate_error_body};
 pub use log::LogProvider;
 pub use provider::{DynProvider, Provider};
 pub use registry::ProviderRegistry;

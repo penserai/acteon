@@ -324,8 +324,15 @@ fn error_response(status: StatusCode, message: &str) -> axum::response::Response
 }
 
 /// Validate template content compiles as valid `MiniJinja`.
+///
+/// A fuel limit is applied to prevent denial-of-service via templates that
+/// trigger unbounded evaluation (e.g. `{% for i in range(1000000000) %}`).
 fn validate_template_syntax(content: &str) -> Result<(), String> {
-    let env = minijinja::Environment::new();
+    /// Fuel budget for syntax validation -- matches the production render path.
+    const VALIDATION_FUEL_LIMIT: u64 = 100_000;
+
+    let mut env = minijinja::Environment::new();
+    env.set_fuel(Some(VALIDATION_FUEL_LIMIT));
     env.render_str(content, ()).map(|_| ()).or_else(|e| {
         let msg = e.to_string();
         // Missing variables are fine -- only syntax errors matter.

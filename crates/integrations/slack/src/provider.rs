@@ -1,5 +1,5 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{DispatchContext, Provider, ProviderError};
+use acteon_provider::{DispatchContext, Provider, ProviderError, truncate_error_body};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, instrument, warn};
@@ -90,7 +90,10 @@ impl SlackProvider {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(SlackError::Api(format!("HTTP {status}: {body}")));
+            return Err(SlackError::Api(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
         }
 
         let api_response: SlackApiResponse = response.json().await?;
@@ -232,7 +235,10 @@ impl Provider for SlackProvider {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Connection(format!("HTTP {status}: {body}")));
+            return Err(ProviderError::Connection(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
         }
 
         let auth_response: SlackAuthTestResponse = response.json().await.map_err(|e| {

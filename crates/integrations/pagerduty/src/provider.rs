@@ -1,5 +1,5 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError};
+use acteon_provider::{Provider, ProviderError, truncate_error_body};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -82,7 +82,10 @@ impl PagerDutyProvider {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(PagerDutyError::Api(format!("HTTP {status}: {body}")));
+            return Err(PagerDutyError::Api(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
         }
 
         let api_response: PagerDutyApiResponse = response.json().await?;

@@ -13,6 +13,13 @@ use crate::error::ServerError;
 use super::AppState;
 use super::schemas::ErrorResponse;
 
+/// Maximum number of actions allowed in a single batch dispatch request.
+///
+/// Prevents resource exhaustion from a single oversized request that could
+/// consume unbounded memory and CPU. Callers that need to dispatch more
+/// actions should split them across multiple requests.
+const MAX_BATCH_SIZE: usize = 1_000;
+
 /// Query parameters for dispatch endpoints.
 #[derive(Debug, Deserialize, Default)]
 pub struct DispatchQuery {
@@ -133,6 +140,19 @@ pub async fn dispatch_batch(
     Query(query): Query<DispatchQuery>,
     Json(actions): Json<Vec<Action>>,
 ) -> Result<impl IntoResponse, ServerError> {
+    // Enforce maximum batch size to prevent resource exhaustion.
+    if actions.len() > MAX_BATCH_SIZE {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(vec![serde_json::json!(ErrorResponse {
+                error: format!(
+                    "batch size {} exceeds maximum of {MAX_BATCH_SIZE}",
+                    actions.len()
+                ),
+            })]),
+        ));
+    }
+
     // Check role permission.
     if !identity.role.has_permission(Permission::Dispatch) {
         return Ok((

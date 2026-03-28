@@ -1,4 +1,4 @@
-use acteon_provider::ProviderError;
+use acteon_provider::{ProviderError, truncate_error_body};
 use thiserror::Error;
 
 /// Errors specific to the webhook provider.
@@ -39,13 +39,14 @@ impl From<WebhookError> for ProviderError {
                 }
             }
             WebhookError::UnexpectedStatus { status, body } => {
+                let truncated = truncate_error_body(&body);
                 if status == 429 {
                     ProviderError::RateLimited
                 } else if (500..600).contains(&status) {
                     // Server errors are retryable
-                    ProviderError::Connection(format!("HTTP {status}: {body}"))
+                    ProviderError::Connection(format!("HTTP {status}: {truncated}"))
                 } else {
-                    ProviderError::ExecutionFailed(format!("HTTP {status}: {body}"))
+                    ProviderError::ExecutionFailed(format!("HTTP {status}: {truncated}"))
                 }
             }
             WebhookError::InvalidPayload(msg) => ProviderError::Serialization(msg),
