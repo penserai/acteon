@@ -64,60 +64,65 @@ pub async fn spawn_agent(
         setup_workspace_hooks(workspace, hooks_binary, config, &session.id).await?;
     }
 
-    // Try Agent SDK bridge first, fall back to claude -p.
-    let bridge_path = find_agent_bridge();
+    // Try Agent SDK bridges in order: Python > Node.js > claude -p fallback.
+    let bridge = find_agent_bridge();
 
     let tools_arg = allowed_tools.join(",");
+    let swarm_env = [
+        ("ACTEON_URL", config.acteon.endpoint.as_str()),
+        ("ACTEON_AGENT_ROLE", session.role.as_str()),
+        ("SWARM_RUN_ID", session.task_id.as_str()),
+        ("SWARM_TASK_ID", session.task_id.as_str()),
+        ("SWARM_SUBTASK_ID", session.subtask_id.as_str()),
+        ("SWARM_AGENT_ID", session.id.as_str()),
+    ];
 
-    let child = if let Some(bridge) = bridge_path {
-        // Use the Agent SDK bridge for proper streaming and session management.
-        Command::new("node")
-            .arg(&bridge)
-            .arg("--prompt")
-            .arg(&subtask.prompt)
-            .arg("--system-prompt")
-            .arg(system_prompt)
-            .arg("--allowed-tools")
-            .arg(&tools_arg)
-            .arg("--cwd")
-            .arg(workspace)
-            .current_dir(workspace)
-            .env("ACTEON_URL", &config.acteon.endpoint)
-            .env("ACTEON_AGENT_ROLE", &session.role)
-            .env("SWARM_RUN_ID", session.task_id.as_str())
-            .env("SWARM_TASK_ID", &session.task_id)
-            .env("SWARM_SUBTASK_ID", &session.subtask_id)
-            .env("SWARM_AGENT_ID", &session.id)
-            .env_optional("ACTEON_AGENT_KEY", config.acteon.api_key.as_deref())
-            .env_optional("TESSERAI_URL", Some(config.tesserai.endpoint.as_str()))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Agent SDK bridge: {e}")))?
-    } else {
-        // Fallback: direct claude -p invocation.
-        tracing::warn!("Agent SDK bridge not found, falling back to `claude -p`");
-        let full_prompt = format!("{system_prompt}\n\n## Task\n{}", subtask.prompt);
-        Command::new("claude")
-            .arg("-p")
-            .arg(&full_prompt)
-            .arg("--model")
-            .arg("sonnet")
-            .arg("--allowedTools")
-            .arg(&tools_arg)
-            .arg("--output-format")
-            .arg("json")
-            .current_dir(workspace)
-            .env("ACTEON_URL", &config.acteon.endpoint)
-            .env("ACTEON_AGENT_ROLE", &session.role)
-            .env("SWARM_RUN_ID", session.task_id.as_str())
-            .env("SWARM_TASK_ID", &session.task_id)
-            .env("SWARM_SUBTASK_ID", &session.subtask_id)
-            .env("SWARM_AGENT_ID", &session.id)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn claude: {e}")))?
+    let child = match bridge {
+        Some(BridgeKind::Python(path)) => {
+            tracing::info!("using Python Agent SDK bridge");
+            let mut cmd = Command::new("python3.10");
+            cmd.arg(&path)
+                .arg("--prompt").arg(&subtask.prompt)
+                .arg("--system-prompt").arg(system_prompt)
+                .arg("--allowed-tools").arg(&tools_arg)
+                .arg("--cwd").arg(workspace)
+                .arg("--model").arg("sonnet")
+                .current_dir(workspace);
+            for (k, v) in &swarm_env { cmd.env(k, v); }
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Python bridge: {e}")))?
+        }
+        Some(BridgeKind::Node(path)) => {
+            tracing::info!("using Node.js Agent SDK bridge");
+            let mut cmd = Command::new("node");
+            cmd.arg(&path)
+                .arg("--prompt").arg(&subtask.prompt)
+                .arg("--system-prompt").arg(system_prompt)
+                .arg("--allowed-tools").arg(&tools_arg)
+                .arg("--cwd").arg(workspace)
+                .current_dir(workspace);
+            for (k, v) in &swarm_env { cmd.env(k, v); }
+            cmd.env_optional("ACTEON_AGENT_KEY", config.acteon.api_key.as_deref())
+                .env_optional("TESSERAI_URL", Some(config.tesserai.endpoint.as_str()))
+                .stdout(Stdio::piped()).stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Node bridge: {e}")))?
+        }
+        None => {
+            tracing::warn!("Agent SDK bridge not found, falling back to `claude -p`");
+            let full_prompt = format!("{system_prompt}\n\n## Task\n{}", subtask.prompt);
+            let mut cmd = Command::new("claude");
+            cmd.arg("-p").arg(&full_prompt)
+                .arg("--model").arg("sonnet")
+                .arg("--allowedTools").arg(&tools_arg)
+                .arg("--output-format").arg("json")
+                .current_dir(workspace);
+            for (k, v) in &swarm_env { cmd.env(k, v); }
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn claude: {e}")))?
+        }
     };
 
     Ok(child)
@@ -258,28 +263,36 @@ async fn setup_workspace_hooks(
     Ok(())
 }
 
+/// Which Agent SDK bridge was found.
+enum BridgeKind {
+    Python(PathBuf),
+    Node(PathBuf),
+}
+
 /// Find the Agent SDK bridge script.
 ///
-/// Looks for `agent-bridge.mjs` in:
-/// 1. Next to the `acteon-swarm` binary
-/// 2. In the crate's `bridge/` directory
-/// 3. Returns None to fall back to `claude -p`
-fn find_agent_bridge() -> Option<PathBuf> {
-    // Check next to the current binary.
-    if let Ok(exe) = std::env::current_exe() {
-        let bridge = exe
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("agent-bridge.mjs");
-        if bridge.exists() {
-            return Some(bridge);
-        }
-    }
+/// Search order: Python (`agent-bridge.py`) > Node.js (`agent-bridge.mjs`).
+/// Looks next to the binary, then in `bridge/` relative to CWD.
+fn find_agent_bridge() -> Option<BridgeKind> {
+    let candidates = [
+        ("agent-bridge.py", BridgeKind::Python as fn(PathBuf) -> BridgeKind),
+        ("agent-bridge.mjs", BridgeKind::Node as fn(PathBuf) -> BridgeKind),
+    ];
 
-    // Check relative to CWD.
-    let local = PathBuf::from("bridge/agent-bridge.mjs");
-    if local.exists() {
-        return Some(local);
+    for (filename, make) in &candidates {
+        // Check next to the current binary.
+        if let Ok(exe) = std::env::current_exe() {
+            let path = exe.parent().unwrap_or(Path::new(".")).join(filename);
+            if path.exists() {
+                return Some(make(path));
+            }
+        }
+
+        // Check relative to CWD.
+        let local = PathBuf::from(format!("bridge/{filename}"));
+        if local.exists() {
+            return Some(make(local));
+        }
     }
 
     None
