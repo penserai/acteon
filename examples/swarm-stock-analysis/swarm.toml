@@ -4,7 +4,7 @@ namespace = "swarm"
 
 [tesserai]
 endpoint = "http://127.0.0.1:8091"
-tenant_id = "parallel-stocks"
+tenant_id = "fresh-stocks"
 
 [defaults]
 max_agents = 8
