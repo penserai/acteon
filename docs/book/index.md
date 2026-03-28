@@ -159,6 +159,16 @@ In-depth guides that combine multiple Acteon features to solve real-world proble
 
 </div>
 
+<div class="card" markdown>
+
+### Agent Swarm Orchestrator
+
+Orchestrate multi-agent swarms with parallel execution, AI-powered plan refinement, and knowledge sharing via TesseraiDB. Built-in roles (planner, coder, researcher, reviewer, executor), safety enforcement via Acteon, and digital twin graph modeling of every run.
+
+[Learn more](features/agent-swarm.md)
+
+</div>
+
 </div>
 
 ---

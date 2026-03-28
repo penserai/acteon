@@ -1,0 +1,16 @@
+[acteon]
+endpoint = "http://127.0.0.1:8090"
+namespace = "swarm"
+
+[tesserai]
+endpoint = "http://127.0.0.1:8091"
+tenant_id = "fresh-stocks"
+
+[defaults]
+max_agents = 8
+max_duration_minutes = 60
+subtask_timeout_seconds = 900
+enable_refiner = true
+
+[safety]
+require_plan_approval = false

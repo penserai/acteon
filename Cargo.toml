@@ -63,6 +63,9 @@ members = [
     "crates/ops",
     "crates/mcp-server",
     "crates/cli",
+
+    # Swarm orchestrator
+    "crates/swarm",
 ]
 
 [workspace.package]
@@ -135,6 +138,7 @@ acteon-discord = { path = "crates/integrations/discord" }
 acteon-ops = { path = "crates/ops" }
 acteon-mcp-server = { path = "crates/mcp-server" }
 acteon-cli = { path = "crates/cli" }
+acteon-swarm = { path = "crates/swarm" }
 
 # Parsing
 nom = "7"

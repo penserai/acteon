@@ -155,4 +155,9 @@ Apply rules based on time of day, day of week, or date — business hours, weeke
 Reconstruct and re-dispatch actions from the audit trail — recover from outages, fix suppressed actions, bulk reprocess.
 </div>
 
+<div class="card" markdown>
+### [Agent Swarm](agent-swarm.md)
+Orchestrate multi-agent swarms with specialist roles, safety enforcement via Acteon, and knowledge sharing via TesseraiDB.
+</div>
+
 </div>
