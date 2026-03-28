@@ -459,7 +459,13 @@ async fn handle_task_completion(
             .await
             {
                 Ok(action) => {
-                    apply_refinement(plan, &action);
+                    let skipped = apply_refinement(plan, &action);
+                    // Mark skipped tasks as completed so dependents can proceed.
+                    for id in &skipped {
+                        run.task_status
+                            .insert(id.clone(), TaskRunStatus::Skipped);
+                        completed_tasks.insert(id.clone());
+                    }
                     if !matches!(action, crate::orchestrator::refiner::RefinementAction::Continue)
                     {
                         run.metrics.refinements += 1;
@@ -539,13 +545,58 @@ async fn finalize_run(run: &mut SwarmRun, tesserai: &TesseraiClient, run_id: &st
     );
 }
 
-/// Extract the readable result text from claude's JSON output.
+/// Extract the readable result text from agent output.
+///
+/// Handles both formats:
+/// - `claude -p --output-format json`: single JSON blob with `.result` field
+/// - Agent SDK bridge (NDJSON): multiple lines, look for `{"type":"result","content":"..."}`
+///   and `{"type":"text","content":"..."}` lines
 fn extract_result_text(raw: &str) -> String {
+    // Try single JSON blob first (claude -p format).
     if let Some(result) = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|json| json.get("result").and_then(|v| v.as_str()).map(String::from))
     {
         return result;
     }
+
+    // Try NDJSON (Agent SDK bridge format): collect text blocks, then check result line.
+    let mut texts = Vec::new();
+    let mut final_result = String::new();
+
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+            match json.get("type").and_then(|v| v.as_str()) {
+                Some("text") => {
+                    if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
+                        texts.push(content.to_string());
+                    }
+                }
+                Some("result") => {
+                    if let Some(content) = json
+                        .get("content")
+                        .and_then(|v| v.as_str())
+                        .filter(|c| !c.is_empty())
+                    {
+                        final_result = content.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if !final_result.is_empty() {
+        return final_result;
+    }
+    if !texts.is_empty() {
+        return texts.join("\n");
+    }
+
+    // Fallback: raw text, truncated.
     raw.chars().take(2000).collect()
 }

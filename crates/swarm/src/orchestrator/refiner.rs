@@ -177,14 +177,20 @@ fn parse_refinement_response(response: &str, _config: &SwarmConfig) -> Refinemen
 }
 
 /// Apply a refinement action to the plan's task list.
-pub fn apply_refinement(plan: &mut SwarmPlan, action: &RefinementAction) {
+///
+/// Note: `SkipTasks` marks tasks as `Skipped` (by removing them from the plan)
+/// rather than `Failed`. The caller should add skipped task IDs to
+/// `completed_tasks` so dependent tasks can proceed.
+pub fn apply_refinement(plan: &mut SwarmPlan, action: &RefinementAction) -> Vec<String> {
     match action {
-        RefinementAction::Continue => {}
+        RefinementAction::Continue => vec![],
         RefinementAction::AddTasks(tasks) => {
             plan.tasks.extend(tasks.iter().cloned());
+            vec![]
         }
         RefinementAction::SkipTasks(ids) => {
             plan.tasks.retain(|t| !ids.contains(&t.id));
+            ids.clone()
         }
         RefinementAction::Reprioritize(priorities) => {
             for (id, priority) in priorities {
@@ -192,6 +198,7 @@ pub fn apply_refinement(plan: &mut SwarmPlan, action: &RefinementAction) {
                     task.priority = *priority;
                 }
             }
+            vec![]
         }
     }
 }
