@@ -1889,7 +1889,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(config.server.max_concurrent_dispatch));
+    let dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        config.server.max_concurrent_dispatch,
+    ));
 
     let state = AppState {
         gateway: Arc::clone(&gateway),
@@ -2013,12 +2015,17 @@ fn validate_provider_url(provider_name: &str, url: &str) -> Result<(), String> {
         ));
     }
 
-    // Plain http to non-loopback destinations is a security risk as it
-    // transmits credentials in cleartext and is a prime target for SSRF.
-    Err(format!(
-        "provider '{provider_name}': plain http:// to non-loopback destinations is forbidden for security. \
-         Use https:// for production or localhost for development. URL: {url}"
-    ))
+    // Warn about plain http:// to non-loopback destinations but allow it
+    // to avoid breaking existing deployments (Docker networks, k8s services,
+    // internal VPNs). Operators should migrate to HTTPS.
+    warn!(
+        provider = %provider_name,
+        url = %url,
+        "provider URL uses plain http:// to a non-loopback destination — \
+         credentials and payloads will be transmitted in cleartext. \
+         Use https:// in production."
+    );
+    Ok(())
 }
 
 /// Decrypt a config value, requiring `ACTEON_AUTH_KEY` if the value is encrypted.

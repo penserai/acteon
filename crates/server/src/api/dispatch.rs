@@ -206,7 +206,7 @@ pub async fn dispatch_batch(
     // Acquire permits from the global dispatch semaphore for the entire batch.
     let _permits = state
         .dispatch_semaphore
-        .try_acquire_many(actions.len() as u32)
+        .try_acquire_many(u32::try_from(actions.len()).unwrap_or(u32::MAX))
         .map_err(|_| ServerError::RateLimited {
             retry_after: 1, // Suggest retry after 1 second
         })?;

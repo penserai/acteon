@@ -60,8 +60,14 @@ impl GatewayError {
         match self {
             Self::Provider(e) => format!("provider error: {}", e.public_message()),
             Self::ProviderNotFound(name) => format!("provider '{name}' not found"),
-            Self::TemplateRender(_) => "template rendering failed due to internal error".to_string(),
-            _ => self.to_string(),
+            Self::TemplateRender(_) => {
+                "template rendering failed due to internal error".to_string()
+            }
+            Self::ApprovalNotFound => "approval not found".to_string(),
+            Self::ApprovalAlreadyDecided(_) => "approval already decided".to_string(),
+            // All other variants may contain internal details (state store errors,
+            // lock contention info, rule engine internals). Redact them.
+            _ => "internal gateway error".to_string(),
         }
     }
 }

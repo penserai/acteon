@@ -123,7 +123,10 @@ mod tests {
         assert_eq!(err.public_message(), "upstream provider returned an error");
 
         let err = ProviderError::Connection("internal ip 10.0.0.1".into());
-        assert_eq!(err.public_message(), "failed to connect to upstream provider");
+        assert_eq!(
+            err.public_message(),
+            "failed to connect to upstream provider"
+        );
 
         let err = ProviderError::Timeout(Duration::from_secs(5));
         assert_eq!(err.public_message(), "upstream provider timed out");
