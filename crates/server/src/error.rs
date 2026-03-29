@@ -40,7 +40,7 @@ impl IntoResponse for ServerError {
             Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), None),
             Self::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone(), None),
             Self::Io(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
-            Self::Gateway(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+            Self::Gateway(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.public_message(), None),
             Self::RateLimited { retry_after } => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "rate limit exceeded".to_owned(),

@@ -1,5 +1,5 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{DispatchContext, Provider, ProviderError};
+use acteon_provider::{DispatchContext, Provider, ProviderError, truncate_error_body};
 use hmac::{Hmac, Mac};
 use reqwest::Client;
 use sha2::Sha256;
@@ -286,7 +286,8 @@ impl Provider for WebhookProvider {
         if status.is_server_error() {
             let body = response.text().await.unwrap_or_default();
             return Err(ProviderError::Connection(format!(
-                "health check failed: HTTP {status}: {body}"
+                "health check failed: HTTP {status}: {}",
+                truncate_error_body(&body)
             )));
         }
 

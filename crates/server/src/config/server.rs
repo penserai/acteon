@@ -45,6 +45,10 @@ pub struct ServerConfig {
     /// Limits resource exhaustion from long-lived SSE connections. Each
     /// tenant is tracked independently.
     pub max_sse_connections_per_tenant: Option<usize>,
+    /// Maximum number of concurrent dispatch operations (global limit).
+    /// Defaults to 5,000.
+    #[serde(default = "default_max_concurrent_dispatch")]
+    pub max_concurrent_dispatch: usize,
 }
 
 impl Default for ServerConfig {
@@ -57,8 +61,13 @@ impl Default for ServerConfig {
             approval_secret: None,
             approval_keys: None,
             max_sse_connections_per_tenant: None,
+            max_concurrent_dispatch: default_max_concurrent_dispatch(),
         }
     }
+}
+
+fn default_max_concurrent_dispatch() -> usize {
+    5_000
 }
 
 fn default_shutdown_timeout() -> u64 {

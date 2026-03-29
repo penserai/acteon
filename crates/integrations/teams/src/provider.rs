@@ -1,5 +1,5 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError};
+use acteon_provider::{Provider, ProviderError, truncate_error_body};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -107,7 +107,11 @@ impl Provider for TeamsProvider {
 
         if !status.is_success() {
             let response_body = response.text().await.unwrap_or_default();
-            return Err(TeamsError::Api(format!("HTTP {status}: {response_body}")).into());
+            return Err(TeamsError::Api(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&response_body)
+            ))
+            .into());
         }
 
         // Teams returns literal "1" with HTTP 200 on success (not JSON).
@@ -144,7 +148,10 @@ impl Provider for TeamsProvider {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Connection(format!("HTTP {status}: {body}")));
+            return Err(ProviderError::Connection(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
         }
 
         debug!("Teams health check passed");

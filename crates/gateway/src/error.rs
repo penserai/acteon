@@ -51,3 +51,23 @@ pub enum GatewayError {
     #[error("attachment error: {0}")]
     Attachment(String),
 }
+
+impl GatewayError {
+    /// Returns a redacted, safe error message suitable for return to API
+    /// consumers while preventing information leakage (internal IPs, stack
+    /// traces, or truncated bodies from upstream services).
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::Provider(e) => format!("provider error: {}", e.public_message()),
+            Self::ProviderNotFound(name) => format!("provider '{name}' not found"),
+            Self::TemplateRender(_) => {
+                "template rendering failed due to internal error".to_string()
+            }
+            Self::ApprovalNotFound => "approval not found".to_string(),
+            Self::ApprovalAlreadyDecided(_) => "approval already decided".to_string(),
+            // All other variants may contain internal details (state store errors,
+            // lock contention info, rule engine internals). Redact them.
+            _ => "internal gateway error".to_string(),
+        }
+    }
+}

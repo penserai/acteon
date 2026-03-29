@@ -1,5 +1,5 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{Provider, ProviderError};
+use acteon_provider::{Provider, ProviderError, truncate_error_body};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -101,7 +101,10 @@ impl TwilioProvider {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(TwilioError::Api(format!("HTTP {status}: {body}")));
+            return Err(TwilioError::Api(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
         }
 
         let api_response: TwilioApiResponse = response.json().await?;
@@ -177,7 +180,10 @@ impl Provider for TwilioProvider {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Connection(format!("HTTP {status}: {body}")));
+            return Err(ProviderError::Connection(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
         }
 
         debug!("Twilio health check passed");

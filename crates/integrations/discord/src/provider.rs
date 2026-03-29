@@ -1,5 +1,5 @@
 use acteon_core::{Action, ProviderResponse};
-use acteon_provider::{DispatchContext, Provider, ProviderError};
+use acteon_provider::{DispatchContext, Provider, ProviderError, truncate_error_body};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, info, instrument, warn};
@@ -100,7 +100,11 @@ impl DiscordProvider {
 
         if !status.is_success() {
             let response_body = response.text().await.unwrap_or_default();
-            return Err(DiscordError::Api(format!("HTTP {status}: {response_body}")).into());
+            return Err(DiscordError::Api(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&response_body)
+            ))
+            .into());
         }
 
         let mut body = if status == reqwest::StatusCode::NO_CONTENT {
@@ -219,7 +223,10 @@ impl Provider for DiscordProvider {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(ProviderError::Connection(format!("HTTP {status}: {body}")));
+            return Err(ProviderError::Connection(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
         }
 
         debug!("Discord health check passed");

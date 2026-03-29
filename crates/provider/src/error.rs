@@ -2,6 +2,29 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+/// Maximum number of bytes from an upstream HTTP response body to include in
+/// error messages. Response bodies can contain internal hostnames, stack
+/// traces, or partial credentials -- truncating prevents information leakage
+/// through the dispatch API and audit trail.
+const MAX_ERROR_BODY_BYTES: usize = 256;
+
+/// Truncate an HTTP response body for safe inclusion in error messages.
+///
+/// Returns at most `MAX_ERROR_BODY_BYTES` (512) bytes of the input, appending
+/// `"...[truncated]"` when the input exceeds the limit. Truncation is
+/// performed at a UTF-8 character boundary to avoid producing invalid strings.
+pub fn truncate_error_body(body: &str) -> String {
+    if body.len() <= MAX_ERROR_BODY_BYTES {
+        return body.to_owned();
+    }
+    // Find a valid char boundary at or before the limit.
+    let mut end = MAX_ERROR_BODY_BYTES;
+    while end > 0 && !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...[truncated]", &body[..end])
+}
+
 /// Errors that can occur during provider operations.
 #[derive(Debug, Error)]
 pub enum ProviderError {
@@ -43,6 +66,21 @@ impl ProviderError {
             Self::Timeout(_) | Self::Connection(_) | Self::RateLimited
         )
     }
+
+    /// Returns a generic, safe error message suitable for returning to API
+    /// consumers without leaking internal provider details (like truncated
+    /// response bodies from upstream services).
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::NotFound(name) => format!("provider '{name}' not found"),
+            Self::ExecutionFailed(_) => "upstream provider returned an error".to_string(),
+            Self::Timeout(_) => "upstream provider timed out".to_string(),
+            Self::Connection(_) => "failed to connect to upstream provider".to_string(),
+            Self::Configuration(_) => "provider misconfigured".to_string(),
+            Self::RateLimited => "rate limited by upstream provider".to_string(),
+            Self::Serialization(_) => "failed to serialize/deserialize payload".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -74,5 +112,55 @@ mod tests {
 
         let err = ProviderError::RateLimited;
         assert_eq!(err.to_string(), "rate limited");
+    }
+
+    #[test]
+    fn test_public_messages() {
+        let err = ProviderError::NotFound("slack".into());
+        assert_eq!(err.public_message(), "provider 'slack' not found");
+
+        let err = ProviderError::ExecutionFailed("sensitive data".into());
+        assert_eq!(err.public_message(), "upstream provider returned an error");
+
+        let err = ProviderError::Connection("internal ip 10.0.0.1".into());
+        assert_eq!(
+            err.public_message(),
+            "failed to connect to upstream provider"
+        );
+
+        let err = ProviderError::Timeout(Duration::from_secs(5));
+        assert_eq!(err.public_message(), "upstream provider timed out");
+    }
+
+    #[test]
+    fn truncate_error_body_short_passes_through() {
+        let short = "bad request";
+        assert_eq!(truncate_error_body(short), short);
+    }
+
+    #[test]
+    fn truncate_error_body_at_limit_passes_through() {
+        let exact = "x".repeat(MAX_ERROR_BODY_BYTES);
+        assert_eq!(truncate_error_body(&exact), exact);
+    }
+
+    #[test]
+    fn truncate_error_body_long_is_truncated() {
+        let long = "a".repeat(512);
+        let result = truncate_error_body(&long);
+        assert!(result.len() < long.len());
+        assert!(result.ends_with("...[truncated]"));
+        // Verify the prefix is correct.
+        assert!(result.starts_with(&"a".repeat(MAX_ERROR_BODY_BYTES)));
+    }
+
+    #[test]
+    fn truncate_error_body_respects_utf8_boundary() {
+        // Multi-byte UTF-8: each char is 4 bytes. Place boundary mid-character.
+        let emoji = "😀".repeat(100); // 400 bytes
+        let result = truncate_error_body(&emoji);
+        assert!(result.ends_with("...[truncated]"));
+        // Must be valid UTF-8 (this would panic if not).
+        let _ = result.as_bytes();
     }
 }

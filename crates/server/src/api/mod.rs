@@ -74,6 +74,8 @@ pub struct AppState {
     pub embedding_metrics: Option<Arc<EmbeddingMetrics>>,
     /// Per-tenant SSE connection limit registry.
     pub connection_registry: Option<Arc<ConnectionRegistry>>,
+    /// Semaphore for limiting concurrent dispatch operations.
+    pub dispatch_semaphore: Arc<tokio::sync::Semaphore>,
     /// Sanitized configuration snapshot (secrets masked).
     pub config: ConfigSnapshot,
     /// Path to the Admin UI static files.

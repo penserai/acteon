@@ -65,6 +65,7 @@ impl TestServer {
             embedding: None,
             embedding_metrics: None,
             connection_registry: None,
+            dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
             config: acteon_server::config::ConfigSnapshot::default(),
             ui_path: None,
             ui_enabled: false,

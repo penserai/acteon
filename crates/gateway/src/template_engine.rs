@@ -152,6 +152,24 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
     let mut env = minijinja::Environment::new();
     env.set_fuel(Some(FUEL_LIMIT));
 
+    // Auto-escape HTML only for templates with .html/.htm file extensions.
+    // Most Acteon templates produce API payloads (JSON, plain text) where
+    // HTML escaping would corrupt data (e.g., `application/pdf` → `application&#x2f;pdf`).
+    //
+    // DO NOT match on keywords like "body" — fields named `body`, `request_body`,
+    // `webhook_body` etc. are overwhelmingly JSON/plain-text, not HTML.
+    env.set_auto_escape_callback(|name| {
+        let ext = std::path::Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm") {
+            minijinja::AutoEscape::Html
+        } else {
+            minijinja::AutoEscape::None
+        }
+    });
+
     // Register ALL scoped templates so {% include %} and {% extends %} work.
     for (name, template) in templates_map {
         env.add_template_owned(name.clone(), template.content.clone())
@@ -676,5 +694,52 @@ mod tests {
         let result = render_profile(&profile, &HashMap::new(), &payload, &attachments).unwrap();
         // data_base64 is not in context, so MiniJinja renders it as empty.
         assert_eq!(result.fields.get("data").unwrap(), "");
+    }
+
+    #[test]
+    fn render_no_escape_for_non_html_profiles() {
+        // Non-HTML template names should NOT escape special chars — most Acteon
+        // templates produce JSON/plain-text payloads.
+        let mut fields = HashMap::new();
+        fields.insert(
+            "msg".to_string(),
+            TemplateProfileField::Inline("Hello {{ name }}".to_string()),
+        );
+        let profile = make_profile("api-payload", fields);
+        let payload = serde_json::json!({"name": "<script>alert(1)</script>"});
+
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
+        let rendered = result.fields.get("msg").unwrap();
+        // Non-HTML context: raw output preserved.
+        assert!(rendered.contains("<script>"));
+    }
+
+    #[test]
+    fn render_escapes_html_for_html_named_ref_templates() {
+        // Templates loaded via $ref with .html names get auto-escaped.
+        let mut fields = HashMap::new();
+        fields.insert(
+            "body".to_string(),
+            TemplateProfileField::Ref {
+                template_ref: "email.html".to_string(),
+            },
+        );
+        let profile = make_profile("email-profile", fields);
+
+        let mut templates = HashMap::new();
+        templates.insert(
+            "email.html".to_string(),
+            make_template("email.html", "Hello {{ name }}"),
+        );
+
+        let payload = serde_json::json!({"name": "<script>alert(1)</script>"});
+
+        let result = render_profile(&profile, &templates, &payload, &[]).unwrap();
+        let rendered = result.fields.get("body").unwrap();
+        assert!(
+            !rendered.contains("<script>"),
+            "expected HTML escaping for .html template, got: {rendered}"
+        );
+        assert!(rendered.contains("&lt;script&gt;"));
     }
 }

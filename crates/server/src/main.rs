@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 
 use acteon_core::{
     Action, BranchCondition, BranchOperator, ChainConfig, ChainFailurePolicy,
@@ -113,6 +113,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build a shared HTTP client with TLS config for all outbound calls.
     let shared_http_client = if config.tls.enabled {
+        if config.tls.client.danger_accept_invalid_certs {
+            warn!(
+                "TLS certificate verification is DISABLED (danger_accept_invalid_certs = true). \
+                 All outbound HTTPS connections will accept any certificate. \
+                 This setting MUST NOT be used in production."
+            );
+        }
         acteon_crypto::tls::build_reqwest_client(
             config.tls.client.cert_path.as_deref(),
             config.tls.client.key_path.as_deref(),
@@ -619,6 +626,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         provider_cfg.name
                     )
                 })?;
+                validate_provider_url(&provider_cfg.name, url)?;
                 let mut wp =
                     acteon_provider::webhook::WebhookProvider::new(&provider_cfg.name, url)
                         .with_client(shared_http_client.clone());
@@ -662,6 +670,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             provider_cfg.name
                         )
                     })?;
+                validate_provider_url(&provider_cfg.name, webhook_url)?;
                 let teams_config = acteon_teams::TeamsConfig::new(webhook_url);
                 std::sync::Arc::new(acteon_teams::TeamsProvider::with_client(
                     teams_config,
@@ -679,6 +688,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             provider_cfg.name
                         )
                     })?;
+                validate_provider_url(&provider_cfg.name, webhook_url)?;
                 let mut discord_config = acteon_discord::DiscordConfig::new(webhook_url);
                 if let Some(ref username) = provider_cfg.default_channel {
                     discord_config = discord_config.with_default_username(username);
@@ -1879,6 +1889,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(
+        config.server.max_concurrent_dispatch,
+    ));
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,
@@ -1890,6 +1904,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
         connection_registry: Some(connection_registry),
+        dispatch_semaphore,
         config: config_snapshot,
         ui_path: Some(config.ui.dist_path.clone()),
         ui_enabled: config.ui.enabled,
@@ -1957,6 +1972,59 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     telemetry_guard.shutdown();
 
     info!("acteon-server shut down");
+    Ok(())
+}
+
+/// Validate that a configured endpoint URL uses an allowed scheme.
+///
+/// Rejects URLs that do not start with `https://` or `http://localhost`
+/// (including `http://127.0.0.1` and `http://[::1]`). Plain `http://` to
+/// non-loopback destinations is logged as a warning because it exposes
+/// credentials and payloads on the wire.
+///
+/// This is a defence-in-depth measure against SSRF via operator-controlled
+/// configuration (e.g. `acteon.toml`).
+fn validate_provider_url(provider_name: &str, url: &str) -> Result<(), String> {
+    let lower = url.to_lowercase();
+
+    // Allow https always.
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+
+    // Explicitly block cloud metadata service (AWS/GCP/Azure) which is a common SSRF target.
+    if lower.contains("169.254.169.254") {
+        return Err(format!(
+            "provider '{provider_name}': URL references restricted cloud metadata IP (169.254.169.254)"
+        ));
+    }
+
+    // Allow http to loopback addresses (local dev / emulators).
+    if lower.starts_with("http://localhost")
+        || lower.starts_with("http://127.")
+        || lower.starts_with("http://[::1]")
+    {
+        return Ok(());
+    }
+
+    // Reject non-HTTP schemes entirely (file://, ftp://, gopher://, etc.).
+    if !lower.starts_with("http://") {
+        return Err(format!(
+            "provider '{provider_name}': URL scheme not allowed — only https:// \
+             and http://localhost are permitted, got: {url}"
+        ));
+    }
+
+    // Warn about plain http:// to non-loopback destinations but allow it
+    // to avoid breaking existing deployments (Docker networks, k8s services,
+    // internal VPNs). Operators should migrate to HTTPS.
+    warn!(
+        provider = %provider_name,
+        url = %url,
+        "provider URL uses plain http:// to a non-loopback destination — \
+         credentials and payloads will be transmitted in cleartext. \
+         Use https:// in production."
+    );
     Ok(())
 }
 

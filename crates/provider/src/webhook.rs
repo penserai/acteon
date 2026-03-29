@@ -1,10 +1,17 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use acteon_core::{Action, ProviderResponse};
 use reqwest::Client;
 
 use crate::error::ProviderError;
 use crate::provider::Provider;
+
+/// Default request timeout for the webhook provider (30 seconds).
+///
+/// Prevents indefinite hangs when a remote endpoint accepts the TCP
+/// connection but never sends a response (tarpit attack).
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A provider that dispatches actions by posting their JSON payload to a
 /// configurable HTTP endpoint.
@@ -25,12 +32,17 @@ pub struct WebhookProvider {
 impl WebhookProvider {
     /// Create a new `WebhookProvider` with the given name and target URL.
     ///
-    /// Uses a default `reqwest::Client` and no extra headers.
+    /// Uses a default `reqwest::Client` with a 30-second timeout and no
+    /// extra headers.
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
+        let client = Client::builder()
+            .timeout(DEFAULT_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| Client::new());
         Self {
             name: name.into(),
             url: url.into(),
-            client: Client::new(),
+            client,
             headers: HashMap::new(),
         }
     }
