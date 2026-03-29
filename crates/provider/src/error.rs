@@ -10,7 +10,7 @@ const MAX_ERROR_BODY_BYTES: usize = 256;
 
 /// Truncate an HTTP response body for safe inclusion in error messages.
 ///
-/// Returns at most [`MAX_ERROR_BODY_BYTES`] bytes of the input, appending
+/// Returns at most `MAX_ERROR_BODY_BYTES` (512) bytes of the input, appending
 /// `"...[truncated]"` when the input exceeds the limit. Truncation is
 /// performed at a UTF-8 character boundary to avoid producing invalid strings.
 pub fn truncate_error_body(body: &str) -> String {
