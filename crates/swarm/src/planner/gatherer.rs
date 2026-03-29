@@ -16,16 +16,20 @@ pub fn build_gathering_prompt(config: &SwarmConfig) -> String {
         .map_or_else(|| ".".to_string(), |p| p.display().to_string());
 
     let engine_tools = match config.defaults.engine {
-        crate::config::AgentEngine::Claude => r#"
+        crate::config::AgentEngine::Claude => {
+            r"
 - **planner**: Read-only analysis (tools: Read, Glob, Grep)
 - **coder**: Code modification (tools: Read, Write, Edit, Bash, Glob, Grep)
 - **researcher**: Web research (tools: Read, Glob, Grep, WebFetch, WebSearch)
-"#,
-        crate::config::AgentEngine::Gemini => r#"
+"
+        }
+        crate::config::AgentEngine::Gemini => {
+            r"
 - **planner**: Read-only analysis (tools: read_file, glob, grep_search)
 - **coder**: Code modification (tools: read_file, write_file, replace, run_shell_command, glob, grep_search)
 - **researcher**: Web research (tools: read_file, glob, grep_search, web_fetch, google_web_search)
-"#,
+"
+        }
     };
 
     format!(
@@ -162,52 +166,72 @@ pub async fn gather_plan(config: &SwarmConfig, user_prompt: &str) -> Result<Swar
         )));
     }
 
-    // Claude and Gemini wrap result in {"result": "...", "session_id": "..."} or {"response": "..."}
-    // The structured_output field contains our plan when --json-schema is used.
-    let raw: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|e| {
-        SwarmError::PlanGathering(format!(
-            "failed to parse {cmd_name} output: {e}\nstdout: {}",
-            String::from_utf8_lossy(&output.stdout)
-        ))
-    })?;
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
 
-    // Try structured_output first (when --json-schema is used), then result, then response.
-    let plan_value = raw
-        .get("structured_output")
-        .or_else(|| raw.get("result"))
-        .or_else(|| raw.get("response"))
-        .ok_or_else(|| {
-            SwarmError::PlanGathering(format!(
-                "{cmd_name} output missing structured_output, result and response"
-            ))
-        })?;
+    // Try parsing as JSON envelope first (Claude: {"result":"...", "structured_output":...})
+    // then fall back to raw text (Gemini: plain text or markdown with embedded JSON).
+    let plan: SwarmPlan = if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
+        // JSON envelope — try structured_output, result, or response fields.
+        let plan_value = raw
+            .get("structured_output")
+            .or_else(|| raw.get("result"))
+            .or_else(|| raw.get("response"))
+            .ok_or_else(|| {
+                SwarmError::PlanGathering(format!(
+                    "{cmd_name} output missing structured_output, result and response"
+                ))
+            })?;
 
-    // If result is a string, it may contain JSON that needs re-parsing.
-    let plan: SwarmPlan = if let Some(s) = plan_value.as_str() {
-        let stripped = strip_markdown(s);
+        if let Some(s) = plan_value.as_str() {
+            let stripped = strip_markdown(s);
+            serde_json::from_str(&stripped).map_err(|e| {
+                SwarmError::PlanGathering(format!(
+                    "failed to parse plan from result string: {e}\nString: {stripped}"
+                ))
+            })?
+        } else {
+            serde_json::from_value(plan_value.clone()).map_err(|e| {
+                SwarmError::PlanGathering(format!(
+                    "failed to parse plan from structured output: {e}"
+                ))
+            })?
+        }
+    } else {
+        // Raw text output (Gemini) — strip markdown fences and parse JSON.
+        let stripped = strip_markdown(&stdout_str);
         serde_json::from_str(&stripped).map_err(|e| {
             SwarmError::PlanGathering(format!(
-                "failed to parse plan from result string: {e}\nString: {stripped}"
+                "failed to parse plan from raw output: {e}\nOutput: {}",
+                &stripped[..stripped.len().min(500)]
             ))
-        })?
-    } else {
-        serde_json::from_value(plan_value.clone()).map_err(|e| {
-            SwarmError::PlanGathering(format!("failed to parse plan from structured output: {e}"))
         })?
     };
 
     Ok(plan)
 }
 
+/// Strip markdown code fences from text that may contain JSON.
+///
+/// Handles cases where there's prose before/after the code fence
+/// (common with Gemini output like "Here's the plan:\n```json\n{...}\n```").
 fn strip_markdown(s: &str) -> String {
     let s = s.trim();
-    if s.starts_with("```json") && s.ends_with("```") {
-        s[7..s.len() - 3].trim().to_string()
-    } else if s.starts_with("```") && s.ends_with("```") {
-        s[3..s.len() - 3].trim().to_string()
-    } else {
-        s.to_string()
+
+    // Find ```json or ``` fence within the text.
+    if let Some(start) = s.find("```json") {
+        let json_start = start + 7;
+        if let Some(end) = s[json_start..].find("```") {
+            return s[json_start..json_start + end].trim().to_string();
+        }
     }
+    if let Some(start) = s.find("```") {
+        let content_start = start + 3;
+        if let Some(end) = s[content_start..].find("```") {
+            return s[content_start..content_start + end].trim().to_string();
+        }
+    }
+
+    s.to_string()
 }
 
 #[cfg(test)]

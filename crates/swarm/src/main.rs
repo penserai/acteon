@@ -141,7 +141,7 @@ fn load_config(path: &std::path::Path) -> Result<SwarmConfig> {
 
 async fn cmd_plan_gather(config: &SwarmConfig, prompt: &str, output: &PathBuf) -> Result<()> {
     let engine = config.defaults.engine;
-    println!("Gathering plan from {:?}...\n", engine);
+    println!("Gathering plan from {engine:?}...\n");
     let plan = gather_plan(config, prompt).await?;
 
     let roles = RoleRegistry::with_config(engine, &config.roles);

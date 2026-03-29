@@ -16,17 +16,14 @@ pub struct HookInput {
 /// Supports both Claude Code and Gemini CLI tool naming conventions.
 pub fn map_tool_to_action_type(tool_name: &str) -> Option<&'static str> {
     match tool_name {
-        // Claude Code tools
-        "Bash" => Some("execute_command"),
-        "Write" | "Edit" => Some("write_file"),
-        "WebFetch" | "WebSearch" => Some("web_access"),
-        "Task" => Some("spawn_agent"),
-
-        // Gemini CLI tools
-        "run_shell_command" => Some("execute_command"),
-        "write_file" | "replace" => Some("write_file"),
-        "web_fetch" | "google_web_search" => Some("web_access"),
-        "generalist" => Some("spawn_agent"),
+        // Claude Code: Bash, Gemini CLI: run_shell_command
+        "Bash" | "run_shell_command" => Some("execute_command"),
+        // Claude Code: Write/Edit, Gemini CLI: write_file/replace
+        "Write" | "Edit" | "write_file" | "replace" => Some("write_file"),
+        // Claude Code: WebFetch/WebSearch, Gemini CLI: web_fetch/google_web_search
+        "WebFetch" | "WebSearch" | "web_fetch" | "google_web_search" => Some("web_access"),
+        // Claude Code: Task, Gemini CLI: generalist
+        "Task" | "generalist" => Some("spawn_agent"),
 
         // Read-only tools pass through without gating.
         _ => None,

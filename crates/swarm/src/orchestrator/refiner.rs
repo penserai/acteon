@@ -110,7 +110,11 @@ Respond with ONLY the action line. No explanation.",
             .arg("-p")
             .arg(&prompt)
             .arg("--model")
-            .arg(if matches!(engine, crate::config::AgentEngine::Claude) { "haiku" } else { "flash" })
+            .arg(if matches!(engine, crate::config::AgentEngine::Claude) {
+                "haiku"
+            } else {
+                "flash"
+            })
             .arg("--output-format")
             .arg("text")
             .stdout(Stdio::piped())
