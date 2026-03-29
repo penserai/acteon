@@ -16,7 +16,7 @@ An agent swarm that analyzes Q4 2025 tech earnings and their impact on related m
 | Tasks | 7 |
 | Agents spawned | 12 |
 | Duration | ~20 minutes |
-| Model | Sonnet |
+| Engine | Claude (Sonnet) |
 | TesseraiDB entities | 57 |
 | RDF triples | 201KB |
 | Graph | 39 nodes, 58 edges |

@@ -1,0 +1,720 @@
+# RDF — LLM survey Gemini (50 twins)
+
+# === finding-1240aa23-7e6e-454e-9f37-f45ba0027c58 ===
+<urn:tesserai:twin:finding-1240aa23-7e6e-454e-9f37-f45ba0027c58> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:22:12.196482Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Llama 4\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:22:12.196328+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"9cf6bfa6-5d5f-47d5-96e3-e770c372f59d\",\n  \"response\": \"I've completed the research on Llama 4 and documented the findings in `survey/llama4.md`.\\n\\nAs of March 2026, the **Llama 4** series (Scout, Maverick, and Behemoth) utilizes a **Mixture-of-Experts (MoE)** architecture, significantly improving inference efficiency and supporting context windows up to **10 million tokens**. Llama 4 Maverick demonstrates \\\"frontier-class\\\" performance with an **MMLU of ~85.5%** and **HumanEval of ~77.6%**, positioning it as a leading open-weight alternative for multimodal and reasoning-heavy tasks. The models remain under the **Llama 4 Community License**, allowing broad accessibility with a 700-million-user commercial threshold.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2033\n        },\n        \"tokens\": {\n          \"input\": 958,\n          \"prompt\": 958,\n          \"candidates\": 71,\n          \"total\": 1395,\n          \"cached\": 0,\n          \"thoughts\": 366,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2033,\n            \"tokens\": {\n              \"input\": 958,\n              \"prompt\": 958,\n              \"candidates\": 71,\n              \"total\": 1395,\n              \"cached\": 0,\n              \"thoughts\": 366,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 8,\n          \"totalErrors\": 3,\n          \"totalLatencyMs\": 26020\n        },\n        \"tokens\": {\n          \"input\": 21780,\n          \"prompt\": 40615,\n          \"candidates\": 2557,\n          \"total\": 43952,\n          \"cached\": 18835,\n          \"thoughts\": 780,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 7,\n            \"tot" ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "1d4b7c6a-b075-43a5-ac3f-55d2a67a0451" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"9cf6bfa6-5d5f-47d5-96e3-e770c372f59d\",\n  \"response\": \"I've completed the research on Llama 4 and documented the findings in `survey/llama4.md`.\\n\\nAs of March 2026, the **Llama 4** series (Scout, Maverick, and Behemoth) utilizes a **Mixture-of-Experts (MoE)** architecture, significantly improving inference efficiency and supporting context windows up to **10 million tokens**. Llama 4 Maverick demonstrates \\\"frontier-class\\\" performance with an **MMLU of ~85.5%** and **HumanEval of ~77.6%**, positioning it as a leading open-weight alternative for multimodal and reasoning-heavy tasks. The models remain under the **Llama 4 Community License**, allowing broad accessibility with a 700-million-user commercial threshold.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2033\n        },\n        \"tokens\": {\n          \"input\": 958,\n          \"prompt\": 958,\n          \"candidates\": 71,\n          \"total\": 1395,\n          \"cached\": 0,\n          \"thoughts\": 366,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2033,\n            \"tokens\": {\n              \"input\": 958,\n              \"prompt\": 958,\n              \"candidates\": 71,\n              \"total\": 1395,\n              \"cached\": 0,\n              \"thoughts\": 366,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 8,\n          \"totalErrors\": 3,\n          \"totalLatencyMs\": 26020\n        },\n        \"tokens\": {\n          \"input\": 21780,\n          \"prompt\": 40615,\n          \"candidates\": 2557,\n          \"total\": 43952,\n          \"cached\": 18835,\n          \"thoughts\": 780,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 7,\n            \"tot" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"9cf6bfa6-5d5f-47d5-96e3-e770c372f59d\",\n  \"response\": \"I've completed the research" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === finding-170a4a24-86f3-4b95-b2ef-f0ffef60e2ac ===
+<urn:tesserai:twin:finding-170a4a24-86f3-4b95-b2ef-f0ffef60e2ac> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:37.358316Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Gemma 3\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:37.358171+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"25b6ebe3-bfc2-4955-827f-fdb5e8b106d9\",\n  \"response\": \"I have researched the Gemma 3 model family and compiled a detailed report covering its architecture, model sizes, performance benchmarks, and license. The report is saved in `survey/gemma3.md`.\\n\\nHighlights from the report:\\n- **Architecture**: Decoder-only Transformer with Grouped-Query Attention (GQA).\\n- **Multimodality**: Native support for text and image processing in the 4B, 12B, and 27B models.\\n- **Model Sizes**: Five variants ranging from 270M to 27B parameters.\\n- **Context Window**: Significant expansion to 128K tokens for multimodal models.\\n- **Benchmarks**: Gemma 3 27B-IT achieved an Elo rating of 1338, competing with much larger models.\\n- **License**: Permissive open-weights license allowing for commercial use.\\n\\nThe file `survey/gemma3.md` is now available with the full report.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 3,\n          \"totalErrors\": 2,\n          \"totalLatencyMs\": 2462\n        },\n        \"tokens\": {\n          \"input\": 924,\n          \"prompt\": 924,\n          \"candidates\": 85,\n          \"total\": 1354,\n          \"cached\": 0,\n          \"thoughts\": 345,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 3,\n            \"totalErrors\": 2,\n            \"totalLatencyMs\": 2462,\n            \"tokens\": {\n              \"input\": 924,\n              \"prompt\": 924,\n              \"candidates\": 85,\n              \"total\": 1354,\n              \"cached\": 0,\n              \"thoughts\": 345,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 30,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 93164\n        },\n        \"tokens\": {\n          \"input\": 55895,\n          \"prompt\": 320538,\n          \"candidates\": 7020,\n          \"total\": 329693,\n          \"cached\": 264643,\n   " ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "49050066-e444-4793-b294-a1db3a72164a" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"25b6ebe3-bfc2-4955-827f-fdb5e8b106d9\",\n  \"response\": \"I have researched the Gemma 3 model family and compiled a detailed report covering its architecture, model sizes, performance benchmarks, and license. The report is saved in `survey/gemma3.md`.\\n\\nHighlights from the report:\\n- **Architecture**: Decoder-only Transformer with Grouped-Query Attention (GQA).\\n- **Multimodality**: Native support for text and image processing in the 4B, 12B, and 27B models.\\n- **Model Sizes**: Five variants ranging from 270M to 27B parameters.\\n- **Context Window**: Significant expansion to 128K tokens for multimodal models.\\n- **Benchmarks**: Gemma 3 27B-IT achieved an Elo rating of 1338, competing with much larger models.\\n- **License**: Permissive open-weights license allowing for commercial use.\\n\\nThe file `survey/gemma3.md` is now available with the full report.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 3,\n          \"totalErrors\": 2,\n          \"totalLatencyMs\": 2462\n        },\n        \"tokens\": {\n          \"input\": 924,\n          \"prompt\": 924,\n          \"candidates\": 85,\n          \"total\": 1354,\n          \"cached\": 0,\n          \"thoughts\": 345,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 3,\n            \"totalErrors\": 2,\n            \"totalLatencyMs\": 2462,\n            \"tokens\": {\n              \"input\": 924,\n              \"prompt\": 924,\n              \"candidates\": 85,\n              \"total\": 1354,\n              \"cached\": 0,\n              \"thoughts\": 345,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 30,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 93164\n        },\n        \"tokens\": {\n          \"input\": 55895,\n          \"prompt\": 320538,\n          \"candidates\": 7020,\n          \"total\": 329693,\n          \"cached\": 264643,\n   " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"25b6ebe3-bfc2-4955-827f-fdb5e8b106d9\",\n  \"response\": \"I have researched the Gemma" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === finding-49fa5b8c-b6e8-4b65-80f2-7915cf1ae205 ===
+<urn:tesserai:twin:finding-49fa5b8c-b6e8-4b65-80f2-7915cf1ae205> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:38.473042Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Mistral/Mixtral\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:38.472901+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"fcb0ed27-4cd4-4b2b-976e-e23a91059b03\",\n  \"response\": \"I have researched the latest Mistral AI models and architectures, focusing on the recent \\\"Mistral 3\\\" family and the innovative \\\"Granular MoE\\\" design. The findings, including detailed benchmarks and licensing terms (Apache 2.0 for major models like Mistral Large 3), have been documented in `survey/mistral.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2451\n        },\n        \"tokens\": {\n          \"input\": 931,\n          \"prompt\": 931,\n          \"candidates\": 91,\n          \"total\": 1382,\n          \"cached\": 0,\n          \"thoughts\": 360,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2451,\n            \"tokens\": {\n              \"input\": 931,\n              \"prompt\": 931,\n              \"candidates\": 91,\n              \"total\": 1382,\n              \"cached\": 0,\n              \"thoughts\": 360,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 10,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 54072\n        },\n        \"tokens\": {\n          \"input\": 30138,\n          \"prompt\": 53026,\n          \"candidates\": 3455,\n          \"total\": 60669,\n          \"cached\": 22888,\n          \"thoughts\": 4188,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 8,\n            \"totalErrors\": 4,\n            \"totalLatencyMs\": 23257,\n            \"tokens\": {\n              \"input\": 19837,\n              \"prompt\": 42725,\n              \"candidates\": 1654,\n              \"total\": 45368,\n              \"cached\": 22888,\n              \"thoughts\": 989,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            " ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "9081bb9c-796c-48e5-abcc-ee0e51e44f32" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"fcb0ed27-4cd4-4b2b-976e-e23a91059b03\",\n  \"response\": \"I have researched the latest Mistral AI models and architectures, focusing on the recent \\\"Mistral 3\\\" family and the innovative \\\"Granular MoE\\\" design. The findings, including detailed benchmarks and licensing terms (Apache 2.0 for major models like Mistral Large 3), have been documented in `survey/mistral.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2451\n        },\n        \"tokens\": {\n          \"input\": 931,\n          \"prompt\": 931,\n          \"candidates\": 91,\n          \"total\": 1382,\n          \"cached\": 0,\n          \"thoughts\": 360,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2451,\n            \"tokens\": {\n              \"input\": 931,\n              \"prompt\": 931,\n              \"candidates\": 91,\n              \"total\": 1382,\n              \"cached\": 0,\n              \"thoughts\": 360,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 10,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 54072\n        },\n        \"tokens\": {\n          \"input\": 30138,\n          \"prompt\": 53026,\n          \"candidates\": 3455,\n          \"total\": 60669,\n          \"cached\": 22888,\n          \"thoughts\": 4188,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 8,\n            \"totalErrors\": 4,\n            \"totalLatencyMs\": 23257,\n            \"tokens\": {\n              \"input\": 19837,\n              \"prompt\": 42725,\n              \"candidates\": 1654,\n              \"total\": 45368,\n              \"cached\": 22888,\n              \"thoughts\": 989,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"fcb0ed27-4cd4-4b2b-976e-e23a91059b03\",\n  \"response\": \"I have researched the lates" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === finding-69793b08-b08a-4fef-b3db-a450462f2447 ===
+<urn:tesserai:twin:finding-69793b08-b08a-4fef-b3db-a450462f2447> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:22:01.731519Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research DeepSeek R1/V3\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:22:01.731384+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"ac96ee5b-c454-4b96-9b19-3db82195e8ed\",\n  \"response\": \"I have researched the DeepSeek R1 and V3 models and documented the results in `survey/deepseek.md`. The documentation includes details on their Mixture-of-Experts (MoE) architecture, reasoning capabilities (Chain-of-Thought), benchmark performance, and the permissive MIT license. I also included code examples for using the models via API and Hugging Face.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2182\n        },\n        \"tokens\": {\n          \"input\": 932,\n          \"prompt\": 932,\n          \"candidates\": 93,\n          \"total\": 1376,\n          \"cached\": 0,\n          \"thoughts\": 351,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2182,\n            \"tokens\": {\n              \"input\": 932,\n              \"prompt\": 932,\n              \"candidates\": 93,\n              \"total\": 1376,\n              \"cached\": 0,\n              \"thoughts\": 351,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 6,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 38004\n        },\n        \"tokens\": {\n          \"input\": 19269,\n          \"prompt\": 50671,\n          \"candidates\": 2456,\n          \"total\": 56112,\n          \"cached\": 31402,\n          \"thoughts\": 2985,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 5,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 20027,\n            \"tokens\": {\n              \"input\": 14137,\n              \"prompt\": 45539,\n              \"candidates\": 1531,\n              \"total\": 47691,\n              \"cached\": 31402,\n              \"thoughts\": 621,\n              \"tool\": 0\n            }\n          }" ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "5e50384e-3031-4e5c-8669-d85631766a49" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"ac96ee5b-c454-4b96-9b19-3db82195e8ed\",\n  \"response\": \"I have researched the DeepSeek R1 and V3 models and documented the results in `survey/deepseek.md`. The documentation includes details on their Mixture-of-Experts (MoE) architecture, reasoning capabilities (Chain-of-Thought), benchmark performance, and the permissive MIT license. I also included code examples for using the models via API and Hugging Face.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2182\n        },\n        \"tokens\": {\n          \"input\": 932,\n          \"prompt\": 932,\n          \"candidates\": 93,\n          \"total\": 1376,\n          \"cached\": 0,\n          \"thoughts\": 351,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2182,\n            \"tokens\": {\n              \"input\": 932,\n              \"prompt\": 932,\n              \"candidates\": 93,\n              \"total\": 1376,\n              \"cached\": 0,\n              \"thoughts\": 351,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 6,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 38004\n        },\n        \"tokens\": {\n          \"input\": 19269,\n          \"prompt\": 50671,\n          \"candidates\": 2456,\n          \"total\": 56112,\n          \"cached\": 31402,\n          \"thoughts\": 2985,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 5,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 20027,\n            \"tokens\": {\n              \"input\": 14137,\n              \"prompt\": 45539,\n              \"candidates\": 1531,\n              \"total\": 47691,\n              \"cached\": 31402,\n              \"thoughts\": 621,\n              \"tool\": 0\n            }\n          }" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"ac96ee5b-c454-4b96-9b19-3db82195e8ed\",\n  \"response\": \"I have researched the DeepS" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === finding-a10a8734-d406-453f-b41c-7eda7175de49 ===
+<urn:tesserai:twin:finding-a10a8734-d406-453f-b41c-7eda7175de49> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:47.926112Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Phi-4\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:47.925990+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"fbb7c8a7-5a55-4f92-b095-91f29983f79d\",\n  \"response\": \"I've confirmed that `phi4.md` is correctly saved in the `survey` directory, along with several other research files, and its content accurately reflects my findings on Microsoft's Phi-4. My task is complete.\\n\\n# Microsoft Phi-4 Research Summary\\n\\nI have researched Microsoft's **Phi-4** model family and documented the findings in `survey/phi4.md`.\\n\\n### Key Findings:\\n- **Architecture**: Based on Phi-3 with significant upgrades including a `tiktoken` tokenizer (100k+ vocabulary), a **128K context window**, and the integration of **GRPO (Group Relative Policy Optimization)** in reasoning variants.\\n- **Model Sizes**:\\n  - **Phi-4 Base (14.7B)**: Dense transformer for high-end reasoning.\\n  - **Phi-4 Multimodal (5.6B)**: Vision, audio, and text support using SigLIP-2.\\n  - **Phi-4-mini (3.8B)**: Optimized for on-device deployment with a focus on math and logic.\\n- **Performance**: Phi-4-mini achieves a **64.0% on MATH**, outperforming Phi-3.5-mini by over 15%. The 14B Reasoning Plus variant rivals large models like o1-mini and DeepSeek-R1 with an **82.5% on AIME 2025**.\\n- **License**: Released under the **MIT License**, allowing for unrestricted commercial use.\\n- **Improvements**: Native **function calling** support and massive scaling of synthetic training data (~10 trillion tokens).\\n\\nThe full report is available at `survey/phi4.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2740\n        },\n        \"tokens\": {\n          \"input\": 919,\n          \"prompt\": 919,\n          \"candidates\": 101,\n          \"total\": 1378,\n          \"cached\": 0,\n          \"thoughts\": 358,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2740,\n            \"tokens\": {\n        " ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "26bbb610-6104-4707-a6e4-713261b5740b" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"fbb7c8a7-5a55-4f92-b095-91f29983f79d\",\n  \"response\": \"I've confirmed that `phi4.md` is correctly saved in the `survey` directory, along with several other research files, and its content accurately reflects my findings on Microsoft's Phi-4. My task is complete.\\n\\n# Microsoft Phi-4 Research Summary\\n\\nI have researched Microsoft's **Phi-4** model family and documented the findings in `survey/phi4.md`.\\n\\n### Key Findings:\\n- **Architecture**: Based on Phi-3 with significant upgrades including a `tiktoken` tokenizer (100k+ vocabulary), a **128K context window**, and the integration of **GRPO (Group Relative Policy Optimization)** in reasoning variants.\\n- **Model Sizes**:\\n  - **Phi-4 Base (14.7B)**: Dense transformer for high-end reasoning.\\n  - **Phi-4 Multimodal (5.6B)**: Vision, audio, and text support using SigLIP-2.\\n  - **Phi-4-mini (3.8B)**: Optimized for on-device deployment with a focus on math and logic.\\n- **Performance**: Phi-4-mini achieves a **64.0% on MATH**, outperforming Phi-3.5-mini by over 15%. The 14B Reasoning Plus variant rivals large models like o1-mini and DeepSeek-R1 with an **82.5% on AIME 2025**.\\n- **License**: Released under the **MIT License**, allowing for unrestricted commercial use.\\n- **Improvements**: Native **function calling** support and massive scaling of synthetic training data (~10 trillion tokens).\\n\\nThe full report is available at `survey/phi4.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2740\n        },\n        \"tokens\": {\n          \"input\": 919,\n          \"prompt\": 919,\n          \"candidates\": 101,\n          \"total\": 1378,\n          \"cached\": 0,\n          \"thoughts\": 358,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2740,\n            \"tokens\": {\n        " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"fbb7c8a7-5a55-4f92-b095-91f29983f79d\",\n  \"response\": \"I've confirmed that `phi4.m" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === finding-bdeb95f9-e32c-46fd-8afb-5a12ce17c37c ===
+<urn:tesserai:twin:finding-bdeb95f9-e32c-46fd-8afb-5a12ce17c37c> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:22:40.941447Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Qwen 3\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:22:40.941328+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"9ae376d7-b78d-4600-9983-a18cd5f1fca1\",\n  \"response\": \"I have completed the research on Alibaba's Qwen 3 series and documented the findings in `survey/qwen3.md`. The report details the new \\\"hybrid reasoning\\\" architecture, the wide range of model sizes (from 0.6B to 235B MoE), competitive multilingual benchmarks, and its Apache 2.0 licensing.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2424\n        },\n        \"tokens\": {\n          \"input\": 942,\n          \"prompt\": 942,\n          \"candidates\": 84,\n          \"total\": 1403,\n          \"cached\": 0,\n          \"thoughts\": 377,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2424,\n            \"tokens\": {\n              \"input\": 942,\n              \"prompt\": 942,\n              \"candidates\": 84,\n              \"total\": 1403,\n              \"cached\": 0,\n              \"thoughts\": 377,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 7,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 37050\n        },\n        \"tokens\": {\n          \"input\": 20331,\n          \"prompt\": 63405,\n          \"candidates\": 3522,\n          \"total\": 68375,\n          \"cached\": 43074,\n          \"thoughts\": 1448,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 6,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 29596,\n            \"tokens\": {\n              \"input\": 15200,\n              \"prompt\": 58274,\n              \"candidates\": 2596,\n              \"total\": 62318,\n              \"cached\": 43074,\n              \"thoughts\": 1448,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            \"totalRequests\": 1,\n    " ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "f22349c6-ccae-4676-b73b-e5cfd30fa6df" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"9ae376d7-b78d-4600-9983-a18cd5f1fca1\",\n  \"response\": \"I have completed the research on Alibaba's Qwen 3 series and documented the findings in `survey/qwen3.md`. The report details the new \\\"hybrid reasoning\\\" architecture, the wide range of model sizes (from 0.6B to 235B MoE), competitive multilingual benchmarks, and its Apache 2.0 licensing.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2424\n        },\n        \"tokens\": {\n          \"input\": 942,\n          \"prompt\": 942,\n          \"candidates\": 84,\n          \"total\": 1403,\n          \"cached\": 0,\n          \"thoughts\": 377,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2424,\n            \"tokens\": {\n              \"input\": 942,\n              \"prompt\": 942,\n              \"candidates\": 84,\n              \"total\": 1403,\n              \"cached\": 0,\n              \"thoughts\": 377,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 7,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 37050\n        },\n        \"tokens\": {\n          \"input\": 20331,\n          \"prompt\": 63405,\n          \"candidates\": 3522,\n          \"total\": 68375,\n          \"cached\": 43074,\n          \"thoughts\": 1448,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 6,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 29596,\n            \"tokens\": {\n              \"input\": 15200,\n              \"prompt\": 58274,\n              \"candidates\": 2596,\n              \"total\": 62318,\n              \"cached\": 43074,\n              \"thoughts\": 1448,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            \"totalRequests\": 1,\n    " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"9ae376d7-b78d-4600-9983-a18cd5f1fca1\",\n  \"response\": \"I have completed the resear" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === finding-e407e06d-f369-4ab1-a6a3-8e6b42f04c77 ===
+<urn:tesserai:twin:finding-e407e06d-f369-4ab1-a6a3-8e6b42f04c77> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:27.073126Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Command R+\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:27.073026+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"b098c49a-0238-4ca9-b909-d5b3b2002174\",\n  \"response\": \"I have completed the research on Cohere's Command R+ models and compiled a detailed report in `survey/command-r.md`. The report highlights its 104B parameter architecture, 128k context window, specialized RAG and tool-use capabilities—including inline citations and multi-step reasoning—along with competitive benchmarks and the CC-BY-NC 4.0 license.\\n\\nSummary of findings:\\n- **Architecture**: 104B parameters, transformer-based, 128k context window, highly efficient multilingual tokenizer.\\n- **RAG & Tool-Use**: Optimized for grounded generation with native citation support and multi-step agentic workflows.\\n- **Benchmarks**: Competitive with GPT-4 Turbo and Claude 3 Sonnet, particularly in RAG and tool-use (e.g., ToolTalk).\\n- **Licensing**: CC-BY-NC 4.0 (open weights for research/non-commercial use).\\n- **API**: Modern V2 Python client support for function calling and citation management.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2211\n        },\n        \"tokens\": {\n          \"input\": 930,\n          \"prompt\": 930,\n          \"candidates\": 96,\n          \"total\": 1383,\n          \"cached\": 0,\n          \"thoughts\": 357,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2211,\n            \"tokens\": {\n              \"input\": 930,\n              \"prompt\": 930,\n              \"candidates\": 96,\n              \"total\": 1383,\n              \"cached\": 0,\n              \"thoughts\": 357,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 17,\n          \"totalErrors\": 7,\n          \"totalLatencyMs\": 66995\n        },\n        \"tokens\": {\n          \"input\": 36512,\n          \"prompt\": 9" ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "adee8223-37ed-45a8-9462-a5ecfe9bf1aa" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"b098c49a-0238-4ca9-b909-d5b3b2002174\",\n  \"response\": \"I have completed the research on Cohere's Command R+ models and compiled a detailed report in `survey/command-r.md`. The report highlights its 104B parameter architecture, 128k context window, specialized RAG and tool-use capabilities—including inline citations and multi-step reasoning—along with competitive benchmarks and the CC-BY-NC 4.0 license.\\n\\nSummary of findings:\\n- **Architecture**: 104B parameters, transformer-based, 128k context window, highly efficient multilingual tokenizer.\\n- **RAG & Tool-Use**: Optimized for grounded generation with native citation support and multi-step agentic workflows.\\n- **Benchmarks**: Competitive with GPT-4 Turbo and Claude 3 Sonnet, particularly in RAG and tool-use (e.g., ToolTalk).\\n- **Licensing**: CC-BY-NC 4.0 (open weights for research/non-commercial use).\\n- **API**: Modern V2 Python client support for function calling and citation management.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2211\n        },\n        \"tokens\": {\n          \"input\": 930,\n          \"prompt\": 930,\n          \"candidates\": 96,\n          \"total\": 1383,\n          \"cached\": 0,\n          \"thoughts\": 357,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2211,\n            \"tokens\": {\n              \"input\": 930,\n              \"prompt\": 930,\n              \"candidates\": 96,\n              \"total\": 1383,\n              \"cached\": 0,\n              \"thoughts\": 357,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 17,\n          \"totalErrors\": 7,\n          \"totalLatencyMs\": 66995\n        },\n        \"tokens\": {\n          \"input\": 36512,\n          \"prompt\": 9" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"b098c49a-0238-4ca9-b909-d5b3b2002174\",\n  \"response\": \"I have completed the resear" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === finding-fc7202f9-173d-4670-8426-33f77f72d570 ===
+<urn:tesserai:twin:finding-fc7202f9-173d-4670-8426-33f77f72d570> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.923734Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Create Comparison Summary\",\"coder\"]" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "semantic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:24:22.923564+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"d9f0d431-995b-4818-956b-88c0540954f4\",\n  \"response\": \"I've completed the comparison summary and synthesized the findings from all research files into `survey/README.md`.\\n\\nThe summary includes:\\n- A comprehensive **comparison table** covering model sizes, context lengths, benchmarks (MMLU, HumanEval/Coding, MATH/Reasoning), license types, and unique strengths for Llama 4, Mistral 3, DeepSeek, Qwen 3, Phi-4, Command R+, and Gemma 3.\\n- A **concluding section** highlighting the dominant trends in the early 2026 open-source LLM landscape, such as the ubiquity of MoE architectures, the rise of native reasoning (\\\"Thinking Mode\\\"), ultra-long context windows, and the shift toward highly permissive licensing.\\n\\nThe `survey/README.md` file is now the central entry point for the research documentation.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 1831\n        },\n        \"tokens\": {\n          \"input\": 4368,\n          \"prompt\": 4368,\n          \"candidates\": 97,\n          \"total\": 4850,\n          \"cached\": 0,\n          \"thoughts\": 385,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 1831,\n            \"tokens\": {\n              \"input\": 4368,\n              \"prompt\": 4368,\n              \"candidates\": 97,\n              \"total\": 4850,\n              \"cached\": 0,\n              \"thoughts\": 385,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 4,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 28666\n        },\n        \"tokens\": {\n          \"input\": 21816,\n          \"prompt\": 58328,\n          \"candidates\": 1600,\n          \"total\": 62586,\n          \"cached\": 36512,\n          \"thoughts\": 2658,\n          \"tool\": 0\n        }" ;
+	<http://tesserai.io/ontology/confidence> "0.8"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "4fa8e6a3-0161-467b-a702-1c1df2f81848" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"d9f0d431-995b-4818-956b-88c0540954f4\",\n  \"response\": \"I've completed the comparison summary and synthesized the findings from all research files into `survey/README.md`.\\n\\nThe summary includes:\\n- A comprehensive **comparison table** covering model sizes, context lengths, benchmarks (MMLU, HumanEval/Coding, MATH/Reasoning), license types, and unique strengths for Llama 4, Mistral 3, DeepSeek, Qwen 3, Phi-4, Command R+, and Gemma 3.\\n- A **concluding section** highlighting the dominant trends in the early 2026 open-source LLM landscape, such as the ubiquity of MoE architectures, the rise of native reasoning (\\\"Thinking Mode\\\"), ultra-long context windows, and the shift toward highly permissive licensing.\\n\\nThe `survey/README.md` file is now the central entry point for the research documentation.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 1831\n        },\n        \"tokens\": {\n          \"input\": 4368,\n          \"prompt\": 4368,\n          \"candidates\": 97,\n          \"total\": 4850,\n          \"cached\": 0,\n          \"thoughts\": 385,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 1831,\n            \"tokens\": {\n              \"input\": 4368,\n              \"prompt\": 4368,\n              \"candidates\": 97,\n              \"total\": 4850,\n              \"cached\": 0,\n              \"thoughts\": 385,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 4,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 28666\n        },\n        \"tokens\": {\n          \"input\": 21816,\n          \"prompt\": 58328,\n          \"candidates\": 1600,\n          \"total\": 62586,\n          \"cached\": 36512,\n          \"thoughts\": 2658,\n          \"tool\": 0\n        }" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "{\n  \"session_id\": \"d9f0d431-995b-4818-956b-88c0540954f4\",\n  \"response\": \"I've completed the comparis" ;
+	a <https://schema.org/SemanticMemory> .
+
+
+# === memory-8693f262-6440-48a5-adfc-1d0628ce3116 ===
+<urn:tesserai:twin:memory-8693f262-6440-48a5-adfc-1d0628ce3116> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:27.07276Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Command R+\",\"research_commandr\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/tool_name> "researcher" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:27.072394+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"b098c49a-0238-4ca9-b909-d5b3b2002174\",\n  \"response\": \"I have completed the research on Cohere's Command R+ models and compiled a detailed report in `survey/command-r.md`. The report highlights its 104B parameter architecture, 128k context window, specialized RAG and tool-use capabilities—including inline citations and multi-step reasoning—along with competitive benchmarks and the CC-BY-NC 4.0 license.\\n\\nSummary of findings:\\n- **Architecture**: 104B parameters, transformer-based, 128k context window, highly efficient multilingual tokenizer.\\n- **RAG & Tool-Use**: Optimized for grounded generation with native citation support and multi-step agentic workflows.\\n- **Benchmarks**: Competitive with GPT-4 Turbo and Claude 3 Sonnet, particularly in RAG and tool-use (e.g., ToolTalk).\\n- **Licensing**: CC-BY-NC 4.0 (open weights for research/non-commercial use).\\n- **API**: Modern V2 Python client support for function calling and citation management.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2211\n        },\n        \"tokens\": {\n          \"input\": 930,\n          \"prompt\": 930,\n          \"candidates\": 96,\n          \"total\": 1383,\n          \"cached\": 0,\n          \"thoughts\": 357,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2211,\n            \"tokens\": {\n              \"input\": 930,\n              \"prompt\": 930,\n              \"candidates\": 96,\n              \"total\": 1383,\n              \"cached\": 0,\n              \"thoughts\": 357,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 17,\n          \"totalErrors\": 7,\n          \"totalLatencyMs\": 66995\n        },\n        \"tokens\": {\n          \"input\": 36512,\n          \"prompt\": 9" ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "adee8223-37ed-45a8-9462-a5ecfe9bf1aa" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"b098c49a-0238-4ca9-b909-d5b3b2002174\",\n  \"response\": \"I have completed the research on Cohere's Command R+ models and compiled a detailed report in `survey/command-r.md`. The report highlights its 104B parameter architecture, 128k context window, specialized RAG and tool-use capabilities—including inline citations and multi-step reasoning—along with competitive benchmarks and the CC-BY-NC 4.0 license.\\n\\nSummary of findings:\\n- **Architecture**: 104B parameters, transformer-based, 128k context window, highly efficient multilingual tokenizer.\\n- **RAG & Tool-Use**: Optimized for grounded generation with native citation support and multi-step agentic workflows.\\n- **Benchmarks**: Competitive with GPT-4 Turbo and Claude 3 Sonnet, particularly in RAG and tool-use (e.g., ToolTalk).\\n- **Licensing**: CC-BY-NC 4.0 (open weights for research/non-commercial use).\\n- **API**: Modern V2 Python client support for function calling and citation management.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2211\n        },\n        \"tokens\": {\n          \"input\": 930,\n          \"prompt\": 930,\n          \"candidates\": 96,\n          \"total\": 1383,\n          \"cached\": 0,\n          \"thoughts\": 357,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2211,\n            \"tokens\": {\n              \"input\": 930,\n              \"prompt\": 930,\n              \"candidates\": 96,\n              \"total\": 1383,\n              \"cached\": 0,\n              \"thoughts\": 357,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 17,\n          \"totalErrors\": 7,\n          \"totalLatencyMs\": 66995\n        },\n        \"tokens\": {\n          \"input\": 36512,\n          \"prompt\": 9" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[researcher] {\n  \"session_id\": \"b098c49a-0238-4ca9-b909-d5b3b2002174\",\n  \"response\": \"I have " ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === memory-b93d0c50-12fb-4b35-b1ad-04ea9f51a325 ===
+<urn:tesserai:twin:memory-b93d0c50-12fb-4b35-b1ad-04ea9f51a325> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:37.357714Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Gemma 3\",\"research_gemma3\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/tool_name> "researcher" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:37.357043+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"25b6ebe3-bfc2-4955-827f-fdb5e8b106d9\",\n  \"response\": \"I have researched the Gemma 3 model family and compiled a detailed report covering its architecture, model sizes, performance benchmarks, and license. The report is saved in `survey/gemma3.md`.\\n\\nHighlights from the report:\\n- **Architecture**: Decoder-only Transformer with Grouped-Query Attention (GQA).\\n- **Multimodality**: Native support for text and image processing in the 4B, 12B, and 27B models.\\n- **Model Sizes**: Five variants ranging from 270M to 27B parameters.\\n- **Context Window**: Significant expansion to 128K tokens for multimodal models.\\n- **Benchmarks**: Gemma 3 27B-IT achieved an Elo rating of 1338, competing with much larger models.\\n- **License**: Permissive open-weights license allowing for commercial use.\\n\\nThe file `survey/gemma3.md` is now available with the full report.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 3,\n          \"totalErrors\": 2,\n          \"totalLatencyMs\": 2462\n        },\n        \"tokens\": {\n          \"input\": 924,\n          \"prompt\": 924,\n          \"candidates\": 85,\n          \"total\": 1354,\n          \"cached\": 0,\n          \"thoughts\": 345,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 3,\n            \"totalErrors\": 2,\n            \"totalLatencyMs\": 2462,\n            \"tokens\": {\n              \"input\": 924,\n              \"prompt\": 924,\n              \"candidates\": 85,\n              \"total\": 1354,\n              \"cached\": 0,\n              \"thoughts\": 345,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 30,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 93164\n        },\n        \"tokens\": {\n          \"input\": 55895,\n          \"prompt\": 320538,\n          \"candidates\": 7020,\n          \"total\": 329693,\n          \"cached\": 264643,\n   " ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "49050066-e444-4793-b294-a1db3a72164a" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"25b6ebe3-bfc2-4955-827f-fdb5e8b106d9\",\n  \"response\": \"I have researched the Gemma 3 model family and compiled a detailed report covering its architecture, model sizes, performance benchmarks, and license. The report is saved in `survey/gemma3.md`.\\n\\nHighlights from the report:\\n- **Architecture**: Decoder-only Transformer with Grouped-Query Attention (GQA).\\n- **Multimodality**: Native support for text and image processing in the 4B, 12B, and 27B models.\\n- **Model Sizes**: Five variants ranging from 270M to 27B parameters.\\n- **Context Window**: Significant expansion to 128K tokens for multimodal models.\\n- **Benchmarks**: Gemma 3 27B-IT achieved an Elo rating of 1338, competing with much larger models.\\n- **License**: Permissive open-weights license allowing for commercial use.\\n\\nThe file `survey/gemma3.md` is now available with the full report.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 3,\n          \"totalErrors\": 2,\n          \"totalLatencyMs\": 2462\n        },\n        \"tokens\": {\n          \"input\": 924,\n          \"prompt\": 924,\n          \"candidates\": 85,\n          \"total\": 1354,\n          \"cached\": 0,\n          \"thoughts\": 345,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 3,\n            \"totalErrors\": 2,\n            \"totalLatencyMs\": 2462,\n            \"tokens\": {\n              \"input\": 924,\n              \"prompt\": 924,\n              \"candidates\": 85,\n              \"total\": 1354,\n              \"cached\": 0,\n              \"thoughts\": 345,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 30,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 93164\n        },\n        \"tokens\": {\n          \"input\": 55895,\n          \"prompt\": 320538,\n          \"candidates\": 7020,\n          \"total\": 329693,\n          \"cached\": 264643,\n   " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[researcher] {\n  \"session_id\": \"25b6ebe3-bfc2-4955-827f-fdb5e8b106d9\",\n  \"response\": \"I have " ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === memory-c7cb2689-b11b-4939-8933-f63631a2c0c7 ===
+<urn:tesserai:twin:memory-c7cb2689-b11b-4939-8933-f63631a2c0c7> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.923095Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Create Comparison Summary\",\"generate_readme\",\"coder\"]" ;
+	<http://tesserai.io/ontology/tool_name> "coder" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:24:22.922453+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"d9f0d431-995b-4818-956b-88c0540954f4\",\n  \"response\": \"I've completed the comparison summary and synthesized the findings from all research files into `survey/README.md`.\\n\\nThe summary includes:\\n- A comprehensive **comparison table** covering model sizes, context lengths, benchmarks (MMLU, HumanEval/Coding, MATH/Reasoning), license types, and unique strengths for Llama 4, Mistral 3, DeepSeek, Qwen 3, Phi-4, Command R+, and Gemma 3.\\n- A **concluding section** highlighting the dominant trends in the early 2026 open-source LLM landscape, such as the ubiquity of MoE architectures, the rise of native reasoning (\\\"Thinking Mode\\\"), ultra-long context windows, and the shift toward highly permissive licensing.\\n\\nThe `survey/README.md` file is now the central entry point for the research documentation.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 1831\n        },\n        \"tokens\": {\n          \"input\": 4368,\n          \"prompt\": 4368,\n          \"candidates\": 97,\n          \"total\": 4850,\n          \"cached\": 0,\n          \"thoughts\": 385,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 1831,\n            \"tokens\": {\n              \"input\": 4368,\n              \"prompt\": 4368,\n              \"candidates\": 97,\n              \"total\": 4850,\n              \"cached\": 0,\n              \"thoughts\": 385,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 4,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 28666\n        },\n        \"tokens\": {\n          \"input\": 21816,\n          \"prompt\": 58328,\n          \"candidates\": 1600,\n          \"total\": 62586,\n          \"cached\": 36512,\n          \"thoughts\": 2658,\n          \"tool\": 0\n        }" ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "4fa8e6a3-0161-467b-a702-1c1df2f81848" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"d9f0d431-995b-4818-956b-88c0540954f4\",\n  \"response\": \"I've completed the comparison summary and synthesized the findings from all research files into `survey/README.md`.\\n\\nThe summary includes:\\n- A comprehensive **comparison table** covering model sizes, context lengths, benchmarks (MMLU, HumanEval/Coding, MATH/Reasoning), license types, and unique strengths for Llama 4, Mistral 3, DeepSeek, Qwen 3, Phi-4, Command R+, and Gemma 3.\\n- A **concluding section** highlighting the dominant trends in the early 2026 open-source LLM landscape, such as the ubiquity of MoE architectures, the rise of native reasoning (\\\"Thinking Mode\\\"), ultra-long context windows, and the shift toward highly permissive licensing.\\n\\nThe `survey/README.md` file is now the central entry point for the research documentation.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 1831\n        },\n        \"tokens\": {\n          \"input\": 4368,\n          \"prompt\": 4368,\n          \"candidates\": 97,\n          \"total\": 4850,\n          \"cached\": 0,\n          \"thoughts\": 385,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 1831,\n            \"tokens\": {\n              \"input\": 4368,\n              \"prompt\": 4368,\n              \"candidates\": 97,\n              \"total\": 4850,\n              \"cached\": 0,\n              \"thoughts\": 385,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 4,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 28666\n        },\n        \"tokens\": {\n          \"input\": 21816,\n          \"prompt\": 58328,\n          \"candidates\": 1600,\n          \"total\": 62586,\n          \"cached\": 36512,\n          \"thoughts\": 2658,\n          \"tool\": 0\n        }" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[coder] {\n  \"session_id\": \"d9f0d431-995b-4818-956b-88c0540954f4\",\n  \"response\": \"I've co" ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === memory-ca4212ef-ae0d-4e0f-bf54-2c4dd9174661 ===
+<urn:tesserai:twin:memory-ca4212ef-ae0d-4e0f-bf54-2c4dd9174661> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:38.47242Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Mistral/Mixtral\",\"research_mistral\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/tool_name> "researcher" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:38.472031+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"fcb0ed27-4cd4-4b2b-976e-e23a91059b03\",\n  \"response\": \"I have researched the latest Mistral AI models and architectures, focusing on the recent \\\"Mistral 3\\\" family and the innovative \\\"Granular MoE\\\" design. The findings, including detailed benchmarks and licensing terms (Apache 2.0 for major models like Mistral Large 3), have been documented in `survey/mistral.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2451\n        },\n        \"tokens\": {\n          \"input\": 931,\n          \"prompt\": 931,\n          \"candidates\": 91,\n          \"total\": 1382,\n          \"cached\": 0,\n          \"thoughts\": 360,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2451,\n            \"tokens\": {\n              \"input\": 931,\n              \"prompt\": 931,\n              \"candidates\": 91,\n              \"total\": 1382,\n              \"cached\": 0,\n              \"thoughts\": 360,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 10,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 54072\n        },\n        \"tokens\": {\n          \"input\": 30138,\n          \"prompt\": 53026,\n          \"candidates\": 3455,\n          \"total\": 60669,\n          \"cached\": 22888,\n          \"thoughts\": 4188,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 8,\n            \"totalErrors\": 4,\n            \"totalLatencyMs\": 23257,\n            \"tokens\": {\n              \"input\": 19837,\n              \"prompt\": 42725,\n              \"candidates\": 1654,\n              \"total\": 45368,\n              \"cached\": 22888,\n              \"thoughts\": 989,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            " ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "9081bb9c-796c-48e5-abcc-ee0e51e44f32" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"fcb0ed27-4cd4-4b2b-976e-e23a91059b03\",\n  \"response\": \"I have researched the latest Mistral AI models and architectures, focusing on the recent \\\"Mistral 3\\\" family and the innovative \\\"Granular MoE\\\" design. The findings, including detailed benchmarks and licensing terms (Apache 2.0 for major models like Mistral Large 3), have been documented in `survey/mistral.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2451\n        },\n        \"tokens\": {\n          \"input\": 931,\n          \"prompt\": 931,\n          \"candidates\": 91,\n          \"total\": 1382,\n          \"cached\": 0,\n          \"thoughts\": 360,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2451,\n            \"tokens\": {\n              \"input\": 931,\n              \"prompt\": 931,\n              \"candidates\": 91,\n              \"total\": 1382,\n              \"cached\": 0,\n              \"thoughts\": 360,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 10,\n          \"totalErrors\": 4,\n          \"totalLatencyMs\": 54072\n        },\n        \"tokens\": {\n          \"input\": 30138,\n          \"prompt\": 53026,\n          \"candidates\": 3455,\n          \"total\": 60669,\n          \"cached\": 22888,\n          \"thoughts\": 4188,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 8,\n            \"totalErrors\": 4,\n            \"totalLatencyMs\": 23257,\n            \"tokens\": {\n              \"input\": 19837,\n              \"prompt\": 42725,\n              \"candidates\": 1654,\n              \"total\": 45368,\n              \"cached\": 22888,\n              \"thoughts\": 989,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[researcher] {\n  \"session_id\": \"fcb0ed27-4cd4-4b2b-976e-e23a91059b03\",\n  \"response\": \"I have " ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === memory-d4ca8c77-d2c4-48f9-861e-1b17867898b8 ===
+<urn:tesserai:twin:memory-d4ca8c77-d2c4-48f9-861e-1b17867898b8> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:47.925534Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Phi-4\",\"research_phi4\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/tool_name> "researcher" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:23:47.924919+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"fbb7c8a7-5a55-4f92-b095-91f29983f79d\",\n  \"response\": \"I've confirmed that `phi4.md` is correctly saved in the `survey` directory, along with several other research files, and its content accurately reflects my findings on Microsoft's Phi-4. My task is complete.\\n\\n# Microsoft Phi-4 Research Summary\\n\\nI have researched Microsoft's **Phi-4** model family and documented the findings in `survey/phi4.md`.\\n\\n### Key Findings:\\n- **Architecture**: Based on Phi-3 with significant upgrades including a `tiktoken` tokenizer (100k+ vocabulary), a **128K context window**, and the integration of **GRPO (Group Relative Policy Optimization)** in reasoning variants.\\n- **Model Sizes**:\\n  - **Phi-4 Base (14.7B)**: Dense transformer for high-end reasoning.\\n  - **Phi-4 Multimodal (5.6B)**: Vision, audio, and text support using SigLIP-2.\\n  - **Phi-4-mini (3.8B)**: Optimized for on-device deployment with a focus on math and logic.\\n- **Performance**: Phi-4-mini achieves a **64.0% on MATH**, outperforming Phi-3.5-mini by over 15%. The 14B Reasoning Plus variant rivals large models like o1-mini and DeepSeek-R1 with an **82.5% on AIME 2025**.\\n- **License**: Released under the **MIT License**, allowing for unrestricted commercial use.\\n- **Improvements**: Native **function calling** support and massive scaling of synthetic training data (~10 trillion tokens).\\n\\nThe full report is available at `survey/phi4.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2740\n        },\n        \"tokens\": {\n          \"input\": 919,\n          \"prompt\": 919,\n          \"candidates\": 101,\n          \"total\": 1378,\n          \"cached\": 0,\n          \"thoughts\": 358,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2740,\n            \"tokens\": {\n        " ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "26bbb610-6104-4707-a6e4-713261b5740b" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"fbb7c8a7-5a55-4f92-b095-91f29983f79d\",\n  \"response\": \"I've confirmed that `phi4.md` is correctly saved in the `survey` directory, along with several other research files, and its content accurately reflects my findings on Microsoft's Phi-4. My task is complete.\\n\\n# Microsoft Phi-4 Research Summary\\n\\nI have researched Microsoft's **Phi-4** model family and documented the findings in `survey/phi4.md`.\\n\\n### Key Findings:\\n- **Architecture**: Based on Phi-3 with significant upgrades including a `tiktoken` tokenizer (100k+ vocabulary), a **128K context window**, and the integration of **GRPO (Group Relative Policy Optimization)** in reasoning variants.\\n- **Model Sizes**:\\n  - **Phi-4 Base (14.7B)**: Dense transformer for high-end reasoning.\\n  - **Phi-4 Multimodal (5.6B)**: Vision, audio, and text support using SigLIP-2.\\n  - **Phi-4-mini (3.8B)**: Optimized for on-device deployment with a focus on math and logic.\\n- **Performance**: Phi-4-mini achieves a **64.0% on MATH**, outperforming Phi-3.5-mini by over 15%. The 14B Reasoning Plus variant rivals large models like o1-mini and DeepSeek-R1 with an **82.5% on AIME 2025**.\\n- **License**: Released under the **MIT License**, allowing for unrestricted commercial use.\\n- **Improvements**: Native **function calling** support and massive scaling of synthetic training data (~10 trillion tokens).\\n\\nThe full report is available at `survey/phi4.md`.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 2,\n          \"totalErrors\": 1,\n          \"totalLatencyMs\": 2740\n        },\n        \"tokens\": {\n          \"input\": 919,\n          \"prompt\": 919,\n          \"candidates\": 101,\n          \"total\": 1378,\n          \"cached\": 0,\n          \"thoughts\": 358,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 2,\n            \"totalErrors\": 1,\n            \"totalLatencyMs\": 2740,\n            \"tokens\": {\n        " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[researcher] {\n  \"session_id\": \"fbb7c8a7-5a55-4f92-b095-91f29983f79d\",\n  \"response\": \"I've co" ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === memory-e10e21a9-5e72-4db4-8e48-2874e0d18a51 ===
+<urn:tesserai:twin:memory-e10e21a9-5e72-4db4-8e48-2874e0d18a51> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:22:40.940991Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Qwen 3\",\"research_qwen3\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/tool_name> "researcher" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:22:40.940544+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"9ae376d7-b78d-4600-9983-a18cd5f1fca1\",\n  \"response\": \"I have completed the research on Alibaba's Qwen 3 series and documented the findings in `survey/qwen3.md`. The report details the new \\\"hybrid reasoning\\\" architecture, the wide range of model sizes (from 0.6B to 235B MoE), competitive multilingual benchmarks, and its Apache 2.0 licensing.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2424\n        },\n        \"tokens\": {\n          \"input\": 942,\n          \"prompt\": 942,\n          \"candidates\": 84,\n          \"total\": 1403,\n          \"cached\": 0,\n          \"thoughts\": 377,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2424,\n            \"tokens\": {\n              \"input\": 942,\n              \"prompt\": 942,\n              \"candidates\": 84,\n              \"total\": 1403,\n              \"cached\": 0,\n              \"thoughts\": 377,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 7,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 37050\n        },\n        \"tokens\": {\n          \"input\": 20331,\n          \"prompt\": 63405,\n          \"candidates\": 3522,\n          \"total\": 68375,\n          \"cached\": 43074,\n          \"thoughts\": 1448,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 6,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 29596,\n            \"tokens\": {\n              \"input\": 15200,\n              \"prompt\": 58274,\n              \"candidates\": 2596,\n              \"total\": 62318,\n              \"cached\": 43074,\n              \"thoughts\": 1448,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            \"totalRequests\": 1,\n    " ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "f22349c6-ccae-4676-b73b-e5cfd30fa6df" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"9ae376d7-b78d-4600-9983-a18cd5f1fca1\",\n  \"response\": \"I have completed the research on Alibaba's Qwen 3 series and documented the findings in `survey/qwen3.md`. The report details the new \\\"hybrid reasoning\\\" architecture, the wide range of model sizes (from 0.6B to 235B MoE), competitive multilingual benchmarks, and its Apache 2.0 licensing.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2424\n        },\n        \"tokens\": {\n          \"input\": 942,\n          \"prompt\": 942,\n          \"candidates\": 84,\n          \"total\": 1403,\n          \"cached\": 0,\n          \"thoughts\": 377,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2424,\n            \"tokens\": {\n              \"input\": 942,\n              \"prompt\": 942,\n              \"candidates\": 84,\n              \"total\": 1403,\n              \"cached\": 0,\n              \"thoughts\": 377,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 7,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 37050\n        },\n        \"tokens\": {\n          \"input\": 20331,\n          \"prompt\": 63405,\n          \"candidates\": 3522,\n          \"total\": 68375,\n          \"cached\": 43074,\n          \"thoughts\": 1448,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 6,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 29596,\n            \"tokens\": {\n              \"input\": 15200,\n              \"prompt\": 58274,\n              \"candidates\": 2596,\n              \"total\": 62318,\n              \"cached\": 43074,\n              \"thoughts\": 1448,\n              \"tool\": 0\n            }\n          },\n          \"utility_tool\": {\n            \"totalRequests\": 1,\n    " ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[researcher] {\n  \"session_id\": \"9ae376d7-b78d-4600-9983-a18cd5f1fca1\",\n  \"response\": \"I have " ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === memory-fa324122-a948-4497-9e19-3b7e29731423 ===
+<urn:tesserai:twin:memory-fa324122-a948-4497-9e19-3b7e29731423> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:22:01.730936Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research DeepSeek R1/V3\",\"research_deepseek\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/tool_name> "researcher" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:22:01.730245+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"ac96ee5b-c454-4b96-9b19-3db82195e8ed\",\n  \"response\": \"I have researched the DeepSeek R1 and V3 models and documented the results in `survey/deepseek.md`. The documentation includes details on their Mixture-of-Experts (MoE) architecture, reasoning capabilities (Chain-of-Thought), benchmark performance, and the permissive MIT license. I also included code examples for using the models via API and Hugging Face.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2182\n        },\n        \"tokens\": {\n          \"input\": 932,\n          \"prompt\": 932,\n          \"candidates\": 93,\n          \"total\": 1376,\n          \"cached\": 0,\n          \"thoughts\": 351,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2182,\n            \"tokens\": {\n              \"input\": 932,\n              \"prompt\": 932,\n              \"candidates\": 93,\n              \"total\": 1376,\n              \"cached\": 0,\n              \"thoughts\": 351,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 6,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 38004\n        },\n        \"tokens\": {\n          \"input\": 19269,\n          \"prompt\": 50671,\n          \"candidates\": 2456,\n          \"total\": 56112,\n          \"cached\": 31402,\n          \"thoughts\": 2985,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 5,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 20027,\n            \"tokens\": {\n              \"input\": 14137,\n              \"prompt\": 45539,\n              \"candidates\": 1531,\n              \"total\": 47691,\n              \"cached\": 31402,\n              \"thoughts\": 621,\n              \"tool\": 0\n            }\n          }" ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "5e50384e-3031-4e5c-8669-d85631766a49" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"ac96ee5b-c454-4b96-9b19-3db82195e8ed\",\n  \"response\": \"I have researched the DeepSeek R1 and V3 models and documented the results in `survey/deepseek.md`. The documentation includes details on their Mixture-of-Experts (MoE) architecture, reasoning capabilities (Chain-of-Thought), benchmark performance, and the permissive MIT license. I also included code examples for using the models via API and Hugging Face.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2182\n        },\n        \"tokens\": {\n          \"input\": 932,\n          \"prompt\": 932,\n          \"candidates\": 93,\n          \"total\": 1376,\n          \"cached\": 0,\n          \"thoughts\": 351,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2182,\n            \"tokens\": {\n              \"input\": 932,\n              \"prompt\": 932,\n              \"candidates\": 93,\n              \"total\": 1376,\n              \"cached\": 0,\n              \"thoughts\": 351,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 6,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 38004\n        },\n        \"tokens\": {\n          \"input\": 19269,\n          \"prompt\": 50671,\n          \"candidates\": 2456,\n          \"total\": 56112,\n          \"cached\": 31402,\n          \"thoughts\": 2985,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 5,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 20027,\n            \"tokens\": {\n              \"input\": 14137,\n              \"prompt\": 45539,\n              \"candidates\": 1531,\n              \"total\": 47691,\n              \"cached\": 31402,\n              \"thoughts\": 621,\n              \"tool\": 0\n            }\n          }" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[researcher] {\n  \"session_id\": \"ac96ee5b-c454-4b96-9b19-3db82195e8ed\",\n  \"response\": \"I have " ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === memory-ff021ece-b695-4d7f-87c6-60f94f82cff8 ===
+<urn:tesserai:twin:memory-ff021ece-b695-4d7f-87c6-60f94f82cff8> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:22:12.195817Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/topics> "[\"Research Llama 4\",\"research_llama4\",\"researcher\"]" ;
+	<http://tesserai.io/ontology/tool_name> "researcher" ;
+	<http://tesserai.io/ontology/structured_data> "null" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/memory_type> "episodic" ;
+	<http://tesserai.io/ontology/created_at> "2026-03-29T23:22:12.195224+00:00" ;
+	<http://tesserai.io/ontology/content> "{\n  \"session_id\": \"9cf6bfa6-5d5f-47d5-96e3-e770c372f59d\",\n  \"response\": \"I've completed the research on Llama 4 and documented the findings in `survey/llama4.md`.\\n\\nAs of March 2026, the **Llama 4** series (Scout, Maverick, and Behemoth) utilizes a **Mixture-of-Experts (MoE)** architecture, significantly improving inference efficiency and supporting context windows up to **10 million tokens**. Llama 4 Maverick demonstrates \\\"frontier-class\\\" performance with an **MMLU of ~85.5%** and **HumanEval of ~77.6%**, positioning it as a leading open-weight alternative for multimodal and reasoning-heavy tasks. The models remain under the **Llama 4 Community License**, allowing broad accessibility with a 700-million-user commercial threshold.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2033\n        },\n        \"tokens\": {\n          \"input\": 958,\n          \"prompt\": 958,\n          \"candidates\": 71,\n          \"total\": 1395,\n          \"cached\": 0,\n          \"thoughts\": 366,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2033,\n            \"tokens\": {\n              \"input\": 958,\n              \"prompt\": 958,\n              \"candidates\": 71,\n              \"total\": 1395,\n              \"cached\": 0,\n              \"thoughts\": 366,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 8,\n          \"totalErrors\": 3,\n          \"totalLatencyMs\": 26020\n        },\n        \"tokens\": {\n          \"input\": 21780,\n          \"prompt\": 40615,\n          \"candidates\": 2557,\n          \"total\": 43952,\n          \"cached\": 18835,\n          \"thoughts\": 780,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 7,\n            \"tot" ;
+	<http://tesserai.io/ontology/confidence> "1"^^<http://www.w3.org/2001/XMLSchema#double> ;
+	<http://tesserai.io/ontology/agent_id> "1d4b7c6a-b075-43a5-ac3f-55d2a67a0451" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "{\n  \"session_id\": \"9cf6bfa6-5d5f-47d5-96e3-e770c372f59d\",\n  \"response\": \"I've completed the research on Llama 4 and documented the findings in `survey/llama4.md`.\\n\\nAs of March 2026, the **Llama 4** series (Scout, Maverick, and Behemoth) utilizes a **Mixture-of-Experts (MoE)** architecture, significantly improving inference efficiency and supporting context windows up to **10 million tokens**. Llama 4 Maverick demonstrates \\\"frontier-class\\\" performance with an **MMLU of ~85.5%** and **HumanEval of ~77.6%**, positioning it as a leading open-weight alternative for multimodal and reasoning-heavy tasks. The models remain under the **Llama 4 Community License**, allowing broad accessibility with a 700-million-user commercial threshold.\",\n  \"stats\": {\n    \"models\": {\n      \"gemini-2.5-flash-lite\": {\n        \"api\": {\n          \"totalRequests\": 1,\n          \"totalErrors\": 0,\n          \"totalLatencyMs\": 2033\n        },\n        \"tokens\": {\n          \"input\": 958,\n          \"prompt\": 958,\n          \"candidates\": 71,\n          \"total\": 1395,\n          \"cached\": 0,\n          \"thoughts\": 366,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"utility_router\": {\n            \"totalRequests\": 1,\n            \"totalErrors\": 0,\n            \"totalLatencyMs\": 2033,\n            \"tokens\": {\n              \"input\": 958,\n              \"prompt\": 958,\n              \"candidates\": 71,\n              \"total\": 1395,\n              \"cached\": 0,\n              \"thoughts\": 366,\n              \"tool\": 0\n            }\n          }\n        }\n      },\n      \"gemini-3-flash-preview\": {\n        \"api\": {\n          \"totalRequests\": 8,\n          \"totalErrors\": 3,\n          \"totalLatencyMs\": 26020\n        },\n        \"tokens\": {\n          \"input\": 21780,\n          \"prompt\": 40615,\n          \"candidates\": 2557,\n          \"total\": 43952,\n          \"cached\": 18835,\n          \"thoughts\": 780,\n          \"tool\": 0\n        },\n        \"roles\": {\n          \"main\": {\n            \"totalRequests\": 7,\n            \"tot" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "[researcher] {\n  \"session_id\": \"9cf6bfa6-5d5f-47d5-96e3-e770c372f59d\",\n  \"response\": \"I've co" ;
+	a <https://schema.org/EpisodicMemory> .
+
+
+# === swarm-agent-1d4b7c6a-b075-43a5-ac3f-55d2a67a0451 ===
+<urn:tesserai:twin:swarm-agent-1d4b7c6a-b075-43a5-ac3f-55d2a67a0451> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297036Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-1" ;
+	<http://tesserai.io/ontology/subtask_id> "task-1-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.296915+00:00" ;
+	<http://tesserai.io/ontology/session_id> "1d4b7c6a-b075-43a5-ac3f-55d2a67a0451" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-1-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-agent-26bbb610-6104-4707-a6e4-713261b5740b ===
+<urn:tesserai:twin:swarm-agent-26bbb610-6104-4707-a6e4-713261b5740b> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297831Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-6" ;
+	<http://tesserai.io/ontology/subtask_id> "task-6-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297245+00:00" ;
+	<http://tesserai.io/ontology/session_id> "26bbb610-6104-4707-a6e4-713261b5740b" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-6-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-agent-49050066-e444-4793-b294-a1db3a72164a ===
+<urn:tesserai:twin:swarm-agent-49050066-e444-4793-b294-a1db3a72164a> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.29761Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-2" ;
+	<http://tesserai.io/ontology/subtask_id> "task-2-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.296966+00:00" ;
+	<http://tesserai.io/ontology/session_id> "49050066-e444-4793-b294-a1db3a72164a" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-2-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-agent-4fa8e6a3-0161-467b-a702-1c1df2f81848 ===
+<urn:tesserai:twin:swarm-agent-4fa8e6a3-0161-467b-a702-1c1df2f81848> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:47.926694Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-8" ;
+	<http://tesserai.io/ontology/subtask_id> "task-8-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:23:47.926579+00:00" ;
+	<http://tesserai.io/ontology/session_id> "4fa8e6a3-0161-467b-a702-1c1df2f81848" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "coder" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "coder agent (task-8-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-agent-5e50384e-3031-4e5c-8669-d85631766a49 ===
+<urn:tesserai:twin:swarm-agent-5e50384e-3031-4e5c-8669-d85631766a49> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297722Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-5" ;
+	<http://tesserai.io/ontology/subtask_id> "task-5-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297184+00:00" ;
+	<http://tesserai.io/ontology/session_id> "5e50384e-3031-4e5c-8669-d85631766a49" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-5-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-agent-9081bb9c-796c-48e5-abcc-ee0e51e44f32 ===
+<urn:tesserai:twin:swarm-agent-9081bb9c-796c-48e5-abcc-ee0e51e44f32> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297762Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-3" ;
+	<http://tesserai.io/ontology/subtask_id> "task-3-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297057+00:00" ;
+	<http://tesserai.io/ontology/session_id> "9081bb9c-796c-48e5-abcc-ee0e51e44f32" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-3-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-agent-adee8223-37ed-45a8-9462-a5ecfe9bf1aa ===
+<urn:tesserai:twin:swarm-agent-adee8223-37ed-45a8-9462-a5ecfe9bf1aa> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297765Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-7" ;
+	<http://tesserai.io/ontology/subtask_id> "task-7-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297304+00:00" ;
+	<http://tesserai.io/ontology/session_id> "adee8223-37ed-45a8-9462-a5ecfe9bf1aa" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-7-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-agent-f22349c6-ccae-4676-b73b-e5cfd30fa6df ===
+<urn:tesserai:twin:swarm-agent-f22349c6-ccae-4676-b73b-e5cfd30fa6df> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.29776Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-4" ;
+	<http://tesserai.io/ontology/subtask_id> "task-4-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297120+00:00" ;
+	<http://tesserai.io/ontology/session_id> "f22349c6-ccae-4676-b73b-e5cfd30fa6df" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-4-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === swarm-run-ef22486b-f430-4b31-862c-1cf1ddd7e7e6 ===
+<urn:tesserai:twin:swarm-run-ef22486b-f430-4b31-862c-1cf1ddd7e7e6> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.296277Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_ids> "[\"task-1\",\"task-2\",\"task-3\",\"task-4\",\"task-5\",\"task-6\",\"task-7\",\"task-8\"]" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.295638+00:00" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/plan_id> "llm-survey-2026" ;
+	<http://tesserai.io/ontology/objective> "Survey the most prominent open-source LLMs as of early 2026, documenting their specifications and comparing them in a centralized summary." ;
+	<http://tesserai.io/ontology/estimated_actions> 45 ;
+	<http://tesserai.io/ontology/agent_roles> "[\"researcher\",\"coder\"]" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Survey the most prominent open-source LLMs as of early 2026, documenting their specifications and comparing them in a centralized summary." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Swarm: Survey the most prominent open-source LLMs as of early 2026, documenting their specifications and comparing them in a centralized summary." ;
+	a <https://schema.org/SwarmRun> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-1 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-1> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.924603Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-1" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Llama 4 (Meta) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Llama 4" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-2 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-2> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.925178Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-2" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Gemma 3 (Google) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Gemma 3" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-3 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-3> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.925662Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-3" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research latest Mistral AI models, architecture, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Mistral/Mixtral" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-4 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-4> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.926166Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-4" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Qwen 3 (Alibaba) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Qwen 3" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-5 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-5> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.926615Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-5" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research DeepSeek R1/V3 architecture, reasoning capabilities, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research DeepSeek R1/V3" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-6 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-6> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.927078Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-6" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Phi-4 (Microsoft) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Phi-4" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-7 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-7> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.927495Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-7" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Command R+ (Cohere) architecture, RAG capabilities, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Command R+" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-8 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-8> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.927966Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-8" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 2 ;
+	<http://tesserai.io/ontology/depends_on> "[\"task-1\",\"task-2\",\"task-3\",\"task-4\",\"task-5\",\"task-6\",\"task-7\"]" ;
+	<http://tesserai.io/ontology/assigned_role> "coder" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Compile a comparison table and summary README in survey/README.md." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Create Comparison Summary" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-agent-1d4b7c6a-b075-43a5-ac3f-55d2a67a0451 ===
+<urn:tesserai:twin:swarm-agent-1d4b7c6a-b075-43a5-ac3f-55d2a67a0451> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297036Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-1" ;
+	<http://tesserai.io/ontology/subtask_id> "task-1-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.296915+00:00" ;
+	<http://tesserai.io/ontology/session_id> "1d4b7c6a-b075-43a5-ac3f-55d2a67a0451" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-1-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-agent-26bbb610-6104-4707-a6e4-713261b5740b ===
+<urn:tesserai:twin:swarm-agent-26bbb610-6104-4707-a6e4-713261b5740b> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297831Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-6" ;
+	<http://tesserai.io/ontology/subtask_id> "task-6-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297245+00:00" ;
+	<http://tesserai.io/ontology/session_id> "26bbb610-6104-4707-a6e4-713261b5740b" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-6-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-agent-49050066-e444-4793-b294-a1db3a72164a ===
+<urn:tesserai:twin:swarm-agent-49050066-e444-4793-b294-a1db3a72164a> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.29761Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-2" ;
+	<http://tesserai.io/ontology/subtask_id> "task-2-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.296966+00:00" ;
+	<http://tesserai.io/ontology/session_id> "49050066-e444-4793-b294-a1db3a72164a" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-2-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-agent-4fa8e6a3-0161-467b-a702-1c1df2f81848 ===
+<urn:tesserai:twin:swarm-agent-4fa8e6a3-0161-467b-a702-1c1df2f81848> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:23:47.926694Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-8" ;
+	<http://tesserai.io/ontology/subtask_id> "task-8-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:23:47.926579+00:00" ;
+	<http://tesserai.io/ontology/session_id> "4fa8e6a3-0161-467b-a702-1c1df2f81848" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "coder" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "coder agent (task-8-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-agent-5e50384e-3031-4e5c-8669-d85631766a49 ===
+<urn:tesserai:twin:swarm-agent-5e50384e-3031-4e5c-8669-d85631766a49> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297722Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-5" ;
+	<http://tesserai.io/ontology/subtask_id> "task-5-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297184+00:00" ;
+	<http://tesserai.io/ontology/session_id> "5e50384e-3031-4e5c-8669-d85631766a49" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-5-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-agent-9081bb9c-796c-48e5-abcc-ee0e51e44f32 ===
+<urn:tesserai:twin:swarm-agent-9081bb9c-796c-48e5-abcc-ee0e51e44f32> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297762Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-3" ;
+	<http://tesserai.io/ontology/subtask_id> "task-3-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297057+00:00" ;
+	<http://tesserai.io/ontology/session_id> "9081bb9c-796c-48e5-abcc-ee0e51e44f32" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-3-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-agent-adee8223-37ed-45a8-9462-a5ecfe9bf1aa ===
+<urn:tesserai:twin:swarm-agent-adee8223-37ed-45a8-9462-a5ecfe9bf1aa> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.297765Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-7" ;
+	<http://tesserai.io/ontology/subtask_id> "task-7-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297304+00:00" ;
+	<http://tesserai.io/ontology/session_id> "adee8223-37ed-45a8-9462-a5ecfe9bf1aa" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-7-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-agent-f22349c6-ccae-4676-b73b-e5cfd30fa6df ===
+<urn:tesserai:twin:swarm-agent-f22349c6-ccae-4676-b73b-e5cfd30fa6df> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.29776Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/workspace> "/private/tmp/swarm-gemini-llms" ;
+	<http://tesserai.io/ontology/task_id> "task-4" ;
+	<http://tesserai.io/ontology/subtask_id> "task-4-sub-1" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.297120+00:00" ;
+	<http://tesserai.io/ontology/session_id> "f22349c6-ccae-4676-b73b-e5cfd30fa6df" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "researcher agent (task-4-sub-1)" ;
+	a <https://schema.org/AgentSession> .
+
+
+# === urn:tesserai:twin:swarm-run-ef22486b-f430-4b31-862c-1cf1ddd7e7e6 ===
+<urn:tesserai:twin:swarm-run-ef22486b-f430-4b31-862c-1cf1ddd7e7e6> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:21:16.296277Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_ids> "[\"task-1\",\"task-2\",\"task-3\",\"task-4\",\"task-5\",\"task-6\",\"task-7\",\"task-8\"]" ;
+	<http://tesserai.io/ontology/status> "running" ;
+	<http://tesserai.io/ontology/started_at> "2026-03-29T23:21:16.295638+00:00" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/plan_id> "llm-survey-2026" ;
+	<http://tesserai.io/ontology/objective> "Survey the most prominent open-source LLMs as of early 2026, documenting their specifications and comparing them in a centralized summary." ;
+	<http://tesserai.io/ontology/estimated_actions> 45 ;
+	<http://tesserai.io/ontology/agent_roles> "[\"researcher\",\"coder\"]" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Survey the most prominent open-source LLMs as of early 2026, documenting their specifications and comparing them in a centralized summary." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Swarm: Survey the most prominent open-source LLMs as of early 2026, documenting their specifications and comparing them in a centralized summary." ;
+	a <https://schema.org/SwarmRun> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-1 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-1> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.924603Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-1" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Llama 4 (Meta) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Llama 4" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-2 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-2> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.925178Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-2" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Gemma 3 (Google) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Gemma 3" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-3 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-3> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.925662Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-3" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research latest Mistral AI models, architecture, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Mistral/Mixtral" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-4 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-4> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.926166Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-4" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Qwen 3 (Alibaba) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Qwen 3" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-5 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-5> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.926615Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-5" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research DeepSeek R1/V3 architecture, reasoning capabilities, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research DeepSeek R1/V3" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-6 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-6> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.927078Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-6" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Phi-4 (Microsoft) architecture, model sizes, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Phi-4" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-7 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-7> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.927495Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-7" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 1 ;
+	<http://tesserai.io/ontology/depends_on> "[]" ;
+	<http://tesserai.io/ontology/assigned_role> "researcher" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Research Command R+ (Cohere) architecture, RAG capabilities, benchmarks, and license." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Research Command R+" ;
+	a <https://schema.org/SwarmTask> .
+
+
+# === urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-8 ===
+<urn:tesserai:twin:swarm-task-ef22486b-f430-4b31-862c-1cf1ddd7e7e6-task-8> <http://tesserai.io/ontology/createdAt> "2026-03-29T23:24:22.927966Z"^^<http://www.w3.org/2001/XMLSchema#dateTime> ;
+	<http://tesserai.io/ontology/task_id> "task-8" ;
+	<http://tesserai.io/ontology/subtask_count> 1 ;
+	<http://tesserai.io/ontology/status> "Completed" ;
+	<http://tesserai.io/ontology/run_id> "ef22486b-f430-4b31-862c-1cf1ddd7e7e6" ;
+	<http://tesserai.io/ontology/priority> 2 ;
+	<http://tesserai.io/ontology/depends_on> "[\"task-1\",\"task-2\",\"task-3\",\"task-4\",\"task-5\",\"task-6\",\"task-7\"]" ;
+	<http://tesserai.io/ontology/assigned_role> "coder" ;
+	<http://www.w3.org/2000/01/rdf-schema#comment> "Compile a comparison table and summary README in survey/README.md." ;
+	<http://www.w3.org/2000/01/rdf-schema#label> "Create Comparison Summary" ;
+	a <https://schema.org/SwarmTask> .
+
+

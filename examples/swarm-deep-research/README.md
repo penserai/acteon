@@ -16,7 +16,7 @@ An agent swarm that performs deep research on the most prominent open source mul
 | Tasks | 11 |
 | Agents spawned | 16 |
 | Duration | ~20 minutes |
-| Model | Sonnet |
+| Engine | Claude (Sonnet) |
 | TesseraiDB entities | 81 |
 | RDF triples | 335KB |
 | Graph | 55 nodes, 85 edges |

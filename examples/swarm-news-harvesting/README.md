@@ -16,7 +16,7 @@ An agent swarm that researches recent EU AI regulation news and produces a struc
 | Agents spawned | 9 |
 | Agents completed | 9 / 9 |
 | Duration | ~25 minutes |
-| Model | Sonnet |
+| Engine | Claude (Sonnet) |
 | TesseraiDB entities | 48 twins |
 | RDF triples | 165KB |
 | Relationships | 45 edges |
