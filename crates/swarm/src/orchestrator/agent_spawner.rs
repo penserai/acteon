@@ -181,6 +181,7 @@ fn spawn_gemini_agent(
     let mut cmd = Command::new("gemini");
     cmd.arg("-p")
         .arg(&full_prompt)
+        .arg("--yolo")
         .arg("--output-format")
         .arg("json")
         .current_dir(workspace);
