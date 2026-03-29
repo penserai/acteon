@@ -1889,6 +1889,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(config.server.max_concurrent_dispatch));
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,
@@ -1900,6 +1902,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
         connection_registry: Some(connection_registry),
+        dispatch_semaphore,
         config: config_snapshot,
         ui_path: Some(config.ui.dist_path.clone()),
         ui_enabled: config.ui.enabled,
@@ -1987,6 +1990,13 @@ fn validate_provider_url(provider_name: &str, url: &str) -> Result<(), String> {
         return Ok(());
     }
 
+    // Explicitly block cloud metadata service (AWS/GCP/Azure) which is a common SSRF target.
+    if lower.contains("169.254.169.254") {
+        return Err(format!(
+            "provider '{provider_name}': URL references restricted cloud metadata IP (169.254.169.254)"
+        ));
+    }
+
     // Allow http to loopback addresses (local dev / emulators).
     if lower.starts_with("http://localhost")
         || lower.starts_with("http://127.")
@@ -2003,17 +2013,12 @@ fn validate_provider_url(provider_name: &str, url: &str) -> Result<(), String> {
         ));
     }
 
-    // Warn about plain http:// to non-loopback destinations but allow it
-    // to avoid breaking existing deployments. Operators should migrate to
-    // HTTPS.
-    warn!(
-        provider = %provider_name,
-        url = %url,
-        "provider URL uses plain http:// to a non-loopback destination — \
-         credentials and payloads will be transmitted in cleartext. \
-         Use https:// in production."
-    );
-    Ok(())
+    // Plain http to non-loopback destinations is a security risk as it
+    // transmits credentials in cleartext and is a prime target for SSRF.
+    Err(format!(
+        "provider '{provider_name}': plain http:// to non-loopback destinations is forbidden for security. \
+         Use https:// for production or localhost for development. URL: {url}"
+    ))
 }
 
 /// Decrypt a config value, requiring `ACTEON_AUTH_KEY` if the value is encrypted.

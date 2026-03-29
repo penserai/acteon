@@ -66,6 +66,21 @@ impl ProviderError {
             Self::Timeout(_) | Self::Connection(_) | Self::RateLimited
         )
     }
+
+    /// Returns a generic, safe error message suitable for returning to API
+    /// consumers without leaking internal provider details (like truncated
+    /// response bodies from upstream services).
+    pub fn public_message(&self) -> String {
+        match self {
+            Self::NotFound(name) => format!("provider '{name}' not found"),
+            Self::ExecutionFailed(_) => "upstream provider returned an error".to_string(),
+            Self::Timeout(_) => "upstream provider timed out".to_string(),
+            Self::Connection(_) => "failed to connect to upstream provider".to_string(),
+            Self::Configuration(_) => "provider misconfigured".to_string(),
+            Self::RateLimited => "rate limited by upstream provider".to_string(),
+            Self::Serialization(_) => "failed to serialize/deserialize payload".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -97,6 +112,21 @@ mod tests {
 
         let err = ProviderError::RateLimited;
         assert_eq!(err.to_string(), "rate limited");
+    }
+
+    #[test]
+    fn test_public_messages() {
+        let err = ProviderError::NotFound("slack".into());
+        assert_eq!(err.public_message(), "provider 'slack' not found");
+
+        let err = ProviderError::ExecutionFailed("sensitive data".into());
+        assert_eq!(err.public_message(), "upstream provider returned an error");
+
+        let err = ProviderError::Connection("internal ip 10.0.0.1".into());
+        assert_eq!(err.public_message(), "failed to connect to upstream provider");
+
+        let err = ProviderError::Timeout(Duration::from_secs(5));
+        assert_eq!(err.public_message(), "upstream provider timed out");
     }
 
     #[test]

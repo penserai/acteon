@@ -156,12 +156,20 @@ pub fn render_profile<S: ::std::hash::BuildHasher>(
     // Most Acteon templates produce API payloads (JSON, plain text) where
     // HTML escaping would corrupt data (e.g., `application/pdf` → `application&#x2f;pdf`).
     // Templates named *.html get auto-escaping; others render raw.
+    //
+    // For inline templates, we check the field name for hints (html, body).
     env.set_auto_escape_callback(|name| {
+        let lower = name.to_lowercase();
         let ext = std::path::Path::new(name)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
-        if ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm") {
+
+        if ext.eq_ignore_ascii_case("html")
+            || ext.eq_ignore_ascii_case("htm")
+            || lower.contains("html")
+            || lower.contains("body")
+        {
             minijinja::AutoEscape::Html
         } else {
             minijinja::AutoEscape::None
@@ -737,6 +745,27 @@ mod tests {
         assert!(
             !rendered.contains("<script>"),
             "expected HTML escaping for .html template, got: {rendered}"
+        );
+        assert!(rendered.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn render_escapes_html_for_inline_templates_with_html_hints() {
+        // Inline templates with names containing 'html' or 'body' should be escaped.
+        let mut fields = HashMap::new();
+        fields.insert(
+            "body_html".to_string(),
+            TemplateProfileField::Inline("Hello {{ name }}".to_string()),
+        );
+        let profile = make_profile("html-profile", fields);
+
+        let payload = serde_json::json!({"name": "<script>alert(1)</script>"});
+
+        let result = render_profile(&profile, &HashMap::new(), &payload, &[]).unwrap();
+        let rendered = result.fields.get("body_html").unwrap();
+        assert!(
+            !rendered.contains("<script>"),
+            "expected HTML escaping for inline 'body_html' field, got: {rendered}"
         );
         assert!(rendered.contains("&lt;script&gt;"));
     }

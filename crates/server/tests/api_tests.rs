@@ -86,6 +86,7 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
         config: ConfigSnapshot::default(),
         ui_path: None,
         ui_enabled: false,
@@ -613,6 +614,61 @@ async fn audit_get_by_action_id() {
 }
 
 #[tokio::test]
+async fn test_dispatch_concurrency_limit_enforced() {
+    let mut state = build_test_state(vec![]);
+    // Set semaphore to 0 to simulate full capacity
+    state.dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(0));
+
+    let app = build_app(state);
+
+    let action = test_action();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/dispatch")
+                .header("X-Acteon-Role", "admin")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&action).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body["error"], "rate limit exceeded");
+}
+
+#[tokio::test]
+async fn test_dispatch_batch_concurrency_limit_enforced() {
+    let mut state = build_test_state(vec![]);
+    // Set semaphore to 1, but we'll try to dispatch 2 actions in a batch
+    state.dispatch_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+
+    let app = build_app(state);
+
+    let actions = vec![test_action(), test_action()];
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/dispatch/batch")
+                .header("X-Acteon-Role", "admin")
+                .header("Content-Type", "application/json")
+                .body(Body::from(serde_json::to_vec(&actions).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn audit_get_nonexistent_returns_404() {
     let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
     let state = build_test_state_with_audit(vec![], Some(audit));
@@ -815,6 +871,7 @@ fn build_approval_state_with_providers(
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
         config: ConfigSnapshot::default(),
         ui_path: None,
         ui_enabled: false,

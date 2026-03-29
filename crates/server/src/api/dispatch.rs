@@ -92,6 +92,13 @@ pub async fn dispatch(
         });
     }
 
+    // Acquire a permit from the global dispatch semaphore to limit concurrency.
+    let _permit = state.dispatch_semaphore.try_acquire().map_err(|_| {
+        ServerError::RateLimited {
+            retry_after: 1, // Suggest retry after 1 second
+        }
+    })?;
+
     let caller = identity.to_caller();
     let mut action = action;
     action.trace_context = super::trace_context::capture_trace_context();
@@ -195,6 +202,14 @@ pub async fn dispatch_batch(
             }
         }
     }
+
+    // Acquire permits from the global dispatch semaphore for the entire batch.
+    let _permits = state
+        .dispatch_semaphore
+        .try_acquire_many(actions.len() as u32)
+        .map_err(|_| ServerError::RateLimited {
+            retry_after: 1, // Suggest retry after 1 second
+        })?;
 
     let caller = identity.to_caller();
     let trace_context = super::trace_context::capture_trace_context();
