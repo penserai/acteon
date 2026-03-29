@@ -11,13 +11,23 @@ pub struct HookInput {
     pub session_id: String,
 }
 
-/// Map `Claude Code` tool names to Acteon action types.
+/// Map agent tool names to Acteon action types.
+///
+/// Supports both Claude Code and Gemini CLI tool naming conventions.
 pub fn map_tool_to_action_type(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        // Claude Code tools
         "Bash" => Some("execute_command"),
         "Write" | "Edit" => Some("write_file"),
         "WebFetch" | "WebSearch" => Some("web_access"),
         "Task" => Some("spawn_agent"),
+
+        // Gemini CLI tools
+        "run_shell_command" => Some("execute_command"),
+        "write_file" | "replace" => Some("write_file"),
+        "web_fetch" | "google_web_search" => Some("web_access"),
+        "generalist" => Some("spawn_agent"),
+
         // Read-only tools pass through without gating.
         _ => None,
     }
@@ -69,11 +79,17 @@ pub async fn dispatch_to_acteon(
     let dedup_key = build_dedup_key(action_type, &input.session_id, &input.tool_input);
     let action_id = uuid::Uuid::new_v4().to_string();
 
+    let engine_provider = if input.tool_name.contains('_') || input.tool_name == "generalist" {
+        "gemini-cli"
+    } else {
+        "claude-code"
+    };
+
     let body = serde_json::json!({
         "id": action_id,
         "namespace": namespace,
         "tenant": tenant,
-        "provider": "claude-code",
+        "provider": engine_provider,
         "action_type": action_type,
         "payload": input.tool_input,
         "metadata": {

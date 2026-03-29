@@ -57,23 +57,13 @@ pub async fn spawn_agent(
     hooks_binary: &Path,
 ) -> Result<Child, SwarmError> {
     let workspace = &session.workspace;
+    let engine = config.defaults.engine;
 
-    // Generate .claude/settings.json with hooks pointing to our hook binary.
-    // Only if the hook binary exists — otherwise agents run without Acteon gating.
+    // Generate settings with hooks pointing to our hook binary.
     if hooks_binary.exists() {
         setup_workspace_hooks(workspace, hooks_binary, config, &session.id).await?;
     }
 
-    // Agent execution: claude -p is the default (supports multi-turn tool loops).
-    // The Agent SDK bridge can be opted in via SWARM_USE_SDK=1 env var, but
-    // it currently only supports single-turn tool calls (SDK limitation).
-    let bridge = if std::env::var("SWARM_USE_SDK").is_ok() {
-        find_agent_bridge()
-    } else {
-        None
-    };
-
-    let tools_arg = allowed_tools.join(",");
     let swarm_env = [
         ("ACTEON_URL", config.acteon.endpoint.as_str()),
         ("ACTEON_AGENT_ROLE", session.role.as_str()),
@@ -83,67 +73,90 @@ pub async fn spawn_agent(
         ("SWARM_AGENT_ID", session.id.as_str()),
     ];
 
-    let child = match bridge {
-        Some(BridgeKind::Python(path)) => {
-            tracing::info!("using Python Agent SDK bridge");
-            let mut cmd = Command::new("python3.10");
-            cmd.arg(&path)
-                .arg("--prompt")
-                .arg(&subtask.prompt)
-                .arg("--system-prompt")
-                .arg(system_prompt)
-                .arg("--cwd")
-                .arg(workspace)
-                .arg("--model")
-                .arg("sonnet");
-            // Don't pass --allowed-tools to the SDK bridge: let the agent
-            // use all tools freely. Role restrictions are advisory; Acteon
-            // hooks enforce safety. Restricting tools causes ToolSearch
-            // overhead where the agent wastes turns discovering deferred tools.
-            for (k, v) in &swarm_env {
-                cmd.env(k, v);
+    let child = match engine {
+        crate::config::AgentEngine::Claude => {
+            let bridge = if std::env::var("SWARM_USE_SDK").is_ok() {
+                find_agent_bridge()
+            } else {
+                None
+            };
+
+            match bridge {
+                Some(BridgeKind::Python(path)) => {
+                    tracing::info!("using Python Agent SDK bridge");
+                    let mut cmd = Command::new("python3.10");
+                    cmd.arg(&path)
+                        .arg("--prompt")
+                        .arg(&subtask.prompt)
+                        .arg("--system-prompt")
+                        .arg(system_prompt)
+                        .arg("--cwd")
+                        .arg(workspace)
+                        .arg("--model")
+                        .arg("sonnet");
+                    for (k, v) in &swarm_env {
+                        cmd.env(k, v);
+                    }
+                    cmd.stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .current_dir(workspace)
+                        .spawn()
+                        .map_err(|e| {
+                            SwarmError::AgentSpawn(format!("failed to spawn Python bridge: {e}"))
+                        })?
+                }
+                Some(BridgeKind::Node(path)) => {
+                    tracing::info!("using Node.js Agent SDK bridge");
+                    let mut cmd = Command::new("node");
+                    cmd.arg(&path)
+                        .arg("--prompt")
+                        .arg(&subtask.prompt)
+                        .arg("--system-prompt")
+                        .arg(system_prompt)
+                        .arg("--allowed-tools")
+                        .arg(allowed_tools.join(","))
+                        .arg("--cwd")
+                        .arg(workspace)
+                        .current_dir(workspace);
+                    for (k, v) in &swarm_env {
+                        cmd.env(k, v);
+                    }
+                    cmd.env_optional("ACTEON_AGENT_KEY", config.acteon.api_key.as_deref())
+                        .env_optional("TESSERAI_URL", Some(config.tesserai.endpoint.as_str()))
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Node bridge: {e}")))?
+                }
+                None => {
+                    tracing::warn!("Agent SDK bridge not found, falling back to `claude -p`");
+                    let full_prompt = format!("{system_prompt}\n\n## Task\n{}", subtask.prompt);
+                    let mut cmd = Command::new("claude");
+                    cmd.arg("-p")
+                        .arg(&full_prompt)
+                        .arg("--model")
+                        .arg("sonnet")
+                        .arg("--allowedTools")
+                        .arg(allowed_tools.join(","))
+                        .arg("--output-format")
+                        .arg("json")
+                        .current_dir(workspace);
+                    for (k, v) in &swarm_env {
+                        cmd.env(k, v);
+                    }
+                    cmd.stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn claude: {e}")))?
+                }
             }
-            cmd.stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .current_dir(workspace)
-                .spawn()
-                .map_err(|e| {
-                    SwarmError::AgentSpawn(format!("failed to spawn Python bridge: {e}"))
-                })?
         }
-        Some(BridgeKind::Node(path)) => {
-            tracing::info!("using Node.js Agent SDK bridge");
-            let mut cmd = Command::new("node");
-            cmd.arg(&path)
-                .arg("--prompt")
-                .arg(&subtask.prompt)
-                .arg("--system-prompt")
-                .arg(system_prompt)
-                .arg("--allowed-tools")
-                .arg(&tools_arg)
-                .arg("--cwd")
-                .arg(workspace)
-                .current_dir(workspace);
-            for (k, v) in &swarm_env {
-                cmd.env(k, v);
-            }
-            cmd.env_optional("ACTEON_AGENT_KEY", config.acteon.api_key.as_deref())
-                .env_optional("TESSERAI_URL", Some(config.tesserai.endpoint.as_str()))
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn Node bridge: {e}")))?
-        }
-        None => {
-            tracing::warn!("Agent SDK bridge not found, falling back to `claude -p`");
+        crate::config::AgentEngine::Gemini => {
+            tracing::info!("spawning gemini agent");
             let full_prompt = format!("{system_prompt}\n\n## Task\n{}", subtask.prompt);
-            let mut cmd = Command::new("claude");
+            let mut cmd = Command::new("gemini");
             cmd.arg("-p")
                 .arg(&full_prompt)
-                .arg("--model")
-                .arg("sonnet")
-                .arg("--allowedTools")
-                .arg(&tools_arg)
                 .arg("--output-format")
                 .arg("json")
                 .current_dir(workspace);
@@ -153,7 +166,7 @@ pub async fn spawn_agent(
             cmd.stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn claude: {e}")))?
+                .map_err(|e| SwarmError::AgentSpawn(format!("failed to spawn gemini: {e}")))?
         }
     };
 
@@ -234,63 +247,116 @@ pub async fn wait_for_agent(
 
 // ── Workspace setup ──────────────────────────────────────────────────────────
 
-/// Generate .claude/settings.json in the agent workspace with hooks.
+/// Generate hook settings in the agent workspace.
 async fn setup_workspace_hooks(
     workspace: &Path,
     hooks_binary: &Path,
     config: &SwarmConfig,
     agent_id: &str,
 ) -> Result<(), SwarmError> {
-    let claude_dir = workspace.join(".claude");
-    tokio::fs::create_dir_all(&claude_dir)
-        .await
-        .map_err(|e| SwarmError::WorkspaceSetup {
-            path: claude_dir.clone(),
-            reason: format!("failed to create .claude directory: {e}"),
-        })?;
-
+    let engine = config.defaults.engine;
     let hook_bin = hooks_binary.display();
     let acteon_url = &config.acteon.endpoint;
     let tesserai_url = &config.tesserai.endpoint;
 
-    let settings = serde_json::json!({
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Task",
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("{hook_bin} gate --acteon-url {acteon_url} --agent-id {agent_id}"),
-                    "timeout": 15
-                }]
-            }],
-            "PostToolUse": [{
-                "matcher": "Bash|Write|Edit",
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("{hook_bin} record --tesserai-url {tesserai_url} --agent-id {agent_id}"),
-                    "timeout": 10,
-                    "async": true
-                }]
-            }],
-            "Stop": [{
-                "matcher": "",
-                "hooks": [{
-                    "type": "command",
-                    "command": format!("{hook_bin} complete --acteon-url {acteon_url} --tesserai-url {tesserai_url} --agent-id {agent_id}"),
-                    "timeout": 15,
-                    "async": true
-                }]
-            }]
-        }
-    });
+    match engine {
+        crate::config::AgentEngine::Claude => {
+            let claude_dir = workspace.join(".claude");
+            tokio::fs::create_dir_all(&claude_dir)
+                .await
+                .map_err(|e| SwarmError::WorkspaceSetup {
+                    path: claude_dir.clone(),
+                    reason: format!("failed to create .claude directory: {e}"),
+                })?;
 
-    let settings_path = claude_dir.join("settings.json");
-    tokio::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
-        .await
-        .map_err(|e| SwarmError::WorkspaceSetup {
-            path: settings_path,
-            reason: format!("failed to write settings.json: {e}"),
-        })?;
+            let settings = serde_json::json!({
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Bash|Write|Edit|WebFetch|WebSearch|Task",
+                        "hooks": [{
+                            "type": "command",
+                            "command": format!("{hook_bin} gate --acteon-url {acteon_url} --agent-id {agent_id}"),
+                            "timeout": 15
+                        }]
+                    }],
+                    "PostToolUse": [{
+                        "matcher": "Bash|Write|Edit",
+                        "hooks": [{
+                            "type": "command",
+                            "command": format!("{hook_bin} record --tesserai-url {tesserai_url} --agent-id {agent_id}"),
+                            "timeout": 10,
+                            "async": true
+                        }]
+                    }],
+                    "Stop": [{
+                        "matcher": "",
+                        "hooks": [{
+                            "type": "command",
+                            "command": format!("{hook_bin} complete --acteon-url {acteon_url} --tesserai-url {tesserai_url} --agent-id {agent_id}"),
+                            "timeout": 15,
+                            "async": true
+                        }]
+                    }]
+                }
+            });
+
+            let settings_path = claude_dir.join("settings.json");
+            tokio::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
+                .await
+                .map_err(|e| SwarmError::WorkspaceSetup {
+                    path: settings_path,
+                    reason: format!("failed to write settings.json: {e}"),
+                })?;
+        }
+        crate::config::AgentEngine::Gemini => {
+            let gemini_dir = workspace.join(".gemini");
+            tokio::fs::create_dir_all(&gemini_dir)
+                .await
+                .map_err(|e| SwarmError::WorkspaceSetup {
+                    path: gemini_dir.clone(),
+                    reason: format!("failed to create .gemini directory: {e}"),
+                })?;
+
+            let settings = serde_json::json!({
+                "hooks": {
+                    "BeforeTool": [{
+                        "matcher": "run_shell_command|write_file|replace|web_fetch|google_web_search|generalist",
+                        "hooks": [{
+                            "type": "command",
+                            "command": format!("{hook_bin} gate --acteon-url {acteon_url} --agent-id {agent_id}"),
+                            "timeout": 15
+                        }]
+                    }],
+                    "AfterTool": [{
+                        "matcher": "run_shell_command|write_file|replace",
+                        "hooks": [{
+                            "type": "command",
+                            "command": format!("{hook_bin} record --tesserai-url {tesserai_url} --agent-id {agent_id}"),
+                            "timeout": 10,
+                            "async": true
+                        }]
+                    }],
+                    "SessionEnd": [{
+                        "matcher": ".*",
+                        "hooks": [{
+                            "type": "command",
+                            "command": format!("{hook_bin} complete --acteon-url {acteon_url} --tesserai-url {tesserai_url} --agent-id {agent_id}"),
+                            "timeout": 15,
+                            "async": true
+                        }]
+                    }]
+                }
+            });
+
+            let settings_path = gemini_dir.join("settings.json");
+            tokio::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)
+                .await
+                .map_err(|e| SwarmError::WorkspaceSetup {
+                    path: settings_path,
+                    reason: format!("failed to write settings.json: {e}"),
+                })?;
+        }
+    }
 
     Ok(())
 }
