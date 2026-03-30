@@ -310,6 +310,17 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
                 );
             }
         }
+
+        let report_dir = config
+            .defaults
+            .working_directory
+            .as_deref()
+            .unwrap_or(std::path::Path::new("."));
+        println!(
+            "\n  Report: {}/adversarial-report-{}.json",
+            report_dir.display(),
+            run.id
+        );
     }
 
     Ok(())

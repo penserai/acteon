@@ -140,6 +140,9 @@ pub async fn execute_swarm_with_adversarial(
         );
     }
 
+    // Persist adversarial report to the working directory.
+    save_adversarial_report(config, &run.id, &adversarial_result);
+
     Ok((run, Some(adversarial_result)))
 }
 
@@ -629,6 +632,30 @@ async fn finalize_run(run: &mut SwarmRun, tesserai: &TesseraiClient, run_id: &st
         agents_completed = run.metrics.agents_completed,
         "swarm run finished"
     );
+}
+
+/// Save the adversarial report as JSON in the working directory.
+///
+/// Writes to `<working_dir>/adversarial-report-<run_id>.json`.
+fn save_adversarial_report(config: &SwarmConfig, run_id: &str, result: &AdversarialResult) {
+    let dir = config
+        .defaults
+        .working_directory
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let filename = format!("adversarial-report-{run_id}.json");
+    let path = dir.join(&filename);
+
+    match serde_json::to_string_pretty(result) {
+        Ok(json) => match std::fs::write(&path, &json) {
+            Ok(()) => tracing::info!(path = %path.display(), "adversarial report saved"),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "failed to save adversarial report: {e}");
+            }
+        },
+        Err(e) => tracing::warn!("failed to serialize adversarial report: {e}"),
+    }
 }
 
 /// Extract the readable result text from agent output.
