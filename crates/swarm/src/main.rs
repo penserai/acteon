@@ -76,6 +76,15 @@ struct RunArgs {
     /// Skip plan approval (use with --prompt).
     #[arg(long, default_value_t = false)]
     auto_approve: bool,
+    /// Enable adversarial challenge-recovery loop after the primary swarm.
+    #[arg(long, default_value_t = false)]
+    adversarial: bool,
+    /// AI engine for the adversarial swarm (overrides config; e.g., "claude" or "gemini").
+    #[arg(long)]
+    adversarial_engine: Option<String>,
+    /// Maximum adversarial challenge-recovery rounds (overrides config).
+    #[arg(long)]
+    adversarial_rounds: Option<usize>,
 }
 
 #[derive(Parser)]
@@ -240,6 +249,19 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
         anyhow::bail!("plan is not approved. Run: acteon-swarm plan approve");
     }
 
+    // Apply CLI overrides to adversarial config.
+    let mut config = config.clone();
+    if args.adversarial {
+        config.adversarial.enabled = true;
+    }
+    if let Some(ref engine_str) = args.adversarial_engine {
+        config.adversarial.enabled = true;
+        config.adversarial.engine = Some(parse_engine(engine_str)?);
+    }
+    if let Some(rounds) = args.adversarial_rounds {
+        config.adversarial.max_rounds = rounds;
+    }
+
     let roles = RoleRegistry::with_config(config.defaults.engine, &config.roles);
     validate_plan(&plan, &roles.names())?;
 
@@ -250,7 +272,18 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
         .join("acteon-swarm-hook");
 
     println!("Starting swarm run...");
-    let run = acteon_swarm::execute_swarm(&mut plan, config, &roles, &hooks_binary).await?;
+
+    if config.adversarial.enabled {
+        let adv_engine = config.adversarial.effective_engine(config.defaults.engine);
+        println!(
+            "Adversarial mode: ON (engine: {adv_engine:?}, max rounds: {})",
+            config.adversarial.max_rounds
+        );
+    }
+
+    let (run, adversarial_result) =
+        acteon_swarm::execute_swarm_with_adversarial(&mut plan, &config, &roles, &hooks_binary)
+            .await?;
 
     println!("\nSwarm run complete:");
     println!("  Status: {:?}", run.status);
@@ -260,7 +293,34 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
     println!("  Total actions: {}", run.metrics.total_actions);
     println!("  Refinements: {}", run.metrics.refinements);
 
+    if let Some(adv) = adversarial_result {
+        println!("\nAdversarial review:");
+        println!("  Rounds: {}", adv.rounds.len());
+        println!("  Total challenges: {}", adv.total_challenges);
+        println!("  Resolved: {}", adv.total_resolved);
+        println!("  Accepted: {}", adv.accepted);
+        if !adv.unresolved.is_empty() {
+            println!("  Unresolved challenges:");
+            for c in &adv.unresolved {
+                println!(
+                    "    - [{id}] ({severity:?}) {desc}",
+                    id = c.id,
+                    severity = c.severity,
+                    desc = c.description
+                );
+            }
+        }
+    }
+
     Ok(())
+}
+
+fn parse_engine(s: &str) -> Result<acteon_swarm::config::AgentEngine> {
+    match s.to_lowercase().as_str() {
+        "claude" => Ok(acteon_swarm::config::AgentEngine::Claude),
+        "gemini" => Ok(acteon_swarm::config::AgentEngine::Gemini),
+        other => anyhow::bail!("unknown engine: {other} (expected 'claude' or 'gemini')"),
+    }
 }
 
 async fn cmd_status(config: &SwarmConfig, run_id: &str) -> Result<()> {

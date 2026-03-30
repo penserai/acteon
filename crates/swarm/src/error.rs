@@ -42,6 +42,12 @@ pub enum SwarmError {
     #[error("hook error: {0}")]
     Hook(String),
 
+    #[error("adversarial challenge phase failed: {0}")]
+    AdversarialChallenge(String),
+
+    #[error("adversarial recovery phase failed: {0}")]
+    AdversarialRecovery(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

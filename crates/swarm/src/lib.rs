@@ -17,7 +17,10 @@ pub mod types;
 pub use config::SwarmConfig;
 pub use error::SwarmError;
 pub use memory::TesseraiClient;
-pub use orchestrator::execute_swarm;
+pub use orchestrator::{execute_swarm, execute_swarm_with_adversarial};
 pub use planner::{topological_sort, validate_plan};
 pub use roles::RoleRegistry;
-pub use types::{AgentRole, AgentSession, SwarmPlan, SwarmRun};
+pub use types::{
+    AdversarialChallenge, AdversarialResult, AdversarialRound, AgentRole, AgentSession, SwarmPlan,
+    SwarmRun,
+};
