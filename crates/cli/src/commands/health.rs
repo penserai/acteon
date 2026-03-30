@@ -1,17 +1,18 @@
 use acteon_ops::OpsClient;
+use tracing::{error, info};
 
 pub async fn run(ops: &OpsClient) -> anyhow::Result<()> {
     match ops.client().health().await {
         Ok(true) => {
-            println!("Acteon gateway is healthy.");
+            info!("Acteon gateway is healthy");
             Ok(())
         }
         Ok(false) => {
-            eprintln!("Acteon gateway returned unhealthy status.");
+            error!("Acteon gateway returned unhealthy status");
             std::process::exit(1);
         }
         Err(e) => {
-            eprintln!("Failed to reach gateway: {e}");
+            error!(error = %e, "Failed to reach gateway");
             std::process::exit(1);
         }
     }

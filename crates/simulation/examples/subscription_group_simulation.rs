@@ -12,6 +12,7 @@
 
 use acteon_core::{Action, ActionOutcome, StreamEvent, StreamEventType};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 /// Groups alerts by cluster+severity, batching for 30s.
 const ALERT_GROUPING_RULE: &str = r"
@@ -72,19 +73,21 @@ fn drain_events(rx: &mut tokio::sync::broadcast::Receiver<StreamEvent>) -> Vec<S
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     GROUP SUBSCRIPTION SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("     GROUP SUBSCRIPTION SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // SCENARIO 1: Watch alerts accumulate in a group
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: ALERT GROUP ACCUMULATION");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: ALERT GROUP ACCUMULATION");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  Multiple alerts from the same cluster are grouped together.");
-    println!("  Each dispatch produces a Grouped outcome with increasing size.\n");
+    info!("  Multiple alerts from the same cluster are grouped together.");
+    info!("  Each dispatch produces a Grouped outcome with increasing size.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -99,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stream_rx = gateway.stream_tx().subscribe();
 
     // Send 5 alerts from the same cluster with the same severity.
-    println!("  -> Dispatching 5 alerts from cluster=us-east, severity=warning\n");
+    info!("  -> Dispatching 5 alerts from cluster=us-east, severity=warning\n");
 
     let mut group_sizes = Vec::new();
     let mut observed_group_id: Option<String> = None;
@@ -130,14 +133,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     observed_group_id = Some(group_id.clone());
                 }
                 group_sizes.push(*group_size);
-                println!(
+                info!(
                     "    Alert {}: group_id={}  size={group_size}  notify_at={notify_at}",
                     i + 1,
                     &group_id[..8.min(group_id.len())],
                 );
             }
             other => {
-                println!("    Alert {}: unexpected outcome: {other:?}", i + 1);
+                info!("    Alert {}: unexpected outcome: {other:?}", i + 1);
             }
         }
     }
@@ -146,9 +149,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     let events = drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events received: {}", events.len());
+    info!("\n  Subscription events received: {}", events.len());
     for (i, event) in events.iter().enumerate() {
-        println!(
+        info!(
             "    #{}: [{:>15}] ns={:<16} action_type={}",
             i + 1,
             event_type_label(&event.event_type),
@@ -158,7 +161,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Verify group sizes increase monotonically.
-    println!("\n  Group sizes over time: {group_sizes:?}");
+    info!("\n  Group sizes over time: {group_sizes:?}");
     for i in 1..group_sizes.len() {
         assert!(
             group_sizes[i] > group_sizes[i - 1],
@@ -176,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Verify the provider was NOT called (actions are held in the group).
-    println!(
+    info!(
         "  Provider calls: {} (actions are buffered, not dispatched yet)",
         harness.provider("webhook").unwrap().call_count()
     );
@@ -187,17 +190,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Multiple independent groups
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: MULTIPLE INDEPENDENT GROUPS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: MULTIPLE INDEPENDENT GROUPS");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  Alerts from different clusters form separate groups.");
-    println!("  A subscriber can distinguish them by examining event metadata.\n");
+    info!("  Alerts from different clusters form separate groups.");
+    info!("  A subscriber can distinguish them by examining event metadata.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -216,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut group_ids: std::collections::HashMap<String, Vec<usize>> =
         std::collections::HashMap::new();
 
-    println!("  -> Dispatching 5 alerts across 2 clusters\n");
+    info!("  -> Dispatching 5 alerts across 2 clusters\n");
 
     for (i, cluster) in clusters.iter().enumerate() {
         let action = Action::new(
@@ -238,7 +241,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..
         } = &outcome
         {
-            println!(
+            info!(
                 "    Alert {} (cluster={cluster}): group={}  size={group_size}",
                 i + 1,
                 &group_id[..8.min(group_id.len())]
@@ -257,24 +260,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(events.len(), 5, "should have 5 dispatch events");
 
     // Verify we have exactly 2 distinct groups.
-    println!("\n  Distinct groups: {}", group_ids.len());
+    info!("\n  Distinct groups: {}", group_ids.len());
     for (gid, sizes) in &group_ids {
-        println!("    group={}: sizes={sizes:?}", &gid[..8.min(gid.len())]);
+        info!("    group={}: sizes={sizes:?}", &gid[..8.min(gid.len())]);
     }
     assert_eq!(group_ids.len(), 2, "should have 2 distinct groups");
 
     harness.teardown().await?;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // SCENARIO 3: Mixed grouped and non-grouped actions
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 3: MIXED GROUPED AND NON-GROUPED ACTIONS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 3: MIXED GROUPED AND NON-GROUPED ACTIONS");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  A subscriber sees both grouped and executed outcomes,");
-    println!("  making it easy to distinguish different action lifecycles.\n");
+    info!("  A subscriber sees both grouped and executed outcomes,");
+    info!("  making it easy to distinguish different action lifecycles.\n");
 
     let combined_rules = format!("{ALERT_GROUPING_RULE}\n{PASSTHROUGH_RULE}");
 
@@ -322,7 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
 
-    println!("  -> Dispatching 2 alerts + 2 notifications\n");
+    info!("  -> Dispatching 2 alerts + 2 notifications\n");
     for (i, action) in actions.iter().enumerate() {
         let outcome = harness.dispatch(action).await?;
         let label = match &outcome {
@@ -330,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ActionOutcome::Executed(_) => "EXECUTED".to_string(),
             other => format!("{other:?}"),
         };
-        println!(
+        info!(
             "    Action {} (type={}): {label}",
             i + 1,
             action.action_type
@@ -340,7 +343,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     let events = drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events:");
+    info!("\n  Subscription events:");
     let mut grouped_count = 0;
     let mut executed_count = 0;
     for (i, event) in events.iter().enumerate() {
@@ -351,7 +354,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => {}
             }
         }
-        println!(
+        info!(
             "    #{}: [{:>15}] ns={:<16} type={}",
             i + 1,
             event_type_label(&event.event_type),
@@ -360,19 +363,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    println!("\n  Grouped events: {grouped_count}, Executed events: {executed_count}");
+    info!("\n  Grouped events: {grouped_count}, Executed events: {executed_count}");
     assert_eq!(grouped_count, 2, "2 alerts should be grouped");
     assert_eq!(executed_count, 2, "2 notifications should be executed");
 
     harness.teardown().await?;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("              ALL SCENARIOS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("              ALL SCENARIOS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

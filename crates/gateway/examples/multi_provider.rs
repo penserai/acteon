@@ -36,9 +36,10 @@ impl DynProvider for MockProvider {
         &self,
         action: &Action,
     ) -> Result<acteon_core::ProviderResponse, ProviderError> {
-        println!(
-            "  [{}-provider] Executing '{}' action",
-            self.provider_name, action.action_type
+        tracing::info!(
+            provider = %self.provider_name,
+            action_type = %action.action_type,
+            "Executing action"
         );
         Ok(acteon_core::ProviderResponse::success(
             serde_json::json!({"provider": self.provider_name, "sent": true}),
@@ -52,6 +53,8 @@ impl DynProvider for MockProvider {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
+
     let frontend = YamlFrontend;
     let rules_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("examples")
@@ -61,16 +64,15 @@ async fn main() {
         .parse_file(&rules_path)
         .expect("failed to parse rules");
 
-    println!("Loaded {} rules:", rules.len());
+    tracing::info!(count = rules.len(), "Loaded rules");
     for rule in &rules {
-        println!(
-            "  - {} (priority: {}, action: {})",
-            rule.name,
-            rule.priority,
-            rule.action.kind_label()
+        tracing::info!(
+            name = %rule.name,
+            priority = rule.priority,
+            action = %rule.action.kind_label(),
+            "  Rule"
         );
     }
-    println!();
 
     let gateway = GatewayBuilder::new()
         .state(Arc::new(MemoryStateStore::new()))
@@ -89,7 +91,7 @@ async fn main() {
         .expect("failed to build gateway");
 
     // Scenario 1: Urgent notification - rerouted to SMS
-    println!("=== Scenario 1: Urgent notification (rerouted to SMS) ===");
+    tracing::info!("=== Scenario 1: Urgent notification (rerouted to SMS) ===");
     let urgent = Action::new(
         "notifications",
         "tenant-1",
@@ -98,11 +100,10 @@ async fn main() {
         serde_json::json!({"to": "admin@example.com", "priority": "urgent", "body": "Server down!"}),
     );
     let outcome = gateway.dispatch(urgent, None).await.unwrap();
-    println!("  Result: {}", describe_outcome(&outcome));
-    println!();
+    tracing::info!(outcome = %describe_outcome(&outcome), "Result");
 
     // Scenario 2: Normal notification - throttled
-    println!("=== Scenario 2: Normal notification (throttled) ===");
+    tracing::info!("=== Scenario 2: Normal notification (throttled) ===");
     let normal = Action::new(
         "notifications",
         "tenant-1",
@@ -111,11 +112,10 @@ async fn main() {
         serde_json::json!({"to": "user@example.com", "body": "Weekly digest"}),
     );
     let outcome = gateway.dispatch(normal, None).await.unwrap();
-    println!("  Result: {}", describe_outcome(&outcome));
-    println!();
+    tracing::info!(outcome = %describe_outcome(&outcome), "Result");
 
     // Scenario 3: Email action - modified with tracking
-    println!("=== Scenario 3: Email action (modified with tracking) ===");
+    tracing::info!("=== Scenario 3: Email action (modified with tracking) ===");
     let email = Action::new(
         "notifications",
         "tenant-1",
@@ -124,15 +124,16 @@ async fn main() {
         serde_json::json!({"to": "user@example.com", "subject": "Newsletter"}),
     );
     let outcome = gateway.dispatch(email, None).await.unwrap();
-    println!("  Result: {}", describe_outcome(&outcome));
-    println!();
+    tracing::info!(outcome = %describe_outcome(&outcome), "Result");
 
     let snap = gateway.metrics().snapshot();
-    println!("=== Gateway Metrics ===");
-    println!("  Dispatched:    {}", snap.dispatched);
-    println!("  Executed:      {}", snap.executed);
-    println!("  Rerouted:      {}", snap.rerouted);
-    println!("  Throttled:     {}", snap.throttled);
+    tracing::info!(
+        dispatched = snap.dispatched,
+        executed = snap.executed,
+        rerouted = snap.rerouted,
+        throttled = snap.throttled,
+        "Gateway metrics"
+    );
 }
 
 fn describe_outcome(outcome: &ActionOutcome) -> String {

@@ -1,5 +1,6 @@
 use acteon_ops::OpsClient;
 use clap::{Args, Subcommand};
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -32,18 +33,19 @@ pub async fn run(
             let resp = ops.list_approvals(namespace, tenant).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} pending approvals:", resp.count);
+                    info!(count = resp.count, "Pending approvals");
                     for a in &resp.approvals {
                         let msg = a.message.as_deref().unwrap_or("");
-                        println!(
-                            "  {token} | {status} | rule: {rule} | expires: {expires} {msg}",
-                            token = &a.token[..8.min(a.token.len())],
-                            status = a.status,
-                            rule = a.rule,
-                            expires = a.expires_at,
+                        info!(
+                            token = %&a.token[..8.min(a.token.len())],
+                            status = %a.status,
+                            rule = %a.rule,
+                            expires_at = %a.expires_at,
+                            message = %msg,
+                            "Approval"
                         );
                     }
                 }

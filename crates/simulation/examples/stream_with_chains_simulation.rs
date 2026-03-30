@@ -22,6 +22,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const CHAIN_RULE: &str = r#"
 rules:
@@ -43,19 +44,20 @@ fn parse_rules(yaml: &str) -> Vec<Rule> {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║      STREAM WITH CHAINS SIMULATION DEMO                     ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║      STREAM WITH CHAINS SIMULATION DEMO                     ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Watch Chain Progress in Real Time
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: CHAIN PROGRESS VIA EVENT STREAM");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: CHAIN PROGRESS VIA EVENT STREAM");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A 3-step research chain (search -> summarize -> notify) is");
-    println!("  executed while an SSE subscriber watches the progress.\n");
+    info!("  A 3-step research chain (search -> summarize -> notify) is");
+    info!("  executed while an SSE subscriber watches the progress.\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -121,7 +123,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to the event stream before starting the chain.
     let mut stream_rx = gateway.stream_tx().subscribe();
 
-    println!("  SSE subscriber connected\n");
+    info!("  SSE subscriber connected\n");
 
     // Dispatch the research action (triggers chain).
     let action = Action::new(
@@ -135,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  -> Dispatching research action...");
+    info!("  -> Dispatching research action...");
     let outcome = gateway.dispatch(action, None).await?;
 
     let chain_id = match &outcome {
@@ -145,20 +147,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             total_steps,
             first_step,
         } => {
-            println!("     Chain started: {chain_name}");
-            println!("     Chain ID:      {chain_id}");
-            println!("     Total steps:   {total_steps}");
-            println!("     First step:    {first_step}");
+            info!("     Chain started: {chain_name}");
+            info!("     Chain ID:      {chain_id}");
+            info!("     Total steps:   {total_steps}");
+            info!("     First step:    {first_step}");
             chain_id.clone()
         }
         other => {
-            println!("     Unexpected outcome: {other:?}");
+            info!("     Unexpected outcome: {other:?}");
             return Ok(());
         }
     };
 
     // Advance through all 3 steps, checking for events after each.
-    println!("\n  Advancing chain steps and watching events:\n");
+    info!("\n  Advancing chain steps and watching events:\n");
 
     let step_names = ["search", "summarize", "notify"];
     for (i, step_name) in step_names.iter().enumerate() {
@@ -175,9 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             step_events.push(event);
         }
 
-        println!("  Step {i} ({step_name}): advanced");
+        info!("  Step {i} ({step_name}): advanced");
         for event in &step_events {
-            println!(
+            info!(
                 "    Event: [{:>12}] ns={:<12} chain={}",
                 event_type_label(&event.event_type),
                 event.namespace,
@@ -187,34 +189,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Verify provider call counts.
-    println!("\n  Provider call counts:");
-    println!("    search-api: {}", search_provider.call_count());
-    println!("    llm-api:    {}", summarize_provider.call_count());
-    println!("    email:      {}", notify_provider.call_count());
+    info!("\n  Provider call counts:");
+    info!("    search-api: {}", search_provider.call_count());
+    info!("    llm-api:    {}", summarize_provider.call_count());
+    info!("    email:      {}", notify_provider.call_count());
 
     // Verify chain completed.
     let chain_state = gateway
         .get_chain_status("research", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
-    println!("\n  Final chain status: {:?}", chain_state.status);
+    info!("\n  Final chain status: {:?}", chain_state.status);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Multiple Chains with Filtered Monitoring
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: MULTIPLE CHAINS, FILTERED MONITORING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: MULTIPLE CHAINS, FILTERED MONITORING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Two chains run concurrently. A subscriber filters events");
-    println!("  to watch only one specific chain.\n");
+    info!("  Two chains run concurrently. A subscriber filters events");
+    info!("  to watch only one specific chain.\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -284,21 +286,21 @@ rules:
     let action_a = Action::new("test", "tenant-1", "svc-a", "alpha", serde_json::json!({}));
     let action_b = Action::new("test", "tenant-1", "svc-b", "beta", serde_json::json!({}));
 
-    println!("  Starting chain-alpha...");
+    info!("  Starting chain-alpha...");
     let outcome_a = gateway.dispatch(action_a, None).await?;
     let chain_id_a = match &outcome_a {
         ActionOutcome::ChainStarted { chain_id, .. } => {
-            println!("    chain_id: {chain_id}");
+            info!("    chain_id: {chain_id}");
             chain_id.clone()
         }
         other => panic!("unexpected: {other:?}"),
     };
 
-    println!("  Starting chain-beta...");
+    info!("  Starting chain-beta...");
     let outcome_b = gateway.dispatch(action_b, None).await?;
     let chain_id_b = match &outcome_b {
         ActionOutcome::ChainStarted { chain_id, .. } => {
-            println!("    chain_id: {chain_id}");
+            info!("    chain_id: {chain_id}");
             chain_id.clone()
         }
         other => panic!("unexpected: {other:?}"),
@@ -332,12 +334,12 @@ rules:
         .filter(|e| extract_chain_id(&e.event_type).is_some_and(|id| id == chain_id_b))
         .collect();
 
-    println!("\n  Total events:        {}", all_events.len());
-    println!("  Chain-alpha events:  {}", alpha_events.len());
-    println!("  Chain-beta events:   {}", beta_events.len());
+    info!("\n  Total events:        {}", all_events.len());
+    info!("  Chain-alpha events:  {}", alpha_events.len());
+    info!("  Chain-beta events:   {}", beta_events.len());
 
     for event in &alpha_events {
-        println!(
+        info!(
             "    alpha: [{:>12}] chain={}",
             event_type_label(&event.event_type),
             &extract_chain_id(&event.event_type).unwrap_or("-")
@@ -346,14 +348,14 @@ rules:
     }
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              ALL SCENARIOS PASSED                           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              ALL SCENARIOS PASSED                           ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

@@ -1,6 +1,7 @@
 use acteon_ops::{DispatchOptions, OpsClient};
 use clap::Args;
 use std::collections::HashMap;
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -67,10 +68,10 @@ pub async fn run(
 
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&outcome)?);
+            info!("{}", serde_json::to_string_pretty(&outcome)?);
         }
         OutputFormat::Text => {
-            println!("{outcome:?}");
+            info!(outcome = ?outcome, "Dispatch result");
         }
     }
 

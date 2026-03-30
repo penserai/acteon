@@ -27,14 +27,16 @@ impl DynProvider for MockEmailProvider {
         &self,
         action: &Action,
     ) -> Result<acteon_core::ProviderResponse, ProviderError> {
-        println!(
-            "  [email-provider] Executing action '{}' for {}",
-            action.action_type,
-            action
-                .payload
-                .get("to")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
+        let recipient = action
+            .payload
+            .get("to")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        tracing::info!(
+            provider = "email",
+            action_type = %action.action_type,
+            recipient,
+            "Executing action"
         );
         Ok(acteon_core::ProviderResponse::success(
             serde_json::json!({"sent": true}),
@@ -48,6 +50,8 @@ impl DynProvider for MockEmailProvider {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
+
     // Load rules from YAML
     let frontend = YamlFrontend;
     let rules_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -58,11 +62,10 @@ async fn main() {
         .parse_file(&rules_path)
         .expect("failed to parse rules");
 
-    println!("Loaded {} rules:", rules.len());
+    tracing::info!(count = rules.len(), "Loaded rules");
     for rule in &rules {
-        println!("  - {} (priority: {})", rule.name, rule.priority);
+        tracing::info!(name = %rule.name, priority = rule.priority, "  Rule");
     }
-    println!();
 
     // Build the gateway
     let gateway = GatewayBuilder::new()
@@ -80,7 +83,7 @@ async fn main() {
         .expect("failed to build gateway");
 
     // Scenario 1: Normal email - should be deduplicated on second send
-    println!("=== Scenario 1: Send email (deduplicated on repeat) ===");
+    tracing::info!("=== Scenario 1: Send email (deduplicated on repeat) ===");
     let email_action = Action::new(
         "notifications",
         "tenant-1",
@@ -91,14 +94,13 @@ async fn main() {
     .with_dedup_key("email-user@example.com-hello");
 
     let outcome1 = gateway.dispatch(email_action.clone(), None).await.unwrap();
-    println!("  First dispatch: {}", outcome_label(&outcome1));
+    tracing::info!(outcome = outcome_label(&outcome1), "First dispatch");
 
     let outcome2 = gateway.dispatch(email_action, None).await.unwrap();
-    println!("  Second dispatch: {}", outcome_label(&outcome2));
-    println!();
+    tracing::info!(outcome = outcome_label(&outcome2), "Second dispatch");
 
     // Scenario 2: Spam action - should be suppressed
-    println!("=== Scenario 2: Spam action (suppressed) ===");
+    tracing::info!("=== Scenario 2: Spam action (suppressed) ===");
     let spam_action = Action::new(
         "notifications",
         "tenant-1",
@@ -108,16 +110,17 @@ async fn main() {
     );
 
     let outcome3 = gateway.dispatch(spam_action, None).await.unwrap();
-    println!("  Result: {}", outcome_label(&outcome3));
-    println!();
+    tracing::info!(outcome = outcome_label(&outcome3), "Result");
 
     // Print metrics
     let snap = gateway.metrics().snapshot();
-    println!("=== Gateway Metrics ===");
-    println!("  Dispatched:    {}", snap.dispatched);
-    println!("  Executed:      {}", snap.executed);
-    println!("  Deduplicated:  {}", snap.deduplicated);
-    println!("  Suppressed:    {}", snap.suppressed);
+    tracing::info!(
+        dispatched = snap.dispatched,
+        executed = snap.executed,
+        deduplicated = snap.deduplicated,
+        suppressed = snap.suppressed,
+        "Gateway metrics"
+    );
 }
 
 fn outcome_label(outcome: &ActionOutcome) -> &'static str {

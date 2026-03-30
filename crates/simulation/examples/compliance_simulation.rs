@@ -22,6 +22,7 @@ use acteon_gateway::GatewayBuilder;
 use acteon_provider::{DynProvider, ProviderError};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use async_trait::async_trait;
+use tracing::info;
 
 // =============================================================================
 // Mock providers
@@ -48,7 +49,7 @@ impl DynProvider for MockProvider {
         &self,
         action: &Action,
     ) -> Result<acteon_core::ProviderResponse, ProviderError> {
-        println!(
+        info!(
             "    [{}-provider] executed '{}' for tenant '{}'",
             self.name, action.action_type, action.tenant
         );
@@ -65,19 +66,21 @@ impl DynProvider for MockProvider {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║       SOC2/HIPAA COMPLIANCE MODE SIMULATION DEMO            ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║       SOC2/HIPAA COMPLIANCE MODE SIMULATION DEMO            ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: No compliance mode (default)
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: NO COMPLIANCE MODE (default)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: NO COMPLIANCE MODE (default)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  With no compliance mode, audit writes are asynchronous, the");
-    println!("  hash chain is disabled, and audit records can be modified.\n");
+    info!("  With no compliance mode, audit writes are asynchronous, the");
+    info!("  hash chain is disabled, and audit records can be modified.\n");
 
     let config = ComplianceConfig::default();
     assert_eq!(config.mode, ComplianceMode::None);
@@ -106,25 +109,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "expected Executed outcome"
     );
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Mode:             none                   │");
-    println!("  │  Sync writes:      false                  │");
-    println!("  │  Hash chain:       false                  │");
-    println!("  │  Immutable audit:  false                  │");
-    println!("  │  Dispatch outcome: Executed                │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Mode:             none                   │");
+    info!("  │  Sync writes:      false                  │");
+    info!("  │  Hash chain:       false                  │");
+    info!("  │  Immutable audit:  false                  │");
+    info!("  │  Dispatch outcome: Executed                │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 2: SOC2 compliance mode
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: SOC2 COMPLIANCE MODE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: SOC2 COMPLIANCE MODE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  SOC2 mode enables synchronous audit writes and hash chaining.");
-    println!("  Audit records remain mutable (deletions allowed).\n");
+    info!("  SOC2 mode enables synchronous audit writes and hash chaining.");
+    info!("  Audit records remain mutable (deletions allowed).\n");
 
     let config = ComplianceConfig::new(ComplianceMode::Soc2);
     assert_eq!(config.mode, ComplianceMode::Soc2);
@@ -150,26 +153,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = gateway.dispatch(action, None).await?;
     assert!(matches!(outcome, ActionOutcome::Executed(_)));
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Mode:             soc2                   │");
-    println!("  │  Sync writes:      true                   │");
-    println!("  │  Hash chain:       true                   │");
-    println!("  │  Immutable audit:  false                  │");
-    println!("  │  Dispatch outcome: Executed                │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Mode:             soc2                   │");
+    info!("  │  Sync writes:      true                   │");
+    info!("  │  Hash chain:       true                   │");
+    info!("  │  Immutable audit:  false                  │");
+    info!("  │  Dispatch outcome: Executed                │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 3: HIPAA compliance mode
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: HIPAA COMPLIANCE MODE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: HIPAA COMPLIANCE MODE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  HIPAA mode enables all compliance features: synchronous audit");
-    println!("  writes, hash chaining, and immutable audit records (deletes and");
-    println!("  updates are rejected by the audit store decorator).\n");
+    info!("  HIPAA mode enables all compliance features: synchronous audit");
+    info!("  writes, hash chaining, and immutable audit records (deletes and");
+    info!("  updates are rejected by the audit store decorator).\n");
 
     let config = ComplianceConfig::new(ComplianceMode::Hipaa);
     assert_eq!(config.mode, ComplianceMode::Hipaa);
@@ -195,26 +198,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = gateway.dispatch(action, None).await?;
     assert!(matches!(outcome, ActionOutcome::Executed(_)));
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Mode:             hipaa                  │");
-    println!("  │  Sync writes:      true                   │");
-    println!("  │  Hash chain:       true                   │");
-    println!("  │  Immutable audit:  true                   │");
-    println!("  │  Dispatch outcome: Executed                │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Mode:             hipaa                  │");
+    info!("  │  Sync writes:      true                   │");
+    info!("  │  Hash chain:       true                   │");
+    info!("  │  Immutable audit:  true                   │");
+    info!("  │  Dispatch outcome: Executed                │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 4: Custom overrides
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: CUSTOM OVERRIDES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: CUSTOM OVERRIDES");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Start from SOC2 mode but override immutable_audit to true and");
-    println!("  disable sync_audit_writes. This shows how individual settings");
-    println!("  can be fine-tuned after selecting a base mode.\n");
+    info!("  Start from SOC2 mode but override immutable_audit to true and");
+    info!("  disable sync_audit_writes. This shows how individual settings");
+    info!("  can be fine-tuned after selecting a base mode.\n");
 
     let config = ComplianceConfig::new(ComplianceMode::Soc2)
         .with_immutable_audit(true)
@@ -243,26 +246,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outcome = gateway.dispatch(action, None).await?;
     assert!(matches!(outcome, ActionOutcome::Executed(_)));
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Base mode:        soc2                   │");
-    println!("  │  Sync writes:      false (overridden)     │");
-    println!("  │  Hash chain:       true  (from soc2)      │");
-    println!("  │  Immutable audit:  true  (overridden)     │");
-    println!("  │  Dispatch outcome: Executed                │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Base mode:        soc2                   │");
+    info!("  │  Sync writes:      false (overridden)     │");
+    info!("  │  Hash chain:       true  (from soc2)      │");
+    info!("  │  Immutable audit:  true  (overridden)     │");
+    info!("  │  Dispatch outcome: Executed                │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 5: Hash chain verification types
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: HASH CHAIN VERIFICATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: HASH CHAIN VERIFICATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  The HashChainVerification struct captures the result of a chain");
-    println!("  integrity check. This demo constructs valid and broken examples");
-    println!("  and verifies serialization round-trips.\n");
+    info!("  The HashChainVerification struct captures the result of a chain");
+    info!("  integrity check. This demo constructs valid and broken examples");
+    info!("  and verifies serialization round-trips.\n");
 
     // A valid chain
     let valid = HashChainVerification {
@@ -278,10 +281,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(back.records_checked, 500);
     assert!(back.first_broken_at.is_none());
 
-    println!("  Valid chain verification:");
-    println!("    records_checked: 500");
-    println!("    valid:           true");
-    println!("    range:           aud-001 .. aud-500\n");
+    info!("  Valid chain verification:");
+    info!("    records_checked: 500");
+    info!("    valid:           true");
+    info!("    range:           aud-001 .. aud-500\n");
 
     // A broken chain
     let broken = HashChainVerification {
@@ -296,28 +299,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!back.valid);
     assert_eq!(back.first_broken_at.as_deref(), Some("aud-123"));
 
-    println!("  Broken chain verification:");
-    println!("    records_checked: 250");
-    println!("    valid:           false");
-    println!("    first_broken_at: aud-123");
+    info!("  Broken chain verification:");
+    info!("    records_checked: 250");
+    info!("    valid:           false");
+    info!("    first_broken_at: aud-123");
 
-    println!("\n  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Valid chain serde roundtrip:   OK         │");
-    println!("  │  Broken chain serde roundtrip:  OK         │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("\n  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Valid chain serde roundtrip:   OK         │");
+    info!("  │  Broken chain serde roundtrip:  OK         │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 6: Mixed tenants on one gateway
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 6: MIXED TENANTS ON ONE GATEWAY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 6: MIXED TENANTS ON ONE GATEWAY");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A single gateway can serve tenants with different compliance");
-    println!("  needs. The compliance mode is a gateway-wide setting that");
-    println!("  determines the audit pipeline behavior for all tenants.\n");
+    info!("  A single gateway can serve tenants with different compliance");
+    info!("  needs. The compliance mode is a gateway-wide setting that");
+    info!("  determines the audit pipeline behavior for all tenants.\n");
 
     // Build gateway with HIPAA compliance
     let config = ComplianceConfig::new(ComplianceMode::Hipaa);
@@ -351,28 +354,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let outcome_b = gateway.dispatch(action_b, None).await?;
     assert!(matches!(outcome_b, ActionOutcome::Executed(_)));
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Gateway mode:     hipaa                  │");
-    println!("  │  Tenant Alpha:     email Executed          │");
-    println!("  │  Tenant Beta:      sms   Executed          │");
-    println!("  │  Both under HIPAA audit pipeline           │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Gateway mode:     hipaa                  │");
+    info!("  │  Tenant Alpha:     email Executed          │");
+    info!("  │  Tenant Beta:      sms   Executed          │");
+    info!("  │  Both under HIPAA audit pipeline           │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SUMMARY
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║  ALL 6 SCENARIOS PASSED                                     ║");
-    println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  1. No compliance mode:     async writes, no hash chain      ║");
-    println!("║  2. SOC2 mode:              sync writes + hash chain         ║");
-    println!("║  3. HIPAA mode:             sync + hash chain + immutable    ║");
-    println!("║  4. Custom overrides:       fine-tune per-setting            ║");
-    println!("║  5. Hash chain verification: valid/broken serde roundtrip    ║");
-    println!("║  6. Mixed tenants:          multi-tenant under one mode      ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║  ALL 6 SCENARIOS PASSED                                     ║");
+    info!("╠══════════════════════════════════════════════════════════════╣");
+    info!("║  1. No compliance mode:     async writes, no hash chain      ║");
+    info!("║  2. SOC2 mode:              sync writes + hash chain         ║");
+    info!("║  3. HIPAA mode:             sync + hash chain + immutable    ║");
+    info!("║  4. Custom overrides:       fine-tune per-setting            ║");
+    info!("║  5. Hash chain verification: valid/broken serde roundtrip    ║");
+    info!("║  6. Mixed tenants:          multi-tenant under one mode      ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

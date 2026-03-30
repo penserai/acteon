@@ -20,6 +20,7 @@ use acteon_rules::RuleFrontend;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::provider::{FailureMode, RecordingProvider};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 /// High circuit breaker threshold that effectively disables tripping.
 fn high_threshold_cb() -> CircuitBreakerConfig {
@@ -86,8 +87,8 @@ fn make_action_with_payload(
 
 /// Print a metrics snapshot in a readable table format.
 fn print_metrics_snapshot(label: &str, snap: &MetricsSnapshot) {
-    println!("  [{label}]");
-    println!(
+    info!("  [{label}]");
+    info!(
         "    dispatched={}, executed={}, suppressed={}, rerouted={}, \
          failed={}, throttled={}, deduplicated={}, circuit_open={}",
         snap.dispatched,
@@ -281,11 +282,11 @@ rules:
 
 /// Scenario 1: Varied traffic patterns showing how counters accumulate.
 async fn scenario_varied_traffic() -> Result<(), Box<dyn std::error::Error>> {
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: VARIED TRAFFIC PATTERNS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    println!("  Dispatch a mix of successful, suppressed, rerouted, and");
-    println!("  deduplicated actions. Watch counters accumulate over waves.\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: VARIED TRAFFIC PATTERNS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("  Dispatch a mix of successful, suppressed, rerouted, and");
+    info!("  deduplicated actions. Watch counters accumulate over waves.\n");
 
     let combined_rules = format!("{SUPPRESSION_RULE}\n{REROUTE_RULE}\n{DEDUP_RULE}");
 
@@ -300,7 +301,7 @@ async fn scenario_varied_traffic() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Wave 1: Normal traffic
-    println!("  Wave 1: Normal traffic (email + slack)");
+    info!("  Wave 1: Normal traffic (email + slack)");
     for _ in 0..10 {
         gateway
             .dispatch(
@@ -321,7 +322,7 @@ async fn scenario_varied_traffic() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(snap1.executed, 20);
 
     // Wave 2: Suppressed traffic
-    println!("\n  Wave 2: Internal debug traffic (suppressed)");
+    info!("\n  Wave 2: Internal debug traffic (suppressed)");
     for _ in 0..5 {
         gateway
             .dispatch(
@@ -336,7 +337,7 @@ async fn scenario_varied_traffic() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(snap2.suppressed, 5);
 
     // Wave 3: Rerouted traffic (critical alerts reroute from slack to webhook)
-    println!("\n  Wave 3: Critical alerts (rerouted slack -> webhook)");
+    info!("\n  Wave 3: Critical alerts (rerouted slack -> webhook)");
     for _ in 0..8 {
         gateway
             .dispatch(
@@ -356,7 +357,7 @@ async fn scenario_varied_traffic() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(snap3.rerouted, 8);
 
     // Wave 4: Deduplicated traffic
-    println!("\n  Wave 4: Duplicate alerts (deduplicated)");
+    info!("\n  Wave 4: Duplicate alerts (deduplicated)");
     let dedup_action =
         make_action("monitoring", "acme", "email", "alert").with_dedup_key("user-alert-001");
     gateway.dispatch(dedup_action, None).await?;
@@ -370,19 +371,19 @@ async fn scenario_varied_traffic() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(snap4.deduplicated, 4);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
     Ok(())
 }
 
 /// Scenario 2: Per-provider metrics with different provider characteristics.
 async fn scenario_per_provider_metrics() -> Result<(), Box<dyn std::error::Error>> {
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: PER-PROVIDER METRICS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    println!("  Three providers with different characteristics:");
-    println!("    - email: healthy, fast");
-    println!("    - slack: healthy, 50ms delay");
-    println!("    - webhook: 30% failure rate\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: PER-PROVIDER METRICS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("  Three providers with different characteristics:");
+    info!("    - email: healthy, fast");
+    info!("    - slack: healthy, 50ms delay");
+    info!("    - webhook: 30% failure rate\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
     let slack = Arc::new(RecordingProvider::new("slack").with_delay(Duration::from_millis(50)));
@@ -417,13 +418,13 @@ async fn scenario_per_provider_metrics() -> Result<(), Box<dyn std::error::Error
     }
 
     let provider_snap = gateway.provider_metrics().snapshot();
-    println!("  Per-Provider Health Summary:");
-    println!("  ┌──────────┬──────────┬───────────┬──────────┬────────────┬──────────────┐");
-    println!("  │ Provider │ Requests │ Successes │ Failures │ Success %  │ Avg Lat (ms) │");
-    println!("  ├──────────┼──────────┼───────────┼──────────┼────────────┼──────────────┤");
+    info!("  Per-Provider Health Summary:");
+    info!("  ┌──────────┬──────────┬───────────┬──────────┬────────────┬──────────────┐");
+    info!("  │ Provider │ Requests │ Successes │ Failures │ Success %  │ Avg Lat (ms) │");
+    info!("  ├──────────┼──────────┼───────────┼──────────┼────────────┼──────────────┤");
     for name in ["email", "slack", "webhook"] {
         let stats = provider_snap.get(name).unwrap();
-        println!(
+        info!(
             "  │ {:8} │ {:8} │ {:9} │ {:8} │ {:9.1}% │ {:12.2} │",
             name,
             stats.total_requests,
@@ -433,7 +434,7 @@ async fn scenario_per_provider_metrics() -> Result<(), Box<dyn std::error::Error
             stats.avg_latency_ms,
         );
     }
-    println!("  └──────────┴──────────┴───────────┴──────────┴────────────┴──────────────┘");
+    info!("  └──────────┴──────────┴───────────┴──────────┴────────────┴──────────────┘");
 
     let email_stats = provider_snap.get("email").unwrap();
     assert_eq!(email_stats.total_requests, 30);
@@ -449,17 +450,17 @@ async fn scenario_per_provider_metrics() -> Result<(), Box<dyn std::error::Error
     assert!(webhook_stats.failures >= 9);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
     Ok(())
 }
 
 /// Scenario 3: Circuit breaker metrics under provider failure.
 async fn scenario_circuit_breaker_metrics() -> Result<(), Box<dyn std::error::Error>> {
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: CIRCUIT BREAKER METRICS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    println!("  A failing provider triggers the circuit breaker.");
-    println!("  Watch circuit_open and circuit_transitions counters.\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: CIRCUIT BREAKER METRICS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("  A failing provider triggers the circuit breaker.");
+    info!("  Watch circuit_open and circuit_transitions counters.\n");
 
     let failing =
         Arc::new(RecordingProvider::new("failing").with_failure_mode(FailureMode::Always));
@@ -476,7 +477,7 @@ async fn scenario_circuit_breaker_metrics() -> Result<(), Box<dyn std::error::Er
         None,
     );
 
-    println!("  Sending requests to failing provider:");
+    info!("  Sending requests to failing provider:");
     for i in 1..=8 {
         let outcome = gateway
             .dispatch(
@@ -492,7 +493,7 @@ async fn scenario_circuit_breaker_metrics() -> Result<(), Box<dyn std::error::Er
         let outcome_str = outcome
             .as_ref()
             .map_or_else(|e| format!("Err({e})"), |o| format!("{o:?}"));
-        println!(
+        info!(
             "    Request {i}: outcome={outcome_str}, failed={provider_failures}, \
              circuit_open={}, transitions={}",
             snap.circuit_open, snap.circuit_transitions,
@@ -511,13 +512,13 @@ async fn scenario_circuit_breaker_metrics() -> Result<(), Box<dyn std::error::Er
     let final_snap = gateway.metrics().snapshot();
     let healthy_stats = gateway.provider_metrics().snapshot_for("healthy").unwrap();
 
-    println!("\n  Final metrics:");
-    println!("    circuit_open = {}", final_snap.circuit_open);
-    println!(
+    info!("\n  Final metrics:");
+    info!("    circuit_open = {}", final_snap.circuit_open);
+    info!(
         "    circuit_transitions = {}",
         final_snap.circuit_transitions
     );
-    println!(
+    info!(
         "    healthy provider: {} requests, {:.1}% success",
         healthy_stats.total_requests, healthy_stats.success_rate
     );
@@ -528,17 +529,17 @@ async fn scenario_circuit_breaker_metrics() -> Result<(), Box<dyn std::error::Er
     assert_eq!(healthy_stats.successes, 5);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
     Ok(())
 }
 
 /// Scenario 4: Periodic snapshots simulating Prometheus scrape intervals.
 async fn scenario_periodic_snapshots() -> Result<(), Box<dyn std::error::Error>> {
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: PERIODIC METRICS SNAPSHOTS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    println!("  Simulating traffic in timed bursts and snapshotting metrics");
-    println!("  after each burst, like a Prometheus scrape interval.\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: PERIODIC METRICS SNAPSHOTS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("  Simulating traffic in timed bursts and snapshotting metrics");
+    info!("  after each burst, like a Prometheus scrape interval.\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
     let slack = Arc::new(RecordingProvider::new("slack"));
@@ -571,7 +572,7 @@ async fn scenario_periodic_snapshots() -> Result<(), Box<dyn std::error::Error>>
 
         let snap = gateway.metrics().snapshot();
         let delta = snap.dispatched - previous_dispatched;
-        println!(
+        info!(
             "  Scrape {burst}: dispatched={} (+{delta}), executed={}, failed={}",
             snap.dispatched, snap.executed, snap.failed,
         );
@@ -583,17 +584,17 @@ async fn scenario_periodic_snapshots() -> Result<(), Box<dyn std::error::Error>>
     assert!(final_snap.failed > 0);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 4 passed]\n");
+    info!("\n  [Scenario 4 passed]\n");
     Ok(())
 }
 
 /// Scenario 5: Full Prometheus text exposition output.
 async fn scenario_prometheus_output() -> Result<(), Box<dyn std::error::Error>> {
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: SIMULATED PROMETHEUS EXPOSITION OUTPUT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    println!("  Building up realistic traffic across multiple providers,");
-    println!("  then rendering the full Prometheus text output.\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: SIMULATED PROMETHEUS EXPOSITION OUTPUT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("  Building up realistic traffic across multiple providers,");
+    info!("  then rendering the full Prometheus text output.\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
     let slack = Arc::new(RecordingProvider::new("slack").with_delay(Duration::from_millis(25)));
@@ -640,11 +641,11 @@ async fn scenario_prometheus_output() -> Result<(), Box<dyn std::error::Error>> 
     let provider_snap = gateway.provider_metrics().snapshot();
     let prom_output = render_prometheus_output(&metrics_snap, &provider_snap);
 
-    println!("  --- BEGIN Prometheus text exposition ---");
+    info!("  --- BEGIN Prometheus text exposition ---");
     for line in prom_output.lines() {
-        println!("  {line}");
+        info!("  {line}");
     }
-    println!("  --- END Prometheus text exposition ---\n");
+    info!("  --- END Prometheus text exposition ---\n");
 
     assert!(prom_output.contains("acteon_actions_dispatched_total"));
     assert!(prom_output.contains("acteon_actions_executed_total"));
@@ -661,15 +662,17 @@ async fn scenario_prometheus_output() -> Result<(), Box<dyn std::error::Error>> 
     assert!(metrics_snap.executed > 0);
 
     gateway.shutdown().await;
-    println!("  [Scenario 5 passed]\n");
+    info!("  [Scenario 5 passed]\n");
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║         MONITORING METRICS COLLECTION SIMULATION           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║         MONITORING METRICS COLLECTION SIMULATION           ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     scenario_varied_traffic().await?;
     scenario_per_provider_metrics().await?;
@@ -677,9 +680,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     scenario_periodic_snapshots().await?;
     scenario_prometheus_output().await?;
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              ALL SCENARIOS PASSED                          ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              ALL SCENARIOS PASSED                          ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

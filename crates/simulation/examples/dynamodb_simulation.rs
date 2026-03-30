@@ -17,6 +17,7 @@ use acteon_provider::DynProvider;
 use acteon_rules::RuleFrontend;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::RecordingProvider;
+use tracing::info;
 
 // Import DynamoDB backends
 use acteon_state_dynamodb::{
@@ -48,9 +49,11 @@ rules:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║       ACTEON SIMULATION WITH DYNAMODB BACKEND                ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║       ACTEON SIMULATION WITH DYNAMODB BACKEND                ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // Configure DynamoDB connection (using DynamoDB Local)
     let dynamo_config = DynamoConfig {
@@ -60,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key_prefix: "acteon-sim".to_string(),
     };
 
-    println!(
+    info!(
         "→ Connecting to DynamoDB Local at {}...",
         dynamo_config.endpoint_url.as_ref().unwrap()
     );
@@ -69,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = build_client(&dynamo_config).await;
 
     // Create the table if it doesn't exist
-    println!(
+    info!(
         "→ Creating table '{}' if not exists...",
         dynamo_config.table_name
     );
@@ -82,20 +85,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
     let lock = Arc::new(DynamoDistributedLock::from_client(client, &dynamo_config));
 
-    println!("✓ Connected to DynamoDB");
-    println!("✓ Table: '{}'", dynamo_config.table_name);
-    println!("✓ Key prefix: '{}'\n", dynamo_config.key_prefix);
+    info!("✓ Connected to DynamoDB");
+    info!("✓ Table: '{}'", dynamo_config.table_name);
+    info!("✓ Key prefix: '{}'\n", dynamo_config.key_prefix);
 
     // Parse rules
     let frontend = YamlFrontend;
     let mut rules = frontend.parse(DEDUP_RULE)?;
     rules.extend(frontend.parse(SUPPRESSION_RULE)?);
 
-    println!("✓ Loaded {} rules", rules.len());
+    info!("✓ Loaded {} rules", rules.len());
     for rule in &rules {
-        println!("  - {}: {:?}", rule.name, rule.action);
+        info!("  - {}: {:?}", rule.name, rule.action);
     }
-    println!();
+    info!("");
 
     // Create recording providers
     let email_provider = Arc::new(RecordingProvider::new("email"));
@@ -110,14 +113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider(sms_provider.clone() as Arc<dyn DynProvider>)
         .build()?;
 
-    println!("✓ Gateway built with DynamoDB state and lock backends\n");
+    info!("✓ Gateway built with DynamoDB state and lock backends\n");
 
     // =========================================================================
     // DEMO 1: Deduplication with DynamoDB State
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: DEDUPLICATION WITH DYNAMODB STATE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: DEDUPLICATION WITH DYNAMODB STATE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let action1 = Action::new(
         "notifications",
@@ -131,16 +134,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("dynamo-dedup-test-1");
 
-    println!("→ Dispatching FIRST notification (dedup_key='dynamo-dedup-test-1')...");
+    info!("→ Dispatching FIRST notification (dedup_key='dynamo-dedup-test-1')...");
     let outcome1 = gateway.dispatch(action1.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome1);
-    println!(
+    info!("  Outcome: {:?}", outcome1);
+    info!(
         "  Email provider called: {} times",
         email_provider.call_count()
     );
 
     // Check DynamoDB state - the dedup key should now be stored
-    println!("\n→ Checking DynamoDB state...");
+    info!("\n→ Checking DynamoDB state...");
 
     // Try duplicate
     let action2 = Action::new(
@@ -155,10 +158,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("dynamo-dedup-test-1");
 
-    println!("\n→ Dispatching DUPLICATE notification (same dedup_key)...");
+    info!("\n→ Dispatching DUPLICATE notification (same dedup_key)...");
     let outcome2 = gateway.dispatch(action2, None).await?;
-    println!("  Outcome: {:?}", outcome2);
-    println!(
+    info!("  Outcome: {:?}", outcome2);
+    info!(
         "  Email provider called: {} times (should still be 1)",
         email_provider.call_count()
     );
@@ -176,10 +179,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("dynamo-dedup-test-2");
 
-    println!("\n→ Dispatching DIFFERENT notification (dedup_key='dynamo-dedup-test-2')...");
+    info!("\n→ Dispatching DIFFERENT notification (dedup_key='dynamo-dedup-test-2')...");
     let outcome3 = gateway.dispatch(action3, None).await?;
-    println!("  Outcome: {:?}", outcome3);
-    println!(
+    info!("  Outcome: {:?}", outcome3);
+    info!(
         "  Email provider called: {} times",
         email_provider.call_count()
     );
@@ -187,9 +190,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // DEMO 2: Suppression
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: SUPPRESSION RULES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: SUPPRESSION RULES");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
@@ -203,10 +206,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching SPAM action...");
+    info!("→ Dispatching SPAM action...");
     let outcome = gateway.dispatch(spam_action, None).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Email provider called: {} times (should be 0)",
         email_provider.call_count()
     );
@@ -214,15 +217,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // DEMO 3: Concurrent Dispatch with DynamoDB Locking
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: CONCURRENT DISPATCH WITH DYNAMODB LOCKING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: CONCURRENT DISPATCH WITH DYNAMODB LOCKING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
     // Simulate multiple concurrent processes trying to send the same notification
-    println!("→ Simulating 10 concurrent dispatches with SAME dedup_key...");
-    println!("  (This tests DynamoDB distributed locking)\n");
+    info!("→ Simulating 10 concurrent dispatches with SAME dedup_key...");
+    info!("  (This tests DynamoDB distributed locking)\n");
 
     let gateway_arc = Arc::new(gateway);
     let mut handles = vec![];
@@ -256,30 +259,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match handle.await? {
             Ok(acteon_core::ActionOutcome::Executed(_)) => executed += 1,
             Ok(acteon_core::ActionOutcome::Deduplicated) => deduplicated += 1,
-            Ok(other) => println!("  Unexpected outcome: {:?}", other),
+            Ok(other) => info!("  Unexpected outcome: {:?}", other),
             Err(e) => {
-                println!("  Error: {}", e);
+                info!("  Error: {}", e);
                 failed += 1;
             }
         }
     }
 
-    println!("  Results:");
-    println!("    Executed: {}", executed);
-    println!("    Deduplicated: {}", deduplicated);
-    println!("    Failed: {}", failed);
-    println!(
+    info!("  Results:");
+    info!("    Executed: {}", executed);
+    info!("    Deduplicated: {}", deduplicated);
+    info!("    Failed: {}", failed);
+    info!(
         "    Email provider called: {} times",
         email_provider.call_count()
     );
-    println!("\n  (With proper locking, exactly 1 should execute, 9 deduplicated)");
+    info!("\n  (With proper locking, exactly 1 should execute, 9 deduplicated)");
 
     // =========================================================================
     // DEMO 4: Throughput Test
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 4: THROUGHPUT TEST (100 ACTIONS)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 4: THROUGHPUT TEST (100 ACTIONS)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
@@ -295,7 +298,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("→ Dispatching 100 actions sequentially...");
+    info!("→ Dispatching 100 actions sequentially...");
     let start = std::time::Instant::now();
 
     for action in actions {
@@ -304,12 +307,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let elapsed = start.elapsed();
 
-    println!("  Completed in: {:?}", elapsed);
-    println!(
+    info!("  Completed in: {:?}", elapsed);
+    info!(
         "  Email provider called: {} times",
         email_provider.call_count()
     );
-    println!(
+    info!(
         "  Throughput: {:.0} actions/sec",
         100.0 / elapsed.as_secs_f64()
     );
@@ -317,30 +320,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // DEMO 5: Verify DynamoDB State Persistence
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DYNAMODB STATE VERIFICATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DYNAMODB STATE VERIFICATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!(
+    info!(
         "→ Items stored in DynamoDB (table: '{}'):",
         dynamo_config.table_name
     );
-    println!("  - Dedup keys stored with TTL");
-    println!("  - Lock entries for distributed coordination\n");
+    info!("  - Dedup keys stored with TTL");
+    info!("  - Lock entries for distributed coordination\n");
 
-    println!("  You can verify with aws-cli:");
-    println!(
+    info!("  You can verify with aws-cli:");
+    info!(
         "    aws dynamodb scan --table-name {} --endpoint-url http://localhost:8000",
         dynamo_config.table_name
     );
 
     // Cleanup
     gateway_arc.shutdown().await;
-    println!("\n✓ Gateway shut down gracefully\n");
+    info!("\n✓ Gateway shut down gracefully\n");
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║                  DYNAMODB DEMO COMPLETE                      ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║                  DYNAMODB DEMO COMPLETE                      ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

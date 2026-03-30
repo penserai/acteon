@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use acteon_core::Action;
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 const RULES: &str = r#"
 rules:
@@ -42,9 +43,11 @@ rules:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║           RULE PLAYGROUND SIMULATION DEMO                    ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║           RULE PLAYGROUND SIMULATION DEMO                    ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -56,15 +59,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster with 1 node");
-    println!("✓ Loaded 3 rules: block-spam, reroute-urgent, enrich-payload\n");
+    info!("✓ Started simulation cluster with 1 node");
+    info!("✓ Loaded 3 rules: block-spam, reroute-urgent, enrich-payload\n");
 
     // =========================================================================
     // DEMO 1: Basic evaluation trace
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: BASIC EVALUATION (spam action)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: BASIC EVALUATION (spam action)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let spam = Action::new(
         "notifications",
@@ -81,14 +84,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .evaluate_rules(&spam, false, false, None, HashMap::new())
         .await?;
 
-    println!("  Verdict: {}", trace.verdict);
-    println!("  Matched rule: {:?}", trace.matched_rule);
-    println!("  Duration: {}µs", trace.evaluation_duration_us);
-    println!("  Rules evaluated: {}", trace.total_rules_evaluated);
-    println!("  Rules skipped: {}", trace.total_rules_skipped);
-    println!();
+    info!("  Verdict: {}", trace.verdict);
+    info!("  Matched rule: {:?}", trace.matched_rule);
+    info!("  Duration: {}µs", trace.evaluation_duration_us);
+    info!("  Rules evaluated: {}", trace.total_rules_evaluated);
+    info!("  Rules skipped: {}", trace.total_rules_skipped);
+    info!("");
     for entry in &trace.trace {
-        println!(
+        info!(
             "  [{:>12}] {} (priority={}, result={})",
             entry.source,
             entry.rule_name,
@@ -96,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             entry.result.as_str()
         );
     }
-    println!(
+    info!(
         "\n  ✓ No side effects: provider call count = {}\n",
         harness.provider("email").unwrap().call_count()
     );
@@ -104,9 +107,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // DEMO 2: Evaluate-all mode
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: EVALUATE ALL RULES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: EVALUATE ALL RULES");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let trace_all = harness
         .node(0)
@@ -115,18 +118,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .evaluate_rules(&spam, false, true, None, HashMap::new())
         .await?;
 
-    println!("  Verdict: {}", trace_all.verdict);
-    println!("  Evaluate-all: every rule condition was checked");
+    info!("  Verdict: {}", trace_all.verdict);
+    info!("  Evaluate-all: every rule condition was checked");
     for entry in &trace_all.trace {
-        println!("    {} -> {}", entry.rule_name, entry.result.as_str());
+        info!("    {} -> {}", entry.rule_name, entry.result.as_str());
     }
 
     // =========================================================================
     // DEMO 3: Modify payload preview
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: MODIFY PAYLOAD PREVIEW");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: MODIFY PAYLOAD PREVIEW");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let email = Action::new(
         "notifications",
@@ -143,10 +146,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .evaluate_rules(&email, false, false, None, HashMap::new())
         .await?;
 
-    println!("  Verdict: {}", trace_modify.verdict);
-    println!("  Matched: {:?}", trace_modify.matched_rule);
+    info!("  Verdict: {}", trace_modify.verdict);
+    info!("  Matched: {:?}", trace_modify.matched_rule);
     if let Some(ref payload) = trace_modify.modified_payload {
-        println!(
+        info!(
             "  Modified payload: {}",
             serde_json::to_string_pretty(payload)?
         );
@@ -155,9 +158,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // DEMO 4: Default fallthrough (no match)
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 4: DEFAULT FALLTHROUGH (no rules match)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 4: DEFAULT FALLTHROUGH (no rules match)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harmless = Action::new(
         "notifications",
@@ -174,24 +177,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .evaluate_rules(&harmless, false, false, None, HashMap::new())
         .await?;
 
-    println!("  Verdict: {}", trace_allow.verdict);
-    println!("  Matched rule: {:?}", trace_allow.matched_rule);
+    info!("  Verdict: {}", trace_allow.verdict);
+    info!("  Matched rule: {:?}", trace_allow.matched_rule);
     // The last entry should be the synthetic default-fallthrough
     if let Some(last) = trace_allow.trace.last() {
-        println!(
+        info!(
             "  Last trace entry: {} (result={})",
             last.rule_name,
             last.result.as_str()
         );
     }
 
-    println!(
+    info!(
         "\n  ✓ Provider was never called: {}",
         harness.provider("email").unwrap().call_count() == 0
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down");
+    info!("\n✓ Simulation cluster shut down");
 
     Ok(())
 }

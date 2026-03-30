@@ -20,6 +20,7 @@ use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use acteon_wasm_runtime::{
     MockWasmRuntime, WasmInvocationResult, WasmPluginConfig, WasmPluginRuntime,
 };
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // Configurable mock runtimes for simulation scenarios
@@ -367,9 +368,9 @@ fn build_gateway_with_wasm_and_yaml(
 
 /// Scenario 1: Basic WASM rule -- allow/deny based on payload field.
 async fn scenario_basic_wasm_rule() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: BASIC WASM RULE (allow/deny based on payload)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: BASIC WASM RULE (allow/deny based on payload)");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(PayloadInspectingRuntime {
         field: "category".to_owned(),
@@ -398,7 +399,7 @@ async fn scenario_basic_wasm_rule() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({ "category": "blocked", "body": "test" }),
     );
     let outcome = gateway.dispatch(blocked, None).await?;
-    println!("  Blocked action outcome: {outcome:?}");
+    info!("  Blocked action outcome: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Suppressed { .. }),
         "blocked category should be suppressed"
@@ -414,7 +415,7 @@ async fn scenario_basic_wasm_rule() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({ "category": "normal", "body": "test" }),
     );
     let outcome = gateway.dispatch(allowed, None).await?;
-    println!("  Allowed action outcome: {outcome:?}");
+    info!("  Allowed action outcome: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Executed(..)),
         "normal category should be executed"
@@ -422,15 +423,15 @@ async fn scenario_basic_wasm_rule() -> Result<(), Box<dyn std::error::Error>> {
     email.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 PASSED]\n");
+    info!("\n  [Scenario 1 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 2: WASM rule with threshold parameter.
 async fn scenario_threshold_parameter() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: WASM WITH THRESHOLD PARAMETER");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: WASM WITH THRESHOLD PARAMETER");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(ThresholdRuntime {
         field: "risk_score".to_owned(),
@@ -459,7 +460,7 @@ async fn scenario_threshold_parameter() -> Result<(), Box<dyn std::error::Error>
         serde_json::json!({ "risk_score": 0.95, "data": "test-value" }),
     );
     let outcome = gateway.dispatch(high_risk, None).await?;
-    println!("  High risk (0.95) outcome: {outcome:?}");
+    info!("  High risk (0.95) outcome: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Suppressed { .. }),
         "high risk should be suppressed"
@@ -474,7 +475,7 @@ async fn scenario_threshold_parameter() -> Result<(), Box<dyn std::error::Error>
         serde_json::json!({ "risk_score": 0.3, "data": "safe-value" }),
     );
     let outcome = gateway.dispatch(low_risk, None).await?;
-    println!("  Low risk (0.3) outcome: {outcome:?}");
+    info!("  Low risk (0.3) outcome: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Executed(..)),
         "low risk should be executed"
@@ -482,15 +483,15 @@ async fn scenario_threshold_parameter() -> Result<(), Box<dyn std::error::Error>
     webhook.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 PASSED]\n");
+    info!("\n  [Scenario 2 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 3: Mixed YAML + WASM rules with priority ordering.
 async fn scenario_mixed_yaml_wasm() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 3: MIXED YAML + WASM RULES WITH PRIORITY");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 3: MIXED YAML + WASM RULES WITH PRIORITY");
+    info!("------------------------------------------------------------------\n");
 
     let yaml_rules = r#"
 rules:
@@ -536,7 +537,7 @@ rules:
     // Spam should be caught by YAML rule (priority 1) before WASM (priority 100)
     let spam = make_action("ns", "tenant-1", "email", "spam");
     let outcome = gateway.dispatch(spam, None).await?;
-    println!("  Spam -> YAML suppress (priority 1): {outcome:?}");
+    info!("  Spam -> YAML suppress (priority 1): {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
 
     // Urgent should be caught by YAML reroute (priority 5) before WASM
@@ -548,27 +549,27 @@ rules:
         serde_json::json!({ "priority": "urgent", "body": "down" }),
     );
     let outcome = gateway.dispatch(urgent, None).await?;
-    println!("  Urgent -> YAML reroute (priority 5): {outcome:?}");
+    info!("  Urgent -> YAML reroute (priority 5): {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Rerouted { .. }));
     sms.assert_called(1);
 
     // Normal action falls through to WASM allow rule
     let normal = make_action("ns", "tenant-1", "email", "send_email");
     let outcome = gateway.dispatch(normal, None).await?;
-    println!("  Normal -> WASM allow (priority 100): {outcome:?}");
+    info!("  Normal -> WASM allow (priority 100): {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 3 PASSED]\n");
+    info!("\n  [Scenario 3 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 4: CEL-style condition calling wasm() inline.
 /// Uses Expr::WasmCall combined with standard Expr operators.
 async fn scenario_cel_wasm_inline() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 4: CEL-STYLE CONDITION WITH WASM INLINE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 4: CEL-STYLE CONDITION WITH WASM INLINE");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(PayloadInspectingRuntime {
         field: "flagged".to_owned(),
@@ -611,7 +612,7 @@ async fn scenario_cel_wasm_inline() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({ "flagged": true }),
     );
     let outcome = gateway.dispatch(flagged_review, None).await?;
-    println!("  review+flagged -> suppress: {outcome:?}");
+    info!("  review+flagged -> suppress: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
 
     // action_type=review but flagged=false -> wasm returns false -> no match
@@ -623,7 +624,7 @@ async fn scenario_cel_wasm_inline() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({ "flagged": false }),
     );
     let outcome = gateway.dispatch(clean_review, None).await?;
-    println!("  review+not-flagged -> allow: {outcome:?}");
+    info!("  review+not-flagged -> allow: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
 
     // action_type=other -> first arm false (short-circuit) -> no match
@@ -635,19 +636,19 @@ async fn scenario_cel_wasm_inline() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({ "flagged": true }),
     );
     let outcome = gateway.dispatch(other, None).await?;
-    println!("  other+flagged -> allow (type mismatch): {outcome:?}");
+    info!("  other+flagged -> allow (type mismatch): {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 4 PASSED]\n");
+    info!("\n  [Scenario 4 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 5: Plugin timeout enforcement.
 async fn scenario_timeout_enforcement() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 5: PLUGIN TIMEOUT ENFORCEMENT");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 5: PLUGIN TIMEOUT ENFORCEMENT");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(TimeoutSimulatingRuntime { timeout_ms: 100 });
     let email = Arc::new(RecordingProvider::new("email"));
@@ -667,7 +668,7 @@ async fn scenario_timeout_enforcement() -> Result<(), Box<dyn std::error::Error>
     // non-match (fail-open) and allow the action to proceed.
     let action = make_action("ns", "t1", "email", "send");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Timeout -> fail-open -> executed: {outcome:?}");
+    info!("  Timeout -> fail-open -> executed: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Executed(..)),
         "timeout should fail-open and allow execution"
@@ -675,15 +676,15 @@ async fn scenario_timeout_enforcement() -> Result<(), Box<dyn std::error::Error>
     email.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 5 PASSED]\n");
+    info!("\n  [Scenario 5 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 6: Plugin memory limit enforcement.
 async fn scenario_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 6: PLUGIN MEMORY LIMIT ENFORCEMENT");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 6: PLUGIN MEMORY LIMIT ENFORCEMENT");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(MemoryExceededRuntime {
         limit_bytes: 16 * 1024 * 1024,
@@ -704,7 +705,7 @@ async fn scenario_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
     // The WASM plugin exceeds memory; should fail-open.
     let action = make_action("ns", "t1", "webhook", "send");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Memory exceeded -> fail-open -> executed: {outcome:?}");
+    info!("  Memory exceeded -> fail-open -> executed: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Executed(..)),
         "memory limit exceeded should fail-open"
@@ -712,15 +713,15 @@ async fn scenario_memory_limit() -> Result<(), Box<dyn std::error::Error>> {
     webhook.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 6 PASSED]\n");
+    info!("\n  [Scenario 6 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 7: Plugin trap/panic handling.
 async fn scenario_trap_handling() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 7: PLUGIN TRAP/PANIC HANDLING");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 7: PLUGIN TRAP/PANIC HANDLING");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(TrappingRuntime);
     let email = Arc::new(RecordingProvider::new("email"));
@@ -739,7 +740,7 @@ async fn scenario_trap_handling() -> Result<(), Box<dyn std::error::Error>> {
     // Plugin traps -> fail-open -> allow
     let action = make_action("ns", "t1", "email", "send");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Plugin trap -> fail-open -> executed: {outcome:?}");
+    info!("  Plugin trap -> fail-open -> executed: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Executed(..)),
         "trapped plugin should fail-open"
@@ -748,22 +749,22 @@ async fn scenario_trap_handling() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify metrics recorded the WASM error
     let metrics = gateway.metrics().snapshot();
-    println!("  WASM errors in metrics: {}", metrics.wasm_errors);
+    info!("  WASM errors in metrics: {}", metrics.wasm_errors);
     assert!(
         metrics.wasm_errors >= 1,
         "should track WASM errors in metrics"
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 7 PASSED]\n");
+    info!("\n  [Scenario 7 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 8: Multiple plugins, different rules using each.
 async fn scenario_multiple_plugins() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 8: MULTIPLE PLUGINS, DIFFERENT RULES");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 8: MULTIPLE PLUGINS, DIFFERENT RULES");
+    info!("------------------------------------------------------------------\n");
 
     // Use MockWasmRuntime that always returns true -- simulates multiple plugins
     let rt = Arc::new(MockWasmRuntime::new(true));
@@ -810,7 +811,7 @@ async fn scenario_multiple_plugins() -> Result<(), Box<dyn std::error::Error>> {
     // The first matching rule (alpha, priority 1) should suppress
     let action = make_action("ns", "t1", "email", "send");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Multi-plugin dispatch -> first match (alpha, suppress): {outcome:?}");
+    info!("  Multi-plugin dispatch -> first match (alpha, suppress): {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
 
     // Verify none of the providers were called
@@ -819,23 +820,23 @@ async fn scenario_multiple_plugins() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify WASM invocation metrics
     let metrics = gateway.metrics().snapshot();
-    println!("  WASM invocations: {}", metrics.wasm_invocations);
+    info!("  WASM invocations: {}", metrics.wasm_invocations);
     assert!(
         metrics.wasm_invocations >= 1,
         "should track WASM invocation count"
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 8 PASSED]\n");
+    info!("\n  [Scenario 8 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 9: Plugin with state access via host functions.
 /// Simulates a plugin that reads state to make decisions.
 async fn scenario_state_access() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 9: PLUGIN WITH STATE ACCESS VIA HOST FUNCTIONS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 9: PLUGIN WITH STATE ACCESS VIA HOST FUNCTIONS");
+    info!("------------------------------------------------------------------\n");
 
     // Use MockWasmRuntime -- in a real scenario, the plugin would call host
     // functions to read state. Here we verify the gateway passes state context.
@@ -862,20 +863,20 @@ async fn scenario_state_access() -> Result<(), Box<dyn std::error::Error>> {
     // The mock returns false, so the rule does not match -- action proceeds
     let action = make_action("ns", "t1", "email", "notify");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  State-aware rule (mock false) -> executed: {outcome:?}");
+    info!("  State-aware rule (mock false) -> executed: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
     email.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 9 PASSED]\n");
+    info!("\n  [Scenario 9 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 10: High-throughput benchmark measuring WASM overhead.
 async fn scenario_throughput_benchmark() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 10: HIGH-THROUGHPUT BENCHMARK (WASM overhead)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 10: HIGH-THROUGHPUT BENCHMARK (WASM overhead)");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(MockWasmRuntime::new(false)); // Always false -> no match -> allow
     let email = Arc::new(RecordingProvider::new("email"));
@@ -909,10 +910,10 @@ async fn scenario_throughput_benchmark() -> Result<(), Box<dyn std::error::Error
     let per_action = elapsed / iterations;
     let throughput = iterations as f64 / elapsed.as_secs_f64();
 
-    println!("  Dispatched {iterations} actions with WASM rule evaluation");
-    println!("  Total time: {elapsed:?}");
-    println!("  Per action: {per_action:?}");
-    println!("  Throughput: {throughput:.0} actions/sec");
+    info!("  Dispatched {iterations} actions with WASM rule evaluation");
+    info!("  Total time: {elapsed:?}");
+    info!("  Per action: {per_action:?}");
+    info!("  Throughput: {throughput:.0} actions/sec");
 
     email.assert_called(iterations as usize);
 
@@ -923,15 +924,15 @@ async fn scenario_throughput_benchmark() -> Result<(), Box<dyn std::error::Error
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 10 PASSED]\n");
+    info!("\n  [Scenario 10 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 11: Hot-reload (plugin v1 -> v2).
 async fn scenario_hot_reload() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 11: HOT-RELOAD (plugin v1 -> v2)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 11: HOT-RELOAD (plugin v1 -> v2)");
+    info!("------------------------------------------------------------------\n");
 
     // Phase 1: v1 always returns true -> rule matches -> suppress
     let v1_rt = Arc::new(VersionedRuntime::new(1));
@@ -950,7 +951,7 @@ async fn scenario_hot_reload() -> Result<(), Box<dyn std::error::Error>> {
 
     let action = make_action("ns", "t1", "email", "send");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  v1: outcome = {outcome:?} (expected: Suppressed)");
+    info!("  v1: outcome = {outcome:?} (expected: Suppressed)");
     assert!(matches!(outcome, ActionOutcome::Suppressed { .. }));
     email_v1.assert_not_called();
 
@@ -964,20 +965,20 @@ async fn scenario_hot_reload() -> Result<(), Box<dyn std::error::Error>> {
 
     let action = make_action("ns", "t1", "email", "send");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  v2: outcome = {outcome:?} (expected: Executed)");
+    info!("  v2: outcome = {outcome:?} (expected: Executed)");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
     email_v2.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 11 PASSED]\n");
+    info!("\n  [Scenario 11 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 12: Chain with WASM step.
 async fn scenario_chain_with_wasm() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 12: CHAIN WITH WASM STEP");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 12: CHAIN WITH WASM STEP");
+    info!("------------------------------------------------------------------\n");
 
     // WASM runtime that always allows (used in rule evaluation)
     let rt = Arc::new(MockWasmRuntime::new(true));
@@ -1029,7 +1030,7 @@ async fn scenario_chain_with_wasm() -> Result<(), Box<dyn std::error::Error>> {
     // Dispatch should start the chain
     let action = make_action("ns", "t1", "validator", "submit");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Chain started: {outcome:?}");
+    info!("  Chain started: {outcome:?}");
 
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => chain_id.clone(),
@@ -1038,17 +1039,17 @@ async fn scenario_chain_with_wasm() -> Result<(), Box<dyn std::error::Error>> {
 
     // Advance chain: validate -> process -> complete
     gateway.advance_chain("ns", "t1", &chain_id).await?;
-    println!("  Step 0 (validate) advanced");
+    info!("  Step 0 (validate) advanced");
     gateway.advance_chain("ns", "t1", &chain_id).await?;
-    println!("  Step 1 (process) advanced -> complete");
+    info!("  Step 1 (process) advanced -> complete");
 
     let chain_state = gateway
         .get_chain_status("ns", "t1", &chain_id)
         .await?
         .expect("chain should exist");
 
-    println!("  Chain status: {:?}", chain_state.status);
-    println!("  Execution path: {:?}", chain_state.execution_path);
+    info!("  Chain status: {:?}", chain_state.status);
+    info!("  Execution path: {:?}", chain_state.execution_path);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -1058,15 +1059,15 @@ async fn scenario_chain_with_wasm() -> Result<(), Box<dyn std::error::Error>> {
     processor.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 12 PASSED]\n");
+    info!("\n  [Scenario 12 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 13: WASM + LLM guardrail combination.
 async fn scenario_wasm_plus_llm() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 13: WASM + LLM GUARDRAIL COMBINATION");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 13: WASM + LLM GUARDRAIL COMBINATION");
+    info!("------------------------------------------------------------------\n");
 
     // WASM rule allows; LLM guardrail provides second-layer check.
     let rt = Arc::new(MockWasmRuntime::new(false)); // WASM does not match -> allow
@@ -1099,20 +1100,20 @@ async fn scenario_wasm_plus_llm() -> Result<(), Box<dyn std::error::Error>> {
     // WASM returns false (no match) -> action allowed by rules -> LLM approves -> execute
     let action = make_action("ns", "t1", "email", "send");
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  WASM(no match) + LLM(approve) -> executed: {outcome:?}");
+    info!("  WASM(no match) + LLM(approve) -> executed: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
     email.assert_called(1);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 13 PASSED]\n");
+    info!("\n  [Scenario 13 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 14: Tenant isolation -- two tenants, different plugin behaviors.
 async fn scenario_tenant_isolation() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 14: TENANT ISOLATION (two tenants, different plugins)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 14: TENANT ISOLATION (two tenants, different plugins)");
+    info!("------------------------------------------------------------------\n");
 
     // The mock runtime always returns true, but we use different rules per tenant
     // to verify that tenant isolation works. Tenant A gets suppressed, tenant B
@@ -1149,26 +1150,26 @@ async fn scenario_tenant_isolation() -> Result<(), Box<dyn std::error::Error>> {
     // Tenant A action: should match the tenant-specific rule -> suppress
     let action_a = make_action("ns", "tenant-a", "email", "send");
     let outcome_a = gateway.dispatch(action_a, None).await?;
-    println!("  Tenant A -> suppress: {outcome_a:?}");
+    info!("  Tenant A -> suppress: {outcome_a:?}");
     assert!(matches!(outcome_a, ActionOutcome::Suppressed { .. }));
 
     // Tenant B action: tenant check fails -> no rule match -> execute
     let action_b = make_action("ns", "tenant-b", "email", "send");
     let outcome_b = gateway.dispatch(action_b, None).await?;
-    println!("  Tenant B -> execute: {outcome_b:?}");
+    info!("  Tenant B -> execute: {outcome_b:?}");
     assert!(matches!(outcome_b, ActionOutcome::Executed(..)));
     email.assert_called(1); // Only tenant B's action reached the provider
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 14 PASSED]\n");
+    info!("\n  [Scenario 14 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 15: Plugin returning modified payload via metadata.
 async fn scenario_modified_payload() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 15: PLUGIN RETURNING MODIFIED PAYLOAD");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 15: PLUGIN RETURNING MODIFIED PAYLOAD");
+    info!("------------------------------------------------------------------\n");
 
     let rt = Arc::new(PayloadTransformRuntime);
     let webhook = Arc::new(RecordingProvider::new("webhook"));
@@ -1195,7 +1196,7 @@ async fn scenario_modified_payload() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({ "original_data": "test-value" }),
     );
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Payload transform outcome: {outcome:?}");
+    info!("  Payload transform outcome: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Executed(..)),
         "modified action should be executed"
@@ -1206,7 +1207,7 @@ async fn scenario_modified_payload() -> Result<(), Box<dyn std::error::Error>> {
     let calls = webhook.calls();
     assert_eq!(calls.len(), 1);
     let received_payload = &calls[0].action.payload;
-    println!("  Provider received payload: {received_payload}");
+    info!("  Provider received payload: {received_payload}");
     assert_eq!(
         received_payload.get("enriched"),
         Some(&serde_json::json!(true)),
@@ -1214,7 +1215,7 @@ async fn scenario_modified_payload() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 15 PASSED]\n");
+    info!("\n  [Scenario 15 PASSED]\n");
     Ok(())
 }
 
@@ -1224,9 +1225,9 @@ async fn scenario_modified_payload() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Verify WasmPluginConfig construction and serialization.
 fn verify_plugin_configs() {
-    println!("------------------------------------------------------------------");
-    println!("  BONUS: WASM PLUGIN CONFIG VERIFICATION");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  BONUS: WASM PLUGIN CONFIG VERIFICATION");
+    info!("------------------------------------------------------------------\n");
 
     let config = WasmPluginConfig::new("rate-limiter")
         .with_description("Checks request rate against thresholds")
@@ -1234,7 +1235,7 @@ fn verify_plugin_configs() {
         .with_timeout_ms(50)
         .with_wasm_path("/plugins/rate-limiter.wasm");
 
-    println!("  Plugin config: {config:?}");
+    info!("  Plugin config: {config:?}");
     assert_eq!(config.name, "rate-limiter");
     assert_eq!(config.memory_limit_bytes, 8 * 1024 * 1024);
     assert_eq!(config.timeout_ms, 50);
@@ -1250,7 +1251,7 @@ fn verify_plugin_configs() {
     let disabled = WasmPluginConfig::new("experimental").with_enabled(false);
     assert!(!disabled.enabled);
 
-    println!("  [Config verification PASSED]\n");
+    info!("  [Config verification PASSED]\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1260,10 +1261,12 @@ fn verify_plugin_configs() {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     ACTEON WASM PLUGIN SIMULATION");
-    println!("     15 scenarios covering the full WASM plugin lifecycle");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("     ACTEON WASM PLUGIN SIMULATION");
+    info!("     15 scenarios covering the full WASM plugin lifecycle");
+    info!("==================================================================\n");
 
     let total_start = Instant::now();
 
@@ -1287,10 +1290,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let total_elapsed = total_start.elapsed();
 
-    println!("==================================================================");
-    println!("     ALL 15 WASM PLUGIN SCENARIOS PASSED");
-    println!("     Total time: {total_elapsed:?}");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("     ALL 15 WASM PLUGIN SCENARIOS PASSED");
+    info!("     Total time: {total_elapsed:?}");
+    info!("==================================================================");
 
     Ok(())
 }

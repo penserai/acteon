@@ -17,6 +17,7 @@ use acteon_gateway::{EncryptingDeadLetterSink, GroupManager};
 use acteon_simulation::prelude::*;
 use acteon_state::StateStore;
 use acteon_state_memory::MemoryStateStore;
+use tracing::info;
 
 /// Schedule rule so dispatched actions land in state store.
 const SCHEDULE_RULE: &str = r#"
@@ -48,16 +49,18 @@ fn make_key_b() -> acteon_crypto::MasterKey {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║         PAYLOAD ENCRYPTION AT REST SIMULATION                ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║         PAYLOAD ENCRYPTION AT REST SIMULATION                ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Scheduled action payloads are encrypted in state store
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: SCHEDULED ACTIONS — ENCRYPTED AT REST");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: SCHEDULED ACTIONS — ENCRYPTED AT REST");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -79,14 +82,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  [dispatch] Scheduling action with sensitive payload...");
+    info!("  [dispatch] Scheduling action with sensitive payload...");
     let outcome = harness.dispatch(&action).await?;
     match &outcome {
         ActionOutcome::Scheduled { action_id, .. } => {
-            println!("  [result]   Scheduled with ID: {action_id}");
+            info!("  [result]   Scheduled with ID: {action_id}");
         }
         other => {
-            println!("  [result]   Unexpected outcome: {other:?}");
+            info!("  [result]   Unexpected outcome: {other:?}");
         }
     }
 
@@ -101,17 +104,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "provider should not be called for scheduled action"
     );
 
-    println!("  [verify]   Action scheduled, provider NOT called (deferred)");
-    println!("  [pass]     Scenario 1 passed\n");
+    info!("  [verify]   Action scheduled, provider NOT called (deferred)");
+    info!("  [pass]     Scenario 1 passed\n");
 
     harness.teardown().await?;
 
     // =========================================================================
     // SCENARIO 2: Encryption roundtrip with PayloadEncryptor
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: ENCRYPTOR UNIT ROUNDTRIP");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: ENCRYPTOR UNIT ROUNDTRIP");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let enc = make_encryptor();
 
@@ -125,8 +128,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let encrypted = enc.encrypt_json(&original)?;
-    println!("  [encrypt]  Original payload: {original}");
-    println!(
+    info!("  [encrypt]  Original payload: {original}");
+    info!(
         "  [encrypt]  Encrypted: {}...",
         &encrypted[..60.min(encrypted.len())]
     );
@@ -141,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         original, decrypted,
         "roundtrip should preserve JSON exactly"
     );
-    println!("  [decrypt]  Decrypted matches original: ok");
+    info!("  [decrypt]  Decrypted matches original: ok");
 
     // String roundtrip.
     let plain = "sensitive-action-payload-data";
@@ -149,28 +152,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(acteon_crypto::is_encrypted(&enc_str));
     let dec_str = enc.decrypt_str(&enc_str)?;
     assert_eq!(plain, dec_str);
-    println!("  [string]   String roundtrip: ok");
+    info!("  [string]   String roundtrip: ok");
 
     // Backward compat: plain JSON strings pass through decrypt unchanged.
     let plain_json = serde_json::json!({"not_encrypted": true}).to_string();
     let passthrough = enc.decrypt_str(&plain_json)?;
     assert_eq!(plain_json, passthrough);
-    println!("  [compat]   Plain JSON passthrough: ok");
+    info!("  [compat]   Plain JSON passthrough: ok");
 
     // Different encryptions of same plaintext produce different ciphertext (random IV).
     let enc1 = enc.encrypt_str("same")?;
     let enc2 = enc.encrypt_str("same")?;
     assert_ne!(enc1, enc2, "encryptions should use random IVs");
-    println!("  [nonce]    Random IV per encryption: ok");
+    info!("  [nonce]    Random IV per encryption: ok");
 
-    println!("  [pass]     Scenario 2 passed\n");
+    info!("  [pass]     Scenario 2 passed\n");
 
     // =========================================================================
     // SCENARIO 3: Audit store encryption
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: AUDIT STORE ENCRYPTION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: AUDIT STORE ENCRYPTION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let inner_audit: Arc<dyn acteon_audit::AuditStore> =
         Arc::new(acteon_audit_memory::MemoryAuditStore::new());
@@ -219,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fetched.action_payload,
         Some(serde_json::json!({"password": "hunter2"}))
     );
-    println!("  [audit]    Write + read roundtrip: payload decrypted correctly");
+    info!("  [audit]    Write + read roundtrip: payload decrypted correctly");
 
     // Read the raw inner store — should be encrypted.
     let raw = inner_audit
@@ -231,7 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             acteon_crypto::is_encrypted(s),
             "raw audit payload should be encrypted"
         );
-        println!("  [audit]    Raw stored payload is encrypted: ok");
+        info!("  [audit]    Raw stored payload is encrypted: ok");
     } else {
         panic!("expected encrypted string in raw audit payload");
     }
@@ -272,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fetched_none.action_payload.is_none(),
         "no-payload record should remain None"
     );
-    println!("  [audit]    No-payload passthrough: ok");
+    info!("  [audit]    No-payload passthrough: ok");
 
     // Backward compat: pre-encryption plain records are readable.
     let plain_record = acteon_audit::AuditRecord {
@@ -311,16 +314,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         fetched_plain.action_payload,
         Some(serde_json::json!({"plain": true}))
     );
-    println!("  [audit]    Backward compat (plain records): ok");
+    info!("  [audit]    Backward compat (plain records): ok");
 
-    println!("  [pass]     Scenario 3 passed\n");
+    info!("  [pass]     Scenario 3 passed\n");
 
     // =========================================================================
     // SCENARIO 4: Key rotation — multi-key PayloadEncryptor
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: KEY ROTATION — MULTI-KEY ENCRYPTOR");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: KEY ROTATION — MULTI-KEY ENCRYPTOR");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Step 1: Encrypt data with the "old" key (k1).
     let old_enc = PayloadEncryptor::with_keys(vec![PayloadKeyEntry {
@@ -332,7 +335,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let encrypted_old = old_enc.encrypt_json(&secret_data)?;
     let kid = acteon_crypto::extract_kid(&encrypted_old);
     assert_eq!(kid.as_deref(), Some("k1"));
-    println!("  [step1]    Encrypted with old key k1 (kid={kid:?})");
+    info!("  [step1]    Encrypted with old key k1 (kid={kid:?})");
 
     // Step 2: Create a new encryptor with k2 (primary) + k1 (old).
     let rotated_enc = PayloadEncryptor::with_keys(vec![
@@ -349,18 +352,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Old data is still decryptable.
     let decrypted_old = rotated_enc.decrypt_json(&encrypted_old)?;
     assert_eq!(decrypted_old, secret_data);
-    println!("  [step2]    Old k1 data decryptable with rotated encryptor: ok");
+    info!("  [step2]    Old k1 data decryptable with rotated encryptor: ok");
 
     // New encryptions use k2.
     let encrypted_new = rotated_enc.encrypt_json(&secret_data)?;
     let new_kid = acteon_crypto::extract_kid(&encrypted_new);
     assert_eq!(new_kid.as_deref(), Some("k2"));
-    println!("  [step3]    New encryptions use k2 (kid={new_kid:?}): ok");
+    info!("  [step3]    New encryptions use k2 (kid={new_kid:?}): ok");
 
     // New data roundtrips.
     let decrypted_new = rotated_enc.decrypt_json(&encrypted_new)?;
     assert_eq!(decrypted_new, secret_data);
-    println!("  [step4]    New k2 data roundtrips: ok");
+    info!("  [step4]    New k2 data roundtrips: ok");
 
     // Legacy envelopes without kid (pre-rotation) are handled by fallback.
     let legacy_enc =
@@ -369,23 +372,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let decrypted_legacy = rotated_enc.decrypt_str(&legacy_enc)?;
     let parsed_legacy: serde_json::Value = serde_json::from_str(&decrypted_legacy)?;
     assert_eq!(parsed_legacy, secret_data);
-    println!("  [step5]    Legacy (no kid) envelope decrypted via fallback: ok");
+    info!("  [step5]    Legacy (no kid) envelope decrypted via fallback: ok");
 
     // Data encrypted with an unknown key fails gracefully.
     let unknown_key = parse_master_key(&"ff".repeat(32))?;
     let unknown_enc = acteon_crypto::encrypt_value_with_kid("secret", &unknown_key, Some("k99"))?;
     let result = rotated_enc.decrypt_str(&unknown_enc);
     assert!(result.is_err(), "unknown key should fail");
-    println!("  [step6]    Unknown kid correctly rejected: ok");
+    info!("  [step6]    Unknown kid correctly rejected: ok");
 
-    println!("  [pass]     Scenario 4 passed\n");
+    info!("  [pass]     Scenario 4 passed\n");
 
     // =========================================================================
     // SCENARIO 5: DLQ encryption — EncryptingDeadLetterSink
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: DLQ ENCRYPTION — EncryptingDeadLetterSink");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: DLQ ENCRYPTION — EncryptingDeadLetterSink");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let inner_dlq = Arc::new(DeadLetterQueue::new());
     let dlq_enc = make_encryptor();
@@ -409,7 +412,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     encrypting_dlq
         .push(dlq_action, "provider timeout".into(), 3)
         .await;
-    println!("  [push]     Pushed action with sensitive payload to DLQ");
+    info!("  [push]     Pushed action with sensitive payload to DLQ");
 
     // Verify the raw inner DLQ holds encrypted data.
     let raw_entries = inner_dlq.drain();
@@ -420,7 +423,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 acteon_crypto::is_encrypted(s),
                 "raw DLQ payload should be encrypted"
             );
-            println!("  [verify]   Inner DLQ holds encrypted payload: ok");
+            info!("  [verify]   Inner DLQ holds encrypted payload: ok");
         }
         other => panic!("expected encrypted String, got {other:?}"),
     }
@@ -443,20 +446,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(decrypted_entries[0].action.payload, sensitive_payload);
     assert_eq!(decrypted_entries[0].error, "provider timeout");
     assert_eq!(decrypted_entries[0].attempts, 3);
-    println!("  [drain]    Draining through wrapper returns decrypted payload: ok");
+    info!("  [drain]    Draining through wrapper returns decrypted payload: ok");
 
     // Verify len/is_empty delegation.
     assert!(encrypting_dlq.is_empty().await);
-    println!("  [empty]    DLQ is empty after drain: ok");
+    info!("  [empty]    DLQ is empty after drain: ok");
 
-    println!("  [pass]     Scenario 5 passed\n");
+    info!("  [pass]     Scenario 5 passed\n");
 
     // =========================================================================
     // SCENARIO 6: Group event persistence (encrypted) with crash recovery
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 6: GROUP EVENT PERSISTENCE + CRASH RECOVERY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 6: GROUP EVENT PERSISTENCE + CRASH RECOVERY");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let group_enc = make_encryptor();
     let state_store = MemoryStateStore::new();
@@ -487,7 +490,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(&group_enc),
         )
         .await?;
-    println!("  [add]      Added event 1 to group {gid} (size={size1})");
+    info!("  [add]      Added event 1 to group {gid} (size={size1})");
 
     let (_, _, size2, _) = manager
         .add_to_group(
@@ -498,7 +501,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(&group_enc),
         )
         .await?;
-    println!("  [add]      Added event 2 to group (size={size2})");
+    info!("  [add]      Added event 2 to group (size={size2})");
     assert_eq!(size2, 2);
 
     // Verify the raw state store value is encrypted.
@@ -512,7 +515,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         acteon_crypto::is_encrypted(&raw_val),
         "stored group metadata should be encrypted"
     );
-    println!("  [verify]   State store holds encrypted group blob: ok");
+    info!("  [verify]   State store holds encrypted group blob: ok");
 
     // Simulate crash: create a new GroupManager and recover from state.
     let recovered_manager = GroupManager::new();
@@ -520,7 +523,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .recover_groups(&state_store, "alerts", "team-a", Some(&group_enc))
         .await?;
     assert_eq!(count, 1, "should recover one group");
-    println!("  [recover]  Recovered {count} group from state store");
+    info!("  [recover]  Recovered {count} group from state store");
 
     let recovered_group = recovered_manager
         .get_group(&gkey)
@@ -538,14 +541,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         recovered_group.events[1].payload,
         serde_json::json!({"host": "server-2", "cpu": 88.7})
     );
-    println!("  [verify]   Recovered group has 2 events with correct payloads: ok");
+    info!("  [verify]   Recovered group has 2 events with correct payloads: ok");
 
     // Verify labels were recovered.
     assert!(
         !recovered_group.labels.is_empty(),
         "labels should be recovered"
     );
-    println!("  [verify]   Labels recovered: ok");
+    info!("  [verify]   Labels recovered: ok");
 
     // Backward compatibility: old group entries without events/labels.
     let old_group_key = "old-group-key";
@@ -583,23 +586,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         compat_group.labels.is_empty(),
         "old entries without labels should recover with empty labels"
     );
-    println!("  [compat]   Old entries (no events/labels) recover gracefully: ok");
+    info!("  [compat]   Old entries (no events/labels) recover gracefully: ok");
 
-    println!("  [pass]     Scenario 6 passed\n");
+    info!("  [pass]     Scenario 6 passed\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║  ALL SCENARIOS PASSED                                        ║");
-    println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║  1. Scheduled action encrypted at rest                       ║");
-    println!("║  2. Encryptor unit roundtrip                                 ║");
-    println!("║  3. Audit store encryption                                   ║");
-    println!("║  4. Key rotation (multi-key encryptor)                       ║");
-    println!("║  5. DLQ encryption (EncryptingDeadLetterSink)                ║");
-    println!("║  6. Group event persistence + crash recovery                 ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║  ALL SCENARIOS PASSED                                        ║");
+    info!("╠══════════════════════════════════════════════════════════════╣");
+    info!("║  1. Scheduled action encrypted at rest                       ║");
+    info!("║  2. Encryptor unit roundtrip                                 ║");
+    info!("║  3. Audit store encryption                                   ║");
+    info!("║  4. Key rotation (multi-key encryptor)                       ║");
+    info!("║  5. DLQ encryption (EncryptingDeadLetterSink)                ║");
+    info!("║  6. Group event persistence + crash recovery                 ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

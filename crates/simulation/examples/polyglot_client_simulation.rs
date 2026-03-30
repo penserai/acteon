@@ -28,6 +28,7 @@ use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
+use tracing::info;
 
 /// Server handle that can be stopped
 struct TestServer {
@@ -293,7 +294,7 @@ fn run_java_client(base_url: &str, project_root: &str) -> ClientTestResult {
     }
 
     // Build the JAR using the build script
-    println!("  Building Java client JAR...");
+    info!("  Building Java client JAR...");
     let build_output = Command::new("bash")
         .arg("build.sh")
         .current_dir(&java_client_dir)
@@ -540,9 +541,11 @@ async fn run_rust_client(base_url: &str) -> ClientTestResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║           POLYGLOT CLIENT SIMULATION                         ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║           POLYGLOT CLIENT SIMULATION                         ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // Get project root
     let project_root = std::env::current_dir()?.to_string_lossy().to_string();
@@ -551,70 +554,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(RecordingProvider::new("email"));
 
     // Start test server
-    println!("Starting test server...");
+    info!("Starting test server...");
     let server = TestServer::start(Arc::clone(&provider)).await?;
     let base_url = server.url();
-    println!("Server running at {}\n", base_url);
+    info!("Server running at {}\n", base_url);
 
     let mut results: Vec<ClientTestResult> = Vec::new();
 
     // Run Rust client test (async)
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  RUST CLIENT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  RUST CLIENT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let rust_result = run_rust_client(&base_url).await;
-    println!("{}", rust_result.output);
+    info!("{}", rust_result.output);
     results.push(rust_result);
 
     // Reset provider call count
     provider.clear();
 
     // Run Python client test
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  PYTHON CLIENT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  PYTHON CLIENT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let python_result = run_python_client(&base_url, &project_root);
-    println!("{}", python_result.output);
+    info!("{}", python_result.output);
     results.push(python_result);
 
     provider.clear();
 
     // Run Node.js client test
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  NODE.JS CLIENT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  NODE.JS CLIENT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let nodejs_result = run_nodejs_client(&base_url, &project_root);
-    println!("{}", nodejs_result.output);
+    info!("{}", nodejs_result.output);
     results.push(nodejs_result);
 
     provider.clear();
 
     // Run Go client test
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  GO CLIENT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  GO CLIENT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let go_result = run_go_client(&base_url, &project_root);
-    println!("{}", go_result.output);
+    info!("{}", go_result.output);
     results.push(go_result);
 
     provider.clear();
 
     // Run Java client test (optional)
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  JAVA CLIENT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  JAVA CLIENT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
     let java_result = run_java_client(&base_url, &project_root);
-    println!("{}", java_result.output);
+    info!("{}", java_result.output);
     results.push(java_result);
 
     // Stop server
-    println!("\nStopping test server...");
+    info!("\nStopping test server...");
     server.stop().await;
 
     // Summary
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║                      SUMMARY                                 ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    info!("\n╔══════════════════════════════════════════════════════════════╗");
+    info!("║                      SUMMARY                                 ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     let mut all_passed = true;
     for result in &results {
@@ -623,17 +626,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             "✗ FAIL"
         };
-        println!("  {} {}", status, result.language);
+        info!("  {} {}", status, result.language);
         if !result.success {
             all_passed = false;
         }
     }
 
-    println!();
+    info!("");
     if all_passed {
-        println!("All client tests passed!");
+        info!("All client tests passed!");
     } else {
-        println!("Some client tests failed.");
+        info!("Some client tests failed.");
         std::process::exit(1);
     }
 

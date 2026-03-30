@@ -4,6 +4,7 @@ use acteon_ops::acteon_client::{
     UpdateTemplateRequest,
 };
 use clap::{Args, Subcommand};
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 
@@ -110,6 +111,7 @@ fn parse_json_data(input: &str) -> anyhow::Result<serde_json::Value> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(
     ops: &OpsClient,
     args: &TemplatesArgs,
@@ -122,18 +124,19 @@ pub async fn run(
                 .await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} templates:", resp.count);
+                    info!(count = resp.count, "Templates");
                     for t in &resp.templates {
                         let desc = t.description.as_deref().unwrap_or("");
-                        println!(
-                            "  {id} | {name} | {ns}:{tenant} {desc}",
-                            id = &t.id[..8.min(t.id.len())],
-                            name = t.name,
-                            ns = t.namespace,
-                            tenant = t.tenant,
+                        info!(
+                            id = %&t.id[..8.min(t.id.len())],
+                            name = %t.name,
+                            namespace = %t.namespace,
+                            tenant = %t.tenant,
+                            description = %desc,
+                            "Template"
                         );
                     }
                 }
@@ -144,21 +147,21 @@ pub async fn run(
             match resp {
                 Some(t) => match format {
                     OutputFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(&t)?);
+                        info!("{}", serde_json::to_string_pretty(&t)?);
                     }
                     OutputFormat::Text => {
-                        println!("ID:        {}", t.id);
-                        println!("Name:      {}", t.name);
-                        println!("Namespace: {}", t.namespace);
-                        println!("Tenant:    {}", t.tenant);
+                        info!(id = %t.id, "Template details");
+                        info!(name = %t.name, "  Name");
+                        info!(namespace = %t.namespace, "  Namespace");
+                        info!(tenant = %t.tenant, "  Tenant");
                         if let Some(ref desc) = t.description {
-                            println!("Desc:      {desc}");
+                            info!(description = %desc, "  Desc");
                         }
-                        println!("Content:\n{}", t.content);
+                        info!(content = %t.content, "  Content");
                     }
                 },
                 None => {
-                    println!("Template not found: {id}");
+                    warn!(id = %id, "Template not found");
                 }
             }
         }
@@ -168,10 +171,10 @@ pub async fn run(
             let resp = ops.create_template(&req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Created template: {} ({})", resp.id, resp.name);
+                    info!(id = %resp.id, name = %resp.name, "Created template");
                 }
             }
         }
@@ -181,16 +184,16 @@ pub async fn run(
             let resp = ops.update_template(id, &req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Updated template: {}", resp.id);
+                    info!(id = %resp.id, "Updated template");
                 }
             }
         }
         TemplatesCommand::Delete { id } => {
             ops.delete_template(id).await?;
-            println!("Template '{id}' deleted.");
+            info!(id = %id, "Template deleted");
         }
         TemplatesCommand::Profiles(profiles_args) => {
             run_profiles(ops, profiles_args, format).await?;
@@ -201,12 +204,12 @@ pub async fn run(
             let resp = ops.render_preview(&req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Rendered fields:");
+                    info!("Rendered fields:");
                     for (field, content) in &resp.rendered {
-                        println!("  {field}: {content}");
+                        info!(field = %field, content = %content, "  Rendered field");
                     }
                 }
             }
@@ -227,19 +230,20 @@ async fn run_profiles(
                 .await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} profiles:", resp.count);
+                    info!(count = resp.count, "Profiles");
                     for p in &resp.profiles {
                         let desc = p.description.as_deref().unwrap_or("");
-                        println!(
-                            "  {id} | {name} | {ns}:{tenant} | {fields} fields {desc}",
-                            id = &p.id[..8.min(p.id.len())],
-                            name = p.name,
-                            ns = p.namespace,
-                            tenant = p.tenant,
+                        info!(
+                            id = %&p.id[..8.min(p.id.len())],
+                            name = %p.name,
+                            namespace = %p.namespace,
+                            tenant = %p.tenant,
                             fields = p.fields.len(),
+                            description = %desc,
+                            "Profile"
                         );
                     }
                 }
@@ -250,21 +254,21 @@ async fn run_profiles(
             match resp {
                 Some(p) => match format {
                     OutputFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(&p)?);
+                        info!("{}", serde_json::to_string_pretty(&p)?);
                     }
                     OutputFormat::Text => {
-                        println!("ID:        {}", p.id);
-                        println!("Name:      {}", p.name);
-                        println!("Namespace: {}", p.namespace);
-                        println!("Tenant:    {}", p.tenant);
-                        println!("Fields:    {}", p.fields.len());
+                        info!(id = %p.id, "Profile details");
+                        info!(name = %p.name, "  Name");
+                        info!(namespace = %p.namespace, "  Namespace");
+                        info!(tenant = %p.tenant, "  Tenant");
+                        info!(fields = p.fields.len(), "  Fields");
                         if let Some(ref desc) = p.description {
-                            println!("Desc:      {desc}");
+                            info!(description = %desc, "  Desc");
                         }
                     }
                 },
                 None => {
-                    println!("Profile not found: {id}");
+                    warn!(id = %id, "Profile not found");
                 }
             }
         }
@@ -274,10 +278,10 @@ async fn run_profiles(
             let resp = ops.create_profile(&req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Created profile: {} ({})", resp.id, resp.name);
+                    info!(id = %resp.id, name = %resp.name, "Created profile");
                 }
             }
         }
@@ -287,16 +291,16 @@ async fn run_profiles(
             let resp = ops.update_profile(id, &req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Updated profile: {}", resp.id);
+                    info!(id = %resp.id, "Updated profile");
                 }
             }
         }
         ProfilesCommand::Delete { id } => {
             ops.delete_profile(id).await?;
-            println!("Profile '{id}' deleted.");
+            info!(id = %id, "Profile deleted");
         }
     }
     Ok(())

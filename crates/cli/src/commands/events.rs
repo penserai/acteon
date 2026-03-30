@@ -1,6 +1,7 @@
 use acteon_ops::OpsClient;
 use acteon_ops::acteon_client::EventQuery;
 use clap::{Args, Subcommand};
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -56,16 +57,17 @@ pub async fn run(ops: &OpsClient, args: &EventsArgs, format: &OutputFormat) -> a
             let resp = ops.client().list_events(&query).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} events:", resp.count);
+                    info!(count = resp.count, "Events");
                     for event in &resp.events {
                         let updated = event.updated_at.as_deref().unwrap_or("?");
-                        println!(
-                            "  {fingerprint} | {state} | updated {updated}",
-                            fingerprint = event.fingerprint,
-                            state = event.state,
+                        info!(
+                            fingerprint = %event.fingerprint,
+                            state = %event.state,
+                            updated = %updated,
+                            "Event"
                         );
                     }
                 }
@@ -83,15 +85,15 @@ pub async fn run(ops: &OpsClient, args: &EventsArgs, format: &OutputFormat) -> a
                 .await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!(
-                        "Event {fp}: {prev} -> {next} (notify: {notify})",
-                        fp = resp.fingerprint,
-                        prev = resp.previous_state,
-                        next = resp.new_state,
+                    info!(
+                        fingerprint = %resp.fingerprint,
+                        previous_state = %resp.previous_state,
+                        new_state = %resp.new_state,
                         notify = resp.notify,
+                        "Event transitioned"
                     );
                 }
             }

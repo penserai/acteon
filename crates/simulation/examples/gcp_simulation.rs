@@ -10,12 +10,15 @@
 
 use acteon_core::{Action, ActionOutcome};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("       GCP CLOUD STORAGE & PUB/SUB SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("       GCP CLOUD STORAGE & PUB/SUB SIMULATION");
+    info!("==================================================================\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -26,17 +29,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("Started simulation cluster with 1 node");
-    println!("Registered providers: gcp-storage, gcp-pubsub\n");
+    info!("Started simulation cluster with 1 node");
+    info!("Registered providers: gcp-storage, gcp-pubsub\n");
 
     let mut results: Vec<(&str, ActionOutcome)> = Vec::new();
 
     // =========================================================================
     // 1. Storage: Upload (text body)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  1. STORAGE: UPLOAD (text body)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  1. STORAGE: UPLOAD (text body)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -55,18 +58,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching upload_object with text body, content_type, and metadata...");
+    info!("  Dispatching upload_object with text body, content_type, and metadata...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("storage/upload_object(text)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 2. Storage: Upload (base64 body)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  2. STORAGE: UPLOAD (base64 body)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  2. STORAGE: UPLOAD (base64 body)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -81,18 +84,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching upload_object with base64-encoded binary body...");
+    info!("  Dispatching upload_object with base64-encoded binary body...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("storage/upload_object(base64)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 3. Storage: Download
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  3. STORAGE: DOWNLOAD");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  3. STORAGE: DOWNLOAD");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -105,18 +108,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching download_object...");
+    info!("  Dispatching download_object...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("storage/download_object", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 4. Storage: Delete
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  4. STORAGE: DELETE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  4. STORAGE: DELETE");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -129,18 +132,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching delete_object...");
+    info!("  Dispatching delete_object...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("storage/delete_object", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 5. Pub/Sub: Publish (JSON data + attributes)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  5. PUB/SUB: PUBLISH (JSON data + attributes)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  5. PUB/SUB: PUBLISH (JSON data + attributes)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "events",
@@ -156,18 +159,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching publish with JSON data string and attributes...");
+    info!("  Dispatching publish with JSON data string and attributes...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("pubsub/publish(json+attrs)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 6. Pub/Sub: Publish (with ordering key)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  6. PUB/SUB: PUBLISH (with ordering key)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  6. PUB/SUB: PUBLISH (with ordering key)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "events",
@@ -181,18 +184,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching publish with ordering_key and topic override...");
+    info!("  Dispatching publish with ordering_key and topic override...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("pubsub/publish(ordering_key)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 7. Pub/Sub: Publish Batch
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  7. PUB/SUB: PUBLISH BATCH");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  7. PUB/SUB: PUBLISH BATCH");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "events",
@@ -217,31 +220,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching publish_batch with 3 messages (mixed attributes/ordering keys)...");
+    info!("  Dispatching publish_batch with 3 messages (mixed attributes/ordering keys)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("pubsub/publish_batch", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("  SUMMARY");
-    println!("==================================================================\n");
+    info!("==================================================================");
+    info!("  SUMMARY");
+    info!("==================================================================\n");
 
     let mut all_passed = true;
     for (name, outcome) in &results {
         let passed = matches!(outcome, ActionOutcome::Executed(_));
         let status = if passed { "PASS" } else { "FAIL" };
-        println!("  [{status}] {name}: {outcome:?}");
+        info!("  [{status}] {name}: {outcome:?}");
         if !passed {
             all_passed = false;
         }
     }
 
-    println!();
-    println!(
+    info!("");
+    info!(
         "  Total dispatched: {}  |  Storage calls: {}  |  Pub/Sub calls: {}",
         results.len(),
         harness.provider("gcp-storage").unwrap().call_count(),
@@ -249,12 +252,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  Simulation cluster shut down");
+    info!("\n  Simulation cluster shut down");
 
     if all_passed {
-        println!("\n  All GCP Cloud Storage and Pub/Sub actions dispatched successfully.");
+        info!("\n  All GCP Cloud Storage and Pub/Sub actions dispatched successfully.");
     } else {
-        println!("\n  Some actions failed. See details above.");
+        info!("\n  Some actions failed. See details above.");
         std::process::exit(1);
     }
 

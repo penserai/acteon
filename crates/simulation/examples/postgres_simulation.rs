@@ -26,6 +26,7 @@ use acteon_simulation::RecordingProvider;
 
 // Import PostgreSQL state backends
 use acteon_state_postgres::{PostgresConfig, PostgresDistributedLock, PostgresStateStore};
+use tracing::info;
 
 const DEDUP_RULE: &str = r#"
 rules:
@@ -52,9 +53,11 @@ rules:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║  ACTEON SIMULATION WITH POSTGRESQL + AUDIT TRAIL             ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║  ACTEON SIMULATION WITH POSTGRESQL + AUDIT TRAIL             ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // Configure PostgreSQL connection
     let database_url = std::env::var("DATABASE_URL")
@@ -71,28 +74,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Audit backend config
     let audit_config = PostgresAuditConfig::new(&database_url).with_prefix("acteon_sim_");
 
-    println!("→ Connecting to PostgreSQL...");
+    info!("→ Connecting to PostgreSQL...");
 
     // Create PostgreSQL-backed state store, lock, and AUDIT store
     let state = Arc::new(PostgresStateStore::new(state_config.clone()).await?);
     let lock = Arc::new(PostgresDistributedLock::new(state_config.clone()).await?);
     let audit = Arc::new(PostgresAuditStore::new(&audit_config).await?);
 
-    println!("✓ Connected to PostgreSQL");
-    println!("✓ State tables: public.acteon_sim_state, public.acteon_sim_locks");
-    println!("✓ Audit table: public.acteon_sim_audit");
-    println!();
+    info!("✓ Connected to PostgreSQL");
+    info!("✓ State tables: public.acteon_sim_state, public.acteon_sim_locks");
+    info!("✓ Audit table: public.acteon_sim_audit");
+    info!("");
 
     // Parse rules
     let frontend = YamlFrontend;
     let mut rules = frontend.parse(DEDUP_RULE)?;
     rules.extend(frontend.parse(SUPPRESSION_RULE)?);
 
-    println!("✓ Loaded {} rules", rules.len());
+    info!("✓ Loaded {} rules", rules.len());
     for rule in &rules {
-        println!("  - {}: {:?}", rule.name, rule.action);
+        info!("  - {}: {:?}", rule.name, rule.action);
     }
-    println!();
+    info!("");
 
     // Create recording providers
     let email_provider = Arc::new(RecordingProvider::new("email"));
@@ -110,14 +113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider(sms_provider.clone() as Arc<dyn DynProvider>)
         .build()?;
 
-    println!("✓ Gateway built with PostgreSQL state, lock, and AUDIT backends\n");
+    info!("✓ Gateway built with PostgreSQL state, lock, and AUDIT backends\n");
 
     // =========================================================================
     // DEMO 1: Action Execution with Audit Trail
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: ACTION EXECUTION WITH AUDIT TRAIL");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: ACTION EXECUTION WITH AUDIT TRAIL");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let action1 = Action::new(
         "notifications",
@@ -131,41 +134,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("pg-audit-test-1");
 
-    println!("→ Dispatching notification action...");
+    info!("→ Dispatching notification action...");
     let outcome1 = gateway.dispatch(action1.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome1);
-    println!("  Action ID: {}", action1.id);
+    info!("  Outcome: {:?}", outcome1);
+    info!("  Action ID: {}", action1.id);
 
     // Wait for audit to be recorded (it's async)
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Verify audit trail
-    println!("\n→ Querying audit trail for action {}...", action1.id);
+    info!("\n→ Querying audit trail for action {}...", action1.id);
     let audit_record = audit.get_by_action_id(&action1.id.to_string()).await?;
 
     if let Some(record) = audit_record {
-        println!("  ✓ Audit record found!");
-        println!("    Record ID: {}", record.id);
-        println!("    Namespace: {}", record.namespace);
-        println!("    Tenant: {}", record.tenant);
-        println!("    Provider: {}", record.provider);
-        println!("    Action Type: {}", record.action_type);
-        println!("    Verdict: {}", record.verdict);
-        println!("    Outcome: {}", record.outcome);
-        println!("    Duration: {}ms", record.duration_ms);
+        info!("  ✓ Audit record found!");
+        info!("    Record ID: {}", record.id);
+        info!("    Namespace: {}", record.namespace);
+        info!("    Tenant: {}", record.tenant);
+        info!("    Provider: {}", record.provider);
+        info!("    Action Type: {}", record.action_type);
+        info!("    Verdict: {}", record.verdict);
+        info!("    Outcome: {}", record.outcome);
+        info!("    Duration: {}ms", record.duration_ms);
         if let Some(ref payload) = record.action_payload {
-            println!("    Payload: {}", payload);
+            info!("    Payload: {}", payload);
         }
     } else {
-        println!("  ✗ No audit record found!");
+        info!("  ✗ No audit record found!");
     }
 
     // =========================================================================
     // DEMO 2: Suppressed Action Audit Trail
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: SUPPRESSED ACTION AUDIT TRAIL");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: SUPPRESSED ACTION AUDIT TRAIL");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let spam_action = Action::new(
         "notifications",
@@ -177,30 +180,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching SPAM action...");
+    info!("→ Dispatching SPAM action...");
     let outcome = gateway.dispatch(spam_action.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!("  Action ID: {}", spam_action.id);
+    info!("  Outcome: {:?}", outcome);
+    info!("  Action ID: {}", spam_action.id);
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    println!("\n→ Querying audit trail for suppressed action...");
+    info!("\n→ Querying audit trail for suppressed action...");
     let audit_record = audit.get_by_action_id(&spam_action.id.to_string()).await?;
 
     if let Some(record) = audit_record {
-        println!("  ✓ Audit record found!");
-        println!("    Verdict: {}", record.verdict);
-        println!("    Outcome: {}", record.outcome);
-        println!("    Matched Rule: {:?}", record.matched_rule);
-        println!("    (Suppressed actions are still audited!)");
+        info!("  ✓ Audit record found!");
+        info!("    Verdict: {}", record.verdict);
+        info!("    Outcome: {}", record.outcome);
+        info!("    Matched Rule: {:?}", record.matched_rule);
+        info!("    (Suppressed actions are still audited!)");
     }
 
     // =========================================================================
     // DEMO 3: Deduplicated Action Audit Trail
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: DEDUPLICATED ACTION AUDIT TRAIL");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: DEDUPLICATED ACTION AUDIT TRAIL");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let dup_action = Action::new(
         "notifications",
@@ -214,30 +217,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("pg-audit-test-1"); // Same dedup key as action1
 
-    println!("→ Dispatching DUPLICATE action (same dedup_key)...");
+    info!("→ Dispatching DUPLICATE action (same dedup_key)...");
     let outcome = gateway.dispatch(dup_action.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!("  Action ID: {}", dup_action.id);
+    info!("  Outcome: {:?}", outcome);
+    info!("  Action ID: {}", dup_action.id);
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    println!("\n→ Querying audit trail for deduplicated action...");
+    info!("\n→ Querying audit trail for deduplicated action...");
     let audit_record = audit.get_by_action_id(&dup_action.id.to_string()).await?;
 
     if let Some(record) = audit_record {
-        println!("  ✓ Audit record found!");
-        println!("    Verdict: {}", record.verdict);
-        println!("    Outcome: {}", record.outcome);
-        println!("    Matched Rule: {:?}", record.matched_rule);
-        println!("    (Deduplicated actions are audited with 'deduplicated' outcome!)");
+        info!("  ✓ Audit record found!");
+        info!("    Verdict: {}", record.verdict);
+        info!("    Outcome: {}", record.outcome);
+        info!("    Matched Rule: {:?}", record.matched_rule);
+        info!("    (Deduplicated actions are audited with 'deduplicated' outcome!)");
     }
 
     // =========================================================================
     // DEMO 4: Query Audit Trail with Filters
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 4: QUERY AUDIT TRAIL WITH FILTERS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 4: QUERY AUDIT TRAIL WITH FILTERS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Query all records for tenant-1
     let query = AuditQuery {
@@ -246,13 +249,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    println!("→ Querying all audit records for tenant-1...");
+    info!("→ Querying all audit records for tenant-1...");
     let page = audit.query(&query).await?;
-    println!("  Total records: {}", page.total);
-    println!("  Records in page: {}\n", page.records.len());
+    info!("  Total records: {}", page.total);
+    info!("  Records in page: {}\n", page.records.len());
 
     for record in &page.records {
-        println!(
+        info!(
             "  - {} | {} | {} | {}",
             &record.action_id[..8],
             record.action_type,
@@ -262,31 +265,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Query suppressed actions only
-    println!("\n→ Querying only SUPPRESSED actions...");
+    info!("\n→ Querying only SUPPRESSED actions...");
     let suppressed_query = AuditQuery {
         outcome: Some("suppressed".to_string()),
         limit: Some(10),
         ..Default::default()
     };
     let suppressed_page = audit.query(&suppressed_query).await?;
-    println!("  Suppressed actions: {}", suppressed_page.total);
+    info!("  Suppressed actions: {}", suppressed_page.total);
 
     // Query executed actions only
-    println!("\n→ Querying only EXECUTED actions...");
+    info!("\n→ Querying only EXECUTED actions...");
     let executed_query = AuditQuery {
         outcome: Some("executed".to_string()),
         limit: Some(10),
         ..Default::default()
     };
     let executed_page = audit.query(&executed_query).await?;
-    println!("  Executed actions: {}", executed_page.total);
+    info!("  Executed actions: {}", executed_page.total);
 
     // =========================================================================
     // DEMO 5: Throughput with Audit
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 5: THROUGHPUT WITH AUDIT ENABLED");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 5: THROUGHPUT WITH AUDIT ENABLED");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
@@ -303,7 +306,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("→ Dispatching 100 actions with audit enabled...");
+    info!("→ Dispatching 100 actions with audit enabled...");
     let start = std::time::Instant::now();
 
     for action in actions {
@@ -311,8 +314,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let elapsed = start.elapsed();
-    println!("  Completed in: {:?}", elapsed);
-    println!(
+    info!("  Completed in: {:?}", elapsed);
+    info!(
         "  Throughput: {:.0} actions/sec",
         100.0 / elapsed.as_secs_f64()
     );
@@ -327,14 +330,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let bulk_page = audit.query(&bulk_query).await?;
-    println!("  Audit records created: {}", bulk_page.total);
+    info!("  Audit records created: {}", bulk_page.total);
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  AUDIT TRAIL SUMMARY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  AUDIT TRAIL SUMMARY");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let all_query = AuditQuery {
         limit: Some(1000),
@@ -358,22 +361,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|r| r.outcome == "deduplicated")
         .count();
 
-    println!("  Total audit records: {}", all_page.total);
-    println!("    - Executed: {}", executed_count);
-    println!("    - Suppressed: {}", suppressed_count);
-    println!("    - Deduplicated: {}", deduplicated_count);
+    info!("  Total audit records: {}", all_page.total);
+    info!("    - Executed: {}", executed_count);
+    info!("    - Suppressed: {}", suppressed_count);
+    info!("    - Deduplicated: {}", deduplicated_count);
 
-    println!("\n  You can query the audit trail with psql:");
-    println!("    SELECT action_type, outcome, matched_rule, dispatched_at");
-    println!("    FROM public.acteon_sim_audit ORDER BY dispatched_at DESC LIMIT 10;");
+    info!("\n  You can query the audit trail with psql:");
+    info!("    SELECT action_type, outcome, matched_rule, dispatched_at");
+    info!("    FROM public.acteon_sim_audit ORDER BY dispatched_at DESC LIMIT 10;");
 
     // Cleanup
     gateway_arc.shutdown().await;
-    println!("\n✓ Gateway shut down gracefully\n");
+    info!("\n✓ Gateway shut down gracefully\n");
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║           POSTGRESQL + AUDIT DEMO COMPLETE                   ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║           POSTGRESQL + AUDIT DEMO COMPLETE                   ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

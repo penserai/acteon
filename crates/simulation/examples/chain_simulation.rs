@@ -22,6 +22,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const CHAIN_RULE: &str = r#"
 rules:
@@ -43,16 +44,18 @@ fn parse_rules(yaml: &str) -> Vec<Rule> {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("           ACTEON CHAIN SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("           ACTEON CHAIN SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // DEMO 1: Successful Multi-Step Chain
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 1: SUCCESSFUL MULTI-STEP CHAIN");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 1: SUCCESSFUL MULTI-STEP CHAIN");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -127,7 +130,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching research action...");
+    info!("  Dispatching research action...");
     let outcome = gateway.dispatch(action, None).await?;
 
     let chain_id = match &outcome {
@@ -137,14 +140,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             total_steps,
             first_step,
         } => {
-            println!("  Chain started: {chain_name}");
-            println!("    chain_id:    {chain_id}");
-            println!("    total_steps: {total_steps}");
-            println!("    first_step:  {first_step}");
+            info!("  Chain started: {chain_name}");
+            info!("    chain_id:    {chain_id}");
+            info!("    total_steps: {total_steps}");
+            info!("    first_step:  {first_step}");
             chain_id.clone()
         }
         other => {
-            println!("  Unexpected outcome: {other:?}");
+            info!("  Unexpected outcome: {other:?}");
             return Ok(());
         }
     };
@@ -154,17 +157,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         gateway
             .advance_chain("research", "tenant-1", &chain_id)
             .await?;
-        println!("  Step {step} advanced");
+        info!("  Step {step} advanced");
     }
 
     // Wait for async audit writes.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify providers were called.
-    println!("\n  Provider call counts:");
-    println!("    search-api: {}", search_provider.call_count());
-    println!("    llm-api:    {}", summarize_provider.call_count());
-    println!("    email:      {}", email_provider.call_count());
+    info!("\n  Provider call counts:");
+    info!("    search-api: {}", search_provider.call_count());
+    info!("    llm-api:    {}", summarize_provider.call_count());
+    info!("    email:      {}", email_provider.call_count());
 
     // Query audit records for this chain.
     let page = audit
@@ -174,9 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    println!("\n  Audit records for chain {chain_id}: {}", page.total);
+    info!("\n  Audit records for chain {chain_id}: {}", page.total);
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<12} outcome={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -187,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_chain_status("research", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
-    println!("\n  Final chain status: {:?}", chain_state.status);
+    info!("\n  Final chain status: {:?}", chain_state.status);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -209,21 +212,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 || r.outcome == "chain_cancelled"
         })
         .collect();
-    println!("  Step audit records:     {}", step_records.len());
-    println!("  Terminal audit records:  {}", terminal_records.len());
+    info!("  Step audit records:     {}", step_records.len());
+    info!("  Terminal audit records:  {}", terminal_records.len());
     assert_eq!(step_records.len(), 3, "expected 3 step records");
     assert_eq!(terminal_records.len(), 1, "expected 1 terminal record");
     assert_eq!(terminal_records[0].outcome, "chain_completed");
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 2: Chain with Failing Step (Abort)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 2: CHAIN WITH FAILING STEP (ABORT POLICY)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 2: CHAIN WITH FAILING STEP (ABORT POLICY)");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -293,21 +296,21 @@ rules:
         serde_json::json!({}),
     );
 
-    println!("  Dispatching action to trigger abort-chain...");
+    info!("  Dispatching action to trigger abort-chain...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => chain_id.clone(),
         other => {
-            println!("  Unexpected outcome: {other:?}");
+            info!("  Unexpected outcome: {other:?}");
             return Ok(());
         }
     };
 
     // Advance step 0 (succeeds), then step 1 (fails -> abort).
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (first): advanced OK");
+    info!("  Step 0 (first): advanced OK");
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (second-fails): failed -> chain aborted");
+    info!("  Step 1 (second-fails): failed -> chain aborted");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -315,13 +318,13 @@ rules:
         .get_chain_status("test", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
-    println!("\n  Final chain status: {:?}", chain_state.status);
+    info!("\n  Final chain status: {:?}", chain_state.status);
     assert_eq!(chain_state.status, acteon_core::chain::ChainStatus::Failed);
 
-    println!("  Provider call counts:");
-    println!("    step-ok:          {}", ok_provider.call_count());
-    println!("    step-fail:        {}", fail_provider.call_count());
-    println!(
+    info!("  Provider call counts:");
+    info!("    step-ok:          {}", ok_provider.call_count());
+    info!("    step-fail:        {}", fail_provider.call_count());
+    info!(
         "    step-unreachable: {} (never reached)",
         unreachable_provider.call_count()
     );
@@ -333,9 +336,9 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!("\n  Audit records for chain: {}", page.total);
+    info!("\n  Audit records for chain: {}", page.total);
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<16} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -353,14 +356,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 3: Chain with Failing Step (Skip)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 3: CHAIN WITH FAILING STEP (SKIP POLICY)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 3: CHAIN WITH FAILING STEP (SKIP POLICY)");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -437,12 +440,12 @@ rules:
         serde_json::json!({}),
     );
 
-    println!("  Dispatching action to trigger skip-chain...");
+    info!("  Dispatching action to trigger skip-chain...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => chain_id.clone(),
         other => {
-            println!("  Unexpected outcome: {other:?}");
+            info!("  Unexpected outcome: {other:?}");
             return Ok(());
         }
     };
@@ -450,7 +453,7 @@ rules:
     // Advance all 3 steps: step 0 OK, step 1 fails but skips, step 2 OK.
     for i in 0..3 {
         gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-        println!("  Step {i} advanced");
+        info!("  Step {i} advanced");
     }
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -459,19 +462,19 @@ rules:
         .get_chain_status("test", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
-    println!("\n  Final chain status: {:?}", chain_state.status);
+    info!("\n  Final chain status: {:?}", chain_state.status);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
     );
 
-    println!("  Provider call counts:");
-    println!("    step-a: {}", ok_provider.call_count());
-    println!(
+    info!("  Provider call counts:");
+    info!("    step-a: {}", ok_provider.call_count());
+    info!(
         "    step-b: {} (failed, skipped)",
         fail_provider.call_count()
     );
-    println!(
+    info!(
         "    step-c: {} (still reached)",
         final_provider.call_count()
     );
@@ -487,9 +490,9 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!("\n  Audit records for chain: {}", page.total);
+    info!("\n  Audit records for chain: {}", page.total);
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -514,14 +517,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 4: Chain Cancellation
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 4: CHAIN CANCELLATION");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 4: CHAIN CANCELLATION");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -585,22 +588,22 @@ rules:
         serde_json::json!({}),
     );
 
-    println!("  Dispatching action to trigger cancellable-chain...");
+    info!("  Dispatching action to trigger cancellable-chain...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => chain_id.clone(),
         other => {
-            println!("  Unexpected outcome: {other:?}");
+            info!("  Unexpected outcome: {other:?}");
             return Ok(());
         }
     };
 
     // Advance step 0 so chain is partially complete.
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 0 advanced");
+    info!("  Step 0 advanced");
 
     // Cancel the chain while step 1 is pending.
-    println!("  Cancelling chain...");
+    info!("  Cancelling chain...");
     let cancelled_state = gateway
         .cancel_chain(
             "test",
@@ -611,9 +614,9 @@ rules:
         )
         .await?;
 
-    println!("  Chain status after cancel: {:?}", cancelled_state.status);
-    println!("  Cancel reason: {:?}", cancelled_state.cancel_reason);
-    println!("  Cancelled by: {:?}", cancelled_state.cancelled_by);
+    info!("  Chain status after cancel: {:?}", cancelled_state.status);
+    info!("  Cancel reason: {:?}", cancelled_state.cancel_reason);
+    info!("  Cancelled by: {:?}", cancelled_state.cancelled_by);
     assert_eq!(
         cancelled_state.status,
         acteon_core::chain::ChainStatus::Cancelled
@@ -627,9 +630,9 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!("\n  Audit records for chain: {}", page.total);
+    info!("\n  Audit records for chain: {}", page.total);
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -656,14 +659,14 @@ rules:
     assert_eq!(details["cancelled_by"].as_str(), Some("admin@example.com"));
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 5: Audit Trail Filter by chain_id
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 5: AUDIT TRAIL QUERIES");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 5: AUDIT TRAIL QUERIES");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -760,7 +763,7 @@ rules:
 
     // Query all audit records.
     let all_page = audit.query(&AuditQuery::default()).await?;
-    println!("  Total audit records (all chains): {}", all_page.total);
+    info!("  Total audit records (all chains): {}", all_page.total);
 
     // Query only chain-alpha records.
     let alpha_page = audit
@@ -769,12 +772,12 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!(
+    info!(
         "  Records for chain-alpha ({}): {}",
         chain_id_a, alpha_page.total
     );
     for rec in &alpha_page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -787,12 +790,12 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!(
+    info!(
         "  Records for chain-beta  ({}): {}",
         chain_id_b, beta_page.total
     );
     for rec in &beta_page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -818,11 +821,11 @@ rules:
     }
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
-    println!("==================================================================");
-    println!("           ALL CHAIN SIMULATIONS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("           ALL CHAIN SIMULATIONS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

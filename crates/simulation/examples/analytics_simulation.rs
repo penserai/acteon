@@ -17,6 +17,7 @@ use acteon_core::analytics::{
     AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
 };
 use chrono::{Duration, Utc};
+use tracing::info;
 
 fn make_record(
     namespace: &str,
@@ -56,19 +57,19 @@ fn make_record(
 }
 
 fn print_response(label: &str, resp: &AnalyticsResponse) {
-    println!("\n{}", "=".repeat(60));
-    println!("  {label}");
-    println!("{}", "=".repeat(60));
-    println!(
+    info!("\n{}", "=".repeat(60));
+    info!("  {label}");
+    info!("{}", "=".repeat(60));
+    info!(
         "  Metric: {:?} | Interval: {:?} | Total: {}",
         resp.metric, resp.interval, resp.total_count
     );
-    println!(
+    info!(
         "  Range: {} -> {}",
         resp.from.format("%Y-%m-%d %H:%M"),
         resp.to.format("%Y-%m-%d %H:%M")
     );
-    println!("  Buckets: {}", resp.buckets.len());
+    info!("  Buckets: {}", resp.buckets.len());
     for bucket in &resp.buckets {
         let group = bucket
             .group
@@ -87,7 +88,7 @@ fn print_response(label: &str, resp: &AnalyticsResponse) {
         .collect::<Vec<_>>()
         .join(" ");
 
-        println!(
+        info!(
             "    {} | count={}{} {}",
             bucket.timestamp.format("%Y-%m-%d %H:%M"),
             bucket.count,
@@ -96,9 +97,9 @@ fn print_response(label: &str, resp: &AnalyticsResponse) {
         );
     }
     if !resp.top_entries.is_empty() {
-        println!("  Top entries:");
+        info!("  Top entries:");
         for entry in &resp.top_entries {
-            println!(
+            info!(
                 "    {}: {} ({:.1}%)",
                 entry.label, entry.count, entry.percentage
             );
@@ -108,8 +109,10 @@ fn print_response(label: &str, resp: &AnalyticsResponse) {
 
 #[tokio::main]
 async fn main() {
-    println!("Acteon Analytics Simulation");
-    println!("===========================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("Acteon Analytics Simulation");
+    info!("===========================\n");
 
     let start = Instant::now();
 
@@ -146,7 +149,7 @@ async fn main() {
         audit_store.record(record).await.unwrap();
     }
 
-    println!("Populated {} audit records", 60);
+    info!("Populated {} audit records", 60);
 
     let analytics = InMemoryAnalytics::new(audit_store as Arc<dyn AuditStore>);
 
@@ -264,5 +267,5 @@ async fn main() {
         .unwrap();
     print_response("6. Volume grouped by Provider", &resp);
 
-    println!("\n\nSimulation completed in {:?}", start.elapsed());
+    info!("\n\nSimulation completed in {:?}", start.elapsed());
 }

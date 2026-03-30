@@ -17,6 +17,7 @@ use acteon_gateway::GatewayBuilder;
 use acteon_simulation::provider::RecordingProvider;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use chrono::Utc;
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -89,9 +90,9 @@ fn build_gateway(
 
 /// Scenario 1: Inline template fields -- render simple variables.
 async fn scenario_inline_fields() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: INLINE TEMPLATE FIELDS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: INLINE TEMPLATE FIELDS");
+    info!("------------------------------------------------------------------\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
 
@@ -126,7 +127,7 @@ async fn scenario_inline_fields() -> Result<(), Box<dyn std::error::Error>> {
     .with_template("welcome-inline");
 
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     assert!(
         matches!(outcome, ActionOutcome::Executed(..)),
         "action should be executed"
@@ -136,7 +137,7 @@ async fn scenario_inline_fields() -> Result<(), Box<dyn std::error::Error>> {
     let calls = email.calls();
     assert_eq!(calls.len(), 1);
     let payload = &calls[0].action.payload;
-    println!("  Provider received payload: {payload}");
+    info!("  Provider received payload: {payload}");
 
     assert_eq!(
         payload.get("subject").and_then(|v| v.as_str()),
@@ -156,15 +157,15 @@ async fn scenario_inline_fields() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 PASSED]\n");
+    info!("\n  [Scenario 1 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 2: `$ref` template fields -- render from stored templates.
 async fn scenario_ref_fields() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: $ref TEMPLATE FIELDS (stored templates)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: $ref TEMPLATE FIELDS (stored templates)");
+    info!("------------------------------------------------------------------\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
 
@@ -203,12 +204,12 @@ async fn scenario_ref_fields() -> Result<(), Box<dyn std::error::Error>> {
     .with_template("order-confirmation");
 
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
 
     let calls = email.calls();
     let payload = &calls[0].action.payload;
-    println!("  Provider received payload: {payload}");
+    info!("  Provider received payload: {payload}");
 
     let body = payload
         .get("body")
@@ -226,15 +227,15 @@ async fn scenario_ref_fields() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 PASSED]\n");
+    info!("\n  [Scenario 2 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 3: Mixed inline and `$ref` fields in a single profile.
 async fn scenario_mixed_inline_and_ref() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 3: MIXED INLINE + $ref FIELDS IN ONE PROFILE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 3: MIXED INLINE + $ref FIELDS IN ONE PROFILE");
+    info!("------------------------------------------------------------------\n");
 
     let slack = Arc::new(RecordingProvider::new("slack"));
 
@@ -282,14 +283,14 @@ async fn scenario_mixed_inline_and_ref() -> Result<(), Box<dyn std::error::Error
     .with_template("incident-alert");
 
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
 
     let calls = slack.calls();
     let payload = &calls[0].action.payload;
-    println!("  subject: {}", payload["subject"]);
-    println!("  html_body: {}", payload["html_body"]);
-    println!("  footer: {}", payload["footer"]);
+    info!("  subject: {}", payload["subject"]);
+    info!("  html_body: {}", payload["html_body"]);
+    info!("  footer: {}", payload["footer"]);
 
     let subject = payload["subject"].as_str().unwrap();
     assert!(
@@ -318,15 +319,15 @@ async fn scenario_mixed_inline_and_ref() -> Result<(), Box<dyn std::error::Error
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 3 PASSED]\n");
+    info!("\n  [Scenario 3 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 4: Templates with loops and conditionals.
 async fn scenario_loops_and_conditionals() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 4: TEMPLATES WITH LOOPS AND CONDITIONALS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 4: TEMPLATES WITH LOOPS AND CONDITIONALS");
+    info!("------------------------------------------------------------------\n");
 
     let webhook = Arc::new(RecordingProvider::new("webhook"));
 
@@ -393,14 +394,14 @@ async fn scenario_loops_and_conditionals() -> Result<(), Box<dyn std::error::Err
     .with_template("order-summary");
 
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
 
     let calls = webhook.calls();
     let payload = &calls[0].action.payload;
 
     let item_summary = payload["item_summary"].as_str().unwrap();
-    println!("  item_summary:\n{item_summary}");
+    info!("  item_summary:\n{item_summary}");
     assert!(
         item_summary.contains("Widget A (x2)"),
         "should render loop items"
@@ -419,34 +420,34 @@ async fn scenario_loops_and_conditionals() -> Result<(), Box<dyn std::error::Err
     );
 
     let status_message = payload["status_message"].as_str().unwrap();
-    println!("  status_message: {status_message}");
+    info!("  status_message: {status_message}");
     assert_eq!(
         status_message, "Your order is on its way!",
         "should render shipped branch"
     );
 
     let priority_label = payload["priority_label"].as_str().unwrap();
-    println!("  priority_label: {priority_label}");
+    info!("  priority_label: {priority_label}");
     assert_eq!(
         priority_label, "EXPRESS SHIPPING",
         "should render express conditional"
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 4 PASSED]\n");
+    info!("\n  [Scenario 4 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 5: Error handling -- missing profile and missing template ref.
 async fn scenario_error_handling() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 5: ERROR HANDLING (missing profile, missing $ref)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 5: ERROR HANDLING (missing profile, missing $ref)");
+    info!("------------------------------------------------------------------\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
 
     // --- Part A: Missing profile ---
-    println!("  Part A: Dispatch with non-existent profile name");
+    info!("  Part A: Dispatch with non-existent profile name");
 
     let gateway_a = build_gateway(vec![], vec![], vec![Arc::clone(&email)]);
 
@@ -460,7 +461,7 @@ async fn scenario_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     .with_template("nonexistent-profile");
 
     let result_a = gateway_a.dispatch(action_a, None).await;
-    println!("  Result: {result_a:?}");
+    info!("  Result: {result_a:?}");
     assert!(result_a.is_err(), "should fail for missing profile");
     let err_msg = result_a.unwrap_err().to_string();
     assert!(
@@ -472,7 +473,7 @@ async fn scenario_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     gateway_a.shutdown().await;
 
     // --- Part B: Profile references a non-existent stored template ---
-    println!("\n  Part B: Profile with dangling $ref to missing template");
+    info!("\n  Part B: Profile with dangling $ref to missing template");
 
     let email_b = Arc::new(RecordingProvider::new("email"));
 
@@ -497,7 +498,7 @@ async fn scenario_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     .with_template("bad-ref-profile");
 
     let result_b = gateway_b.dispatch(action_b, None).await;
-    println!("  Result: {result_b:?}");
+    info!("  Result: {result_b:?}");
     assert!(result_b.is_err(), "should fail for missing template ref");
     let err_msg_b = result_b.unwrap_err().to_string();
     assert!(
@@ -509,7 +510,7 @@ async fn scenario_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     gateway_b.shutdown().await;
 
     // --- Part C: Dispatch without template field works normally ---
-    println!("\n  Part C: Dispatch without template field (normal path)");
+    info!("\n  Part C: Dispatch without template field (normal path)");
 
     let email_c = Arc::new(RecordingProvider::new("email"));
     let gateway_c = build_gateway(vec![], vec![], vec![Arc::clone(&email_c)]);
@@ -523,7 +524,7 @@ async fn scenario_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let outcome_c = gateway_c.dispatch(action_c, None).await?;
-    println!("  Outcome: {outcome_c:?}");
+    info!("  Outcome: {outcome_c:?}");
     assert!(
         matches!(outcome_c, ActionOutcome::Executed(..)),
         "should execute normally without template"
@@ -531,15 +532,15 @@ async fn scenario_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     email_c.assert_called(1);
 
     gateway_c.shutdown().await;
-    println!("\n  [Scenario 5 PASSED]\n");
+    info!("\n  [Scenario 5 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 6: Nested variables and complex payload structures.
 async fn scenario_nested_variables() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 6: NESTED VARIABLES AND COMPLEX PAYLOADS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 6: NESTED VARIABLES AND COMPLEX PAYLOADS");
+    info!("------------------------------------------------------------------\n");
 
     let webhook = Arc::new(RecordingProvider::new("webhook"));
 
@@ -592,14 +593,14 @@ async fn scenario_nested_variables() -> Result<(), Box<dyn std::error::Error>> {
     .with_template("user-activity");
 
     let outcome = gateway.dispatch(action, None).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     assert!(matches!(outcome, ActionOutcome::Executed(..)));
 
     let calls = webhook.calls();
     let payload = &calls[0].action.payload;
 
     let summary = payload["summary"].as_str().unwrap();
-    println!("  summary:\n{summary}");
+    info!("  summary:\n{summary}");
     assert!(summary.contains("Carol"), "should contain user name");
     assert!(
         summary.contains("carol@acme.com"),
@@ -609,7 +610,7 @@ async fn scenario_nested_variables() -> Result<(), Box<dyn std::error::Error>> {
     assert!(summary.contains("enterprise"), "should contain plan");
 
     let title = payload["title"].as_str().unwrap();
-    println!("  title: {title}");
+    info!("  title: {title}");
     assert_eq!(
         title, "Activity for Carol @ Acme Inc",
         "should render nested fields in inline template"
@@ -623,15 +624,15 @@ async fn scenario_nested_variables() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 6 PASSED]\n");
+    info!("\n  [Scenario 6 PASSED]\n");
     Ok(())
 }
 
 /// Scenario 7: Multi-tenant template isolation.
 async fn scenario_multi_tenant_isolation() -> Result<(), Box<dyn std::error::Error>> {
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 7: MULTI-TENANT TEMPLATE ISOLATION");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 7: MULTI-TENANT TEMPLATE ISOLATION");
+    info!("------------------------------------------------------------------\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
 
@@ -664,7 +665,7 @@ async fn scenario_multi_tenant_isolation() -> Result<(), Box<dyn std::error::Err
     .with_template("greeting");
 
     let outcome_a = gateway.dispatch(action_a, None).await?;
-    println!("  Tenant A outcome: {outcome_a:?}");
+    info!("  Tenant A outcome: {outcome_a:?}");
     assert!(matches!(outcome_a, ActionOutcome::Executed(..)));
 
     // Tenant B action
@@ -678,7 +679,7 @@ async fn scenario_multi_tenant_isolation() -> Result<(), Box<dyn std::error::Err
     .with_template("greeting");
 
     let outcome_b = gateway.dispatch(action_b, None).await?;
-    println!("  Tenant B outcome: {outcome_b:?}");
+    info!("  Tenant B outcome: {outcome_b:?}");
     assert!(matches!(outcome_b, ActionOutcome::Executed(..)));
 
     let calls = email.calls();
@@ -689,8 +690,8 @@ async fn scenario_multi_tenant_isolation() -> Result<(), Box<dyn std::error::Err
 
     let msg_a = payload_a["message"].as_str().unwrap();
     let msg_b = payload_b["message"].as_str().unwrap();
-    println!("  Tenant A message: {msg_a}");
-    println!("  Tenant B message: {msg_b}");
+    info!("  Tenant A message: {msg_a}");
+    info!("  Tenant B message: {msg_b}");
 
     assert_eq!(
         msg_a, "Bonjour Pierre! Bienvenue.",
@@ -712,14 +713,14 @@ async fn scenario_multi_tenant_isolation() -> Result<(), Box<dyn std::error::Err
     .with_template("greeting");
 
     let result_c = gateway.dispatch(action_c, None).await;
-    println!("  Tenant C (no profile): {result_c:?}");
+    info!("  Tenant C (no profile): {result_c:?}");
     assert!(
         result_c.is_err(),
         "tenant without profile should get an error"
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 7 PASSED]\n");
+    info!("\n  [Scenario 7 PASSED]\n");
     Ok(())
 }
 
@@ -729,10 +730,12 @@ async fn scenario_multi_tenant_isolation() -> Result<(), Box<dyn std::error::Err
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     ACTEON PAYLOAD TEMPLATE SIMULATION");
-    println!("     7 scenarios covering the full template lifecycle");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("     ACTEON PAYLOAD TEMPLATE SIMULATION");
+    info!("     7 scenarios covering the full template lifecycle");
+    info!("==================================================================\n");
 
     let total_start = Instant::now();
 
@@ -746,10 +749,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let total_elapsed = total_start.elapsed();
 
-    println!("==================================================================");
-    println!("     ALL 7 TEMPLATE SCENARIOS PASSED");
-    println!("     Total time: {total_elapsed:?}");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("     ALL 7 TEMPLATE SCENARIOS PASSED");
+    info!("     Total time: {total_elapsed:?}");
+    info!("==================================================================");
 
     Ok(())
 }

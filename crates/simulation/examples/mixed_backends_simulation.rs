@@ -61,6 +61,7 @@ use acteon_audit_postgres::{PostgresAuditConfig, PostgresAuditStore};
 // Optional ClickHouse audit
 #[cfg(feature = "clickhouse")]
 use acteon_audit_clickhouse::{ClickHouseAuditConfig, ClickHouseAuditStore};
+use tracing::info;
 
 const DEDUP_RULE: &str = r#"
 rules:
@@ -188,6 +189,8 @@ struct MixedBackendConfig {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
     let args: Vec<String> = std::env::args().collect();
     let scenario = args.get(1).map(|s| s.as_str()).unwrap_or("help");
 
@@ -241,31 +244,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
 
         _ => {
-            println!("╔══════════════════════════════════════════════════════════════╗");
-            println!("║         MIXED BACKENDS SIMULATION - USAGE                    ║");
-            println!("╚══════════════════════════════════════════════════════════════╝\n");
-            println!("Available scenarios (based on enabled features):\n");
+            info!("╔══════════════════════════════════════════════════════════════╗");
+            info!("║         MIXED BACKENDS SIMULATION - USAGE                    ║");
+            info!("╚══════════════════════════════════════════════════════════════╝\n");
+            info!("Available scenarios (based on enabled features):\n");
 
             #[cfg(all(feature = "redis", feature = "postgres"))]
-            println!("  redis-postgres    - Redis for state, PostgreSQL for audit");
+            info!("  redis-postgres    - Redis for state, PostgreSQL for audit");
 
             #[cfg(all(feature = "redis", feature = "clickhouse"))]
-            println!("  redis-clickhouse  - Redis for state, ClickHouse for audit");
+            info!("  redis-clickhouse  - Redis for state, ClickHouse for audit");
 
             #[cfg(feature = "postgres")]
-            println!("  memory-postgres   - Memory for state, PostgreSQL for audit");
+            info!("  memory-postgres   - Memory for state, PostgreSQL for audit");
 
             #[cfg(feature = "clickhouse")]
-            println!("  memory-clickhouse - Memory for state, ClickHouse for audit");
+            info!("  memory-clickhouse - Memory for state, ClickHouse for audit");
 
-            println!("\nExample:");
-            println!("  cargo run -p acteon-simulation --example mixed_backends_simulation \\");
-            println!("    --features \"redis,postgres\" -- redis-postgres\n");
+            info!("\nExample:");
+            info!("  cargo run -p acteon-simulation --example mixed_backends_simulation \\");
+            info!("    --features \"redis,postgres\" -- redis-postgres\n");
 
-            println!("Environment variables:");
-            println!("  REDIS_URL      - Redis connection URL (default: redis://localhost:6379)");
-            println!("  DATABASE_URL   - PostgreSQL connection URL");
-            println!("  CLICKHOUSE_URL - ClickHouse HTTP URL (default: http://localhost:8123)");
+            info!("Environment variables:");
+            info!("  REDIS_URL      - Redis connection URL (default: redis://localhost:6379)");
+            info!("  DATABASE_URL   - PostgreSQL connection URL");
+            info!("  CLICKHOUSE_URL - ClickHouse HTTP URL (default: http://localhost:8123)");
 
             return Ok(());
         }
@@ -275,23 +278,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║  ACTEON MIXED BACKENDS SIMULATION                            ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║  ACTEON MIXED BACKENDS SIMULATION                            ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
-    println!("Configuration: {}\n", config.name);
+    info!("Configuration: {}\n", config.name);
 
     // Create state backend
     let (state, lock): (Arc<dyn StateStore>, Arc<dyn DistributedLock>) = match config.state {
         StateBackend::Memory => {
-            println!("→ State backend: Memory (in-process)");
+            info!("→ State backend: Memory (in-process)");
             let state = Arc::new(MemoryStateStore::new()) as Arc<dyn StateStore>;
             let lock = Arc::new(MemoryDistributedLock::new()) as Arc<dyn DistributedLock>;
             (state, lock)
         }
         #[cfg(feature = "redis")]
         StateBackend::Redis { url } => {
-            println!("→ State backend: Redis at {}", url);
+            info!("→ State backend: Redis at {}", url);
             let redis_config = RedisConfig {
                 url: url.clone(),
                 prefix: "acteon_mixed_".to_string(),
@@ -304,13 +307,13 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
             (state, lock)
         }
     };
-    println!("  ✓ State store connected");
+    info!("  ✓ State store connected");
 
     // Create audit backend
     let audit: Arc<dyn AuditStore> = match config.audit {
         #[cfg(feature = "postgres")]
         AuditBackend::Postgres { url } => {
-            println!(
+            info!(
                 "→ Audit backend: PostgreSQL at {}",
                 url.split('@').last().unwrap_or(&url)
             );
@@ -319,12 +322,12 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }
         #[cfg(feature = "clickhouse")]
         AuditBackend::ClickHouse { url } => {
-            println!("→ Audit backend: ClickHouse at {}", url);
+            info!("→ Audit backend: ClickHouse at {}", url);
             let audit_config = ClickHouseAuditConfig::new(&url).with_prefix("acteon_mixed_");
             Arc::new(ClickHouseAuditStore::new(&audit_config).await?)
         }
     };
-    println!("  ✓ Audit store connected\n");
+    info!("  ✓ Audit store connected\n");
 
     // Parse rules
     let frontend = YamlFrontend;
@@ -332,11 +335,11 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     rules.extend(frontend.parse(SUPPRESSION_RULE)?);
     rules.extend(frontend.parse(THROTTLE_RULE)?);
 
-    println!("✓ Loaded {} rules", rules.len());
+    info!("✓ Loaded {} rules", rules.len());
     for rule in &rules {
-        println!("  - {}: {:?}", rule.name, rule.action);
+        info!("  - {}: {:?}", rule.name, rule.action);
     }
-    println!();
+    info!("");
 
     // Create providers
     let email_provider = Arc::new(RecordingProvider::new("email"));
@@ -356,14 +359,14 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .provider(push_provider.clone() as Arc<dyn DynProvider>)
         .build()?;
 
-    println!("✓ Gateway built with mixed backends\n");
+    info!("✓ Gateway built with mixed backends\n");
 
     // =========================================================================
     // SCENARIO 1: Basic Execution with Cross-Backend Audit
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: BASIC EXECUTION (State + Audit Integration)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: BASIC EXECUTION (State + Audit Integration)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let action = Action::new(
         "notifications",
@@ -376,16 +379,16 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
 
-    println!("→ Dispatching welcome email...");
+    info!("→ Dispatching welcome email...");
     let outcome = gateway.dispatch(action.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome);
+    info!("  Outcome: {:?}", outcome);
 
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let audit_record = audit.get_by_action_id(&action.id.to_string()).await?;
     if let Some(record) = audit_record {
-        println!("  ✓ Audit recorded in separate backend:");
-        println!(
+        info!("  ✓ Audit recorded in separate backend:");
+        info!(
             "    Outcome: {}, Duration: {}ms",
             record.outcome, record.duration_ms
         );
@@ -394,9 +397,9 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     // =========================================================================
     // SCENARIO 2: Deduplication with State, Audit in Different Store
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: DEDUPLICATION (State handles dedup, Audit records)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: DEDUPLICATION (State handles dedup, Audit records)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
@@ -413,9 +416,9 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     )
     .with_dedup_key("order-shipped-user-002");
 
-    println!("→ Dispatching FIRST notification...");
+    info!("→ Dispatching FIRST notification...");
     let outcome1 = gateway.dispatch(notify1.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome1);
+    info!("  Outcome: {:?}", outcome1);
 
     // Duplicate notification
     let notify2 = Action::new(
@@ -430,11 +433,11 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     )
     .with_dedup_key("order-shipped-user-002");
 
-    println!("→ Dispatching DUPLICATE notification...");
+    info!("→ Dispatching DUPLICATE notification...");
     let outcome2 = gateway.dispatch(notify2.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome2);
+    info!("  Outcome: {:?}", outcome2);
 
-    println!(
+    info!(
         "  Email provider calls: {} (should be 1)",
         email_provider.call_count()
     );
@@ -445,16 +448,16 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     let record1 = audit.get_by_action_id(&notify1.id.to_string()).await?;
     let record2 = audit.get_by_action_id(&notify2.id.to_string()).await?;
 
-    println!("\n  Audit trail verification:");
+    info!("\n  Audit trail verification:");
     if let Some(r) = record1 {
-        println!(
+        info!(
             "    First action:  {} ({})",
             r.outcome,
             r.action_id[..8].to_string()
         );
     }
     if let Some(r) = record2 {
-        println!(
+        info!(
             "    Second action: {} ({})",
             r.outcome,
             r.action_id[..8].to_string()
@@ -464,13 +467,13 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     // =========================================================================
     // SCENARIO 3: Throttling with Audit Trail
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: THROTTLING (Rate limit in state, all audited)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: THROTTLING (Rate limit in state, all audited)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     push_provider.clear();
 
-    println!("→ Dispatching 5 alert actions (throttle limit: 3/10s)...\n");
+    info!("→ Dispatching 5 alert actions (throttle limit: 3/10s)...\n");
 
     let mut alert_outcomes = vec![];
     for i in 1..=5 {
@@ -487,7 +490,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
 
         let outcome = gateway.dispatch(alert, None).await?;
         alert_outcomes.push(outcome.clone());
-        println!("  Alert #{}: {:?}", i, outcome);
+        info!("  Alert #{}: {:?}", i, outcome);
     }
 
     let executed = alert_outcomes
@@ -499,11 +502,11 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .filter(|o| matches!(o, acteon_core::ActionOutcome::Throttled { .. }))
         .count();
 
-    println!(
+    info!(
         "\n  Results: {} executed, {} throttled",
         executed, throttled
     );
-    println!(
+    info!(
         "  Push provider calls: {} (should be 3)",
         push_provider.call_count()
     );
@@ -511,9 +514,9 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     // =========================================================================
     // SCENARIO 4: Multi-Provider Dispatch
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: MULTI-PROVIDER (Different channels, unified audit)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: MULTI-PROVIDER (Different channels, unified audit)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
     sms_provider.clear();
@@ -534,7 +537,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         );
 
         let outcome = gateway.dispatch(action, None).await?;
-        println!("  {} campaign: {:?}", provider.to_uppercase(), outcome);
+        info!("  {} campaign: {:?}", provider.to_uppercase(), outcome);
     }
 
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -546,12 +549,12 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         ..Default::default()
     };
     let tenant2_page = audit.query(&tenant2_query).await?;
-    println!(
+    info!(
         "\n  Unified audit for tenant-2: {} records",
         tenant2_page.total
     );
     for record in &tenant2_page.records {
-        println!(
+        info!(
             "    - {} via {} ({})",
             record.action_type, record.provider, record.outcome
         );
@@ -560,16 +563,16 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     // =========================================================================
     // SCENARIO 5: Concurrent Dispatch with Mixed Backends
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: CONCURRENT DISPATCH (Stress test mixed backends)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: CONCURRENT DISPATCH (Stress test mixed backends)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
     let gateway_arc = Arc::new(gateway);
     let mut handles = vec![];
 
-    println!("→ Dispatching 20 concurrent actions with same dedup key...");
+    info!("→ Dispatching 20 concurrent actions with same dedup key...");
 
     for i in 0..20 {
         let gw = Arc::clone(&gateway_arc);
@@ -597,20 +600,20 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         match handle.await? {
             Ok(acteon_core::ActionOutcome::Executed(_)) => executed += 1,
             Ok(acteon_core::ActionOutcome::Deduplicated) => deduplicated += 1,
-            Ok(other) => println!("  Unexpected: {:?}", other),
-            Err(e) => println!("  Error: {}", e),
+            Ok(other) => info!("  Unexpected: {:?}", other),
+            Err(e) => info!("  Error: {}", e),
         }
     }
 
-    println!("  Executed: {}, Deduplicated: {}", executed, deduplicated);
-    println!("  Email provider calls: {}", email_provider.call_count());
+    info!("  Executed: {}, Deduplicated: {}", executed, deduplicated);
+    info!("  Email provider calls: {}", email_provider.call_count());
 
     // =========================================================================
     // SCENARIO 6: Throughput Benchmark
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 6: THROUGHPUT BENCHMARK");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 6: THROUGHPUT BENCHMARK");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
@@ -627,7 +630,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         })
         .collect();
 
-    println!("→ Dispatching {} actions sequentially...", batch_size);
+    info!("→ Dispatching {} actions sequentially...", batch_size);
     let start = std::time::Instant::now();
 
     for action in actions {
@@ -637,8 +640,8 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     let elapsed = start.elapsed();
     let throughput = batch_size as f64 / elapsed.as_secs_f64();
 
-    println!("  Completed in: {:?}", elapsed);
-    println!("  Throughput: {:.0} actions/sec", throughput);
+    info!("  Completed in: {:?}", elapsed);
+    info!("  Throughput: {:.0} actions/sec", throughput);
 
     // Wait for audit writes
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -650,17 +653,17 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         ..Default::default()
     };
     let bench_page = audit.query(&bench_query).await?;
-    println!("  Audit records created: {}", bench_page.total);
+    info!("  Audit records created: {}", bench_page.total);
 
     // =========================================================================
     // SCENARIO 7: Failure Injection
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 7: FAILURE INJECTION (Provider errors, retries)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 7: FAILURE INJECTION (Provider errors, retries)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // 7a: FailingProvider - always fails
-    println!("  7a) FailingProvider (always fails):");
+    info!("  7a) FailingProvider (always fails):");
     let failing_webhook = Arc::new(FailingProvider::connection_error(
         "webhook",
         "Connection refused: service unavailable",
@@ -684,11 +687,11 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
 
-    println!("      → Dispatching to failing webhook provider...");
+    info!("      → Dispatching to failing webhook provider...");
     let result = gw_with_failing.dispatch(webhook_action.clone(), None).await;
     match &result {
-        Ok(outcome) => println!("      Outcome: {:?}", outcome),
-        Err(e) => println!("      Error (expected): {}", e),
+        Ok(outcome) => info!("      Outcome: {:?}", outcome),
+        Err(e) => info!("      Error (expected): {}", e),
     }
 
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -698,13 +701,13 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .get_by_action_id(&webhook_action.id.to_string())
         .await?;
     if let Some(record) = fail_audit {
-        println!("      ✓ Failure audited: outcome={}", record.outcome);
+        info!("      ✓ Failure audited: outcome={}", record.outcome);
     }
 
     gw_with_failing.shutdown().await;
 
     // 7b: FailingProvider - fail then recover
-    println!("\n  7b) FailingProvider with recovery (fail first 2, then succeed):");
+    info!("\n  7b) FailingProvider with recovery (fail first 2, then succeed):");
     let recovering_provider = Arc::new(
         FailingProvider::execution_failed("recovering", "Temporary failure").fail_until(2),
     );
@@ -730,13 +733,13 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         let result = gw_recovering.dispatch(action, None).await;
         match result {
             Ok(acteon_core::ActionOutcome::Executed(_)) => {
-                println!("      Attempt #{}: SUCCESS", i)
+                info!("      Attempt #{}: SUCCESS", i)
             }
-            Ok(outcome) => println!("      Attempt #{}: {:?}", i, outcome),
-            Err(e) => println!("      Attempt #{}: FAILED - {}", i, e),
+            Ok(outcome) => info!("      Attempt #{}: {:?}", i, outcome),
+            Err(e) => info!("      Attempt #{}: FAILED - {}", i, e),
         }
     }
-    println!(
+    info!(
         "      Provider call count: {}",
         recovering_provider.call_count()
     );
@@ -744,7 +747,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     gw_recovering.shutdown().await;
 
     // 7c: RecordingProvider with FailureMode
-    println!("\n  7c) RecordingProvider with FailureMode::EveryN(3):");
+    info!("\n  7c) RecordingProvider with FailureMode::EveryN(3):");
     let flaky_provider =
         Arc::new(RecordingProvider::new("flaky").with_failure_mode(FailureMode::EveryN(3)));
 
@@ -755,7 +758,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .provider(flaky_provider.clone() as Arc<dyn DynProvider>)
         .build()?;
 
-    println!("      → Dispatching 6 actions (every 3rd fails):");
+    info!("      → Dispatching 6 actions (every 3rd fails):");
     for i in 1..=6 {
         let action = Action::new(
             "flaky",
@@ -775,7 +778,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         };
         print!("      #{}: {}  ", i, status);
     }
-    println!(
+    info!(
         "\n      Provider calls: {}, Successful: {}",
         flaky_provider.call_count(),
         flaky_provider
@@ -788,7 +791,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     gw_flaky.shutdown().await;
 
     // 7d: RecordingProvider with simulated latency
-    println!("\n  7d) RecordingProvider with simulated latency (50ms):");
+    info!("\n  7d) RecordingProvider with simulated latency (50ms):");
     let slow_provider =
         Arc::new(RecordingProvider::new("slow").with_delay(std::time::Duration::from_millis(50)));
 
@@ -798,7 +801,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .provider(slow_provider.clone() as Arc<dyn DynProvider>)
         .build()?;
 
-    println!("      → Dispatching 5 actions with latency...");
+    info!("      → Dispatching 5 actions with latency...");
     let start = std::time::Instant::now();
     for i in 1..=5 {
         let action = Action::new(
@@ -811,13 +814,13 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         gw_slow.dispatch(action, None).await?;
     }
     let elapsed = start.elapsed();
-    println!("      Total time: {:?} (expected ~250ms)", elapsed);
-    println!("      Avg latency: {:?}/action", elapsed / 5);
+    info!("      Total time: {:?} (expected ~250ms)", elapsed);
+    info!("      Avg latency: {:?}/action", elapsed / 5);
 
     gw_slow.shutdown().await;
 
     // 7e: RecordingProvider with custom response
-    println!("\n  7e) RecordingProvider with custom response function:");
+    info!("\n  7e) RecordingProvider with custom response function:");
     let custom_provider = Arc::new(RecordingProvider::new("custom").with_response_fn(|action| {
         // Simulate different responses based on action payload
         let priority = action
@@ -859,7 +862,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         if let Ok(acteon_core::ActionOutcome::Executed(resp)) =
             gw_custom.dispatch(action, None).await
         {
-            println!(
+            info!(
                 "      priority={}: queue={}, eta={}s",
                 priority,
                 resp.body.get("queue").unwrap(),
@@ -873,9 +876,9 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     // =========================================================================
     // SCENARIO 8: Rerouting (If-Then-Else Logic)
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 8: REROUTING (If-Then-Else Logic)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 8: REROUTING (If-Then-Else Logic)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Create providers for all reroute targets
     let email_reroute = Arc::new(RecordingProvider::new("email"));
@@ -901,15 +904,15 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .provider(email_backup_reroute.clone() as Arc<dyn DynProvider>)
         .build()?;
 
-    println!("  Rules loaded:");
-    println!("    - urgent email → SMS");
-    println!("    - premium-tier transaction → premium provider");
-    println!("    - after-hours email → Slack");
-    println!("    - enterprise tenant → dedicated provider");
-    println!("    - retry email → email-backup\n");
+    info!("  Rules loaded:");
+    info!("    - urgent email → SMS");
+    info!("    - premium-tier transaction → premium provider");
+    info!("    - after-hours email → Slack");
+    info!("    - enterprise tenant → dedicated provider");
+    info!("    - retry email → email-backup\n");
 
     // 8a: Normal email (no reroute)
-    println!("  8a) Normal email (no reroute condition):");
+    info!("  8a) Normal email (no reroute condition):");
     let normal_email = Action::new(
         "notifications",
         "tenant-1",
@@ -922,16 +925,16 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
     let outcome = gw_reroute.dispatch(normal_email, None).await?;
-    println!("      → Original provider: email");
-    println!("      → Executed by: email (no reroute)");
-    println!(
+    info!("      → Original provider: email");
+    info!("      → Executed by: email (no reroute)");
+    info!(
         "      Email calls: {}, SMS calls: {}",
         email_reroute.call_count(),
         sms_reroute.call_count()
     );
 
     // 8b: Urgent email → SMS
-    println!("\n  8b) Urgent email → rerouted to SMS:");
+    info!("\n  8b) Urgent email → rerouted to SMS:");
     email_reroute.clear();
     sms_reroute.clear();
 
@@ -947,9 +950,9 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
     let outcome = gw_reroute.dispatch(urgent_email.clone(), None).await?;
-    println!("      → Original provider: email");
-    println!("      → Rerouted to: sms (because priority=urgent)");
-    println!(
+    info!("      → Original provider: email");
+    info!("      → Rerouted to: sms (because priority=urgent)");
+    info!(
         "      Email calls: {}, SMS calls: {}",
         email_reroute.call_count(),
         sms_reroute.call_count()
@@ -958,14 +961,14 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     // Verify audit shows reroute
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     if let Some(record) = audit.get_by_action_id(&urgent_email.id.to_string()).await? {
-        println!(
+        info!(
             "      Audit: verdict={}, provider={}",
             record.verdict, record.provider
         );
     }
 
     // 8c: Premium-tier transaction → premium provider
-    println!("\n  8c) Premium-tier transaction → premium provider:");
+    info!("\n  8c) Premium-tier transaction → premium provider:");
     premium_reroute.clear();
 
     let high_value = Action::new(
@@ -980,12 +983,12 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
     let outcome = gw_reroute.dispatch(high_value, None).await?;
-    println!("      → Original provider: standard");
-    println!("      → Rerouted to: premium (because payload.tier=premium)");
-    println!("      Premium calls: {}", premium_reroute.call_count());
+    info!("      → Original provider: standard");
+    info!("      → Rerouted to: premium (because payload.tier=premium)");
+    info!("      Premium calls: {}", premium_reroute.call_count());
 
     // 8d: Standard-tier transaction (no reroute)
-    println!("\n  8d) Standard-tier transaction → no reroute:");
+    info!("\n  8d) Standard-tier transaction → no reroute:");
     premium_reroute.clear();
 
     let low_value = Action::new(
@@ -1001,14 +1004,14 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     );
     // This will fail because we don't have a "standard" provider, but that's ok for demo
     let _ = gw_reroute.dispatch(low_value, None).await;
-    println!("      → Original provider: standard (no reroute, tier != premium)");
-    println!(
+    info!("      → Original provider: standard (no reroute, tier != premium)");
+    info!(
         "      Premium calls: {} (should be 0)",
         premium_reroute.call_count()
     );
 
     // 8e: After-hours email → Slack
-    println!("\n  8e) After-hours email → rerouted to Slack:");
+    info!("\n  8e) After-hours email → rerouted to Slack:");
     email_reroute.clear();
     slack_reroute.clear();
 
@@ -1024,16 +1027,16 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
     let outcome = gw_reroute.dispatch(after_hours, None).await?;
-    println!("      → Original provider: email");
-    println!("      → Rerouted to: slack (because after_hours=true)");
-    println!(
+    info!("      → Original provider: email");
+    info!("      → Rerouted to: slack (because after_hours=true)");
+    info!(
         "      Email calls: {}, Slack calls: {}",
         email_reroute.call_count(),
         slack_reroute.call_count()
     );
 
     // 8f: Enterprise tier → dedicated
-    println!("\n  8f) Enterprise tenant → dedicated provider:");
+    info!("\n  8f) Enterprise tenant → dedicated provider:");
     dedicated_reroute.clear();
 
     let enterprise = Action::new(
@@ -1052,12 +1055,12 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
             .collect(),
     });
     let outcome = gw_reroute.dispatch(enterprise, None).await?;
-    println!("      → Original provider: email");
-    println!("      → Rerouted to: dedicated (because metadata.tier=enterprise)");
-    println!("      Dedicated calls: {}", dedicated_reroute.call_count());
+    info!("      → Original provider: email");
+    info!("      → Rerouted to: dedicated (because metadata.tier=enterprise)");
+    info!("      Dedicated calls: {}", dedicated_reroute.call_count());
 
     // 8g: Retry fallback → email-backup
-    println!("\n  8g) Retry email → backup provider:");
+    info!("\n  8g) Retry email → backup provider:");
     email_reroute.clear();
     email_backup_reroute.clear();
 
@@ -1073,16 +1076,16 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
     let outcome = gw_reroute.dispatch(retry_action, None).await?;
-    println!("      → Original provider: email");
-    println!("      → Rerouted to: email-backup (because is_retry=true)");
-    println!(
+    info!("      → Original provider: email");
+    info!("      → Rerouted to: email-backup (because is_retry=true)");
+    info!(
         "      Email calls: {}, Backup calls: {}",
         email_reroute.call_count(),
         email_backup_reroute.call_count()
     );
 
     // 8h: Multiple conditions - urgent + after_hours
-    println!("\n  8h) Multiple matching rules (priority wins):");
+    info!("\n  8h) Multiple matching rules (priority wins):");
     email_reroute.clear();
     sms_reroute.clear();
     slack_reroute.clear();
@@ -1100,36 +1103,34 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         }),
     );
     let outcome = gw_reroute.dispatch(multi_match, None).await?;
-    println!(
-        "      → Matches: reroute-urgent-to-sms (priority=1), reroute-after-hours (priority=3)"
-    );
-    println!("      → Winner: SMS (higher priority rule)");
-    println!(
+    info!("      → Matches: reroute-urgent-to-sms (priority=1), reroute-after-hours (priority=3)");
+    info!("      → Winner: SMS (higher priority rule)");
+    info!(
         "      SMS calls: {}, Slack calls: {}",
         sms_reroute.call_count(),
         slack_reroute.call_count()
     );
 
     // Summary
-    println!("\n  Rerouting Summary:");
-    println!(
+    info!("\n  Rerouting Summary:");
+    info!(
         "    Total email provider calls: {}",
         email_reroute.call_count()
     );
-    println!("    Total SMS provider calls: {}", sms_reroute.call_count());
-    println!(
+    info!("    Total SMS provider calls: {}", sms_reroute.call_count());
+    info!(
         "    Total Slack provider calls: {}",
         slack_reroute.call_count()
     );
-    println!(
+    info!(
         "    Total Premium provider calls: {}",
         premium_reroute.call_count()
     );
-    println!(
+    info!(
         "    Total Dedicated provider calls: {}",
         dedicated_reroute.call_count()
     );
-    println!(
+    info!(
         "    Total Backup provider calls: {}",
         email_backup_reroute.call_count()
     );
@@ -1139,9 +1140,9 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  AUDIT TRAIL SUMMARY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  AUDIT TRAIL SUMMARY");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let all_query = AuditQuery {
         limit: Some(1000),
@@ -1170,28 +1171,28 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .filter(|r| r.outcome == "throttled")
         .count();
 
-    println!("  Total audit records: {}", all_page.total);
-    println!("    - Executed: {}", executed_count);
-    println!("    - Suppressed: {}", suppressed_count);
-    println!("    - Deduplicated: {}", deduplicated_count);
-    println!("    - Throttled: {}", throttled_count);
+    info!("  Total audit records: {}", all_page.total);
+    info!("    - Executed: {}", executed_count);
+    info!("    - Suppressed: {}", suppressed_count);
+    info!("    - Deduplicated: {}", deduplicated_count);
+    info!("    - Throttled: {}", throttled_count);
 
     // Unique tenants
     let tenants: std::collections::HashSet<_> =
         all_page.records.iter().map(|r| &r.tenant).collect();
-    println!("\n  Tenants tracked: {:?}", tenants);
+    info!("\n  Tenants tracked: {:?}", tenants);
 
     // Unique providers
     let providers: std::collections::HashSet<_> =
         all_page.records.iter().map(|r| &r.provider).collect();
-    println!("  Providers tracked: {:?}", providers);
+    info!("  Providers tracked: {:?}", providers);
 
     gateway_arc.shutdown().await;
-    println!("\n✓ Gateway shut down gracefully\n");
+    info!("\n✓ Gateway shut down gracefully\n");
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║           MIXED BACKENDS SIMULATION COMPLETE                 ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║           MIXED BACKENDS SIMULATION COMPLETE                 ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

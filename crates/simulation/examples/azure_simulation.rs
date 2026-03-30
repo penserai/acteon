@@ -10,12 +10,15 @@
 
 use acteon_core::{Action, ActionOutcome};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("       AZURE BLOB STORAGE & EVENT HUBS SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("       AZURE BLOB STORAGE & EVENT HUBS SIMULATION");
+    info!("==================================================================\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -26,17 +29,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("Started simulation cluster with 1 node");
-    println!("Registered providers: azure-blob, azure-eventhubs\n");
+    info!("Started simulation cluster with 1 node");
+    info!("Registered providers: azure-blob, azure-eventhubs\n");
 
     let mut results: Vec<(&str, ActionOutcome)> = Vec::new();
 
     // =========================================================================
     // 1. Blob: Upload (text body)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  1. BLOB: UPLOAD (text body)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  1. BLOB: UPLOAD (text body)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -55,18 +58,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching upload_blob with text body, content_type, and metadata...");
+    info!("  Dispatching upload_blob with text body, content_type, and metadata...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("blob/upload_blob(text)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 2. Blob: Upload (base64 body)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  2. BLOB: UPLOAD (base64 body)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  2. BLOB: UPLOAD (base64 body)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -81,18 +84,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching upload_blob with base64-encoded binary body...");
+    info!("  Dispatching upload_blob with base64-encoded binary body...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("blob/upload_blob(base64)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 3. Blob: Download
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  3. BLOB: DOWNLOAD");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  3. BLOB: DOWNLOAD");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -105,18 +108,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching download_blob...");
+    info!("  Dispatching download_blob...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("blob/download_blob", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 4. Blob: Delete
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  4. BLOB: DELETE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  4. BLOB: DELETE");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "storage",
@@ -129,18 +132,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching delete_blob...");
+    info!("  Dispatching delete_blob...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("blob/delete_blob", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 5. Event Hubs: Send Event (JSON body)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  5. EVENT HUBS: SEND EVENT (JSON body)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  5. EVENT HUBS: SEND EVENT (JSON body)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "events",
@@ -160,18 +163,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching send_event with JSON body and application properties...");
+    info!("  Dispatching send_event with JSON body and application properties...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("eventhubs/send_event(json)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 6. Event Hubs: Send Event (with partition)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  6. EVENT HUBS: SEND EVENT (with partition)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  6. EVENT HUBS: SEND EVENT (with partition)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "events",
@@ -189,18 +192,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching send_event with explicit partition_id and event_hub_name override...");
+    info!("  Dispatching send_event with explicit partition_id and event_hub_name override...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("eventhubs/send_event(partition)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 7. Event Hubs: Send Batch
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  7. EVENT HUBS: SEND BATCH");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  7. EVENT HUBS: SEND BATCH");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "events",
@@ -225,31 +228,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching send_batch with 3 events (mixed properties/partitions)...");
+    info!("  Dispatching send_batch with 3 events (mixed properties/partitions)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("eventhubs/send_batch", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("  SUMMARY");
-    println!("==================================================================\n");
+    info!("==================================================================");
+    info!("  SUMMARY");
+    info!("==================================================================\n");
 
     let mut all_passed = true;
     for (name, outcome) in &results {
         let passed = matches!(outcome, ActionOutcome::Executed(_));
         let status = if passed { "PASS" } else { "FAIL" };
-        println!("  [{status}] {name}: {outcome:?}");
+        info!("  [{status}] {name}: {outcome:?}");
         if !passed {
             all_passed = false;
         }
     }
 
-    println!();
-    println!(
+    info!("");
+    info!(
         "  Total dispatched: {}  |  Blob calls: {}  |  Event Hubs calls: {}",
         results.len(),
         harness.provider("azure-blob").unwrap().call_count(),
@@ -257,12 +260,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  Simulation cluster shut down");
+    info!("\n  Simulation cluster shut down");
 
     if all_passed {
-        println!("\n  All Azure Blob Storage and Event Hubs actions dispatched successfully.");
+        info!("\n  All Azure Blob Storage and Event Hubs actions dispatched successfully.");
     } else {
-        println!("\n  Some actions failed. See details above.");
+        info!("\n  Some actions failed. See details above.");
         std::process::exit(1);
     }
 

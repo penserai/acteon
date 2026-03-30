@@ -1,6 +1,7 @@
 use acteon_ops::OpsClient;
 use acteon_ops::acteon_client::{CreateRetentionRequest, UpdateRetentionRequest};
 use clap::{Args, Subcommand};
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 
@@ -68,18 +69,20 @@ pub async fn run(
                 .await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} retention policies:", resp.count);
+                    info!(count = resp.count, "Retention policies");
                     for p in &resp.policies {
                         let enabled = if p.enabled { "ON " } else { "OFF" };
                         let hold = if p.compliance_hold { " [HOLD]" } else { "" };
-                        println!(
-                            "  [{enabled}] {id} | {ns}:{tenant}{hold}",
-                            id = &p.id[..8.min(p.id.len())],
-                            ns = p.namespace,
-                            tenant = p.tenant,
+                        info!(
+                            enabled = %enabled,
+                            id = %&p.id[..8.min(p.id.len())],
+                            namespace = %p.namespace,
+                            tenant = %p.tenant,
+                            compliance_hold = %hold,
+                            "Retention policy"
                         );
                     }
                 }
@@ -90,27 +93,27 @@ pub async fn run(
             match resp {
                 Some(p) => match format {
                     OutputFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(&p)?);
+                        info!("{}", serde_json::to_string_pretty(&p)?);
                     }
                     OutputFormat::Text => {
-                        println!("ID:              {}", p.id);
-                        println!("Namespace:       {}", p.namespace);
-                        println!("Tenant:          {}", p.tenant);
-                        println!("Enabled:         {}", p.enabled);
-                        println!("Compliance Hold: {}", p.compliance_hold);
+                        info!(id = %p.id, "Retention policy details");
+                        info!(namespace = %p.namespace, "  Namespace");
+                        info!(tenant = %p.tenant, "  Tenant");
+                        info!(enabled = p.enabled, "  Enabled");
+                        info!(compliance_hold = p.compliance_hold, "  Compliance Hold");
                         if let Some(ttl) = p.audit_ttl_seconds {
-                            println!("Audit TTL:       {ttl}s");
+                            info!(audit_ttl_seconds = ttl, "  Audit TTL");
                         }
                         if let Some(ttl) = p.state_ttl_seconds {
-                            println!("State TTL:       {ttl}s");
+                            info!(state_ttl_seconds = ttl, "  State TTL");
                         }
                         if let Some(ttl) = p.event_ttl_seconds {
-                            println!("Event TTL:       {ttl}s");
+                            info!(event_ttl_seconds = ttl, "  Event TTL");
                         }
                     }
                 },
                 None => {
-                    println!("Retention policy not found: {id}");
+                    warn!(id = %id, "Retention policy not found");
                 }
             }
         }
@@ -120,10 +123,10 @@ pub async fn run(
             let resp = ops.create_retention(&req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Created retention policy: {}", resp.id);
+                    info!(id = %resp.id, "Created retention policy");
                 }
             }
         }
@@ -133,16 +136,16 @@ pub async fn run(
             let resp = ops.update_retention(id, &req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Updated retention policy: {}", resp.id);
+                    info!(id = %resp.id, "Updated retention policy");
                 }
             }
         }
         RetentionCommand::Delete { id } => {
             ops.delete_retention(id).await?;
-            println!("Retention policy '{id}' deleted.");
+            info!(id = %id, "Retention policy deleted");
         }
     }
     Ok(())

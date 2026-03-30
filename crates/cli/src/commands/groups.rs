@@ -1,5 +1,6 @@
 use acteon_ops::OpsClient;
 use clap::{Args, Subcommand};
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 
@@ -31,17 +32,18 @@ pub async fn run(ops: &OpsClient, args: &GroupsArgs, format: &OutputFormat) -> a
             let resp = ops.list_groups().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} groups:", resp.total);
+                    info!(count = resp.total, "Groups");
                     for g in &resp.groups {
                         let notify = g.notify_at.as_deref().unwrap_or("-");
-                        println!(
-                            "  {key} | {state} | {count} events | notify: {notify}",
-                            key = g.group_key,
-                            state = g.state,
-                            count = g.event_count,
+                        info!(
+                            key = %g.group_key,
+                            state = %g.state,
+                            event_count = g.event_count,
+                            notify_at = %notify,
+                            "Group"
                         );
                     }
                 }
@@ -52,24 +54,24 @@ pub async fn run(ops: &OpsClient, args: &GroupsArgs, format: &OutputFormat) -> a
             match resp {
                 Some(detail) => match format {
                     OutputFormat::Json => {
-                        println!("{}", serde_json::to_string_pretty(&detail)?);
+                        info!("{}", serde_json::to_string_pretty(&detail)?);
                     }
                     OutputFormat::Text => {
-                        println!("Group ID:  {}", detail.group.group_id);
-                        println!("Key:       {}", detail.group.group_key);
-                        println!("State:     {}", detail.group.state);
-                        println!("Events:    {}", detail.group.event_count);
-                        println!("Created:   {}", detail.group.created_at);
+                        info!(group_id = %detail.group.group_id, "Group details");
+                        info!(key = %detail.group.group_key, "  Key");
+                        info!(state = %detail.group.state, "  State");
+                        info!(event_count = detail.group.event_count, "  Events");
+                        info!(created_at = %detail.group.created_at, "  Created");
                         if !detail.events.is_empty() {
-                            println!("Event fingerprints:");
+                            info!("Event fingerprints:");
                             for fp in &detail.events {
-                                println!("  - {fp}");
+                                info!(fingerprint = %fp, "  - Event");
                             }
                         }
                     }
                 },
                 None => {
-                    println!("Group not found: {key}");
+                    warn!(key = %key, "Group not found");
                 }
             }
         }
@@ -77,12 +79,14 @@ pub async fn run(ops: &OpsClient, args: &GroupsArgs, format: &OutputFormat) -> a
             let resp = ops.flush_group(key).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!(
-                        "Flushed group '{}': {} events, notified: {}",
-                        resp.group_id, resp.event_count, resp.notified
+                    info!(
+                        group_id = %resp.group_id,
+                        event_count = resp.event_count,
+                        notified = resp.notified,
+                        "Flushed group"
                     );
                 }
             }

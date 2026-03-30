@@ -1,6 +1,7 @@
 use acteon_ops::OpsClient;
 use acteon_ops::acteon_client::{CreateQuotaRequest, UpdateQuotaRequest};
 use clap::{Args, Subcommand};
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 
@@ -81,7 +82,7 @@ pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> a
             tenant,
         } => {
             ops.delete_quota(id, namespace, tenant).await?;
-            println!("Quota '{id}' deleted.");
+            info!(id = %id, "Quota deleted");
             Ok(())
         }
         QuotasCommand::Usage { id } => run_usage(ops, id, format).await,
@@ -99,20 +100,21 @@ async fn run_list(
         .await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("{} quotas:", resp.count);
+            info!(count = resp.count, "Quotas");
             for q in &resp.quotas {
                 let enabled = if q.enabled { "ON " } else { "OFF" };
-                println!(
-                    "  [{enabled}] {id} | {ns}:{tenant} | {max}/{window} ({behavior})",
-                    id = &q.id[..8.min(q.id.len())],
-                    ns = q.namespace,
-                    tenant = q.tenant,
-                    max = q.max_actions,
-                    window = q.window,
-                    behavior = q.overage_behavior,
+                info!(
+                    enabled = %enabled,
+                    id = %&q.id[..8.min(q.id.len())],
+                    namespace = %q.namespace,
+                    tenant = %q.tenant,
+                    max_actions = q.max_actions,
+                    window = %q.window,
+                    overage_behavior = %q.overage_behavior,
+                    "Quota"
                 );
             }
         }
@@ -125,19 +127,19 @@ async fn run_get(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Re
     match resp {
         Some(q) => match format {
             OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(&q)?);
+                info!("{}", serde_json::to_string_pretty(&q)?);
             }
             OutputFormat::Text => {
-                println!("ID:        {}", q.id);
-                println!("Namespace: {}", q.namespace);
-                println!("Tenant:    {}", q.tenant);
-                println!("Max:       {} / {}", q.max_actions, q.window);
-                println!("Behavior:  {}", q.overage_behavior);
-                println!("Enabled:   {}", q.enabled);
+                info!(id = %q.id, "Quota details");
+                info!(namespace = %q.namespace, "  Namespace");
+                info!(tenant = %q.tenant, "  Tenant");
+                info!(max_actions = q.max_actions, window = %q.window, "  Max");
+                info!(overage_behavior = %q.overage_behavior, "  Behavior");
+                info!(enabled = q.enabled, "  Enabled");
             }
         },
         None => {
-            println!("Quota not found: {id}");
+            warn!(id = %id, "Quota not found");
         }
     }
     Ok(())
@@ -149,10 +151,10 @@ async fn run_create(ops: &OpsClient, data: &str, format: &OutputFormat) -> anyho
     let resp = ops.create_quota(&req).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("Created quota: {}", resp.id);
+            info!(id = %resp.id, "Created quota");
         }
     }
     Ok(())
@@ -169,10 +171,10 @@ async fn run_update(
     let resp = ops.update_quota(id, &req).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("Updated quota: {}", resp.id);
+            info!(id = %resp.id, "Updated quota");
         }
     }
     Ok(())
@@ -182,15 +184,18 @@ async fn run_usage(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::
     let resp = ops.get_quota_usage(id).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("Quota Usage:");
-            println!("  Used:      {}/{}", resp.used, resp.limit);
-            println!("  Remaining: {}", resp.remaining);
-            println!("  Window:    {}", resp.window);
-            println!("  Resets:    {}", resp.resets_at);
-            println!("  Behavior:  {}", resp.overage_behavior);
+            info!(
+                used = resp.used,
+                limit = resp.limit,
+                remaining = resp.remaining,
+                window = %resp.window,
+                resets_at = %resp.resets_at,
+                overage_behavior = %resp.overage_behavior,
+                "Quota usage"
+            );
         }
     }
     Ok(())

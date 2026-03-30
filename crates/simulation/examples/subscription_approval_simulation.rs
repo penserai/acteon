@@ -19,6 +19,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const APPROVAL_RULE: &str = r#"
 rules:
@@ -118,19 +119,21 @@ fn build_approval_gateway() -> ApprovalGatewayResult {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     APPROVAL SUBSCRIPTION SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("     APPROVAL SUBSCRIPTION SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // SCENARIO 1: Approval granted — full lifecycle
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: APPROVAL GRANTED");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: APPROVAL GRANTED");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  A refund action triggers an approval workflow. A subscriber");
-    println!("  watches the pending state, then observes the approval outcome.\n");
+    info!("  A refund action triggers an approval workflow. A subscriber");
+    info!("  watches the pending state, then observes the approval outcome.\n");
 
     let (gateway, payment_provider, notifier_provider) = build_approval_gateway()?;
     let mut stream_rx = gateway.stream_tx().subscribe();
@@ -148,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  -> Dispatching refund action (requires approval)...");
+    info!("  -> Dispatching refund action (requires approval)...");
     let outcome = gateway.dispatch(refund, None).await?;
 
     let (approval_id, approve_url) = match &outcome {
@@ -159,10 +162,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             notification_sent,
             ..
         } => {
-            println!("     Status: PENDING APPROVAL");
-            println!("     Approval ID: {approval_id}");
-            println!("     Expires at: {expires_at}");
-            println!("     Notification sent: {notification_sent}");
+            info!("     Status: PENDING APPROVAL");
+            info!("     Approval ID: {approval_id}");
+            info!("     Expires at: {expires_at}");
+            info!("     Notification sent: {notification_sent}");
             (approval_id.clone(), approve_url.clone())
         }
         other => panic!("Expected PendingApproval, got {other:?}"),
@@ -172,18 +175,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(30)).await;
     let events = drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events after dispatch:");
+    info!("\n  Subscription events after dispatch:");
     for event in &events {
         match &event.event_type {
             StreamEventType::ActionDispatched { outcome, provider } => {
                 let category = acteon_core::outcome_category(outcome);
-                println!(
+                info!(
                     "    [dispatched] provider={provider} outcome={category} action_id={}",
                     event.action_id.as_deref().unwrap_or("-")
                 );
             }
             _ => {
-                println!("    [{:>15}]", event_type_label(&event.event_type));
+                info!("    [{:>15}]", event_type_label(&event.event_type));
             }
         }
     }
@@ -194,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Verify the notifier was called (approval notification sent).
-    println!(
+    info!(
         "\n  Notifier calls: {} (approval notification)",
         notifier_provider.call_count()
     );
@@ -205,7 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Now simulate the manager approving the refund.
-    println!("\n  -> Manager approves the refund...");
+    info!("\n  -> Manager approves the refund...");
     let sig = parse_query_param(&approve_url, "sig").expect("sig param");
     let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
         .expect("expires_at param")
@@ -226,10 +229,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match &approval_result {
         ActionOutcome::Executed(resp) => {
-            println!("     Approval executed: status={:?}", resp.status);
+            info!("     Approval executed: status={:?}", resp.status);
         }
         other => {
-            println!("     Approval result: {other:?}");
+            info!("     Approval result: {other:?}");
         }
     }
 
@@ -237,9 +240,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(30)).await;
     let post_approval_events = drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events after approval:");
+    info!("\n  Subscription events after approval:");
     for event in &post_approval_events {
-        println!(
+        info!(
             "    [{:>15}] action_id={}",
             event_type_label(&event.event_type),
             event.action_id.as_deref().unwrap_or("-"),
@@ -247,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Verify payment provider was called (the refund was executed).
-    println!(
+    info!(
         "\n  Payment provider calls: {} (refund executed after approval)",
         payment_provider.call_count()
     );
@@ -258,17 +261,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Approval rejected
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: APPROVAL REJECTED");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: APPROVAL REJECTED");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  A refund is dispatched, then rejected by the manager.");
-    println!("  The subscriber sees the rejection and verifies no execution.\n");
+    info!("  A refund is dispatched, then rejected by the manager.");
+    info!("  The subscriber sees the rejection and verifies no execution.\n");
 
     let (gateway, payment_provider, _notifier) = build_approval_gateway()?;
     let mut stream_rx = gateway.stream_tx().subscribe();
@@ -285,7 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  -> Dispatching refund action...");
+    info!("  -> Dispatching refund action...");
     let outcome = gateway.dispatch(refund, None).await?;
 
     let (approval_id, reject_url) = match &outcome {
@@ -294,8 +297,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reject_url,
             ..
         } => {
-            println!("     Status: PENDING APPROVAL");
-            println!("     Approval ID: {approval_id}");
+            info!("     Status: PENDING APPROVAL");
+            info!("     Approval ID: {approval_id}");
             (approval_id.clone(), reject_url.clone())
         }
         other => panic!("Expected PendingApproval, got {other:?}"),
@@ -306,7 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drain_events(&mut stream_rx);
 
     // Manager rejects the refund.
-    println!("\n  -> Manager rejects the refund...");
+    info!("\n  -> Manager rejects the refund...");
     let sig = parse_query_param(&reject_url, "sig").expect("sig param");
     let expires_at: i64 = parse_query_param(&reject_url, "expires_at")
         .expect("expires_at param")
@@ -325,23 +328,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
-    println!("     Rejection completed successfully");
+    info!("     Rejection completed successfully");
 
     // Check post-rejection events.
     tokio::time::sleep(Duration::from_millis(30)).await;
     let post_rejection_events = drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events after rejection:");
+    info!("\n  Subscription events after rejection:");
     if post_rejection_events.is_empty() {
-        println!("    (no new events -- rejection is terminal)");
+        info!("    (no new events -- rejection is terminal)");
     } else {
         for event in &post_rejection_events {
-            println!("    [{:>15}]", event_type_label(&event.event_type),);
+            info!("    [{:>15}]", event_type_label(&event.event_type),);
         }
     }
 
     // Verify payment provider was NOT called.
-    println!(
+    info!(
         "\n  Payment provider calls: {} (refund was never executed)",
         payment_provider.call_count()
     );
@@ -352,14 +355,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("              ALL SCENARIOS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("              ALL SCENARIOS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

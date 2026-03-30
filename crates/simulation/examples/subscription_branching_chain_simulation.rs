@@ -20,6 +20,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const RULE_YAML: &str = r#"
 rules:
@@ -187,19 +188,20 @@ async fn run_chain_and_collect(
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     BRANCHING CHAIN SUBSCRIPTION SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+    info!("==================================================================");
+    info!("     BRANCHING CHAIN SUBSCRIPTION SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // SCENARIO 1: In-stock order takes the ship-standard branch
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: IN-STOCK ORDER (ship-standard branch)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: IN-STOCK ORDER (ship-standard branch)");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  An order for an in-stock item routes through:");
-    println!("    check-inventory -> ship-standard -> confirm\n");
+    info!("  An order for an in-stock item routes through:");
+    info!("    check-inventory -> ship-standard -> confirm\n");
 
     let (gateway, providers) = build_branching_gateway(serde_json::json!({
         "in_stock": "true",
@@ -220,7 +222,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  -> Dispatching in-stock order...");
+    info!("  -> Dispatching in-stock order...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted {
@@ -228,7 +230,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             chain_name,
             ..
         } => {
-            println!(
+            info!(
                 "     Chain: {chain_name}, ID: {}",
                 &chain_id[..8.min(chain_id.len())]
             );
@@ -241,7 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(20)).await;
     drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events as chain executes:\n");
+    info!("\n  Subscription events as chain executes:\n");
     let events =
         run_chain_and_collect(&gateway, &chain_id, "orders", "tenant-1", &mut stream_rx, 5).await;
 
@@ -256,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } => {
                 execution_path.push(step_name.clone());
-                println!(
+                info!(
                     "    [step_completed] step={step_name} index={step_index} success={success} next={}",
                     next_step.as_deref().unwrap_or("(none)")
                 );
@@ -266,19 +268,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 execution_path: path,
                 ..
             } => {
-                println!(
+                info!(
                     "    [chain_completed] status={status} path=[{}]",
                     path.join(" -> ")
                 );
             }
             _ => {
-                println!("    [{:>15}]", event_type_label(&event.event_type));
+                info!("    [{:>15}]", event_type_label(&event.event_type));
             }
         }
     }
 
     // Verify the execution path: should skip backorder entirely.
-    println!(
+    info!(
         "\n  Observed execution path: [{}]",
         execution_path.join(" -> ")
     );
@@ -292,7 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Verify provider calls.
-    println!(
+    info!(
         "  Provider calls: inventory={}, shipping={}, backorder={}, confirm={}",
         providers[0].call_count(),
         providers[1].call_count(),
@@ -311,17 +313,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Out-of-stock order takes the backorder branch
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: OUT-OF-STOCK ORDER (backorder branch)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: OUT-OF-STOCK ORDER (backorder branch)");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  An order for an out-of-stock item routes through:");
-    println!("    check-inventory -> backorder -> confirm\n");
+    info!("  An order for an out-of-stock item routes through:");
+    info!("    check-inventory -> backorder -> confirm\n");
 
     let (gateway, providers) = build_branching_gateway(serde_json::json!({
         "in_stock": "false",
@@ -342,7 +344,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  -> Dispatching out-of-stock order...");
+    info!("  -> Dispatching out-of-stock order...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted {
@@ -350,7 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             chain_name,
             ..
         } => {
-            println!(
+            info!(
                 "     Chain: {chain_name}, ID: {}",
                 &chain_id[..8.min(chain_id.len())]
             );
@@ -362,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(Duration::from_millis(20)).await;
     drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events as chain executes:\n");
+    info!("\n  Subscription events as chain executes:\n");
     let events =
         run_chain_and_collect(&gateway, &chain_id, "orders", "tenant-1", &mut stream_rx, 5).await;
 
@@ -375,7 +377,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } => {
                 execution_path.push(step_name.clone());
-                println!(
+                info!(
                     "    [step_completed] step={step_name} next={}",
                     next_step.as_deref().unwrap_or("(none)")
                 );
@@ -385,18 +387,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 execution_path: path,
                 ..
             } => {
-                println!(
+                info!(
                     "    [chain_completed] status={status} path=[{}]",
                     path.join(" -> ")
                 );
             }
             _ => {
-                println!("    [{:>15}]", event_type_label(&event.event_type));
+                info!("    [{:>15}]", event_type_label(&event.event_type));
             }
         }
     }
 
-    println!(
+    info!(
         "\n  Observed execution path: [{}]",
         execution_path.join(" -> ")
     );
@@ -409,7 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "out-of-stock order should NOT take ship-standard branch"
     );
 
-    println!(
+    info!(
         "  Provider calls: inventory={}, shipping={}, backorder={}, confirm={}",
         providers[0].call_count(),
         providers[1].call_count(),
@@ -428,14 +430,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("              ALL SCENARIOS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("              ALL SCENARIOS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

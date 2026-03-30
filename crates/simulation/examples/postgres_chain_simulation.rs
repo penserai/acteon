@@ -31,6 +31,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_postgres::{PostgresConfig, PostgresDistributedLock, PostgresStateStore};
+use tracing::info;
 
 fn parse_rules(yaml: &str) -> Vec<Rule> {
     let frontend = YamlFrontend;
@@ -57,16 +58,18 @@ fn pg_configs(prefix: &str) -> (PostgresConfig, PostgresAuditConfig) {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("    ACTEON CHAIN SIMULATION — POSTGRESQL BACKEND");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("    ACTEON CHAIN SIMULATION — POSTGRESQL BACKEND");
+    info!("==================================================================\n");
 
     // =========================================================================
     // DEMO 1: Successful Multi-Step Chain
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 1: SUCCESSFUL MULTI-STEP CHAIN (PostgreSQL)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 1: SUCCESSFUL MULTI-STEP CHAIN (PostgreSQL)");
+    info!("------------------------------------------------------------------\n");
 
     let (state_cfg, audit_cfg) = pg_configs("chain_sim1_");
 
@@ -145,7 +148,7 @@ rules:
         .completed_chain_ttl(Duration::from_secs(3600))
         .build()?;
 
-    println!("  Connected to PostgreSQL");
+    info!("  Connected to PostgreSQL");
 
     let action = Action::new(
         "research",
@@ -158,7 +161,7 @@ rules:
         }),
     );
 
-    println!("  Dispatching research action...");
+    info!("  Dispatching research action...");
     let outcome = gateway.dispatch(action, None).await?;
 
     let chain_id = match &outcome {
@@ -168,10 +171,10 @@ rules:
             total_steps,
             first_step,
         } => {
-            println!("  Chain started: {chain_name}");
-            println!("    chain_id:    {chain_id}");
-            println!("    total_steps: {total_steps}");
-            println!("    first_step:  {first_step}");
+            info!("  Chain started: {chain_name}");
+            info!("    chain_id:    {chain_id}");
+            info!("    total_steps: {total_steps}");
+            info!("    first_step:  {first_step}");
             chain_id.clone()
         }
         other => panic!("Expected ChainStarted, got: {other:?}"),
@@ -181,16 +184,16 @@ rules:
         gateway
             .advance_chain("research", "tenant-1", &chain_id)
             .await?;
-        println!("  Step {step} advanced");
+        info!("  Step {step} advanced");
     }
 
     // Wait for async audit writes to flush to Postgres.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    println!("\n  Provider call counts:");
-    println!("    search-api: {}", search_provider.call_count());
-    println!("    llm-api:    {}", summarize_provider.call_count());
-    println!("    email:      {}", email_provider.call_count());
+    info!("\n  Provider call counts:");
+    info!("    search-api: {}", search_provider.call_count());
+    info!("    llm-api:    {}", summarize_provider.call_count());
+    info!("    email:      {}", email_provider.call_count());
 
     let page = audit
         .query(&AuditQuery {
@@ -199,12 +202,12 @@ rules:
         })
         .await?;
 
-    println!(
+    info!(
         "\n  Audit records in Postgres for chain {chain_id}: {}",
         page.total
     );
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<12} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -225,8 +228,8 @@ rules:
                 || r.outcome == "chain_cancelled"
         })
         .collect();
-    println!("  Step audit records:     {}", step_records.len());
-    println!("  Terminal audit records:  {}", terminal_records.len());
+    info!("  Step audit records:     {}", step_records.len());
+    info!("  Terminal audit records:  {}", terminal_records.len());
     assert_eq!(step_records.len(), 3, "expected 3 step records");
     assert_eq!(terminal_records.len(), 1, "expected 1 terminal record");
     assert_eq!(terminal_records[0].outcome, "chain_completed");
@@ -241,14 +244,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 2: Chain with Failing Step (Abort Policy)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 2: CHAIN WITH FAILING STEP — ABORT (PostgreSQL)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 2: CHAIN WITH FAILING STEP — ABORT (PostgreSQL)");
+    info!("------------------------------------------------------------------\n");
 
     let (state_cfg, audit_cfg) = pg_configs("chain_sim2_");
 
@@ -322,7 +325,7 @@ rules:
         serde_json::json!({}),
     );
 
-    println!("  Dispatching action to trigger abort-chain...");
+    info!("  Dispatching action to trigger abort-chain...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => chain_id.clone(),
@@ -330,9 +333,9 @@ rules:
     };
 
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (first): advanced OK");
+    info!("  Step 0 (first): advanced OK");
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (second-fails): failed -> chain aborted");
+    info!("  Step 1 (second-fails): failed -> chain aborted");
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -340,13 +343,13 @@ rules:
         .get_chain_status("test", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
-    println!("\n  Final chain status: {:?}", chain_state.status);
+    info!("\n  Final chain status: {:?}", chain_state.status);
     assert_eq!(chain_state.status, acteon_core::chain::ChainStatus::Failed);
 
-    println!("  Provider call counts:");
-    println!("    step-ok:          {}", ok_provider.call_count());
-    println!("    step-fail:        {}", fail_provider.call_count());
-    println!(
+    info!("  Provider call counts:");
+    info!("    step-ok:          {}", ok_provider.call_count());
+    info!("    step-fail:        {}", fail_provider.call_count());
+    info!(
         "    step-unreachable: {} (never reached)",
         unreachable_provider.call_count()
     );
@@ -358,9 +361,9 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!("\n  Audit records in Postgres for chain: {}", page.total);
+    info!("\n  Audit records in Postgres for chain: {}", page.total);
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<16} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -378,14 +381,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 3: Chain with Failing Step (Skip Policy)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 3: CHAIN WITH FAILING STEP — SKIP (PostgreSQL)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 3: CHAIN WITH FAILING STEP — SKIP (PostgreSQL)");
+    info!("------------------------------------------------------------------\n");
 
     let (state_cfg, audit_cfg) = pg_configs("chain_sim3_");
 
@@ -466,7 +469,7 @@ rules:
         serde_json::json!({}),
     );
 
-    println!("  Dispatching action to trigger skip-chain...");
+    info!("  Dispatching action to trigger skip-chain...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => chain_id.clone(),
@@ -475,7 +478,7 @@ rules:
 
     for i in 0..3 {
         gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-        println!("  Step {i} advanced");
+        info!("  Step {i} advanced");
     }
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -484,7 +487,7 @@ rules:
         .get_chain_status("test", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
-    println!("\n  Final chain status: {:?}", chain_state.status);
+    info!("\n  Final chain status: {:?}", chain_state.status);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
@@ -502,9 +505,9 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!("\n  Audit records in Postgres for chain: {}", page.total);
+    info!("\n  Audit records in Postgres for chain: {}", page.total);
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -529,14 +532,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 4: Chain Cancellation
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 4: CHAIN CANCELLATION (PostgreSQL)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 4: CHAIN CANCELLATION (PostgreSQL)");
+    info!("------------------------------------------------------------------\n");
 
     let (state_cfg, audit_cfg) = pg_configs("chain_sim4_");
 
@@ -601,7 +604,7 @@ rules:
         serde_json::json!({}),
     );
 
-    println!("  Dispatching action to trigger cancellable-chain...");
+    info!("  Dispatching action to trigger cancellable-chain...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted { chain_id, .. } => chain_id.clone(),
@@ -609,9 +612,9 @@ rules:
     };
 
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 0 advanced");
+    info!("  Step 0 advanced");
 
-    println!("  Cancelling chain...");
+    info!("  Cancelling chain...");
     let cancelled_state = gateway
         .cancel_chain(
             "test",
@@ -622,9 +625,9 @@ rules:
         )
         .await?;
 
-    println!("  Chain status after cancel: {:?}", cancelled_state.status);
-    println!("  Cancel reason: {:?}", cancelled_state.cancel_reason);
-    println!("  Cancelled by: {:?}", cancelled_state.cancelled_by);
+    info!("  Chain status after cancel: {:?}", cancelled_state.status);
+    info!("  Cancel reason: {:?}", cancelled_state.cancel_reason);
+    info!("  Cancelled by: {:?}", cancelled_state.cancelled_by);
     assert_eq!(
         cancelled_state.status,
         acteon_core::chain::ChainStatus::Cancelled
@@ -638,9 +641,9 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!("\n  Audit records in Postgres for chain: {}", page.total);
+    info!("\n  Audit records in Postgres for chain: {}", page.total);
     for rec in &page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -666,14 +669,14 @@ rules:
     assert_eq!(details["cancelled_by"].as_str(), Some("admin@example.com"));
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 5: Two Concurrent Chains with chain_id Audit Filtering
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 5: CONCURRENT CHAINS + AUDIT FILTERING (PostgreSQL)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 5: CONCURRENT CHAINS + AUDIT FILTERING (PostgreSQL)");
+    info!("------------------------------------------------------------------\n");
 
     let (state_cfg, audit_cfg) = pg_configs("chain_sim5_");
 
@@ -758,8 +761,8 @@ rules:
         other => panic!("Expected ChainStarted, got: {other:?}"),
     };
 
-    println!("  chain-alpha: {chain_id_a}");
-    println!("  chain-beta:  {chain_id_b}");
+    info!("  chain-alpha: {chain_id_a}");
+    info!("  chain-beta:  {chain_id_b}");
 
     for _ in 0..2 {
         gateway
@@ -773,7 +776,7 @@ rules:
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let all_page = audit.query(&AuditQuery::default()).await?;
-    println!("\n  Total audit records (all chains): {}", all_page.total);
+    info!("\n  Total audit records (all chains): {}", all_page.total);
 
     let alpha_page = audit
         .query(&AuditQuery {
@@ -781,12 +784,12 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!(
+    info!(
         "  Records for chain-alpha: {} (expected 4: 1 dispatch + 2 step + 1 terminal)",
         alpha_page.total
     );
     for rec in &alpha_page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -798,12 +801,12 @@ rules:
             ..Default::default()
         })
         .await?;
-    println!(
+    info!(
         "  Records for chain-beta:  {} (expected 3: 1 dispatch + 1 step + 1 terminal)",
         beta_page.total
     );
     for rec in &beta_page.records {
-        println!(
+        info!(
             "    [{:>22}] provider={:<10} action_type={}",
             rec.outcome, rec.provider, rec.action_type
         );
@@ -828,17 +831,17 @@ rules:
         assert_eq!(rec.chain_id.as_deref(), Some(chain_id_b.as_str()));
     }
 
-    println!("\n  SQL you can run to inspect the audit trail:");
-    println!("    SELECT chain_id, outcome, provider, action_type, dispatched_at");
-    println!("    FROM public.chain_sim5_audit");
-    println!("    ORDER BY dispatched_at DESC LIMIT 20;");
+    info!("\n  SQL you can run to inspect the audit trail:");
+    info!("    SELECT chain_id, outcome, provider, action_type, dispatched_at");
+    info!("    FROM public.chain_sim5_audit");
+    info!("    ORDER BY dispatched_at DESC LIMIT 20;");
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
-    println!("==================================================================");
-    println!("    ALL POSTGRESQL CHAIN SIMULATIONS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("    ALL POSTGRESQL CHAIN SIMULATIONS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

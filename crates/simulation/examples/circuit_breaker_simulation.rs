@@ -14,6 +14,7 @@ use acteon_executor::ExecutorConfig;
 use acteon_gateway::{CircuitBreakerConfig, GatewayBuilder};
 use acteon_simulation::provider::{FailureMode, RecordingProvider};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 /// Helper to build a gateway with circuit breaker configuration.
 /// Accepts providers and an optional per-provider circuit breaker config map.
@@ -60,19 +61,21 @@ fn make_action(provider: &str) -> Action {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║          CIRCUIT BREAKER SIMULATION DEMO                    ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║          CIRCUIT BREAKER SIMULATION DEMO                    ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Basic Circuit Opening
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: BASIC CIRCUIT OPENING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: BASIC CIRCUIT OPENING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A provider that always fails will cause the circuit to open");
-    println!("  after reaching the failure threshold (3 failures).\n");
+    info!("  A provider that always fails will cause the circuit to open");
+    info!("  after reaching the failure threshold (3 failures).\n");
 
     let email = Arc::new(RecordingProvider::new("email").with_failure_mode(FailureMode::Always));
 
@@ -101,23 +104,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await;
         match &outcome {
             ActionOutcome::Failed(err) => {
-                println!(
+                info!(
                     "  Request {i}: FAILED (error: {}) | Circuit: {cb_state}",
                     err.message
                 );
             }
             ActionOutcome::CircuitOpen { provider, .. } => {
-                println!(
-                    "  Request {i}: CIRCUIT OPEN (provider: {provider}) | Circuit: {cb_state}"
-                );
+                info!("  Request {i}: CIRCUIT OPEN (provider: {provider}) | Circuit: {cb_state}");
             }
             other => {
-                println!("  Request {i}: {:?} | Circuit: {cb_state}", other);
+                info!("  Request {i}: {:?} | Circuit: {cb_state}", other);
             }
         }
 
         if i == 3 {
-            println!("  --- Circuit opened after {i} consecutive failures ---");
+            info!("  --- Circuit opened after {i} consecutive failures ---");
         }
     }
 
@@ -128,24 +129,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         3,
         "provider should be called exactly 3 times"
     );
-    println!("\n  Provider was called 3 times (requests 1-3).");
-    println!("  Requests 4-5 were rejected immediately by the circuit breaker.");
+    info!("\n  Provider was called 3 times (requests 1-3).");
+    info!("  Requests 4-5 were rejected immediately by the circuit breaker.");
 
     let snap = gateway.metrics().snapshot();
-    println!("  Circuit-open rejections: {}", snap.circuit_open);
+    info!("  Circuit-open rejections: {}", snap.circuit_open);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Fallback Routing
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: FALLBACK ROUTING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: FALLBACK ROUTING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  When the primary provider's circuit opens and a fallback is");
-    println!("  configured, traffic is automatically rerouted to the fallback.\n");
+    info!("  When the primary provider's circuit opens and a fallback is");
+    info!("  configured, traffic is automatically rerouted to the fallback.\n");
 
     let primary =
         Arc::new(RecordingProvider::new("primary").with_failure_mode(FailureMode::Always));
@@ -175,9 +176,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=2 {
         let action = make_action("primary");
         let outcome = gateway.dispatch(action, None).await?;
-        println!("  Request {i}: {:?}", outcome_summary(&outcome));
+        info!("  Request {i}: {:?}", outcome_summary(&outcome));
     }
-    println!("  --- Circuit opened after 2 failures ---\n");
+    info!("  --- Circuit opened after 2 failures ---\n");
 
     // Now send more requests -- they should be rerouted to fallback
     for i in 3..=5 {
@@ -189,10 +190,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 new_provider,
                 ..
             } => {
-                println!("  Request {i}: REROUTED from '{original_provider}' to '{new_provider}'");
+                info!("  Request {i}: REROUTED from '{original_provider}' to '{new_provider}'");
             }
             other => {
-                println!("  Request {i}: {:?}", outcome_summary(other));
+                info!("  Request {i}: {:?}", outcome_summary(other));
             }
         }
     }
@@ -207,26 +208,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         3,
         "fallback received all rerouted traffic"
     );
-    println!(
+    info!(
         "\n  Primary provider calls: {} | Fallback provider calls: {}",
         primary.call_count(),
         fallback.call_count()
     );
     let snap = gateway.metrics().snapshot();
-    println!("  Circuit-fallback reroutes: {}", snap.circuit_fallbacks);
+    info!("  Circuit-fallback reroutes: {}", snap.circuit_fallbacks);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // SCENARIO 3: Full Recovery Lifecycle
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: FULL RECOVERY LIFECYCLE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: FULL RECOVERY LIFECYCLE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Demonstrates the full circuit breaker lifecycle:");
-    println!("  Closed -> Open -> HalfOpen -> Closed\n");
+    info!("  Demonstrates the full circuit breaker lifecycle:");
+    info!("  Closed -> Open -> HalfOpen -> Closed\n");
 
     // Use FirstN to simulate a provider that fails initially then recovers.
     // With FirstN(3), calls 1-3 fail, calls 4+ succeed.
@@ -249,11 +250,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cb = cb_registry.get("recovering").unwrap();
 
     // Phase 1: Closed -> Open (3 consecutive failures)
-    println!("  Phase 1: CLOSED -> OPEN");
+    info!("  Phase 1: CLOSED -> OPEN");
     for i in 1..=3 {
         let action = make_action("recovering");
         let outcome = gateway.dispatch(action, None).await?;
-        println!(
+        info!(
             "    Request {i}: {} | Circuit: {}",
             outcome_summary(&outcome),
             cb.state().await
@@ -264,11 +265,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "open",
         "circuit should be open after 3 failures"
     );
-    println!("    -> Circuit is now OPEN\n");
+    info!("    -> Circuit is now OPEN\n");
 
     // Phase 2: Open -> HalfOpen (recovery_timeout is ZERO, so check() transitions immediately)
-    println!("  Phase 2: OPEN -> HALF-OPEN -> CLOSED");
-    println!("    (recovery_timeout=0s, so transition is immediate)");
+    info!("  Phase 2: OPEN -> HALF-OPEN -> CLOSED");
+    info!("    (recovery_timeout=0s, so transition is immediate)");
 
     // The next dispatch will trigger check() which transitions Open->HalfOpen,
     // then the provider succeeds (call #4, which is past FirstN(3)),
@@ -276,7 +277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let action = make_action("recovering");
     let outcome = gateway.dispatch(action, None).await?;
     let cb_state = cb.state().await;
-    println!(
+    info!(
         "    Request 4: {} | Circuit: {}",
         outcome_summary(&outcome),
         cb_state
@@ -286,7 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let action = make_action("recovering");
     let outcome = gateway.dispatch(action, None).await?;
     let cb_state = cb.state().await;
-    println!(
+    info!(
         "    Request 5: {} | Circuit: {}",
         outcome_summary(&outcome),
         cb_state
@@ -297,34 +298,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "closed",
         "circuit should be closed after 2 successes in half-open"
     );
-    println!("    -> Circuit is now CLOSED (recovered!)\n");
+    info!("    -> Circuit is now CLOSED (recovered!)\n");
 
     // Phase 3: Verify normal operation resumes
-    println!("  Phase 3: Normal operation resumed");
+    info!("  Phase 3: Normal operation resumed");
     let action = make_action("recovering");
     let outcome = gateway.dispatch(action, None).await?;
     assert!(outcome.is_executed(), "should execute normally");
     let cb_state = cb.state().await;
-    println!(
+    info!(
         "    Request 6: {} | Circuit: {}",
         outcome_summary(&outcome),
         cb_state
     );
 
-    println!("\n  Total provider calls: {}", recovering.call_count());
+    info!("\n  Total provider calls: {}", recovering.call_count());
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
 
     // =========================================================================
     // SCENARIO 4: Independent Circuits Per Provider
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: INDEPENDENT CIRCUITS PER PROVIDER");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: INDEPENDENT CIRCUITS PER PROVIDER");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Each provider has its own circuit breaker. One provider failing");
-    println!("  does not affect other providers.\n");
+    info!("  Each provider has its own circuit breaker. One provider failing");
+    info!("  does not affect other providers.\n");
 
     let email_provider =
         Arc::new(RecordingProvider::new("email").with_failure_mode(FailureMode::Always));
@@ -351,32 +352,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cb_registry = gateway.circuit_breakers().unwrap();
 
     // Trip the email circuit (2 failures)
-    println!("  Sending 2 requests to 'email' (always fails)...");
+    info!("  Sending 2 requests to 'email' (always fails)...");
     for _ in 0..2 {
         let action = make_action("email");
         let _ = gateway.dispatch(action, None).await?;
     }
     let email_state = cb_registry.get("email").unwrap().state().await;
-    println!("    email circuit: {email_state}");
+    info!("    email circuit: {email_state}");
 
     // SMS should still be working fine
-    println!("\n  Sending 2 requests to 'sms' (healthy)...");
+    info!("\n  Sending 2 requests to 'sms' (healthy)...");
     for _ in 0..2 {
         let action = make_action("sms");
         let outcome = gateway.dispatch(action, None).await?;
         assert!(outcome.is_executed(), "sms should execute normally");
     }
     let sms_state = cb_registry.get("sms").unwrap().state().await;
-    println!("    sms circuit: {sms_state}");
+    info!("    sms circuit: {sms_state}");
 
     // Webhook had 1 failure (FirstN(1)), then succeeded -- still closed
-    println!("\n  Sending 2 requests to 'webhook' (fails first, then recovers)...");
+    info!("\n  Sending 2 requests to 'webhook' (fails first, then recovers)...");
     for _ in 0..2 {
         let action = make_action("webhook");
         let _ = gateway.dispatch(action, None).await?;
     }
     let webhook_state = cb_registry.get("webhook").unwrap().state().await;
-    println!("    webhook circuit: {webhook_state}");
+    info!("    webhook circuit: {webhook_state}");
 
     // Verify states
     assert_eq!(email_state.to_string(), "open", "email should be open");
@@ -394,15 +395,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         matches!(outcome, ActionOutcome::CircuitOpen { .. }),
         "email should be circuit-open"
     );
-    println!("\n  Email request after circuit open: REJECTED (CircuitOpen)");
+    info!("\n  Email request after circuit open: REJECTED (CircuitOpen)");
 
     // SMS still works
     let action = make_action("sms");
     let outcome = gateway.dispatch(action, None).await?;
     assert!(outcome.is_executed(), "sms should still work");
-    println!("  SMS request: EXECUTED (unaffected by email's circuit)");
+    info!("  SMS request: EXECUTED (unaffected by email's circuit)");
 
-    println!(
+    info!(
         "\n  Final call counts: email={}, sms={}, webhook={}",
         email_provider.call_count(),
         sms_provider.call_count(),
@@ -410,17 +411,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 4 passed]\n");
+    info!("\n  [Scenario 4 passed]\n");
 
     // =========================================================================
     // SCENARIO 5: Multi-Level Fallback Chain
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: MULTI-LEVEL FALLBACK CHAIN");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: MULTI-LEVEL FALLBACK CHAIN");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Demonstrates recursive fallback resolution: US -> EU -> AP.");
-    println!("  When US and EU are both down, traffic cascades to AP.\n");
+    info!("  Demonstrates recursive fallback resolution: US -> EU -> AP.");
+    info!("  When US and EU are both down, traffic cascades to AP.\n");
 
     let us_region =
         Arc::new(RecordingProvider::new("region-us").with_failure_mode(FailureMode::Always));
@@ -464,12 +465,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
 
     // Trip both US and EU circuits (2 failures each).
-    println!("  Tripping US circuit...");
+    info!("  Tripping US circuit...");
     for _ in 0..2 {
         let action = make_action("region-us");
         let _ = gateway.dispatch(action, None).await?;
     }
-    println!("  Tripping EU circuit...");
+    info!("  Tripping EU circuit...");
     for _ in 0..2 {
         let action = make_action("region-eu");
         let _ = gateway.dispatch(action, None).await?;
@@ -479,12 +480,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let us_state = cb_registry.get("region-us").unwrap().state().await;
     let eu_state = cb_registry.get("region-eu").unwrap().state().await;
     let ap_state = cb_registry.get("region-ap").unwrap().state().await;
-    println!("    region-us: {us_state}");
-    println!("    region-eu: {eu_state}");
-    println!("    region-ap: {ap_state}\n");
+    info!("    region-us: {us_state}");
+    info!("    region-eu: {eu_state}");
+    info!("    region-ap: {ap_state}\n");
 
     // Now send requests to US. They should cascade: US(open) -> EU(open) -> AP(closed).
-    println!("  Sending requests to 'region-us' (expecting cascade to 'region-ap')...");
+    info!("  Sending requests to 'region-us' (expecting cascade to 'region-ap')...");
     for i in 1..=3 {
         let action = make_action("region-us");
         let outcome = gateway.dispatch(action, None).await?;
@@ -494,10 +495,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 new_provider,
                 ..
             } => {
-                println!("  Request {i}: REROUTED from '{original_provider}' to '{new_provider}'");
+                info!("  Request {i}: REROUTED from '{original_provider}' to '{new_provider}'");
             }
             other => {
-                println!("  Request {i}: {:?}", outcome_summary(other));
+                info!("  Request {i}: {:?}", outcome_summary(other));
             }
         }
     }
@@ -509,7 +510,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         3,
         "AP received all cascaded traffic"
     );
-    println!(
+    info!(
         "\n  Call counts: US={}, EU={}, AP={}",
         us_region.call_count(),
         eu_region.call_count(),
@@ -517,14 +518,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 5 passed]\n");
+    info!("\n  [Scenario 5 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              ALL SCENARIOS PASSED                           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              ALL SCENARIOS PASSED                           ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

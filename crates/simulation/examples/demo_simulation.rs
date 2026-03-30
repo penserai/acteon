@@ -4,6 +4,7 @@
 
 use acteon_core::Action;
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 const SUPPRESSION_RULE: &str = r#"
 rules:
@@ -78,16 +79,18 @@ rules:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║           ACTEON SIMULATION FRAMEWORK DEMO                   ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║           ACTEON SIMULATION FRAMEWORK DEMO                   ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // DEMO 1: Suppression Rules
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: SUPPRESSION RULES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: SUPPRESSION RULES");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -98,9 +101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster with 1 node");
-    println!("✓ Registered 'email' recording provider");
-    println!("✓ Loaded suppression rule: block-spam\n");
+    info!("✓ Started simulation cluster with 1 node");
+    info!("✓ Registered 'email' recording provider");
+    info!("✓ Loaded suppression rule: block-spam\n");
 
     // Try to send spam - should be suppressed
     let spam_action = Action::new(
@@ -114,14 +117,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching SPAM action (action_type='spam')...");
+    info!("→ Dispatching SPAM action (action_type='spam')...");
     let outcome = harness.dispatch(&spam_action).await?;
 
-    println!("  Action ID: {}", spam_action.id);
-    println!("  Provider: {}", spam_action.provider);
-    println!("  Action Type: {}", spam_action.action_type);
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Action ID: {}", spam_action.id);
+    info!("  Provider: {}", spam_action.provider);
+    info!("  Action Type: {}", spam_action.action_type);
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Provider called: {} times\n",
         harness.provider("email").unwrap().call_count()
     );
@@ -138,27 +141,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching LEGITIMATE action (action_type='send_email')...");
+    info!("→ Dispatching LEGITIMATE action (action_type='send_email')...");
     let outcome = harness.dispatch(&legit_action).await?;
 
-    println!("  Action ID: {}", legit_action.id);
-    println!("  Provider: {}", legit_action.provider);
-    println!("  Action Type: {}", legit_action.action_type);
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Action ID: {}", legit_action.id);
+    info!("  Provider: {}", legit_action.provider);
+    info!("  Action Type: {}", legit_action.action_type);
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Provider called: {} times",
         harness.provider("email").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 2: Deduplication
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: DEDUPLICATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: DEDUPLICATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -169,8 +172,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster");
-    println!("✓ Loaded deduplication rule: dedup-notifications\n");
+    info!("✓ Started simulation cluster");
+    info!("✓ Loaded deduplication rule: dedup-notifications\n");
 
     // Send first notification
     let notify1 = Action::new(
@@ -185,10 +188,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("user-123-new-message");
 
-    println!("→ Dispatching FIRST notification (dedup_key='user-123-new-message')...");
+    info!("→ Dispatching FIRST notification (dedup_key='user-123-new-message')...");
     let outcome1 = harness.dispatch(&notify1).await?;
-    println!("  Outcome: {:?}", outcome1);
-    println!(
+    info!("  Outcome: {:?}", outcome1);
+    info!(
         "  Provider called: {} times\n",
         harness.provider("push").unwrap().call_count()
     );
@@ -206,10 +209,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("user-123-new-message");
 
-    println!("→ Dispatching DUPLICATE notification (same dedup_key)...");
+    info!("→ Dispatching DUPLICATE notification (same dedup_key)...");
     let outcome2 = harness.dispatch(&notify2).await?;
-    println!("  Outcome: {:?}", outcome2);
-    println!(
+    info!("  Outcome: {:?}", outcome2);
+    info!(
         "  Provider called: {} times (still 1 - duplicate blocked!)",
         harness.provider("push").unwrap().call_count()
     );
@@ -227,23 +230,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("user-123-order-shipped");
 
-    println!("\n→ Dispatching DIFFERENT notification (dedup_key='user-123-order-shipped')...");
+    info!("\n→ Dispatching DIFFERENT notification (dedup_key='user-123-order-shipped')...");
     let outcome3 = harness.dispatch(&notify3).await?;
-    println!("  Outcome: {:?}", outcome3);
-    println!(
+    info!("  Outcome: {:?}", outcome3);
+    info!(
         "  Provider called: {} times",
         harness.provider("push").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 3: Rerouting
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: REROUTING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: REROUTING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -255,9 +258,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster");
-    println!("✓ Registered 'email' and 'sms' providers");
-    println!("✓ Loaded reroute rule: reroute-urgent\n");
+    info!("✓ Started simulation cluster");
+    info!("✓ Registered 'email' and 'sms' providers");
+    info!("✓ Loaded reroute rule: reroute-urgent\n");
 
     // Send normal priority - should go to email
     let normal = Action::new(
@@ -271,14 +274,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching NORMAL priority action to 'email' provider...");
+    info!("→ Dispatching NORMAL priority action to 'email' provider...");
     let outcome = harness.dispatch(&normal).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Email provider called: {}",
         harness.provider("email").unwrap().call_count()
     );
-    println!(
+    info!(
         "  SMS provider called: {}\n",
         harness.provider("sms").unwrap().call_count()
     );
@@ -295,27 +298,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching URGENT priority action to 'email' provider...");
+    info!("→ Dispatching URGENT priority action to 'email' provider...");
     let outcome = harness.dispatch(&urgent).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Email provider called: {} (still 1 - rerouted!)",
         harness.provider("email").unwrap().call_count()
     );
-    println!(
+    info!(
         "  SMS provider called: {} (received the rerouted action!)",
         harness.provider("sms").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 4: Multi-Node Cluster with Shared State
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 4: MULTI-NODE CLUSTER WITH SHARED STATE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 4: MULTI-NODE CLUSTER WITH SHARED STATE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -327,11 +330,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started 3-node cluster with SHARED state");
-    println!("  Node 0: {}", harness.node(0).unwrap().base_url());
-    println!("  Node 1: {}", harness.node(1).unwrap().base_url());
-    println!("  Node 2: {}", harness.node(2).unwrap().base_url());
-    println!();
+    info!("✓ Started 3-node cluster with SHARED state");
+    info!("  Node 0: {}", harness.node(0).unwrap().base_url());
+    info!("  Node 1: {}", harness.node(1).unwrap().base_url());
+    info!("  Node 2: {}", harness.node(2).unwrap().base_url());
+    info!("");
 
     // Send to node 0
     let action = Action::new(
@@ -345,9 +348,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("cross-node-dedup");
 
-    println!("→ Dispatching to NODE 0...");
+    info!("→ Dispatching to NODE 0...");
     let outcome0 = harness.dispatch_to(0, &action).await?;
-    println!("  Outcome: {:?}", outcome0);
+    info!("  Outcome: {:?}", outcome0);
 
     // Send same dedup_key to node 1
     let action = Action::new(
@@ -361,9 +364,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("cross-node-dedup");
 
-    println!("\n→ Dispatching SAME dedup_key to NODE 1...");
+    info!("\n→ Dispatching SAME dedup_key to NODE 1...");
     let outcome1 = harness.dispatch_to(1, &action).await?;
-    println!("  Outcome: {:?} (deduplicated across nodes!)", outcome1);
+    info!("  Outcome: {:?} (deduplicated across nodes!)", outcome1);
 
     // Send same dedup_key to node 2
     let action = Action::new(
@@ -377,24 +380,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("cross-node-dedup");
 
-    println!("\n→ Dispatching SAME dedup_key to NODE 2...");
+    info!("\n→ Dispatching SAME dedup_key to NODE 2...");
     let outcome2 = harness.dispatch_to(2, &action).await?;
-    println!("  Outcome: {:?}", outcome2);
+    info!("  Outcome: {:?}", outcome2);
 
-    println!(
+    info!(
         "\n  Total provider calls: {} (only 1 despite 3 dispatches!)",
         harness.provider("email").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 5: Batch Dispatch with Metrics
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 5: BATCH DISPATCH");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 5: BATCH DISPATCH");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -404,7 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster\n");
+    info!("✓ Started simulation cluster\n");
 
     let actions: Vec<Action> = (0..100)
         .map(|i| {
@@ -418,7 +421,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("→ Dispatching batch of 100 actions...");
+    info!("→ Dispatching batch of 100 actions...");
     let start = std::time::Instant::now();
     let outcomes = harness.dispatch_batch(&actions).await;
     let elapsed = start.elapsed();
@@ -429,27 +432,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|r| matches!(r, Ok(acteon_core::ActionOutcome::Executed(_))))
         .count();
 
-    println!("  Completed in: {:?}", elapsed);
-    println!("  Successful: {}/100", successful);
-    println!("  Executed: {}/100", executed);
-    println!(
+    info!("  Completed in: {:?}", elapsed);
+    info!("  Successful: {}/100", successful);
+    info!("  Executed: {}/100", executed);
+    info!(
         "  Provider calls: {}",
         harness.provider("email").unwrap().call_count()
     );
-    println!(
+    info!(
         "  Throughput: {:.0} actions/sec",
         100.0 / elapsed.as_secs_f64()
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 6: PagerDuty Incident Escalation
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 6: PAGERDUTY INCIDENT ESCALATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 6: PAGERDUTY INCIDENT ESCALATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -461,11 +464,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster");
-    println!("✓ Registered 'slack' and 'pagerduty' providers");
-    println!("✓ Loaded escalation rules:");
-    println!("  - critical severity → reroute to pagerduty");
-    println!("  - high severity → deduplicate (10 min window)\n");
+    info!("✓ Started simulation cluster");
+    info!("✓ Registered 'slack' and 'pagerduty' providers");
+    info!("✓ Loaded escalation rules:");
+    info!("  - critical severity → reroute to pagerduty");
+    info!("  - high severity → deduplicate (10 min window)\n");
 
     // Low severity alert - goes to slack normally
     let low_alert = Action::new(
@@ -480,10 +483,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching LOW severity alert to 'slack'...");
+    info!("→ Dispatching LOW severity alert to 'slack'...");
     let outcome = harness.dispatch(&low_alert).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Slack called: {}, PagerDuty called: {}\n",
         harness.provider("slack").unwrap().call_count(),
         harness.provider("pagerduty").unwrap().call_count(),
@@ -502,10 +505,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching CRITICAL severity alert to 'slack'...");
+    info!("→ Dispatching CRITICAL severity alert to 'slack'...");
     let outcome = harness.dispatch(&critical_alert).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Slack called: {} (unchanged), PagerDuty called: {} (escalated!)\n",
         harness.provider("slack").unwrap().call_count(),
         harness.provider("pagerduty").unwrap().call_count(),
@@ -525,9 +528,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("api-gateway-error-rate");
 
-    println!("→ Dispatching FIRST high severity alert...");
+    info!("→ Dispatching FIRST high severity alert...");
     let outcome = harness.dispatch(&high_alert).await?;
-    println!("  Outcome: {:?}", outcome);
+    info!("  Outcome: {:?}", outcome);
 
     let high_alert_dup = Action::new(
         "monitoring",
@@ -542,28 +545,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("api-gateway-error-rate");
 
-    println!("→ Dispatching DUPLICATE high severity alert...");
+    info!("→ Dispatching DUPLICATE high severity alert...");
     let outcome = harness.dispatch(&high_alert_dup).await?;
-    println!(
+    info!(
         "  Outcome: {:?} (deduplicated - alert storm prevented!)",
         outcome
     );
 
-    println!(
+    info!(
         "\n  Final counts: Slack={}, PagerDuty={}",
         harness.provider("slack").unwrap().call_count(),
         harness.provider("pagerduty").unwrap().call_count(),
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 7: Webhook Dispatch via Rerouting
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 7: WEBHOOK DISPATCH VIA REROUTING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 7: WEBHOOK DISPATCH VIA REROUTING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -575,9 +578,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster");
-    println!("✓ Registered 'slack' and 'webhook' providers");
-    println!("✓ Loaded rule: reroute-critical-to-webhook\n");
+    info!("✓ Started simulation cluster");
+    info!("✓ Registered 'slack' and 'webhook' providers");
+    info!("✓ Loaded rule: reroute-critical-to-webhook\n");
 
     // Warning alert - stays on Slack
     let warning_alert = Action::new(
@@ -593,10 +596,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching WARNING severity alert to 'slack'...");
+    info!("→ Dispatching WARNING severity alert to 'slack'...");
     let outcome = harness.dispatch(&warning_alert).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Slack called: {}, Webhook called: {}\n",
         harness.provider("slack").unwrap().call_count(),
         harness.provider("webhook").unwrap().call_count(),
@@ -616,21 +619,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching CRITICAL severity alert to 'slack'...");
+    info!("→ Dispatching CRITICAL severity alert to 'slack'...");
     let outcome = harness.dispatch(&critical_alert).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Slack called: {} (unchanged), Webhook called: {} (rerouted!)",
         harness.provider("slack").unwrap().call_count(),
         harness.provider("webhook").unwrap().call_count(),
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║                    DEMO COMPLETE                             ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║                    DEMO COMPLETE                             ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

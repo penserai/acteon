@@ -24,6 +24,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const CHAIN_RULE: &str = r#"
 rules:
@@ -45,16 +46,18 @@ fn parse_rules(yaml: &str) -> Vec<Rule> {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("           ACTEON PARALLEL CHAIN STEPS SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("           ACTEON PARALLEL CHAIN STEPS SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // DEMO 1: Simple Parallel — All Succeed
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 1: SIMPLE PARALLEL — ALL SUB-STEPS SUCCEED");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 1: SIMPLE PARALLEL — ALL SUB-STEPS SUCCEED");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -132,7 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             chain_name,
             ..
         } => {
-            println!("  Chain started: {chain_name}");
+            info!("  Chain started: {chain_name}");
             chain_id.clone()
         }
         other => panic!("unexpected outcome: {other:?}"),
@@ -148,25 +151,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .expect("chain state");
     assert_eq!(final_state.status, ChainStatus::Completed);
-    println!("  All 3 sub-steps executed concurrently");
-    println!("    slack calls:     {}", slack_provider.call_count());
-    println!("    email calls:     {}", email_provider.call_count());
-    println!("    pagerduty calls: {}", pagerduty_provider.call_count());
-    println!("  Chain status: {:?}", final_state.status);
+    info!("  All 3 sub-steps executed concurrently");
+    info!("    slack calls:     {}", slack_provider.call_count());
+    info!("    email calls:     {}", email_provider.call_count());
+    info!("    pagerduty calls: {}", pagerduty_provider.call_count());
+    info!("  Chain status: {:?}", final_state.status);
 
     assert_eq!(slack_provider.call_count(), 1);
     assert_eq!(email_provider.call_count(), 1);
     assert_eq!(pagerduty_provider.call_count(), 1);
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 2: One Failure with FailFast Policy
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 2: ONE FAILURE WITH FAIL_FAST POLICY");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 2: ONE FAILURE WITH FAIL_FAST POLICY");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -225,18 +228,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .expect("chain state");
     assert_eq!(final_state.status, ChainStatus::Failed);
-    println!("  Parallel group with fail_fast: chain failed due to bad-step");
-    println!("  Chain status: {:?}", final_state.status);
+    info!("  Parallel group with fail_fast: chain failed due to bad-step");
+    info!("  Chain status: {:?}", final_state.status);
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 3: One Failure with BestEffort Policy
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 3: ONE FAILURE WITH BEST_EFFORT POLICY");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 3: ONE FAILURE WITH BEST_EFFORT POLICY");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -296,22 +299,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("chain state");
     // With All join + BestEffort, all sub-steps run but one failed → chain fails.
     assert_eq!(final_state.status, ChainStatus::Failed);
-    println!(
-        "  BestEffort: all sub-steps ran, but chain failed (All join requires all to succeed)"
-    );
-    println!("  ok-provider calls: {}", ok_provider.call_count());
-    println!("  fail-provider calls: {}", fail_provider.call_count());
-    println!("  Chain status: {:?}", final_state.status);
+    info!("  BestEffort: all sub-steps ran, but chain failed (All join requires all to succeed)");
+    info!("  ok-provider calls: {}", ok_provider.call_count());
+    info!("  fail-provider calls: {}", fail_provider.call_count());
+    info!("  Chain status: {:?}", final_state.status);
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 4: Any-Join — First Success Wins
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 4: ANY-JOIN — FIRST SUCCESS WINS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 4: ANY-JOIN — FIRST SUCCESS WINS");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -387,18 +388,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .expect("chain state");
     assert_eq!(final_state.status, ChainStatus::Completed);
-    println!("  Any-join: chain completed on first success");
-    println!("  Chain status: {:?}", final_state.status);
+    info!("  Any-join: chain completed on first success");
+    info!("  Chain status: {:?}", final_state.status);
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 5: Parallel Group Timeout
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 5: PARALLEL GROUP TIMEOUT");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 5: PARALLEL GROUP TIMEOUT");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -460,18 +461,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .expect("chain state");
     assert_eq!(final_state.status, ChainStatus::Failed);
-    println!("  Parallel group timed out after 1s");
-    println!("  Chain status: {:?}", final_state.status);
+    info!("  Parallel group timed out after 1s");
+    info!("  Chain status: {:?}", final_state.status);
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 6: Template Resolution from Parallel Results
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 6: TEMPLATE RESOLUTION FROM PARALLEL RESULTS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 6: TEMPLATE RESOLUTION FROM PARALLEL RESULTS");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -565,11 +566,11 @@ rules:
 
     // Step 0: parallel gather-data
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Parallel gather-data: enrich + lookup-owner completed");
+    info!("  Parallel gather-data: enrich + lookup-owner completed");
 
     // Step 1: send-alert (uses templates from parallel results)
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  send-alert: dispatched with resolved templates");
+    info!("  send-alert: dispatched with resolved templates");
 
     let final_state = gateway
         .get_chain_status("test", "tenant-1", &chain_id)
@@ -580,7 +581,7 @@ rules:
     // Verify the notify provider received the resolved payload.
     let last_call = notify_provider.last_action().expect("notify was called");
     let payload_str = last_call.payload.to_string();
-    println!("  Resolved payload: {}", last_call.payload);
+    info!("  Resolved payload: {}", last_call.payload);
     assert!(
         payload_str.contains("85"),
         "should contain risk_score from enrich step"
@@ -591,14 +592,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 7: Branching After Parallel Step
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 7: BRANCHING AFTER PARALLEL STEP");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 7: BRANCHING AFTER PARALLEL STEP");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -703,7 +704,7 @@ rules:
 
     // Step 0: parallel gather-checks → branches to "escalate" because severity == critical
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Parallel gather-checks completed, branching on severity...");
+    info!("  Parallel gather-checks completed, branching on severity...");
 
     // Step: escalate (branched to)
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
@@ -723,19 +724,19 @@ rules:
         0,
         "just-log should not be reached"
     );
-    println!("  Branched to 'escalate' (severity was critical)");
-    println!("  escalation calls: {}", escalate_provider.call_count());
-    println!("  logger calls: {} (skipped)", log_provider.call_count());
+    info!("  Branched to 'escalate' (severity was critical)");
+    info!("  escalation calls: {}", escalate_provider.call_count());
+    info!("  logger calls: {} (skipped)", log_provider.call_count());
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 8: Cancel During Parallel Execution
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 8: CANCEL CHAIN WITH PARALLEL STEP");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 8: CANCEL CHAIN WITH PARALLEL STEP");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -810,7 +811,7 @@ rules:
 
     // Advance step 0 (setup)
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (setup): OK");
+    info!("  Step 0 (setup): OK");
 
     // Cancel before the parallel step runs
     gateway
@@ -829,19 +830,19 @@ rules:
         .expect("chain state");
     assert_eq!(final_state.status, ChainStatus::Cancelled);
     unreachable_provider.assert_not_called();
-    println!("  Chain cancelled before parallel step executed");
-    println!("  Chain status: {:?}", final_state.status);
-    println!(
+    info!("  Chain cancelled before parallel step executed");
+    info!("  Chain status: {:?}", final_state.status);
+    info!(
         "  unreachable calls: {} (never reached)",
         unreachable_provider.call_count()
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
-    println!("==================================================================");
-    println!("  ALL PARALLEL CHAIN STEPS SIMULATION DEMOS PASSED");
-    println!("==================================================================\n");
+    info!("==================================================================");
+    info!("  ALL PARALLEL CHAIN STEPS SIMULATION DEMOS PASSED");
+    info!("==================================================================\n");
 
     Ok(())
 }

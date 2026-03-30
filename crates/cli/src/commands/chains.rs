@@ -1,5 +1,6 @@
 use acteon_ops::OpsClient;
 use clap::{Args, Subcommand};
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -161,18 +162,18 @@ async fn run_list(
         .await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("{} chains:", resp.chains.len());
+            info!(count = resp.chains.len(), "Chains");
             for chain in &resp.chains {
-                println!(
-                    "  {id} | {name} | {status} | step {current}/{total}",
-                    id = &chain.chain_id[..8.min(chain.chain_id.len())],
-                    name = chain.chain_name,
-                    status = chain.status,
-                    current = chain.current_step,
-                    total = chain.total_steps,
+                info!(
+                    id = %&chain.chain_id[..8.min(chain.chain_id.len())],
+                    name = %chain.chain_name,
+                    status = %chain.status,
+                    current_step = chain.current_step,
+                    total_steps = chain.total_steps,
+                    "Chain"
                 );
             }
         }
@@ -190,25 +191,30 @@ async fn run_get(
     let resp = ops.get_chain(id, namespace, tenant).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("Chain ID:     {}", resp.chain_id);
-            println!("Name:         {}", resp.chain_name);
-            println!("Status:       {}", resp.status);
-            println!("Progress:     {}/{}", resp.current_step, resp.total_steps);
-            println!("Started:      {}", resp.started_at);
-            println!("Updated:      {}", resp.updated_at);
+            info!(chain_id = %resp.chain_id, "Chain details");
+            info!(name = %resp.chain_name, "  Name");
+            info!(status = %resp.status, "  Status");
+            info!(
+                current = resp.current_step,
+                total = resp.total_steps,
+                "  Progress"
+            );
+            info!(started_at = %resp.started_at, "  Started");
+            info!(updated_at = %resp.updated_at, "  Updated");
             if let Some(ref reason) = resp.cancel_reason {
-                println!("Cancel:       {reason}");
+                info!(reason = %reason, "  Cancel reason");
             }
             for step in &resp.steps {
                 let err = step.error.as_deref().unwrap_or("");
-                println!(
-                    "  [{status}] {name} -> {provider} {err}",
-                    status = step.status,
-                    name = step.name,
-                    provider = step.provider,
+                info!(
+                    status = %step.status,
+                    name = %step.name,
+                    provider = %step.provider,
+                    error = %err,
+                    "  Step"
                 );
             }
         }
@@ -236,12 +242,13 @@ async fn run_cancel(
         .await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!(
-                "Chain {} cancelled (status: {}).",
-                resp.chain_id, resp.status
+            info!(
+                chain_id = %resp.chain_id,
+                status = %resp.status,
+                "Chain cancelled"
             );
         }
     }
@@ -258,22 +265,24 @@ async fn run_dag(
     let resp = ops.get_chain_dag(id, namespace, tenant).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!(
-                "DAG for chain '{}': {} nodes, {} edges",
-                resp.chain_name,
-                resp.nodes.len(),
-                resp.edges.len()
+            info!(
+                chain_name = %resp.chain_name,
+                nodes = resp.nodes.len(),
+                edges = resp.edges.len(),
+                "Chain DAG"
             );
             for node in &resp.nodes {
                 let provider = node.provider.as_deref().unwrap_or("-");
                 let status = node.status.as_deref().unwrap_or("-");
-                println!(
-                    "  [{node_type}] {name} | provider: {provider} | status: {status}",
-                    node_type = node.node_type,
-                    name = node.name,
+                info!(
+                    node_type = %node.node_type,
+                    name = %node.name,
+                    provider = %provider,
+                    status = %status,
+                    "  DAG node"
                 );
             }
         }
@@ -291,16 +300,16 @@ async fn run_definitions(
             let resp = ops.list_chain_definitions().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} definitions:", resp.definitions.len());
+                    info!(count = resp.definitions.len(), "Chain definitions");
                     for def in &resp.definitions {
-                        println!(
-                            "  {name} | {steps} steps | on_failure: {on_failure}",
-                            name = def.name,
+                        info!(
+                            name = %def.name,
                             steps = def.steps_count,
-                            on_failure = def.on_failure,
+                            on_failure = %def.on_failure,
+                            "Definition"
                         );
                     }
                 }
@@ -309,43 +318,44 @@ async fn run_definitions(
         DefinitionsCommand::Get { name } => {
             let resp = ops.get_chain_definition(name).await?;
             // Definition config is raw JSON, so always pretty-print.
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         DefinitionsCommand::Put { name, config } => {
             let config_value = parse_json_data(config)?;
             let resp = ops.put_chain_definition(name, &config_value).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Chain definition '{name}' saved.");
+                    info!(name = %name, "Chain definition saved");
                 }
             }
         }
         DefinitionsCommand::Delete { name } => {
             ops.delete_chain_definition(name).await?;
-            println!("Chain definition '{name}' deleted.");
+            info!(name = %name, "Chain definition deleted");
         }
         DefinitionsCommand::Dag { name } => {
             let resp = ops.get_chain_definition_dag(name).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!(
-                        "DAG for definition '{}': {} nodes, {} edges",
-                        resp.chain_name,
-                        resp.nodes.len(),
-                        resp.edges.len()
+                    info!(
+                        chain_name = %resp.chain_name,
+                        nodes = resp.nodes.len(),
+                        edges = resp.edges.len(),
+                        "Definition DAG"
                     );
                     for node in &resp.nodes {
                         let provider = node.provider.as_deref().unwrap_or("-");
-                        println!(
-                            "  [{node_type}] {name} | provider: {provider}",
-                            node_type = node.node_type,
-                            name = node.name,
+                        info!(
+                            node_type = %node.node_type,
+                            name = %node.name,
+                            provider = %provider,
+                            "  DAG node"
                         );
                     }
                 }

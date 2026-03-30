@@ -1,5 +1,6 @@
 use acteon_ops::OpsClient;
 use clap::{Args, Subcommand};
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -23,11 +24,10 @@ pub async fn run(ops: &OpsClient, args: &DlqArgs, format: &OutputFormat) -> anyh
             let resp = ops.dlq_stats().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("DLQ enabled: {}", resp.enabled);
-                    println!("Entries:     {}", resp.count);
+                    info!(enabled = resp.enabled, entries = resp.count, "DLQ stats");
                 }
             }
         }
@@ -35,18 +35,18 @@ pub async fn run(ops: &OpsClient, args: &DlqArgs, format: &OutputFormat) -> anyh
             let resp = ops.dlq_drain().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Drained {} entries:", resp.count);
+                    info!(count = resp.count, "Drained DLQ entries");
                     for entry in &resp.entries {
-                        println!(
-                            "  {id} | {provider}/{action_type} | {err} (attempts: {attempts})",
-                            id = &entry.action_id[..8.min(entry.action_id.len())],
-                            provider = entry.provider,
-                            action_type = entry.action_type,
-                            err = entry.error,
+                        info!(
+                            id = %&entry.action_id[..8.min(entry.action_id.len())],
+                            provider = %entry.provider,
+                            action_type = %entry.action_type,
+                            error = %entry.error,
                             attempts = entry.attempts,
+                            "DLQ entry"
                         );
                     }
                 }

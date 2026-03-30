@@ -3,6 +3,7 @@ use std::fmt::Write;
 use acteon_ops::OpsClient;
 use acteon_ops::test_rules::{self, TestRunSummary};
 use clap::{Args, Subcommand};
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 
@@ -44,17 +45,19 @@ pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> an
             let rules = ops.client().list_rules().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&rules)?);
+                    info!("{}", serde_json::to_string_pretty(&rules)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} rules loaded:", rules.len());
+                    info!(count = rules.len(), "Rules loaded");
                     for rule in &rules {
                         let status = if rule.enabled { "ON " } else { "OFF" };
                         let desc = rule.description.as_deref().unwrap_or("");
-                        println!(
-                            "  [{status}] {name} (priority {priority}) {desc}",
-                            name = rule.name,
+                        info!(
+                            status = %status,
+                            name = %rule.name,
                             priority = rule.priority,
+                            description = %desc,
+                            "Rule"
                         );
                     }
                 }
@@ -62,11 +65,11 @@ pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> an
         }
         RulesCommand::Enable { name } => {
             ops.client().set_rule_enabled(name, true).await?;
-            println!("Rule '{name}' enabled.");
+            info!(name = %name, "Rule enabled");
         }
         RulesCommand::Disable { name } => {
             ops.client().set_rule_enabled(name, false).await?;
-            println!("Rule '{name}' disabled.");
+            info!(name = %name, "Rule disabled");
         }
         RulesCommand::Test { fixtures, filter } => {
             let yaml = std::fs::read_to_string(fixtures)?;
@@ -76,7 +79,7 @@ pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> an
 
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&summary)?);
+                    info!("{}", serde_json::to_string_pretty(&summary)?);
                 }
                 OutputFormat::Text => {
                     print_test_summary(&summary);
@@ -91,14 +94,14 @@ pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> an
             let result = ops.reload_rules().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
+                    info!("{}", serde_json::to_string_pretty(&result)?);
                 }
                 OutputFormat::Text => {
-                    println!("Reloaded {} rules.", result.loaded);
+                    info!(loaded = result.loaded, "Reloaded rules");
                     if !result.errors.is_empty() {
-                        println!("Errors:");
+                        warn!("Rule reload errors:");
                         for err in &result.errors {
-                            println!("  - {err}");
+                            warn!(error = %err, "  Rule error");
                         }
                     }
                 }
@@ -109,12 +112,12 @@ pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> an
 }
 
 fn print_test_summary(summary: &TestRunSummary) {
-    println!();
+    info!("");
     for result in &summary.results {
         if result.passed {
-            println!("  PASS  {}", result.name);
+            info!(name = %result.name, "  PASS");
         } else if let Some(ref err) = result.error {
-            println!("  FAIL  {} (error: {err})", result.name);
+            warn!(name = %result.name, error = %err, "  FAIL");
         } else {
             let mut detail = format!(
                 "expected verdict '{}', got '{}'",
@@ -126,13 +129,16 @@ fn print_test_summary(summary: &TestRunSummary) {
                     let _ = write!(detail, "; expected rule '{expected_rule}', got '{actual}'");
                 }
             }
-            println!("  FAIL  {} ({detail})", result.name);
+            warn!(name = %result.name, detail = %detail, "  FAIL");
         }
     }
 
-    println!();
-    println!(
-        "test result: {} passed, {} failed ({} total) in {}ms",
-        summary.passed, summary.failed, summary.total, summary.duration_ms,
+    info!("");
+    info!(
+        passed = summary.passed,
+        failed = summary.failed,
+        total = summary.total,
+        duration_ms = summary.duration_ms,
+        "Test result"
     );
 }

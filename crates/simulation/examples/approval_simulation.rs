@@ -39,6 +39,7 @@
 
 use acteon_core::{Action, ActionOutcome};
 use acteon_simulation::ActeonClient;
+use tracing::{info, warn};
 
 /// Parse a query parameter value from a URL string.
 fn parse_query_param(url: &str, param: &str) -> Option<String> {
@@ -54,15 +55,17 @@ fn parse_query_param(url: &str, param: &str) -> Option<String> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  HUMAN-IN-THE-LOOP APPROVAL SIMULATION (REST API)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    tracing_subscriber::fmt::init();
+
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  HUMAN-IN-THE-LOOP APPROVAL SIMULATION (REST API)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let base_url =
         std::env::var("ACTEON_URL").unwrap_or_else(|_| "http://localhost:8080".to_string());
     let api_key = std::env::var("ACTEON_API_KEY").ok();
 
-    println!("  Connecting to Acteon server at {base_url}\n");
+    info!("  Connecting to Acteon server at {base_url}\n");
 
     let client = match api_key {
         Some(key) => ActeonClient::builder(&base_url)
@@ -75,20 +78,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Health Check
     // =========================================================================
-    println!("── Health check ──────────────────────────────────────────────\n");
+    info!("── Health check ──────────────────────────────────────────────\n");
 
     match client.health().await {
-        Ok(true) => println!("  Server is healthy\n"),
+        Ok(true) => info!("  Server is healthy\n"),
         Ok(false) => {
-            println!("  Server returned unhealthy status.");
-            println!("  Make sure acteon-server is running with an approval rule loaded:");
-            println!("    cargo run -p acteon-server -- -c examples/approval.toml\n");
+            info!("  Server returned unhealthy status.");
+            info!("  Make sure acteon-server is running with an approval rule loaded:");
+            info!("    cargo run -p acteon-server -- -c examples/approval.toml\n");
             return Ok(());
         }
         Err(e) => {
-            println!("  Failed to connect: {e}");
-            println!("\n  Make sure acteon-server is running:");
-            println!("    cargo run -p acteon-server\n");
+            info!("  Failed to connect: {e}");
+            info!("\n  Make sure acteon-server is running:");
+            info!("    cargo run -p acteon-server\n");
             return Ok(());
         }
     }
@@ -96,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Step 1: Small refund ($50) — should execute immediately (no approval)
     // =========================================================================
-    println!("── Step 1: Small refund (no approval needed) ──────────────────\n");
+    info!("── Step 1: Small refund (no approval needed) ──────────────────\n");
 
     let small_refund = Action::new(
         "billing",
@@ -111,20 +114,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  POST /v1/dispatch  (amount=50)");
+    info!("  POST /v1/dispatch  (amount=50)");
     match client.dispatch(&small_refund).await {
         Ok(ActionOutcome::Executed(resp)) => {
-            println!("  Outcome: EXECUTED (no approval needed)");
-            println!("  Provider response: {:?}\n", resp.status);
+            info!("  Outcome: EXECUTED (no approval needed)");
+            info!("  Provider response: {:?}\n", resp.status);
         }
-        Ok(other) => println!("  Outcome: {other:?}\n"),
-        Err(e) => println!("  Error: {e}\n"),
+        Ok(other) => info!("  Outcome: {other:?}\n"),
+        Err(e) => info!("  Error: {e}\n"),
     }
 
     // =========================================================================
     // Step 2: Large refund ($5000) — should require approval
     // =========================================================================
-    println!("── Step 2: Large refund (approval required) ───────────────────\n");
+    info!("── Step 2: Large refund (approval required) ───────────────────\n");
 
     let large_refund = Action::new(
         "billing",
@@ -139,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  POST /v1/dispatch  (amount=5000)");
+    info!("  POST /v1/dispatch  (amount=5000)");
     let outcome = client.dispatch(&large_refund).await?;
 
     let (approval_id, approve_url) = match &outcome {
@@ -150,17 +153,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reject_url,
             notification_sent,
         } => {
-            println!("  Outcome: PENDING APPROVAL");
-            println!("  Approval ID: {approval_id}");
-            println!("  Expires at: {expires_at}");
-            println!("  Notification sent: {notification_sent}");
-            println!("  Approve URL: {approve_url}");
-            println!("  Reject URL: {reject_url}");
+            info!("  Outcome: PENDING APPROVAL");
+            info!("  Approval ID: {approval_id}");
+            info!("  Expires at: {expires_at}");
+            info!("  Notification sent: {notification_sent}");
+            info!("  Approve URL: {approve_url}");
+            info!("  Reject URL: {reject_url}");
             (approval_id.clone(), approve_url.clone())
         }
         other => {
-            eprintln!("  ERROR: Expected PendingApproval, got: {other:?}");
-            eprintln!("  Make sure the server has an approval rule for process_refund > $1000");
+            warn!("  ERROR: Expected PendingApproval, got: {other:?}");
+            warn!("  Make sure the server has an approval rule for process_refund > $1000");
             return Err("unexpected outcome".into());
         }
     };
@@ -168,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Step 3: Check approval status via REST API
     // =========================================================================
-    println!("\n── Step 3: Check approval status ──────────────────────────────\n");
+    info!("\n── Step 3: Check approval status ──────────────────────────────\n");
 
     let sig = parse_query_param(&approve_url, "sig").expect("sig in approve URL");
     let expires_at: i64 = parse_query_param(&approve_url, "expires_at")
@@ -177,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("expires_at should be an integer");
     let kid = parse_query_param(&approve_url, "kid");
 
-    println!("  GET /v1/approvals/billing/tenant-1/{approval_id}");
+    info!("  GET /v1/approvals/billing/tenant-1/{approval_id}");
     match client
         .get_approval_with_kid(
             "billing",
@@ -190,48 +193,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
     {
         Ok(Some(status)) => {
-            println!("  Status: {}", status.status);
-            println!("  Rule: {}", status.rule);
+            info!("  Status: {}", status.status);
+            info!("  Rule: {}", status.rule);
             if let Some(msg) = &status.message {
-                println!("  Message: {msg}");
+                info!("  Message: {msg}");
             }
         }
-        Ok(None) => println!("  Approval not found (unexpected)"),
-        Err(e) => println!("  Error: {e}"),
+        Ok(None) => info!("  Approval not found (unexpected)"),
+        Err(e) => info!("  Error: {e}"),
     }
 
     // =========================================================================
     // Step 4: List pending approvals (authenticated endpoint)
     // =========================================================================
-    println!("\n── Step 4: List pending approvals ─────────────────────────────\n");
+    info!("\n── Step 4: List pending approvals ─────────────────────────────\n");
 
-    println!("  GET /v1/approvals?namespace=billing&tenant=tenant-1");
+    info!("  GET /v1/approvals?namespace=billing&tenant=tenant-1");
     match client.list_approvals("billing", "tenant-1").await {
         Ok(list) => {
-            println!("  Found {} pending approval(s):", list.count);
+            info!("  Found {} pending approval(s):", list.count);
             for approval in &list.approvals {
-                println!(
+                info!(
                     "    - {} | status={} | rule={}",
                     approval.token, approval.status, approval.rule
                 );
             }
         }
         Err(e) => {
-            println!("  Error listing approvals: {e}");
-            println!("  (This endpoint requires authentication; set ACTEON_API_KEY)");
+            info!("  Error listing approvals: {e}");
+            info!("  (This endpoint requires authentication; set ACTEON_API_KEY)");
         }
     }
 
     // =========================================================================
     // Step 5: Approve the action (simulating a human clicking the link)
     // =========================================================================
-    println!("\n── Step 5: Approve the action ─────────────────────────────────\n");
+    info!("\n── Step 5: Approve the action ─────────────────────────────────\n");
 
-    println!("  Simulating human clicking 'Approve'...");
-    println!("  HMAC signature: {}...", &sig[..16.min(sig.len())]);
-    println!("  Expires at (unix): {expires_at}");
+    info!("  Simulating human clicking 'Approve'...");
+    info!("  HMAC signature: {}...", &sig[..16.min(sig.len())]);
+    info!("  Expires at (unix): {expires_at}");
 
-    println!("  POST /v1/approvals/billing/tenant-1/{approval_id}/approve");
+    info!("  POST /v1/approvals/billing/tenant-1/{approval_id}/approve");
     match client
         .approve_with_kid(
             "billing",
@@ -244,14 +247,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
     {
         Ok(result) => {
-            println!("  Result: status={}", result.status);
+            info!("  Result: status={}", result.status);
             if let Some(outcome) = &result.outcome {
-                println!("  Outcome: {outcome}");
+                info!("  Outcome: {outcome}");
             }
-            println!("  The original $5,000 refund has been executed!");
+            info!("  The original $5,000 refund has been executed!");
         }
         Err(e) => {
-            eprintln!("  ERROR: {e}");
+            warn!("  ERROR: {e}");
             return Err(e.into());
         }
     }
@@ -259,9 +262,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Step 6: Verify approval status changed
     // =========================================================================
-    println!("\n── Step 6: Verify approval is resolved ────────────────────────\n");
+    info!("\n── Step 6: Verify approval is resolved ────────────────────────\n");
 
-    println!("  GET /v1/approvals/billing/tenant-1/{approval_id}");
+    info!("  GET /v1/approvals/billing/tenant-1/{approval_id}");
     match client
         .get_approval_with_kid(
             "billing",
@@ -273,15 +276,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await
     {
-        Ok(Some(status)) => println!("  Status: {} (was: pending)", status.status),
-        Ok(None) => println!("  Approval no longer found (cleaned up)"),
-        Err(e) => println!("  Error: {e}"),
+        Ok(Some(status)) => info!("  Status: {} (was: pending)", status.status),
+        Ok(None) => info!("  Approval no longer found (cleaned up)"),
+        Err(e) => info!("  Error: {e}"),
     }
 
     // =========================================================================
     // Step 7: Dispatch another large refund and reject it
     // =========================================================================
-    println!("\n── Step 7: Reject a different refund ──────────────────────────\n");
+    info!("\n── Step 7: Reject a different refund ──────────────────────────\n");
 
     let another_refund = Action::new(
         "billing",
@@ -296,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  POST /v1/dispatch  (amount=9999)");
+    info!("  POST /v1/dispatch  (amount=9999)");
     let outcome2 = client.dispatch(&another_refund).await?;
 
     let (approval_id_2, reject_url_2) = match &outcome2 {
@@ -305,11 +308,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             reject_url,
             ..
         } => {
-            println!("  Outcome: PENDING APPROVAL (id={approval_id})");
+            info!("  Outcome: PENDING APPROVAL (id={approval_id})");
             (approval_id.clone(), reject_url.clone())
         }
         other => {
-            eprintln!("  ERROR: Expected PendingApproval, got: {other:?}");
+            warn!("  ERROR: Expected PendingApproval, got: {other:?}");
             return Err("unexpected outcome".into());
         }
     };
@@ -321,8 +324,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("expires_at should be an integer");
     let reject_kid = parse_query_param(&reject_url_2, "kid");
 
-    println!("  Simulating human clicking 'Reject'...");
-    println!("  POST /v1/approvals/billing/tenant-1/{approval_id_2}/reject");
+    info!("  Simulating human clicking 'Reject'...");
+    info!("  POST /v1/approvals/billing/tenant-1/{approval_id_2}/reject");
     match client
         .reject_with_kid(
             "billing",
@@ -335,11 +338,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
     {
         Ok(result) => {
-            println!("  Result: status={}", result.status);
-            println!("  The $9,999 refund was NOT executed.");
+            info!("  Result: status={}", result.status);
+            info!("  The $9,999 refund was NOT executed.");
         }
         Err(e) => {
-            eprintln!("  ERROR: {e}");
+            warn!("  ERROR: {e}");
             return Err(e.into());
         }
     }
@@ -347,9 +350,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Done
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SIMULATION COMPLETE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SIMULATION COMPLETE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     Ok(())
 }

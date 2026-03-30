@@ -1,5 +1,6 @@
 use acteon_ops::OpsClient;
 use clap::{Args, Subcommand};
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -25,20 +26,22 @@ pub async fn run(
             let resp = ops.list_provider_health().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} providers:", resp.providers.len());
+                    info!(count = resp.providers.len(), "Providers");
                     for p in &resp.providers {
                         let health = if p.healthy { "OK " } else { "ERR" };
                         let cb = p.circuit_breaker_state.as_deref().unwrap_or("-");
-                        println!(
-                            "  [{health}] {provider} | reqs: {total} | success: {rate:.1}% | p50: {p50:.1}ms | p99: {p99:.1}ms | cb: {cb}",
-                            provider = p.provider,
-                            total = p.total_requests,
-                            rate = p.success_rate,
-                            p50 = p.p50_latency_ms,
-                            p99 = p.p99_latency_ms,
+                        info!(
+                            health = %health,
+                            provider = %p.provider,
+                            total_requests = p.total_requests,
+                            success_rate = p.success_rate,
+                            p50_latency_ms = p.p50_latency_ms,
+                            p99_latency_ms = p.p99_latency_ms,
+                            circuit_breaker = %cb,
+                            "Provider"
                         );
                     }
                 }

@@ -12,6 +12,7 @@
 
 use acteon_core::{Action, ActionOutcome, StreamEvent, StreamEventType};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 const SUPPRESSION_RULE: &str = r#"
 rules:
@@ -27,19 +28,21 @@ rules:
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║          SSE EVENT STREAM SIMULATION DEMO                   ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║          SSE EVENT STREAM SIMULATION DEMO                   ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Basic Event Streaming
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: BASIC EVENT STREAMING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: BASIC EVENT STREAMING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Subscribe to the gateway event stream and dispatch actions.");
-    println!("  Each dispatch emits a StreamEvent with full metadata.\n");
+    info!("  Subscribe to the gateway event stream and dispatch actions.");
+    info!("  Each dispatch emits a StreamEvent with full metadata.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -51,8 +54,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  Started simulation cluster with 1 node");
-    println!("  Registered providers: email, slack, webhook\n");
+    info!("  Started simulation cluster with 1 node");
+    info!("  Registered providers: email, slack, webhook\n");
 
     // Subscribe to the event stream via the gateway broadcast channel.
     let gateway = harness.node(0).unwrap().gateway();
@@ -93,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     for (i, action) in actions.iter().enumerate() {
-        println!(
+        info!(
             "  -> Dispatching action {} [{}/{}] (provider={}, type={})",
             &action.id.to_string()[..8],
             i + 1,
@@ -102,11 +105,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             action.action_type,
         );
         let outcome = harness.dispatch(action).await?;
-        println!("     Outcome: {}", outcome_summary(&outcome));
+        info!("     Outcome: {}", outcome_summary(&outcome));
     }
 
     // Read all events from the stream.
-    println!("\n  Events received on stream:");
+    info!("\n  Events received on stream:");
     let mut event_count = 0;
     while let Ok(event) = stream_rx.try_recv() {
         event_count += 1;
@@ -114,20 +117,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     assert_eq!(event_count, 3, "expected 3 stream events");
-    println!("\n  Total events received: {event_count}");
+    info!("\n  Total events received: {event_count}");
 
     harness.teardown().await?;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Suppressed Actions Still Emit Events
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: SUPPRESSED ACTIONS EMIT EVENTS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: SUPPRESSED ACTIONS EMIT EVENTS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Even suppressed actions produce stream events, so monitoring");
-    println!("  dashboards can track rule enforcement in real time.\n");
+    info!("  Even suppressed actions produce stream events, so monitoring");
+    info!("  dashboards can track rule enforcement in real time.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -157,15 +160,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({"subject": "Your order shipped"}),
     );
 
-    println!("  -> Dispatching SPAM action (should be suppressed)...");
+    info!("  -> Dispatching SPAM action (should be suppressed)...");
     let outcome = harness.dispatch(&spam).await?;
-    println!("     Outcome: {}", outcome_summary(&outcome));
+    info!("     Outcome: {}", outcome_summary(&outcome));
 
-    println!("  -> Dispatching LEGITIMATE action...");
+    info!("  -> Dispatching LEGITIMATE action...");
     let outcome = harness.dispatch(&legit).await?;
-    println!("     Outcome: {}", outcome_summary(&outcome));
+    info!("     Outcome: {}", outcome_summary(&outcome));
 
-    println!("\n  Events received on stream:");
+    info!("\n  Events received on stream:");
     let mut event_count = 0;
     while let Ok(event) = stream_rx.try_recv() {
         event_count += 1;
@@ -176,25 +179,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_count, 2,
         "both dispatches should emit events (even suppressed)"
     );
-    println!("\n  Both actions emitted events -- suppression is visible on the stream");
-    println!(
+    info!("\n  Both actions emitted events -- suppression is visible on the stream");
+    info!(
         "  Provider calls: {} (only the legit action reached the provider)",
         harness.provider("email").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // SCENARIO 3: Namespace and Action-Type Filtering
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: CLIENT-SIDE FILTERING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: CLIENT-SIDE FILTERING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Clients can filter events by namespace, tenant, and action type.");
-    println!("  This scenario dispatches actions across multiple namespaces and");
-    println!("  then filters the stream to show only matching events.\n");
+    info!("  Clients can filter events by namespace, tenant, and action type.");
+    info!("  This scenario dispatches actions across multiple namespaces and");
+    info!("  then filters the stream to show only matching events.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -247,7 +250,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
 
-    println!(
+    info!(
         "  -> Dispatching {} actions across billing/alerts/notifications",
         mixed_actions.len()
     );
@@ -261,19 +264,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         all_events.push(event);
     }
 
-    println!("  Total events: {}\n", all_events.len());
+    info!("  Total events: {}\n", all_events.len());
 
     // Filter: only billing namespace.
     let billing_events: Vec<_> = all_events
         .iter()
         .filter(|e| e.namespace == "billing")
         .collect();
-    println!(
+    info!(
         "  Filter: namespace=billing -> {} events",
         billing_events.len()
     );
     for event in &billing_events {
-        println!(
+        info!(
             "    [{:>12}] ns={:<16} type={}",
             event_type_label(&event.event_type),
             event.namespace,
@@ -287,12 +290,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter(|e| e.namespace == "alerts" && e.action_type.as_deref() == Some("post_alert"))
         .collect();
-    println!(
+    info!(
         "\n  Filter: namespace=alerts, action_type=post_alert -> {} events",
         alert_events.len()
     );
     for event in &alert_events {
-        println!(
+        info!(
             "    [{:>12}] ns={:<16} type={}",
             event_type_label(&event.event_type),
             event.namespace,
@@ -302,14 +305,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(alert_events.len(), 2);
 
     harness.teardown().await?;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              ALL SCENARIOS PASSED                           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              ALL SCENARIOS PASSED                           ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }
@@ -317,7 +320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Print a single stream event in a formatted line.
 fn print_event(index: usize, event: &StreamEvent) {
     let type_label = event_type_label(&event.event_type);
-    println!(
+    info!(
         "    #{index}: [{type_label:>12}] ns={:<16} tenant={:<12} action_type={:<16} id={}",
         event.namespace,
         event.tenant,

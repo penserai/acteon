@@ -128,7 +128,7 @@ macro_rules! skip_without_redis {
     () => {
         let backends = $crate::AvailableBackends::from_env();
         if !backends.has_redis() {
-            eprintln!("Skipping test: Redis not available");
+            tracing::warn!("Skipping test: Redis not available");
             return;
         }
     };
@@ -140,7 +140,7 @@ macro_rules! skip_without_postgres {
     () => {
         let backends = $crate::AvailableBackends::from_env();
         if !backends.has_postgres() {
-            eprintln!("Skipping test: PostgreSQL not available");
+            tracing::warn!("Skipping test: PostgreSQL not available");
             return;
         }
     };
