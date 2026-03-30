@@ -74,9 +74,14 @@ pub async fn spawn_agent(
     ];
 
     let child = match engine {
-        crate::config::AgentEngine::Claude => {
-            spawn_claude_agent(config, subtask, system_prompt, allowed_tools, workspace, &swarm_env)?
-        }
+        crate::config::AgentEngine::Claude => spawn_claude_agent(
+            config,
+            subtask,
+            system_prompt,
+            allowed_tools,
+            workspace,
+            &swarm_env,
+        )?,
         crate::config::AgentEngine::Gemini => {
             spawn_gemini_agent(subtask, system_prompt, workspace, &swarm_env)?
         }
@@ -299,12 +304,12 @@ async fn setup_claude_hooks(
     agent_id: &str,
 ) -> Result<(), SwarmError> {
     let claude_dir = workspace.join(".claude");
-    tokio::fs::create_dir_all(&claude_dir).await.map_err(|e| {
-        SwarmError::WorkspaceSetup {
+    tokio::fs::create_dir_all(&claude_dir)
+        .await
+        .map_err(|e| SwarmError::WorkspaceSetup {
             path: claude_dir.clone(),
             reason: format!("failed to create .claude directory: {e}"),
-        }
-    })?;
+        })?;
 
     let settings = serde_json::json!({
         "hooks": {
@@ -357,12 +362,12 @@ async fn setup_gemini_hooks(
     agent_id: &str,
 ) -> Result<(), SwarmError> {
     let gemini_dir = workspace.join(".gemini");
-    tokio::fs::create_dir_all(&gemini_dir).await.map_err(|e| {
-        SwarmError::WorkspaceSetup {
+    tokio::fs::create_dir_all(&gemini_dir)
+        .await
+        .map_err(|e| SwarmError::WorkspaceSetup {
             path: gemini_dir.clone(),
             reason: format!("failed to create .gemini directory: {e}"),
-        }
-    })?;
+        })?;
 
     let settings = serde_json::json!({
         "hooks": {
