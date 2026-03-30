@@ -204,7 +204,8 @@ Output ONLY JSON lines, one per issue. If no issues are found, output a single l
         objective = plan.objective,
     );
 
-    let raw_output = invoke_engine(engine, &prompt, adv.challenge_timeout_seconds).await?;
+    let raw_output =
+        invoke_engine(engine, &prompt, adv.challenge_timeout_seconds, "challenge").await?;
     Ok(parse_challenges(&raw_output, round))
 }
 
@@ -274,7 +275,7 @@ Be thorough but concise.",
         objective = plan.objective,
     );
 
-    invoke_engine(engine, &prompt, adv.recovery_timeout_seconds).await
+    invoke_engine(engine, &prompt, adv.recovery_timeout_seconds, "recovery").await
 }
 
 /// Invoke an AI engine with a prompt and return the raw text output.
@@ -282,6 +283,7 @@ async fn invoke_engine(
     engine: AgentEngine,
     prompt: &str,
     timeout_seconds: u64,
+    phase: &str,
 ) -> Result<String, SwarmError> {
     let cmd_name = match engine {
         AgentEngine::Claude => "claude",
@@ -306,21 +308,27 @@ async fn invoke_engine(
     )
     .await;
 
+    let make_err = |msg: String| -> SwarmError {
+        if phase == "recovery" {
+            SwarmError::AdversarialRecovery(msg)
+        } else {
+            SwarmError::AdversarialChallenge(msg)
+        }
+    };
+
     match result {
         Ok(Ok(output)) if output.status.success() => {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         }
         Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(SwarmError::AdversarialChallenge(format!(
+            Err(make_err(format!(
                 "{cmd_name} exited with status {}: {stderr}",
                 output.status
             )))
         }
-        Ok(Err(e)) => Err(SwarmError::AdversarialChallenge(format!(
-            "failed to spawn {cmd_name}: {e}"
-        ))),
-        Err(_) => Err(SwarmError::AdversarialChallenge(format!(
+        Ok(Err(e)) => Err(make_err(format!("failed to spawn {cmd_name}: {e}"))),
+        Err(_) => Err(make_err(format!(
             "{cmd_name} timed out after {timeout_seconds}s"
         ))),
     }
