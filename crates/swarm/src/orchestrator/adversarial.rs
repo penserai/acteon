@@ -245,7 +245,7 @@ async fn run_recovery_phase(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let truncated_output: String = primary_output.chars().take(6000).collect();
+    let truncated_output: String = primary_output.chars().take(3000).collect();
 
     let prompt = format!(
         r"You are a recovery agent for a multi-agent swarm (round {round}). The adversarial review found issues that need to be addressed.
@@ -295,7 +295,8 @@ async fn invoke_engine(
 
     match engine {
         AgentEngine::Claude => {
-            cmd.arg("--model").arg("sonnet");
+            // Use haiku for adversarial phases (faster for analysis prompts).
+            cmd.arg("--model").arg("haiku");
         }
         AgentEngine::Gemini => {
             cmd.arg("--yolo");
