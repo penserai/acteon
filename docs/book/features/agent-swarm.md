@@ -18,12 +18,13 @@ The `acteon-swarm` crate provides a generic multi-agent swarm system that decomp
 
 ### Example Runs
 
-| Use Case | Agents | Duration | Output |
-|----------|--------|----------|--------|
-| [News Harvesting](https://github.com/penserai/acteon/tree/main/examples/swarm-news-harvesting) | 9/9 | ~28 min | 16KB briefing on EU AI regulation |
-| [Stock Analysis](https://github.com/penserai/acteon/tree/main/examples/swarm-stock-analysis) | 12 | ~20 min | Per-company earnings analyses |
-| [Security Audit](https://github.com/penserai/acteon/tree/main/examples/swarm-pentest) | 28 | ~25 min | Vulnerability reports for Acteon itself |
-| [Framework Research](https://github.com/penserai/acteon/tree/main/examples/swarm-deep-research) | 16 | ~20 min | 7 open source agent framework analyses |
+| Use Case | Engine | Agents | Duration | Output |
+|----------|--------|--------|----------|--------|
+| [News Harvesting](https://github.com/penserai/acteon/tree/main/examples/swarm-news-harvesting) | Claude | 9/9 | ~28 min | 16KB briefing on EU AI regulation |
+| [Stock Analysis](https://github.com/penserai/acteon/tree/main/examples/swarm-stock-analysis) | Claude | 12 | ~20 min | Per-company earnings analyses |
+| [Security Audit](https://github.com/penserai/acteon/tree/main/examples/swarm-pentest) | Claude | 28 | ~25 min | Vulnerability reports for Acteon itself |
+| [Framework Research](https://github.com/penserai/acteon/tree/main/examples/swarm-deep-research) | Claude | 16 | ~20 min | 7 agent framework analyses |
+| [LLM Survey](https://github.com/penserai/acteon/tree/main/examples/swarm-gemini-llm-survey) | **Gemini** | 8/8 | ~7 min | 7 open source LLM analyses |
 
 ## How It Works
 
@@ -59,8 +60,8 @@ sequenceDiagram
 2. `acteon-swarm` gathers a structured plan via interactive Q&A with Claude
 3. The plan is decomposed into tasks with dependencies, each assigned to a specialist role
 4. Acteon receives safety rules and a per-run quota
-5. Agents are spawned as Claude Code sessions via the Agent SDK
-6. Every agent tool call flows through an Acteon `PreToolUse` hook for policy enforcement
+5. Agents are spawned via the configured engine (Claude Code or Gemini CLI)
+6. Every agent tool call flows through an Acteon hook for policy enforcement
 7. Agents store findings in TesseraiDB; other agents can search before acting
 8. After each subtask, a refiner evaluates results and may adjust the remaining plan
 9. When all tasks complete, a summary report is produced
@@ -70,16 +71,30 @@ sequenceDiagram
 ```
 acteon-swarm CLI
   │
-  ├── plan gather     (Claude Agent SDK → SwarmPlan JSON)
+  ├── plan gather     (claude -p / gemini -p → SwarmPlan JSON)
   ├── plan approve    (user reviews and approves)
   └── run             (execute approved plan)
         │
         ├── Acteon Server ── rules, audit, quotas, chains
         ├── TesseraiDB ──── twins, semantic memory, lineage
         │
-        ├── Agent 1 (claude session) ── PreToolUse hooks → Acteon
-        ├── Agent 2 (claude session) ── PostToolUse hooks → TesseraiDB
+        ├── Agent 1 (claude/gemini session) ── hooks → Acteon
+        ├── Agent 2 (claude/gemini session) ── hooks → TesseraiDB
         └── Agent N ...
+```
+
+### Supported Engines
+
+| Engine | CLI | Plan Gather | Agent Execution | Refiner |
+|--------|-----|------------|-----------------|---------|
+| **Claude** (default) | `claude -p` | `--json-schema` structured output | `--model sonnet` | `--model haiku` |
+| **Gemini** | `gemini -p` | markdown JSON extraction | `--yolo` auto-approval | `--model flash` |
+
+Switch engines via the `engine` field in `swarm.toml`:
+
+```toml
+[defaults]
+engine = "gemini"   # or "claude" (default)
 ```
 
 ### Components
@@ -87,8 +102,7 @@ acteon-swarm CLI
 | Component | Purpose |
 |-----------|---------|
 | `acteon-swarm` binary | CLI orchestrator: plan gathering, execution loop, monitoring |
-| `acteon-swarm-hook` binary | Lightweight hook handler for `PreToolUse`/`PostToolUse`/Stop |
-| `agent-bridge.mjs` | Node.js bridge wrapping `@anthropic-ai/claude-agent-sdk` |
+| `acteon-swarm-hook` binary | Lightweight hook handler for tool gating (both engines) |
 | Acteon server | Safety rules, cross-agent dedup, throttling, approval gates, audit |
 | TesseraiDB server | Knowledge graph (twins), semantic memory (findings), lineage |
 
@@ -97,8 +111,9 @@ acteon-swarm CLI
 ### Prerequisites
 
 - **Rust 1.88+** — builds the `acteon-swarm` and `acteon-swarm-hook` binaries
-- **Node.js 20+** — runs the Agent SDK bridge
-- **Claude Code** — installed and authenticated (`claude` CLI in PATH)
+- **Claude Code** or **Gemini CLI** — at least one must be installed and authenticated:
+  - Claude: `claude` CLI in PATH ([install](https://docs.anthropic.com/en/docs/claude-code))
+  - Gemini: `gemini` CLI in PATH ([install](https://github.com/google-gemini/gemini-cli))
 - **Acteon server** — running instance (see [Getting Started](../getting-started/quickstart.md))
 - **TesseraiDB server** — running instance
 
@@ -107,9 +122,6 @@ acteon-swarm CLI
 ```bash
 # Build the swarm binaries
 cargo build -p acteon-swarm --release
-
-# Install the Agent SDK bridge
-cd crates/swarm/bridge && npm install && cd -
 
 # Verify
 ./target/release/acteon-swarm --help
@@ -120,25 +132,60 @@ cd crates/swarm/bridge && npm install && cd -
 
 Create a `swarm.toml` in your working directory:
 
-```toml title="swarm.toml"
-[acteon]
-endpoint = "http://localhost:8080"
-namespace = "swarm"
+=== "Claude Engine (default)"
 
-[tesserai]
-endpoint = "http://localhost:8081"
-tenant_id = "swarm-default"
+    ```toml title="swarm.toml"
+    [acteon]
+    endpoint = "http://localhost:8080"
+    namespace = "swarm"
 
-[defaults]
-max_agents = 5
-max_duration_minutes = 60
-subtask_timeout_seconds = 300
-quota_max_actions = 500
+    [tesserai]
+    endpoint = "http://localhost:8081"
+    tenant_id = "swarm-default"
 
-[safety]
-require_plan_approval = true
-blocked_commands = ["sudo.*", "docker.*--privileged"]
-```
+    [defaults]
+    engine = "claude"          # Uses claude -p --model sonnet
+    max_agents = 8
+    max_duration_minutes = 60
+    subtask_timeout_seconds = 900
+    enable_refiner = true      # AI refiner uses haiku
+
+    [safety]
+    require_plan_approval = true
+    ```
+
+=== "Gemini Engine"
+
+    ```toml title="swarm.toml"
+    [acteon]
+    endpoint = "http://localhost:8080"
+    namespace = "swarm"
+
+    [tesserai]
+    endpoint = "http://localhost:8081"
+    tenant_id = "swarm-default"
+
+    [defaults]
+    engine = "gemini"          # Uses gemini -p --yolo
+    max_agents = 8
+    max_duration_minutes = 60
+    subtask_timeout_seconds = 900
+    enable_refiner = true      # AI refiner uses flash
+
+    [safety]
+    require_plan_approval = true
+    ```
+
+### Engine Comparison
+
+| | Claude | Gemini |
+|-|--------|--------|
+| **Speed** | ~2-5 min/subtask | ~1-2 min/subtask |
+| **Detail** | Deep analysis, structured tables | Concise summaries |
+| **File writing** | Native | Requires `--yolo` flag |
+| **Web research** | WebSearch/WebFetch tools | google_web_search/web_fetch |
+| **Cost** | Claude Code subscription | Free (Gemini CLI) |
+| **Refiner model** | Haiku (fast, cheap) | Flash (fast, free) |
 
 ## Agent Roles
 
@@ -241,11 +288,16 @@ acteon-swarm plan approve --plan plan.json
 ### Execution
 
 ```bash
-# Execute an approved plan
+# Execute an approved plan (uses engine from swarm.toml)
 acteon-swarm run --plan plan.json
 
 # Gather and run in one step (skip approval)
 acteon-swarm run --prompt "Analyze this codebase" --auto-approve
+
+# Run with Gemini engine (set in swarm.toml)
+# [defaults]
+# engine = "gemini"
+acteon-swarm run --prompt "Survey open source LLMs" --auto-approve
 
 # Monitor a running swarm
 acteon-swarm status --run <run-id>
