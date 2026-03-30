@@ -98,13 +98,23 @@ Respond with ONLY the action line. No explanation.",
         remaining = remaining_desc.join("\n"),
     );
 
+    let engine = config.defaults.engine;
+    let cmd_name = match engine {
+        crate::config::AgentEngine::Claude => "claude",
+        crate::config::AgentEngine::Gemini => "gemini",
+    };
+
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        tokio::process::Command::new("claude")
+        tokio::process::Command::new(cmd_name)
             .arg("-p")
             .arg(&prompt)
             .arg("--model")
-            .arg("haiku")
+            .arg(if matches!(engine, crate::config::AgentEngine::Claude) {
+                "haiku"
+            } else {
+                "flash"
+            })
             .arg("--output-format")
             .arg("text")
             .stdout(Stdio::piped())

@@ -14,7 +14,7 @@ use acteon_swarm::types::plan::SwarmPlan;
 #[command(
     name = "acteon-swarm",
     version,
-    about = "Orchestrate multi-agent swarms via Acteon + TesseraiDB + Claude Agent SDK"
+    about = "Orchestrate multi-agent swarms via Acteon + TesseraiDB + AI Agents"
 )]
 struct Cli {
     /// Path to swarm configuration file.
@@ -42,7 +42,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum PlanAction {
-    /// Gather a new plan via interactive Q&A with Claude.
+    /// Gather a new plan via interactive Q&A with the AI engine.
     Gather {
         /// The high-level objective or prompt.
         #[arg(short, long)]
@@ -140,10 +140,11 @@ fn load_config(path: &std::path::Path) -> Result<SwarmConfig> {
 }
 
 async fn cmd_plan_gather(config: &SwarmConfig, prompt: &str, output: &PathBuf) -> Result<()> {
-    println!("Gathering plan from Claude...\n");
+    let engine = config.defaults.engine;
+    println!("Gathering plan from {engine:?}...\n");
     let plan = gather_plan(config, prompt).await?;
 
-    let roles = RoleRegistry::with_config(&config.roles);
+    let roles = RoleRegistry::with_config(engine, &config.roles);
     let warnings = validate_plan(&plan, &roles.names())?;
 
     for w in &warnings {
@@ -239,7 +240,7 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
         anyhow::bail!("plan is not approved. Run: acteon-swarm plan approve");
     }
 
-    let roles = RoleRegistry::with_config(&config.roles);
+    let roles = RoleRegistry::with_config(config.defaults.engine, &config.roles);
     validate_plan(&plan, &roles.names())?;
 
     // Find the hook binary (should be next to this binary).

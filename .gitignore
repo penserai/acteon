@@ -41,3 +41,4 @@ test-results/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 .DS_Store
+examples/agent-swarm-coordination/swarm/workspaces/

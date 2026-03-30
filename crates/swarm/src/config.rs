@@ -74,6 +74,9 @@ impl Default for TesseraiConnectionConfig {
 /// Default execution parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmDefaults {
+    /// The AI engine to use for agents.
+    #[serde(default)]
+    pub engine: AgentEngine,
     /// Maximum concurrent agents.
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
@@ -97,9 +100,19 @@ pub struct SwarmDefaults {
     pub enable_refiner: bool,
 }
 
+/// Supported AI engines for swarm agents.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentEngine {
+    #[default]
+    Claude,
+    Gemini,
+}
+
 impl Default for SwarmDefaults {
     fn default() -> Self {
         Self {
+            engine: AgentEngine::default(),
             max_agents: default_max_agents(),
             max_duration_minutes: default_max_duration(),
             subtask_timeout_seconds: default_subtask_timeout(),

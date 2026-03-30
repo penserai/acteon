@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::config::AgentRoleConfig;
+use crate::config::{AgentEngine, AgentRoleConfig};
 use crate::types::agent::AgentRole;
 
 use super::builtins::builtin_roles;
@@ -12,18 +12,18 @@ pub struct RoleRegistry {
 }
 
 impl RoleRegistry {
-    /// Create a registry with only the built-in roles.
-    pub fn with_builtins() -> Self {
+    /// Create a registry with only the built-in roles for the given engine.
+    pub fn with_builtins(engine: AgentEngine) -> Self {
         let mut roles = HashMap::new();
-        for role in builtin_roles() {
+        for role in builtin_roles(engine) {
             roles.insert(role.name.clone(), role);
         }
         Self { roles }
     }
 
     /// Create a registry with built-in roles + custom overrides from config.
-    pub fn with_config(custom_roles: &[AgentRoleConfig]) -> Self {
-        let mut registry = Self::with_builtins();
+    pub fn with_config(engine: AgentEngine, custom_roles: &[AgentRoleConfig]) -> Self {
+        let mut registry = Self::with_builtins(engine);
 
         for cfg in custom_roles {
             let role = AgentRole {
@@ -62,19 +62,13 @@ impl RoleRegistry {
     }
 }
 
-impl Default for RoleRegistry {
-    fn default() -> Self {
-        Self::with_builtins()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_builtins_registered() {
-        let registry = RoleRegistry::with_builtins();
+        let registry = RoleRegistry::with_builtins(AgentEngine::Claude);
         assert!(registry.contains("coder"));
         assert!(registry.contains("planner"));
         assert!(registry.contains("researcher"));
@@ -93,7 +87,7 @@ mod tests {
             can_delegate_to: vec![],
             max_concurrent: 1,
         }];
-        let registry = RoleRegistry::with_config(&custom);
+        let registry = RoleRegistry::with_config(AgentEngine::Claude, &custom);
         let coder = registry.get("coder").unwrap();
         assert_eq!(coder.description, "Custom coder");
         assert_eq!(coder.allowed_tools, vec!["Read"]);
@@ -109,7 +103,7 @@ mod tests {
             can_delegate_to: vec![],
             max_concurrent: 1,
         }];
-        let registry = RoleRegistry::with_config(&custom);
+        let registry = RoleRegistry::with_config(AgentEngine::Claude, &custom);
         assert!(registry.contains("db-admin"));
         assert_eq!(registry.names().len(), 6); // 5 built-in + 1 custom
     }
