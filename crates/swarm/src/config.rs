@@ -24,6 +24,9 @@ pub struct SwarmConfig {
     /// Adversarial swarm configuration.
     #[serde(default)]
     pub adversarial: AdversarialConfig,
+    /// Eval harness configuration (fitness-driven verification).
+    #[serde(default)]
+    pub eval_harness: EvalHarnessConfig,
 }
 
 /// Connection settings for the Acteon gateway.
@@ -103,6 +106,17 @@ pub struct SwarmDefaults {
     pub enable_refiner: bool,
 }
 
+/// Recovery mode for the adversarial loop.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecoveryMode {
+    /// Text-only analysis — agents describe fixes but don't edit code.
+    Analyze,
+    /// Code-writing agents — spawn real agents that edit files to fix challenges.
+    #[default]
+    Fix,
+}
+
 /// Supported AI engines for swarm agents.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -160,6 +174,12 @@ pub struct AdversarialConfig {
     /// Custom adversarial role definitions.
     #[serde(default)]
     pub roles: Vec<AgentRoleConfig>,
+    /// Recovery mode: `analyze` (text-only) or `fix` (spawn code-writing agents).
+    #[serde(default)]
+    pub recovery_mode: RecoveryMode,
+    /// Maximum number of challenges to fix per round (highest severity first).
+    #[serde(default = "default_max_recovery_agents")]
+    pub max_recovery_agents: usize,
 }
 
 impl Default for AdversarialConfig {
@@ -173,6 +193,8 @@ impl Default for AdversarialConfig {
             recovery_timeout_seconds: default_recovery_timeout(),
             severity_threshold: default_severity_threshold(),
             roles: Vec::new(),
+            recovery_mode: RecoveryMode::default(),
+            max_recovery_agents: default_max_recovery_agents(),
         }
     }
 }
@@ -182,6 +204,40 @@ impl AdversarialConfig {
     /// primary engine if none is explicitly configured.
     pub fn effective_engine(&self, primary: AgentEngine) -> AgentEngine {
         self.engine.unwrap_or(primary)
+    }
+}
+
+/// Eval harness configuration — fitness-driven verification inspired by
+/// Karpathy's autoresearch pattern.
+///
+/// When enabled, a deterministic eval command runs after the primary swarm
+/// and after each adversarial recovery round. The output is parsed for score
+/// signals (`SCORE:`, `PASS:`, `WARNINGS:`). The adversarial loop uses score
+/// changes to gate continuation and keep/discard recovery changes via git.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalHarnessConfig {
+    /// Enable the eval harness.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Shell command to run (e.g., `"cargo test && cargo clippy"`).
+    #[serde(default)]
+    pub command: String,
+    /// Timeout for the eval command in seconds.
+    #[serde(default = "default_eval_timeout")]
+    pub timeout_seconds: u64,
+    /// Minimum score (0.0–1.0) to consider a pass.
+    #[serde(default = "default_pass_threshold")]
+    pub pass_threshold: f64,
+}
+
+impl Default for EvalHarnessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            command: String::new(),
+            timeout_seconds: default_eval_timeout(),
+            pass_threshold: default_pass_threshold(),
+        }
     }
 }
 
@@ -247,6 +303,7 @@ impl SwarmConfig {
             safety: SafetyConfig::default(),
             roles: Vec::new(),
             adversarial: AdversarialConfig::default(),
+            eval_harness: EvalHarnessConfig::default(),
         }
     }
 }
@@ -303,6 +360,15 @@ fn default_recovery_timeout() -> u64 {
 }
 fn default_severity_threshold() -> f64 {
     0.5
+}
+fn default_max_recovery_agents() -> usize {
+    5
+}
+fn default_eval_timeout() -> u64 {
+    300
+}
+fn default_pass_threshold() -> f64 {
+    0.7
 }
 
 #[cfg(test)]
@@ -392,5 +458,30 @@ severity_threshold = 0.7
             config.effective_engine(AgentEngine::Claude),
             AgentEngine::Gemini
         );
+    }
+
+    #[test]
+    fn test_eval_harness_config_from_toml() {
+        let toml_str = r#"
+[eval_harness]
+enabled = true
+command = "cargo test && cargo clippy"
+timeout_seconds = 120
+pass_threshold = 0.8
+"#;
+        let config: SwarmConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.eval_harness.enabled);
+        assert_eq!(config.eval_harness.command, "cargo test && cargo clippy");
+        assert_eq!(config.eval_harness.timeout_seconds, 120);
+        assert!((config.eval_harness.pass_threshold - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_eval_harness_defaults() {
+        let config = SwarmConfig::minimal();
+        assert!(!config.eval_harness.enabled);
+        assert!(config.eval_harness.command.is_empty());
+        assert_eq!(config.eval_harness.timeout_seconds, 300);
+        assert!((config.eval_harness.pass_threshold - 0.7).abs() < f64::EPSILON);
     }
 }

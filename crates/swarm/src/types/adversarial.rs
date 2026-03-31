@@ -86,6 +86,12 @@ pub struct AdversarialRound {
     pub challenge_started_at: DateTime<Utc>,
     /// When the recovery phase completed.
     pub recovery_finished_at: Option<DateTime<Utc>>,
+    /// Eval score before recovery (if eval harness enabled).
+    #[serde(default)]
+    pub pre_eval_score: Option<f64>,
+    /// Eval score after recovery (if eval harness enabled).
+    #[serde(default)]
+    pub post_eval_score: Option<f64>,
 }
 
 impl AdversarialRound {
@@ -190,6 +196,8 @@ mod tests {
             resolved_count: 3,
             challenge_started_at: Utc::now(),
             recovery_finished_at: Some(Utc::now()),
+            pre_eval_score: None,
+            post_eval_score: None,
         };
         assert!(round.fully_resolved());
 
@@ -234,6 +242,8 @@ mod tests {
             resolved_count: 1,
             challenge_started_at: Utc::now(),
             recovery_finished_at: Some(Utc::now()),
+            pre_eval_score: None,
+            post_eval_score: None,
         };
 
         // Threshold 0.5: challenge_b (0.5 >= 0.5) is unresolved.

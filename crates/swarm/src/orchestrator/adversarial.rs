@@ -1,30 +1,48 @@
+use std::path::Path;
 use std::process::Stdio;
 
 use chrono::Utc;
+use uuid::Uuid;
 
-use crate::config::{AdversarialConfig, AgentEngine, SwarmConfig};
+use crate::config::{AgentEngine, EvalHarnessConfig, RecoveryMode, SwarmConfig};
 use crate::error::SwarmError;
+use crate::orchestrator::agent_spawner::{spawn_agent, wait_for_agent};
+use crate::orchestrator::eval;
+use crate::orchestrator::eval_gen;
 use crate::types::adversarial::{
     AdversarialChallenge, AdversarialResult, AdversarialRound, ChallengeSeverity,
 };
-use crate::types::plan::SwarmPlan;
+use crate::types::agent::{AgentSession, AgentSessionStatus};
+use crate::types::plan::{SwarmPlan, SwarmSubtask};
 use crate::types::run::SwarmRun;
+
+/// Bundled context for the adversarial loop to avoid wide function signatures.
+pub struct AdversarialContext<'a> {
+    pub config: &'a SwarmConfig,
+    pub plan: &'a SwarmPlan,
+    pub working_dir: &'a Path,
+    pub hooks_binary: &'a Path,
+    pub program_md: &'a str,
+    pub eval_config: Option<&'a EvalHarnessConfig>,
+    pub baseline_score: Option<f64>,
+}
 
 /// Run the adversarial challenge-recovery loop.
 ///
 /// Each round:
 /// 1. **Challenge phase** — adversarial agents critique the primary swarm's output.
 /// 2. **Filter** — only challenges above `severity_threshold` trigger recovery.
-/// 3. **Recovery phase** — the primary engine's agents address actionable challenges.
-/// 4. **Check** — if all challenges are resolved (or below threshold), stop early.
+/// 3. **Recovery phase** — agents address challenges (text analysis or code-writing).
+/// 4. **Eval** — if eval harness is enabled, measure score and revert on regression.
+/// 5. **Check** — if all challenges are resolved (or below threshold), stop early.
+#[allow(clippy::too_many_lines)]
 pub async fn run_adversarial_loop(
-    config: &SwarmConfig,
-    plan: &SwarmPlan,
+    ctx: &AdversarialContext<'_>,
     run: &mut SwarmRun,
     primary_output_summary: &str,
 ) -> Result<AdversarialResult, SwarmError> {
-    let adv = &config.adversarial;
-    let primary_engine = config.defaults.engine;
+    let adv = &ctx.config.adversarial;
+    let primary_engine = ctx.config.defaults.engine;
     let adversarial_engine = adv.effective_engine(primary_engine);
 
     tracing::info!(
@@ -32,24 +50,108 @@ pub async fn run_adversarial_loop(
         adversarial = ?adversarial_engine,
         max_rounds = adv.max_rounds,
         threshold = adv.severity_threshold,
+        recovery_mode = ?adv.recovery_mode,
+        baseline_score = ?ctx.baseline_score,
         "starting adversarial loop"
     );
 
     run.status = crate::types::run::SwarmRunStatus::Adversarial;
     let mut rounds = Vec::new();
     let mut cumulative_context = primary_output_summary.to_string();
+    let mut current_score = ctx.baseline_score;
 
     for round_num in 1..=adv.max_rounds {
-        let round_result = execute_adversarial_round(
-            adv,
+        // Git snapshot before recovery (so we can revert if score regresses).
+        let snapshot = if ctx.eval_config.is_some() {
+            eval::git_snapshot(ctx.working_dir).await
+        } else {
+            String::new()
+        };
+
+        let mut round_result = execute_adversarial_round(
+            ctx,
             primary_engine,
             adversarial_engine,
-            plan,
             run,
             &mut cumulative_context,
             round_num,
         )
         .await?;
+
+        // Generate challenge-specific eval script from this round's challenges.
+        if ctx.eval_config.is_some()
+            && let Ok(script) = eval_gen::generate_eval_script(
+                ctx.config,
+                &round_result.challenges,
+                ctx.working_dir,
+                adv.severity_threshold,
+            )
+            .await
+        {
+            let script_path = ctx.working_dir.join("eval-harness.sh");
+            if let Err(e) = tokio::fs::write(&script_path, &script).await {
+                tracing::warn!("failed to write eval script: {e}");
+            } else {
+                tracing::info!(
+                    assertions = round_result.challenges.len(),
+                    "generated challenge-specific eval script"
+                );
+            }
+        }
+
+        // Eval gating: run eval after recovery, compare to previous score.
+        // Use the generated eval script if available, fall back to static config.
+        if let Some(eval_cfg) = ctx.eval_config {
+            round_result.pre_eval_score = current_score;
+
+            let generated_script = ctx.working_dir.join("eval-harness.sh");
+            let effective_eval = if generated_script.exists() {
+                EvalHarnessConfig {
+                    enabled: true,
+                    command: format!("sh {}", generated_script.display()),
+                    timeout_seconds: eval_cfg.timeout_seconds,
+                    pass_threshold: eval_cfg.pass_threshold,
+                }
+            } else {
+                eval_cfg.clone()
+            };
+
+            match eval::run_eval_harness(&effective_eval, ctx.working_dir).await {
+                Ok(eval_result) => {
+                    let post_score = eval_result.score;
+                    round_result.post_eval_score = Some(post_score);
+
+                    if let Some(prev) = current_score {
+                        if post_score < prev {
+                            tracing::warn!(
+                                round = round_num,
+                                pre = prev,
+                                post = post_score,
+                                "eval score regressed — reverting recovery changes"
+                            );
+                            eval::git_revert_to_snapshot(ctx.working_dir, &snapshot).await;
+                            round_result.post_eval_score = current_score;
+                            rounds.push(round_result);
+                            break;
+                        }
+                        tracing::info!(
+                            round = round_num,
+                            pre = prev,
+                            post = post_score,
+                            delta = post_score - prev,
+                            "eval score after recovery"
+                        );
+                    }
+
+                    eval::git_discard_snapshot(ctx.working_dir, &snapshot).await;
+                    current_score = Some(post_score);
+                }
+                Err(e) => {
+                    tracing::warn!(round = round_num, "eval harness failed: {e}");
+                    eval::git_discard_snapshot(ctx.working_dir, &snapshot).await;
+                }
+            }
+        }
 
         let stop = round_result.fully_resolved() || round_result.actionable_challenges == 0;
         rounds.push(round_result);
@@ -59,12 +161,18 @@ pub async fn run_adversarial_loop(
         }
     }
 
+    // Update final eval score in metrics.
+    if let Some(score) = current_score {
+        run.metrics.eval_final_score = Some(score);
+    }
+
     let result = AdversarialResult::from_rounds(rounds, adv.severity_threshold);
     tracing::info!(
         accepted = result.accepted,
         total_challenges = result.total_challenges,
         total_resolved = result.total_resolved,
         unresolved = result.unresolved.len(),
+        final_score = ?current_score,
         "adversarial loop complete"
     );
 
@@ -73,20 +181,27 @@ pub async fn run_adversarial_loop(
 
 /// Execute a single adversarial challenge-recovery round.
 async fn execute_adversarial_round(
-    adv: &AdversarialConfig,
+    ctx: &AdversarialContext<'_>,
     primary_engine: AgentEngine,
     adversarial_engine: AgentEngine,
-    plan: &SwarmPlan,
     run: &mut SwarmRun,
     cumulative_context: &mut String,
     round_num: usize,
 ) -> Result<AdversarialRound, SwarmError> {
+    let adv = &ctx.config.adversarial;
+
     tracing::info!(round = round_num, "adversarial round starting");
     let challenge_started_at = Utc::now();
 
     // ── Challenge phase ────────────────────────────────────────────────────
-    let mut challenges =
-        run_challenge_phase(adv, adversarial_engine, plan, cumulative_context, round_num).await?;
+    let mut challenges = run_challenge_phase(
+        adv,
+        adversarial_engine,
+        ctx.plan,
+        cumulative_context,
+        round_num,
+    )
+    .await?;
 
     let actionable_count = challenges
         .iter()
@@ -113,19 +228,26 @@ async fn execute_adversarial_round(
             resolved_count: 0,
             challenge_started_at,
             recovery_finished_at: Some(Utc::now()),
+            pre_eval_score: None,
+            post_eval_score: None,
         });
     }
 
     // ── Recovery phase ─────────────────────────────────────────────────────
-    let recovery_summary = run_recovery_phase(
-        adv,
-        primary_engine,
-        plan,
-        &challenges,
-        cumulative_context,
-        round_num,
-    )
-    .await?;
+    let recovery_summary = match adv.recovery_mode {
+        RecoveryMode::Fix => run_recovery_agents(ctx, &challenges, run, round_num).await?,
+        RecoveryMode::Analyze => {
+            run_recovery_analyze(
+                adv,
+                primary_engine,
+                ctx.plan,
+                &challenges,
+                cumulative_context,
+                round_num,
+            )
+            .await?
+        }
+    };
 
     let resolved_count =
         mark_resolved_challenges(&mut challenges, &recovery_summary, adv.severity_threshold);
@@ -136,6 +258,7 @@ async fn execute_adversarial_round(
         round = round_num,
         resolved = resolved_count,
         actionable = actionable_count,
+        mode = ?adv.recovery_mode,
         "recovery phase complete"
     );
 
@@ -152,66 +275,185 @@ async fn execute_adversarial_round(
         resolved_count,
         challenge_started_at,
         recovery_finished_at: Some(Utc::now()),
+        pre_eval_score: None,
+        post_eval_score: None,
     })
 }
 
-/// Run the challenge phase: spawn adversarial agents to critique the primary output.
-async fn run_challenge_phase(
-    adv: &AdversarialConfig,
-    engine: AgentEngine,
-    plan: &SwarmPlan,
-    primary_output: &str,
+// ── Recovery: Code-writing agents ──────────────────────────────────────────────
+
+/// Spawn real code-writing agents to fix each actionable challenge sequentially.
+///
+/// Each agent gets the challenge description, suggested fix, and program.md
+/// constraints. Agents run in the workspace with full coder tools and modify
+/// files directly. Returns a summary compatible with `mark_resolved_challenges`.
+async fn run_recovery_agents(
+    ctx: &AdversarialContext<'_>,
+    challenges: &[AdversarialChallenge],
+    run: &mut SwarmRun,
     round: usize,
-) -> Result<Vec<AdversarialChallenge>, SwarmError> {
-    let truncated: String = primary_output.chars().take(8000).collect();
-    let task_summary = plan
-        .tasks
+) -> Result<String, SwarmError> {
+    let adv = &ctx.config.adversarial;
+    let mut actionable: Vec<&AdversarialChallenge> = challenges
         .iter()
-        .map(|t| format!("- {} ({}): {}", t.id, t.assigned_role, t.description))
-        .collect::<Vec<_>>()
-        .join("\n");
+        .filter(|c| c.severity_score >= adv.severity_threshold)
+        .collect();
 
-    let prompt = format!(
-        r#"You are an adversarial reviewer for a multi-agent swarm (round {round}). Your job is to find flaws, risks, and gaps in the swarm's output.
+    // Sort by severity descending, cap to max_recovery_agents.
+    actionable.sort_by(|a, b| {
+        b.severity_score
+            .partial_cmp(&a.severity_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    actionable.truncate(adv.max_recovery_agents);
 
-## Plan Objective
-{objective}
+    if actionable.is_empty() {
+        return Ok(String::new());
+    }
 
-## Tasks Executed
-{task_summary}
-
-## Primary Swarm Output (truncated)
-{truncated}
-
-## Instructions
-Critically review the output. Look for:
-1. **Correctness** — Logic errors, missing edge cases, wrong behavior
-2. **Security** — Injection vectors, unsafe operations, exposed internals
-3. **Performance** — N+1 queries, unbounded allocations, missing caching
-4. **Completeness** — Missing features, untested paths, incomplete implementations
-5. **Style** — Code quality issues, naming problems, missing documentation
-
-For each issue found, output a JSON object on its own line with these fields:
-- "id": unique string (e.g., "c-{round}-1")
-- "target_task_id": task ID or null if cross-cutting
-- "category": one of "correctness", "security", "performance", "completeness", "style"
-- "description": clear description of the issue
-- "severity": one of "low", "medium", "high", "critical"
-- "severity_score": float 0.0-1.0
-- "suggested_fix": suggested remediation or null
-
-Output ONLY JSON lines, one per issue. If no issues are found, output a single line: {{"id": "none", "category": "none", "description": "No issues found", "severity": "low", "severity_score": 0.0}}"#,
-        objective = plan.objective,
+    tracing::info!(
+        count = actionable.len(),
+        mode = "fix",
+        "spawning recovery agents"
     );
 
-    let raw_output =
-        invoke_engine(engine, &prompt, adv.challenge_timeout_seconds, "challenge").await?;
-    Ok(parse_challenges(&raw_output, round))
+    let mut summaries = Vec::new();
+
+    for challenge in &actionable {
+        let summary = spawn_single_recovery_agent(ctx, challenge, run, round).await;
+        summaries.push(summary);
+    }
+
+    Ok(summaries.join("\n"))
 }
 
-/// Run the recovery phase: spawn primary-engine agents to address challenges.
-async fn run_recovery_phase(
-    adv: &AdversarialConfig,
+/// Spawn a single recovery agent for one challenge. Returns a `RESOLVED:` or `UNRESOLVED:` line.
+#[allow(clippy::too_many_lines)]
+async fn spawn_single_recovery_agent(
+    ctx: &AdversarialContext<'_>,
+    challenge: &AdversarialChallenge,
+    run: &mut SwarmRun,
+    round: usize,
+) -> String {
+    let adv = &ctx.config.adversarial;
+    let fix_hint = challenge
+        .suggested_fix
+        .as_deref()
+        .unwrap_or("no specific suggestion");
+
+    let constraints = if ctx.program_md.is_empty() {
+        String::new()
+    } else {
+        format!("## Constraints\n{}", ctx.program_md)
+    };
+
+    let system_prompt = format!(
+        "You are a recovery agent fixing a specific issue found during adversarial review.\n\n\
+         ## Issue to Fix\n\
+         - **ID**: {id}\n- **Category**: {cat}\n- **Severity**: {severity:?} ({score:.2})\n\
+         - **Description**: {desc}\n- **Suggested Fix**: {fix_hint}\n\n\
+         ## Instructions\n\
+         1. Read the relevant source files to understand the current state\n\
+         2. Make the MINIMAL code changes needed to fix this specific issue\n\
+         3. Run any relevant build/test commands to verify your fix\n\
+         4. Do NOT modify unrelated code\n\
+         5. Do NOT modify program.md, settings.json, or test infrastructure\n\n\
+         {constraints}",
+        id = challenge.id,
+        cat = challenge.category,
+        severity = challenge.severity,
+        score = challenge.severity_score,
+        desc = challenge.description,
+    );
+
+    let allowed_tools = vec![
+        "Read".into(),
+        "Write".into(),
+        "Edit".into(),
+        "Bash".into(),
+        "Glob".into(),
+        "Grep".into(),
+    ];
+
+    let subtask = SwarmSubtask {
+        id: format!("recovery-{}", challenge.id),
+        name: format!("Fix: {}", challenge.id),
+        description: challenge.description.clone(),
+        prompt: format!(
+            "Fix this issue in the codebase: {}\n\nSuggested approach: {fix_hint}",
+            challenge.description
+        ),
+        allowed_tools: Some(allowed_tools.clone()),
+        timeout_seconds: adv.recovery_timeout_seconds,
+    };
+
+    let session = AgentSession {
+        id: Uuid::new_v4().to_string(),
+        role: "recovery".into(),
+        task_id: format!("adversarial-round-{round}"),
+        subtask_id: subtask.id.clone(),
+        pid: None,
+        workspace: ctx.working_dir.to_path_buf(),
+        status: AgentSessionStatus::Running,
+        started_at: Utc::now(),
+        finished_at: None,
+        actions_dispatched: 0,
+        actions_blocked: 0,
+    };
+
+    tracing::info!(challenge_id = %challenge.id, severity = ?challenge.severity, "spawning recovery agent");
+    run.metrics.agents_spawned += 1;
+
+    let child = match spawn_agent(
+        ctx.config,
+        &session,
+        &subtask,
+        &system_prompt,
+        &allowed_tools,
+        ctx.hooks_binary,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(challenge_id = %challenge.id, "recovery agent spawn failed: {e}");
+            run.metrics.agents_failed += 1;
+            return format!("UNRESOLVED: {} - agent spawn failed", challenge.id);
+        }
+    };
+
+    match wait_for_agent(child, &session.id, adv.recovery_timeout_seconds).await {
+        Ok(result) if result.exit_code == 0 => {
+            run.metrics.agents_completed += 1;
+            tracing::info!(challenge_id = %challenge.id, "recovery agent completed");
+            format!("RESOLVED: {} - agent applied fix", challenge.id)
+        }
+        Ok(result) => {
+            run.metrics.agents_failed += 1;
+            tracing::warn!(challenge_id = %challenge.id, exit_code = result.exit_code, "recovery agent failed");
+            format!(
+                "UNRESOLVED: {} - agent exited with code {}",
+                challenge.id, result.exit_code
+            )
+        }
+        Err(SwarmError::AgentTimeout { .. }) => {
+            run.metrics.agents_failed += 1;
+            tracing::warn!(challenge_id = %challenge.id, "recovery agent timed out");
+            format!("UNRESOLVED: {} - agent timed out", challenge.id)
+        }
+        Err(e) => {
+            run.metrics.agents_failed += 1;
+            tracing::warn!(challenge_id = %challenge.id, "recovery agent error: {e}");
+            format!("UNRESOLVED: {} - {e}", challenge.id)
+        }
+    }
+}
+
+// ── Recovery: Text-only analysis (legacy) ──────────────────────────────────────
+
+/// Text-only recovery: describe fixes without editing code (original behavior).
+async fn run_recovery_analyze(
+    adv: &crate::config::AdversarialConfig,
     engine: AgentEngine,
     plan: &SwarmPlan,
     challenges: &[AdversarialChallenge],
@@ -278,6 +520,64 @@ Be thorough but concise.",
     invoke_engine(engine, &prompt, adv.recovery_timeout_seconds, "recovery").await
 }
 
+// ── Challenge phase ────────────────────────────────────────────────────────────
+
+/// Run the challenge phase: spawn adversarial agents to critique the primary output.
+async fn run_challenge_phase(
+    adv: &crate::config::AdversarialConfig,
+    engine: AgentEngine,
+    plan: &SwarmPlan,
+    primary_output: &str,
+    round: usize,
+) -> Result<Vec<AdversarialChallenge>, SwarmError> {
+    let truncated: String = primary_output.chars().take(8000).collect();
+    let task_summary = plan
+        .tasks
+        .iter()
+        .map(|t| format!("- {} ({}): {}", t.id, t.assigned_role, t.description))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let prompt = format!(
+        r#"You are an adversarial reviewer for a multi-agent swarm (round {round}). Your job is to find flaws, risks, and gaps in the swarm's output.
+
+## Plan Objective
+{objective}
+
+## Tasks Executed
+{task_summary}
+
+## Primary Swarm Output (truncated)
+{truncated}
+
+## Instructions
+Critically review the output. Look for:
+1. **Correctness** — Logic errors, missing edge cases, wrong behavior
+2. **Security** — Injection vectors, unsafe operations, exposed internals
+3. **Performance** — N+1 queries, unbounded allocations, missing caching
+4. **Completeness** — Missing features, untested paths, incomplete implementations
+5. **Style** — Code quality issues, naming problems, missing documentation
+
+For each issue found, output a JSON object on its own line with these fields:
+- "id": unique string (e.g., "c-{round}-1")
+- "target_task_id": task ID or null if cross-cutting
+- "category": one of "correctness", "security", "performance", "completeness", "style"
+- "description": clear description of the issue
+- "severity": one of "low", "medium", "high", "critical"
+- "severity_score": float 0.0-1.0
+- "suggested_fix": suggested remediation or null
+
+Output ONLY JSON lines, one per issue. If no issues are found, output a single line: {{"id": "none", "category": "none", "description": "No issues found", "severity": "low", "severity_score": 0.0}}"#,
+        objective = plan.objective,
+    );
+
+    let raw_output =
+        invoke_engine(engine, &prompt, adv.challenge_timeout_seconds, "challenge").await?;
+    Ok(parse_challenges(&raw_output, round))
+}
+
+// ── Engine invocation ──────────────────────────────────────────────────────────
+
 /// Invoke an AI engine with a prompt and return the raw text output.
 async fn invoke_engine(
     engine: AgentEngine,
@@ -295,7 +595,6 @@ async fn invoke_engine(
 
     match engine {
         AgentEngine::Claude => {
-            // Use haiku for adversarial phases (faster for analysis prompts).
             cmd.arg("--model").arg("haiku");
         }
         AgentEngine::Gemini => {
@@ -342,7 +641,6 @@ fn parse_challenges(raw: &str, round: usize) -> Vec<AdversarialChallenge> {
     let mut challenges = Vec::new();
     let mut counter = 1;
 
-    // Try line-by-line JSON first.
     for line in raw.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -353,7 +651,6 @@ fn parse_challenges(raw: &str, round: usize) -> Vec<AdversarialChallenge> {
         }
     }
 
-    // Fallback: try parsing as a JSON array.
     if challenges.is_empty()
         && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(raw.trim())
     {
@@ -367,25 +664,21 @@ fn parse_challenges(raw: &str, round: usize) -> Vec<AdversarialChallenge> {
     challenges
 }
 
-/// Try to parse a single JSON line into a challenge.
 fn parse_single_challenge(
     line: &str,
     round: usize,
     counter: &mut usize,
 ) -> Option<AdversarialChallenge> {
-    // Strip trailing commas (common in array-formatted output).
     let trimmed = line.strip_suffix(',').unwrap_or(line);
     let json = serde_json::from_str::<serde_json::Value>(trimmed).ok()?;
     challenge_from_json(&json, round, counter)
 }
 
-/// Build an `AdversarialChallenge` from a JSON value.
 fn challenge_from_json(
     json: &serde_json::Value,
     round: usize,
     counter: &mut usize,
 ) -> Option<AdversarialChallenge> {
-    // Skip the "no issues found" sentinel.
     if json
         .get("category")
         .and_then(serde_json::Value::as_str)
@@ -440,8 +733,6 @@ fn challenge_from_json(
 }
 
 /// Mark challenges as resolved based on the recovery output.
-///
-/// Looks for `RESOLVED: <id>` lines in the recovery summary.
 fn mark_resolved_challenges(
     challenges: &mut [AdversarialChallenge],
     recovery_output: &str,
@@ -455,8 +746,6 @@ fn mark_resolved_challenges(
             .strip_prefix("RESOLVED:")
             .or_else(|| line.strip_prefix("RESOLVED "))
         {
-            // Format: "RESOLVED: <id> — <explanation>" or "RESOLVED: <id> - <explanation>"
-            // Split on " — " (em-dash) or " - " (spaced hyphen) to avoid breaking IDs with dashes.
             let (id_part, explanation) = rest
                 .split_once(" \u{2014} ")
                 .or_else(|| rest.split_once(" - "))
@@ -557,7 +846,7 @@ mod tests {
             },
         ];
 
-        let recovery = "RESOLVED: c-1-1 \u{2014} Added null check to fix the bug\nUNRESOLVED: c-1-2 \u{2014} Style preference, not a blocker"; // Note: em-dash with spaces
+        let recovery = "RESOLVED: c-1-1 \u{2014} Added null check to fix the bug\nUNRESOLVED: c-1-2 \u{2014} Style preference, not a blocker";
 
         let count = mark_resolved_challenges(&mut challenges, recovery, 0.5);
         assert_eq!(count, 1);
@@ -566,7 +855,7 @@ mod tests {
             challenges[0].resolution.as_deref(),
             Some("Added null check to fix the bug")
         );
-        assert!(!challenges[1].resolved); // Below threshold, not marked.
+        assert!(!challenges[1].resolved);
     }
 
     #[test]
@@ -587,5 +876,17 @@ mod tests {
         let count = mark_resolved_challenges(&mut challenges, recovery, 0.5);
         assert_eq!(count, 1);
         assert!(challenges[0].resolved);
+    }
+
+    #[test]
+    fn test_recovery_mode_serde() {
+        let json_fix = serde_json::to_string(&RecoveryMode::Fix).unwrap();
+        assert_eq!(json_fix, "\"fix\"");
+
+        let json_analyze = serde_json::to_string(&RecoveryMode::Analyze).unwrap();
+        assert_eq!(json_analyze, "\"analyze\"");
+
+        let parsed: RecoveryMode = serde_json::from_str("\"fix\"").unwrap();
+        assert_eq!(parsed, RecoveryMode::Fix);
     }
 }

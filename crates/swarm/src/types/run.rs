@@ -86,4 +86,10 @@ pub struct RunMetrics {
     /// Total challenges resolved during recovery.
     #[serde(default)]
     pub challenges_resolved: u64,
+    /// Eval harness baseline score (after primary swarm).
+    #[serde(default)]
+    pub eval_baseline_score: Option<f64>,
+    /// Eval harness final score (after adversarial loop).
+    #[serde(default)]
+    pub eval_final_score: Option<f64>,
 }

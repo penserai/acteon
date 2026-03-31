@@ -1,7 +1,10 @@
 pub mod adversarial;
 pub mod agent_spawner;
 pub mod engine;
+pub mod eval;
+pub mod eval_gen;
 pub mod monitor;
+pub mod program;
 pub mod refiner;
 
 pub use engine::{execute_swarm, execute_swarm_with_adversarial};
