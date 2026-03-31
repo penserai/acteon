@@ -95,6 +95,9 @@ struct RunArgs {
     /// Minimum eval score to consider passing (0.0-1.0, overrides config).
     #[arg(long)]
     eval_threshold: Option<f64>,
+    /// Recovery mode: "fix" (spawn code-writing agents) or "analyze" (text-only).
+    #[arg(long)]
+    recovery_mode: Option<String>,
 }
 
 #[derive(Parser)]
@@ -282,6 +285,13 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
     }
     if let Some(threshold) = args.eval_threshold {
         config.eval_harness.pass_threshold = threshold;
+    }
+    if let Some(ref mode) = args.recovery_mode {
+        config.adversarial.recovery_mode = match mode.to_lowercase().as_str() {
+            "fix" => acteon_swarm::config::RecoveryMode::Fix,
+            "analyze" => acteon_swarm::config::RecoveryMode::Analyze,
+            other => anyhow::bail!("unknown recovery mode: {other} (expected 'fix' or 'analyze')"),
+        };
     }
 
     let roles = RoleRegistry::with_config(config.defaults.engine, &config.roles);

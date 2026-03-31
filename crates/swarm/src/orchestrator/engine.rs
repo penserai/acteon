@@ -10,10 +10,11 @@ use uuid::Uuid;
 use crate::config::SwarmConfig;
 use crate::error::SwarmError;
 use crate::memory::TesseraiClient;
-use crate::orchestrator::adversarial::run_adversarial_loop;
+use crate::orchestrator::adversarial::{AdversarialContext, run_adversarial_loop};
 use crate::orchestrator::agent_spawner::{AgentResult, spawn_agent, wait_for_agent};
 use crate::orchestrator::eval;
 use crate::orchestrator::monitor::SwarmMonitor;
+use crate::orchestrator::program;
 use crate::orchestrator::refiner::{apply_refinement, refine_plan};
 use crate::roles::RoleRegistry;
 use crate::types::adversarial::AdversarialResult;
@@ -122,13 +123,19 @@ pub async fn execute_swarm_with_adversarial(
     roles: &RoleRegistry,
     hooks_binary: &std::path::Path,
 ) -> Result<(SwarmRun, Option<AdversarialResult>), SwarmError> {
-    let mut run = execute_swarm(plan, config, roles, hooks_binary).await?;
-
     let working_dir = config
         .defaults
         .working_directory
         .clone()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    // Generate program.md before primary swarm (no baseline score yet).
+    let program_md_content = program::generate_program_md(plan, config, None);
+    if let Err(e) = program::write_program_md(&working_dir, &program_md_content).await {
+        tracing::warn!("failed to write initial program.md: {e}");
+    }
+
+    let mut run = execute_swarm(plan, config, roles, hooks_binary).await?;
 
     // Run baseline eval after primary swarm (if configured).
     let (eval_cfg, baseline_score) = if config.eval_harness.enabled {
@@ -148,6 +155,12 @@ pub async fn execute_swarm_with_adversarial(
         (None, None)
     };
 
+    // Regenerate program.md with baseline score for recovery agents.
+    let program_md_content = program::generate_program_md(plan, config, baseline_score);
+    if let Err(e) = program::write_program_md(&working_dir, &program_md_content).await {
+        tracing::warn!("failed to update program.md with baseline score: {e}");
+    }
+
     if !config.adversarial.enabled {
         return Ok((run, None));
     }
@@ -155,16 +168,17 @@ pub async fn execute_swarm_with_adversarial(
     // Collect primary output summary from completed task results.
     let primary_summary = build_primary_summary(plan, &run);
 
-    let adversarial_result = run_adversarial_loop(
+    let adv_ctx = AdversarialContext {
         config,
         plan,
-        &mut run,
-        &primary_summary,
-        eval_cfg,
+        working_dir: &working_dir,
+        hooks_binary,
+        program_md: &program_md_content,
+        eval_config: eval_cfg,
         baseline_score,
-        &working_dir,
-    )
-    .await?;
+    };
+
+    let adversarial_result = run_adversarial_loop(&adv_ctx, &mut run, &primary_summary).await?;
 
     // Update final status based on adversarial outcome.
     if !adversarial_result.accepted && run.status == SwarmRunStatus::Completed {

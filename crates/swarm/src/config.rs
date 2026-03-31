@@ -106,6 +106,17 @@ pub struct SwarmDefaults {
     pub enable_refiner: bool,
 }
 
+/// Recovery mode for the adversarial loop.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RecoveryMode {
+    /// Text-only analysis — agents describe fixes but don't edit code.
+    Analyze,
+    /// Code-writing agents — spawn real agents that edit files to fix challenges.
+    #[default]
+    Fix,
+}
+
 /// Supported AI engines for swarm agents.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -163,6 +174,12 @@ pub struct AdversarialConfig {
     /// Custom adversarial role definitions.
     #[serde(default)]
     pub roles: Vec<AgentRoleConfig>,
+    /// Recovery mode: `analyze` (text-only) or `fix` (spawn code-writing agents).
+    #[serde(default)]
+    pub recovery_mode: RecoveryMode,
+    /// Maximum number of challenges to fix per round (highest severity first).
+    #[serde(default = "default_max_recovery_agents")]
+    pub max_recovery_agents: usize,
 }
 
 impl Default for AdversarialConfig {
@@ -176,6 +193,8 @@ impl Default for AdversarialConfig {
             recovery_timeout_seconds: default_recovery_timeout(),
             severity_threshold: default_severity_threshold(),
             roles: Vec::new(),
+            recovery_mode: RecoveryMode::default(),
+            max_recovery_agents: default_max_recovery_agents(),
         }
     }
 }
@@ -341,6 +360,9 @@ fn default_recovery_timeout() -> u64 {
 }
 fn default_severity_threshold() -> f64 {
     0.5
+}
+fn default_max_recovery_agents() -> usize {
+    5
 }
 fn default_eval_timeout() -> u64 {
     300
