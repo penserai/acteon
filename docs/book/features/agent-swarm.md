@@ -25,6 +25,7 @@ The `acteon-swarm` crate provides a generic multi-agent swarm system that decomp
 | [Security Audit](https://github.com/penserai/acteon/tree/main/examples/swarm-pentest) | Claude | 28 | ~25 min | Vulnerability reports for Acteon itself |
 | [Framework Research](https://github.com/penserai/acteon/tree/main/examples/swarm-deep-research) | Claude | 16 | ~20 min | 7 agent framework analyses |
 | [LLM Survey](https://github.com/penserai/acteon/tree/main/examples/swarm-gemini-llm-survey) | **Gemini** | 8/8 | ~7 min | 7 open source LLM analyses |
+| [Posit Clone MVP](https://github.com/penserai/acteon/tree/main/examples/swarm-posit-clone) | Claude + Gemini adversarial | 9 + adversarial | ~20 min | Web IDE MVP with adversarial review |
 
 ## How It Works
 
@@ -780,6 +781,153 @@ let roles = RoleRegistry::with_builtins();
 let warnings = validate_plan(&plan, &roles.names()).unwrap();
 ```
 
+## Adversarial Challenge-Recovery Loop
+
+After the primary swarm completes its objective, an optional **adversarial phase** critiques the output using a separate LLM engine, then the primary engine recovers by addressing the valid challenges. This enables cross-engine quality assurance — for example, a Claude primary swarm reviewed by a Gemini adversarial swarm, or vice versa. The loop is configurable: you control the engine, number of rounds, severity threshold, timeouts, and maximum adversarial agents.
+
+### Sequence
+
+```mermaid
+sequenceDiagram
+    participant PS as Primary Swarm
+    participant OR as Orchestrator
+    participant AS as Adversarial Engine
+    participant FI as Severity Filter
+    participant RE as Recovery Engine
+
+    PS->>OR: Primary run complete (artifacts)
+    loop Up to max_rounds
+        OR->>AS: Challenge phase (adversarial engine)
+        AS-->>OR: Challenges (category + severity)
+        OR->>FI: Filter by severity_threshold
+        FI-->>OR: Actionable challenges
+        alt No actionable challenges
+            OR->>OR: Accept output
+        else Actionable challenges remain
+            OR->>RE: Recovery phase (primary engine)
+            RE-->>OR: Patched artifacts
+            OR->>OR: Check resolution
+        end
+    end
+    OR-->>PS: Final output + adversarial report
+```
+
+1. The primary swarm runs to completion as normal.
+2. The orchestrator hands the output to the adversarial engine for critique.
+3. Challenges below `severity_threshold` are filtered out.
+4. The primary engine spawns recovery agents to address each actionable challenge.
+5. The orchestrator checks whether the challenges are resolved. If unresolved challenges remain and rounds are left, the loop repeats.
+6. A final adversarial report is persisted alongside the swarm output.
+
+### Configuration
+
+Enable adversarial mode in `swarm.toml`:
+
+```toml
+[adversarial]
+enabled = true
+engine = "gemini"
+max_rounds = 2
+max_agents = 3
+challenge_timeout_seconds = 300
+recovery_timeout_seconds = 600
+severity_threshold = 0.5
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the adversarial challenge-recovery loop |
+| `engine` | string | `"gemini"` | LLM engine for the adversarial phase (`"claude"` or `"gemini"`) |
+| `max_rounds` | u32 | `2` | Maximum challenge-recovery iterations before accepting the output |
+| `max_agents` | u32 | `3` | Maximum concurrent adversarial agents during the challenge phase |
+| `challenge_timeout_seconds` | u64 | `300` | Timeout for each challenge phase |
+| `recovery_timeout_seconds` | u64 | `600` | Timeout for each recovery phase |
+| `severity_threshold` | f64 | `0.5` | Minimum severity score for a challenge to be actionable (0.0 - 1.0) |
+
+### CLI Flags
+
+Override adversarial settings from the command line:
+
+```bash
+# Enable adversarial mode for a single run
+acteon-swarm run --plan plan.json --adversarial
+
+# Specify the adversarial engine
+acteon-swarm run --plan plan.json --adversarial --adversarial-engine gemini
+
+# Limit to a single challenge-recovery round
+acteon-swarm run --plan plan.json --adversarial --adversarial-rounds 1
+```
+
+| Flag | Description |
+|------|-------------|
+| `--adversarial` | Enable adversarial mode (overrides `adversarial.enabled` in config) |
+| `--adversarial-engine <ENGINE>` | Set the adversarial engine (`claude` or `gemini`) |
+| `--adversarial-rounds <N>` | Maximum number of challenge-recovery rounds |
+
+### Challenge Categories
+
+Adversarial agents evaluate the primary output across five categories:
+
+| Category | Description |
+|----------|-------------|
+| **correctness** | Logic errors, wrong assumptions, incorrect implementations |
+| **security** | Missing input validation, unsafe subprocess handling, credential exposure |
+| **performance** | Blocking I/O on async paths, unnecessary allocations, missing caching |
+| **completeness** | Missing features, unhandled edge cases, incomplete error handling |
+| **style** | Framework mismatches, non-idiomatic patterns, inconsistent conventions |
+
+### Severity Levels
+
+Each challenge is assigned a severity score. The `severity_threshold` setting determines which challenges are actionable:
+
+| Level | Score | Description |
+|-------|-------|-------------|
+| **Low** | 0.25 | Minor style issues, optional improvements |
+| **Medium** | 0.5 | Functional gaps that should be addressed |
+| **High** | 0.75 | Significant bugs or security concerns |
+| **Critical** | 1.0 | Blocking defects that must be fixed |
+
+With the default threshold of `0.5`, only Medium, High, and Critical challenges trigger recovery.
+
+### Report Persistence
+
+After the adversarial loop completes, a JSON report is saved to the working directory:
+
+```
+adversarial-report-<run-id>.json
+```
+
+The report contains:
+
+- All challenges raised across every round (category, severity, description)
+- Which challenges were filtered out by the severity threshold
+- Recovery actions taken and whether each challenge was resolved
+- Per-round timing and agent counts
+- Final accept/reject status
+
+### Example: Posit Clone MVP
+
+A real-world test run demonstrates the adversarial loop in practice:
+
+**Primary phase:** Claude engine, 9 agents, produced 47 files implementing a Posit (RStudio) web IDE clone MVP — including a notebook editor, code execution backend, file browser, and terminal emulator.
+
+**Adversarial phase:** Gemini engine identified 10 challenges, of which 7 exceeded the severity threshold and were actionable:
+
+| # | Category | Severity | Finding |
+|---|----------|----------|---------|
+| 1 | correctness | High (0.75) | Kernel sessions are stateless — each cell execution starts a fresh process, losing variable state between cells |
+| 2 | security | Critical (1.0) | No subprocess sandboxing — user code executes with the same privileges as the server process |
+| 3 | performance | High (0.75) | Blocking `std::process::Command` calls on async Tokio runtime — will stall the event loop under load |
+| 4 | style | Medium (0.5) | Server uses Actix Web but the project convention is Axum — inconsistent with the rest of the codebase |
+| 5 | completeness | Medium (0.5) | No WebSocket support for streaming cell output — users see results only after execution completes |
+| 6 | completeness | Medium (0.5) | File browser lacks rename and delete operations |
+| 7 | performance | Medium (0.5) | Terminal emulator spawns a new shell per keystroke instead of maintaining a persistent PTY session |
+
+Three challenges were filtered out (severity below 0.5): two Low-severity style suggestions and one Low-severity documentation gap.
+
+**Recovery phase:** Claude engine spawned recovery agents that addressed 6 of the 7 actionable challenges in a single round. The subprocess sandboxing issue (Critical) was partially mitigated with a namespace isolation stub but flagged for manual follow-up.
+
 ## See Also
 
 - [Task Chains](chains.md) — Acteon's chain execution model
@@ -787,3 +935,4 @@ let warnings = validate_plan(&plan, &roles.names()).unwrap();
 - [Throttling](throttling.md) — per-agent and swarm-wide rate limiting
 - [Tenant Usage Quotas](tenant-usage-quotas.md) — per-run quota budgets
 - [WASM Rule Plugins](wasm-plugins.md) — custom safety rules
+- [Adversarial Challenge-Recovery](#adversarial-challenge-recovery-loop) — cross-engine critique and recovery
