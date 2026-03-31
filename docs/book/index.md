@@ -159,17 +159,53 @@ In-depth guides that combine multiple Acteon features to solve real-world proble
 
 </div>
 
+</div>
+
+</div>
+
+---
+
+## Agent Swarm Orchestrator
+
+Acteon also ships `acteon-swarm` — a standalone multi-agent orchestrator that **uses** the Acteon gateway for safety enforcement but is a separate product surface. While Acteon core is an action gateway (rules, routing, audit), the swarm is an **agent orchestration engine** inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) pattern.
+
+<div class="grid" markdown>
+
 <div class="card" markdown>
 
-### Agent Swarm with Autoresearch
+### Build → Eval → Critique → Fix → Verify
 
-Orchestrate multi-agent swarms with a Karpathy-style autoresearch loop: primary agents build, an eval harness scores, adversarial agents critique (optionally cross-engine — Claude + Gemini), and recovery agents fix code — all gated by fitness scoring with automatic git revert on regression. Includes program.md constraint generation, SWE-bench-style binary assertions, and polyglot support for 12 languages.
+Primary agents build your project, an **eval harness** scores it, adversarial agents **critique** across engines (Claude + Gemini), and recovery agents **fix code** — all gated by fitness scoring with automatic **git revert on regression**.
 
-[Learn more](features/agent-swarm.md)
+</div>
+
+<div class="card" markdown>
+
+### Cross-Engine Adversarial Review
+
+Use a different AI engine for critique than for building — Claude primary with Gemini adversarial, or vice versa. Cross-model blind spots catch issues that a single model misses.
+
+</div>
+
+<div class="card" markdown>
+
+### Autoresearch Primitives
+
+Three Karpathy primitives: editable asset (workspace), scalar metric (eval score), time-boxed cycles. Plus a fourth: SWE-bench-style binary assertions auto-generated from adversarial challenges.
+
+</div>
+
+<div class="card" markdown>
+
+### Acteon as Safety Layer
+
+Every agent tool call flows through Acteon for policy enforcement — dedup, throttle, approval gates, audit trail. The swarm is the orchestrator; Acteon is the guardrail.
 
 </div>
 
 </div>
+
+[Learn more about Agent Swarm](features/agent-swarm.md){ .md-button }
 
 ---
 

@@ -155,9 +155,22 @@ Apply rules based on time of day, day of week, or date — business hours, weeke
 Reconstruct and re-dispatch actions from the audit trail — recover from outages, fix suppressed actions, bulk reprocess.
 </div>
 
+</div>
+
+## Agent Orchestration
+
+The `acteon-swarm` crate is a separate product surface that **uses** Acteon for safety enforcement but provides its own agent orchestration engine.
+
+<div class="grid" markdown>
+
 <div class="card" markdown>
-### [Agent Swarm with Autoresearch](agent-swarm.md)
-Multi-agent swarm orchestrator with adversarial challenge-recovery loop, eval harness (Karpathy-style autoresearch), code-writing recovery agents, and cross-engine critique (Claude + Gemini). Includes program.md constraint generation, SWE-bench-style binary assertions, git keep/revert gating, and polyglot language detection.
+### [Agent Swarm Orchestrator](agent-swarm.md)
+Multi-agent swarm with parallel execution, 5 built-in roles, AI-powered plan refinement, and knowledge sharing via TesseraiDB. Supports Claude and Gemini engines.
+</div>
+
+<div class="card" markdown>
+### [Adversarial Loop & Eval Harness](agent-swarm.md#adversarial-loop-with-eval-harness-autoresearch-pattern)
+Karpathy-style autoresearch: adversarial critique across engines, code-writing recovery agents, SWE-bench binary assertions, program.md constraints, fitness-gated git keep/revert, polyglot support for 12 languages.
 </div>
 
 </div>
