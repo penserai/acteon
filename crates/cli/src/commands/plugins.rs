@@ -1,5 +1,6 @@
 use acteon_ops::OpsClient;
 use clap::{Args, Subcommand};
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -26,18 +27,20 @@ pub async fn run(ops: &OpsClient, args: &PluginsArgs, format: &OutputFormat) -> 
             let resp = ops.list_plugins().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("{} plugins:", resp.count);
+                    info!(count = resp.count, "Plugins");
                     for p in &resp.plugins {
                         let enabled = if p.enabled { "ON " } else { "OFF" };
                         let desc = p.description.as_deref().unwrap_or("");
-                        println!(
-                            "  [{enabled}] {name} | {status} | invocations: {count} {desc}",
-                            name = p.name,
-                            status = p.status,
-                            count = p.invocation_count,
+                        info!(
+                            enabled = %enabled,
+                            name = %p.name,
+                            status = %p.status,
+                            invocation_count = p.invocation_count,
+                            description = %desc,
+                            "Plugin"
                         );
                     }
                 }
@@ -45,7 +48,7 @@ pub async fn run(ops: &OpsClient, args: &PluginsArgs, format: &OutputFormat) -> 
         }
         PluginsCommand::Delete { name } => {
             ops.delete_plugin(name).await?;
-            println!("Plugin '{name}' deleted.");
+            info!(name = %name, "Plugin deleted");
         }
     }
     Ok(())

@@ -20,6 +20,7 @@ use acteon_simulation::RecordingProvider;
 
 // Import Redis backends
 use acteon_state_redis::{RedisConfig, RedisDistributedLock, RedisStateStore};
+use tracing::info;
 
 const DEDUP_RULE: &str = r#"
 rules:
@@ -46,9 +47,11 @@ rules:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║         ACTEON SIMULATION WITH REDIS BACKEND                 ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║         ACTEON SIMULATION WITH REDIS BACKEND                 ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // Configure Redis connection
     let redis_config = RedisConfig {
@@ -58,25 +61,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connection_timeout: Duration::from_secs(5),
     };
 
-    println!("→ Connecting to Redis at {}...", redis_config.url);
+    info!("→ Connecting to Redis at {}...", redis_config.url);
 
     // Create Redis-backed state store and distributed lock
     let state = Arc::new(RedisStateStore::new(&redis_config)?);
     let lock = Arc::new(RedisDistributedLock::new(&redis_config)?);
 
-    println!("✓ Connected to Redis");
-    println!("✓ Key prefix: '{}'\n", redis_config.prefix);
+    info!("✓ Connected to Redis");
+    info!("✓ Key prefix: '{}'\n", redis_config.prefix);
 
     // Parse rules
     let frontend = YamlFrontend;
     let mut rules = frontend.parse(DEDUP_RULE)?;
     rules.extend(frontend.parse(SUPPRESSION_RULE)?);
 
-    println!("✓ Loaded {} rules", rules.len());
+    info!("✓ Loaded {} rules", rules.len());
     for rule in &rules {
-        println!("  - {}: {:?}", rule.name, rule.action);
+        info!("  - {}: {:?}", rule.name, rule.action);
     }
-    println!();
+    info!("");
 
     // Create recording providers
     let email_provider = Arc::new(RecordingProvider::new("email"));
@@ -91,17 +94,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .provider(sms_provider.clone() as Arc<dyn DynProvider>)
         .build()?;
 
-    println!("✓ Gateway built with Redis state and lock backends\n");
+    info!("✓ Gateway built with Redis state and lock backends\n");
 
     // =========================================================================
     // DEMO 1: Deduplication with Redis State
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: DEDUPLICATION WITH REDIS STATE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: DEDUPLICATION WITH REDIS STATE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Clear any previous state
-    println!("→ Clearing previous dedup state from Redis...");
+    info!("→ Clearing previous dedup state from Redis...");
 
     let action1 = Action::new(
         "notifications",
@@ -115,16 +118,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("redis-dedup-test-1");
 
-    println!("\n→ Dispatching FIRST notification (dedup_key='redis-dedup-test-1')...");
+    info!("\n→ Dispatching FIRST notification (dedup_key='redis-dedup-test-1')...");
     let outcome1 = gateway.dispatch(action1.clone(), None).await?;
-    println!("  Outcome: {:?}", outcome1);
-    println!(
+    info!("  Outcome: {:?}", outcome1);
+    info!(
         "  Email provider called: {} times",
         email_provider.call_count()
     );
 
     // Check Redis state
-    println!("\n→ Checking Redis state...");
+    info!("\n→ Checking Redis state...");
     // The dedup key should now be stored in Redis
 
     // Try duplicate
@@ -140,10 +143,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("redis-dedup-test-1");
 
-    println!("\n→ Dispatching DUPLICATE notification (same dedup_key)...");
+    info!("\n→ Dispatching DUPLICATE notification (same dedup_key)...");
     let outcome2 = gateway.dispatch(action2, None).await?;
-    println!("  Outcome: {:?}", outcome2);
-    println!(
+    info!("  Outcome: {:?}", outcome2);
+    info!(
         "  Email provider called: {} times (should still be 1)",
         email_provider.call_count()
     );
@@ -161,10 +164,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("redis-dedup-test-2");
 
-    println!("\n→ Dispatching DIFFERENT notification (dedup_key='redis-dedup-test-2')...");
+    info!("\n→ Dispatching DIFFERENT notification (dedup_key='redis-dedup-test-2')...");
     let outcome3 = gateway.dispatch(action3, None).await?;
-    println!("  Outcome: {:?}", outcome3);
-    println!(
+    info!("  Outcome: {:?}", outcome3);
+    info!(
         "  Email provider called: {} times",
         email_provider.call_count()
     );
@@ -172,9 +175,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // DEMO 2: Suppression
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: SUPPRESSION RULES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: SUPPRESSION RULES");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
@@ -188,10 +191,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching SPAM action...");
+    info!("→ Dispatching SPAM action...");
     let outcome = gateway.dispatch(spam_action, None).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Email provider called: {} times (should be 0)",
         email_provider.call_count()
     );
@@ -199,15 +202,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // DEMO 3: Concurrent Dispatch with Redis Locking
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: CONCURRENT DISPATCH WITH REDIS LOCKING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: CONCURRENT DISPATCH WITH REDIS LOCKING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
     // Simulate multiple concurrent processes trying to send the same notification
-    println!("→ Simulating 10 concurrent dispatches with SAME dedup_key...");
-    println!("  (This tests Redis distributed locking)\n");
+    info!("→ Simulating 10 concurrent dispatches with SAME dedup_key...");
+    info!("  (This tests Redis distributed locking)\n");
 
     let gateway_arc = Arc::new(gateway);
     let mut handles = vec![];
@@ -241,30 +244,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match handle.await? {
             Ok(acteon_core::ActionOutcome::Executed(_)) => executed += 1,
             Ok(acteon_core::ActionOutcome::Deduplicated) => deduplicated += 1,
-            Ok(other) => println!("  Unexpected outcome: {:?}", other),
+            Ok(other) => info!("  Unexpected outcome: {:?}", other),
             Err(e) => {
-                println!("  Error: {}", e);
+                info!("  Error: {}", e);
                 failed += 1;
             }
         }
     }
 
-    println!("  Results:");
-    println!("    Executed: {}", executed);
-    println!("    Deduplicated: {}", deduplicated);
-    println!("    Failed: {}", failed);
-    println!(
+    info!("  Results:");
+    info!("    Executed: {}", executed);
+    info!("    Deduplicated: {}", deduplicated);
+    info!("    Failed: {}", failed);
+    info!(
         "    Email provider called: {} times",
         email_provider.call_count()
     );
-    println!("\n  (With proper locking, exactly 1 should execute, 9 deduplicated)");
+    info!("\n  (With proper locking, exactly 1 should execute, 9 deduplicated)");
 
     // =========================================================================
     // DEMO 4: Throughput Test
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 4: THROUGHPUT TEST (500 ACTIONS)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 4: THROUGHPUT TEST (500 ACTIONS)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     email_provider.clear();
 
@@ -280,7 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
-    println!("→ Dispatching 500 actions sequentially...");
+    info!("→ Dispatching 500 actions sequentially...");
     let start = std::time::Instant::now();
 
     for action in actions {
@@ -289,12 +292,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let elapsed = start.elapsed();
 
-    println!("  Completed in: {:?}", elapsed);
-    println!(
+    info!("  Completed in: {:?}", elapsed);
+    info!(
         "  Email provider called: {} times",
         email_provider.call_count()
     );
-    println!(
+    info!(
         "  Throughput: {:.0} actions/sec",
         500.0 / elapsed.as_secs_f64()
     );
@@ -302,23 +305,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Verify Redis State
     // =========================================================================
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  REDIS STATE VERIFICATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  REDIS STATE VERIFICATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Use Redis KEYS to see what was stored
-    println!("→ Keys stored in Redis (prefix: 'acteon-sim'):");
+    info!("→ Keys stored in Redis (prefix: 'acteon-sim'):");
     // We can't call redis-cli directly, but we've demonstrated the simulation works
 
-    println!("  (Dedup keys are stored in Redis with TTL)\n");
+    info!("  (Dedup keys are stored in Redis with TTL)\n");
 
     // Cleanup
     gateway_arc.shutdown().await;
-    println!("✓ Gateway shut down gracefully\n");
+    info!("✓ Gateway shut down gracefully\n");
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║                    REDIS DEMO COMPLETE                       ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║                    REDIS DEMO COMPLETE                       ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

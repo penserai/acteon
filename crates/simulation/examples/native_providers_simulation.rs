@@ -7,12 +7,15 @@
 
 use acteon_core::{Action, ActionOutcome};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("══════════════════════════════════════════════════════════════");
-    println!("       NATIVE PROVIDERS SIMULATION");
-    println!("══════════════════════════════════════════════════════════════\n");
+    tracing_subscriber::fmt::init();
+
+    info!("══════════════════════════════════════════════════════════════");
+    info!("       NATIVE PROVIDERS SIMULATION");
+    info!("══════════════════════════════════════════════════════════════\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -24,17 +27,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("Started simulation cluster with 1 node");
-    println!("Registered providers: twilio, teams, discord\n");
+    info!("Started simulation cluster with 1 node");
+    info!("Registered providers: twilio, teams, discord\n");
 
     let mut results: Vec<(&str, ActionOutcome)> = Vec::new();
 
     // =========================================================================
     // Twilio SMS
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  TWILIO SMS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  TWILIO SMS");
+    info!("------------------------------------------------------------------\n");
 
     let twilio_action = Action::new(
         "notifications",
@@ -48,11 +51,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching SMS to +15559876543...");
+    info!("  Dispatching SMS to +15559876543...");
     let outcome = harness.dispatch(&twilio_action).await?;
-    println!("  Action ID: {}", twilio_action.id);
-    println!("  Outcome:   {:?}", outcome);
-    println!(
+    info!("  Action ID: {}", twilio_action.id);
+    info!("  Outcome:   {:?}", outcome);
+    info!(
         "  Provider called: {} time(s)\n",
         harness.provider("twilio").unwrap().call_count()
     );
@@ -61,9 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Microsoft Teams
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  MICROSOFT TEAMS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  MICROSOFT TEAMS");
+    info!("------------------------------------------------------------------\n");
 
     let teams_action = Action::new(
         "notifications",
@@ -77,11 +80,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching Teams message...");
+    info!("  Dispatching Teams message...");
     let outcome = harness.dispatch(&teams_action).await?;
-    println!("  Action ID: {}", teams_action.id);
-    println!("  Outcome:   {:?}", outcome);
-    println!(
+    info!("  Action ID: {}", teams_action.id);
+    info!("  Outcome:   {:?}", outcome);
+    info!(
         "  Provider called: {} time(s)\n",
         harness.provider("teams").unwrap().call_count()
     );
@@ -90,9 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Discord
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DISCORD");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DISCORD");
+    info!("------------------------------------------------------------------\n");
 
     let discord_action = Action::new(
         "notifications",
@@ -111,11 +114,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching Discord message with embed...");
+    info!("  Dispatching Discord message with embed...");
     let outcome = harness.dispatch(&discord_action).await?;
-    println!("  Action ID: {}", discord_action.id);
-    println!("  Outcome:   {:?}", outcome);
-    println!(
+    info!("  Action ID: {}", discord_action.id);
+    info!("  Outcome:   {:?}", outcome);
+    info!(
         "  Provider called: {} time(s)\n",
         harness.provider("discord").unwrap().call_count()
     );
@@ -124,22 +127,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("══════════════════════════════════════════════════════════════");
-    println!("  SUMMARY");
-    println!("══════════════════════════════════════════════════════════════\n");
+    info!("══════════════════════════════════════════════════════════════");
+    info!("  SUMMARY");
+    info!("══════════════════════════════════════════════════════════════\n");
 
     let mut all_passed = true;
     for (name, outcome) in &results {
         let passed = matches!(outcome, ActionOutcome::Executed(_));
         let status = if passed { "PASS" } else { "FAIL" };
-        println!("  [{status}] {name}: {outcome:?}");
+        info!("  [{status}] {name}: {outcome:?}");
         if !passed {
             all_passed = false;
         }
     }
 
-    println!();
-    println!(
+    info!("");
+    info!(
         "  Total dispatched: {}  |  Twilio calls: {}  |  Teams calls: {}  |  Discord calls: {}",
         results.len(),
         harness.provider("twilio").unwrap().call_count(),
@@ -148,12 +151,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  Simulation cluster shut down");
+    info!("\n  Simulation cluster shut down");
 
     if all_passed {
-        println!("\n  All providers dispatched successfully.");
+        info!("\n  All providers dispatched successfully.");
     } else {
-        println!("\n  Some providers failed. See details above.");
+        info!("\n  Some providers failed. See details above.");
         std::process::exit(1);
     }
 

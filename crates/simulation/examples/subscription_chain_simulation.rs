@@ -20,6 +20,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const CHAIN_RULE: &str = r#"
 rules:
@@ -68,19 +69,21 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     CHAIN SUBSCRIPTION SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("     CHAIN SUBSCRIPTION SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // SCENARIO 1: Subscribe to a 4-step ETL pipeline chain
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: ETL PIPELINE CHAIN SUBSCRIPTION");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: ETL PIPELINE CHAIN SUBSCRIPTION");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  A 4-step ETL pipeline (validate -> extract -> transform -> load)");
-    println!("  is executed while a subscriber watches step-by-step progress.\n");
+    info!("  A 4-step ETL pipeline (validate -> extract -> transform -> load)");
+    info!("  is executed while a subscriber watches step-by-step progress.\n");
 
     // Set up providers for each step.
     let validate_provider = Arc::new(RecordingProvider::new("validator").with_response_fn(|_| {
@@ -156,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Subscribe to the event stream BEFORE dispatching.
     let mut stream_rx = gateway.stream_tx().subscribe();
 
-    println!("  Subscriber connected to event stream\n");
+    info!("  Subscriber connected to event stream\n");
 
     // Dispatch the ingest action to trigger the chain.
     let action = Action::new(
@@ -169,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  -> Dispatching ingest action...");
+    info!("  -> Dispatching ingest action...");
     let outcome = gateway.dispatch(action, None).await?;
 
     let chain_id = match &outcome {
@@ -179,10 +182,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             total_steps,
             first_step,
         } => {
-            println!("     Chain started: {chain_name}");
-            println!("     Chain ID:      {chain_id}");
-            println!("     Total steps:   {total_steps}");
-            println!("     First step:    {first_step}");
+            info!("     Chain started: {chain_name}");
+            info!("     Chain ID:      {chain_id}");
+            info!("     Total steps:   {total_steps}");
+            info!("     First step:    {first_step}");
             chain_id.clone()
         }
         other => {
@@ -193,9 +196,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Drain the initial ActionDispatched event.
     tokio::time::sleep(Duration::from_millis(20)).await;
     let initial_events = drain_events(&mut stream_rx);
-    println!("\n  Initial events after dispatch:");
+    info!("\n  Initial events after dispatch:");
     for event in &initial_events {
-        println!(
+        info!(
             "    [{:>15}] ns={}",
             event_type_label(&event.event_type),
             event.namespace
@@ -203,7 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Advance through all 4 steps, watching events after each.
-    println!("\n  Advancing chain steps and watching subscription events:\n");
+    info!("\n  Advancing chain steps and watching subscription events:\n");
 
     let step_names = ["validate", "extract", "transform", "load"];
     let mut total_step_completed = 0;
@@ -217,7 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let step_events = drain_events(&mut stream_rx);
 
-        println!("  Step {} ({step_name}):", i + 1);
+        info!("  Step {} ({step_name}):", i + 1);
         for event in &step_events {
             match &event.event_type {
                 StreamEventType::ChainStepCompleted {
@@ -228,7 +231,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } => {
                     total_step_completed += 1;
-                    println!(
+                    info!(
                         "    [step_completed] step={name} index={step_index} success={success} next={}",
                         next_step.as_deref().unwrap_or("(none)")
                     );
@@ -239,25 +242,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } => {
                     saw_chain_completed = true;
-                    println!(
+                    info!(
                         "    [chain_completed] status={status} path=[{}]",
                         execution_path.join(" -> ")
                     );
                 }
                 StreamEventType::ChainAdvanced { chain_id: cid } => {
-                    println!("    [chain_advanced] chain_id={}", &cid[..8.min(cid.len())]);
+                    info!("    [chain_advanced] chain_id={}", &cid[..8.min(cid.len())]);
                 }
                 _ => {
-                    println!("    [{:>15}]", event_type_label(&event.event_type));
+                    info!("    [{:>15}]", event_type_label(&event.event_type));
                 }
             }
         }
     }
 
     // Verify we received step completion events for each step.
-    println!("\n  Summary:");
-    println!("    Step completed events: {total_step_completed}");
-    println!("    Chain completed event: {saw_chain_completed}");
+    info!("\n  Summary:");
+    info!("    Step completed events: {total_step_completed}");
+    info!("    Chain completed event: {saw_chain_completed}");
     assert_eq!(
         total_step_completed, 4,
         "expected 4 step completion events, got {total_step_completed}"
@@ -269,14 +272,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_chain_status("data", "tenant-1", &chain_id)
         .await?
         .expect("chain state should exist");
-    println!("    Final chain status: {:?}", chain_state.status);
+    info!("    Final chain status: {:?}", chain_state.status);
     assert_eq!(
         chain_state.status,
         acteon_core::chain::ChainStatus::Completed
     );
 
     // Verify all providers were called exactly once.
-    println!(
+    info!(
         "    Provider calls: validator={}, extractor={}, transformer={}, loader={}",
         validate_provider.call_count(),
         extract_provider.call_count(),
@@ -285,17 +288,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Filter events by chain ID
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: CHAIN ID FILTERING");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: CHAIN ID FILTERING");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  Two chains run concurrently. A subscriber filters events");
-    println!("  to watch only one specific chain's lifecycle.\n");
+    info!("  Two chains run concurrently. A subscriber filters events");
+    info!("  to watch only one specific chain's lifecycle.\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -377,21 +380,21 @@ rules:
     let action_fast = Action::new("test", "tenant-1", "svc-a", "fast", serde_json::json!({}));
     let action_slow = Action::new("test", "tenant-1", "svc-b", "slow", serde_json::json!({}));
 
-    println!("  Starting chain-fast...");
+    info!("  Starting chain-fast...");
     let outcome_fast = gateway.dispatch(action_fast, None).await?;
     let chain_id_fast = match &outcome_fast {
         ActionOutcome::ChainStarted { chain_id, .. } => {
-            println!("    chain_id: {}", &chain_id[..8.min(chain_id.len())]);
+            info!("    chain_id: {}", &chain_id[..8.min(chain_id.len())]);
             chain_id.clone()
         }
         other => panic!("unexpected: {other:?}"),
     };
 
-    println!("  Starting chain-slow...");
+    info!("  Starting chain-slow...");
     let outcome_slow = gateway.dispatch(action_slow, None).await?;
     let chain_id_slow = match &outcome_slow {
         ActionOutcome::ChainStarted { chain_id, .. } => {
-            println!("    chain_id: {}", &chain_id[..8.min(chain_id.len())]);
+            info!("    chain_id: {}", &chain_id[..8.min(chain_id.len())]);
             chain_id.clone()
         }
         other => panic!("unexpected: {other:?}"),
@@ -424,18 +427,18 @@ rules:
         .filter(|e| matches_chain_id(&e.event_type, &chain_id_slow))
         .collect();
 
-    println!("\n  Total events:       {}", all_events.len());
-    println!("  chain-fast events:  {}", fast_events.len());
-    println!("  chain-slow events:  {}", slow_events.len());
+    info!("\n  Total events:       {}", all_events.len());
+    info!("  chain-fast events:  {}", fast_events.len());
+    info!("  chain-slow events:  {}", slow_events.len());
 
-    println!("\n  chain-fast lifecycle:");
+    info!("\n  chain-fast lifecycle:");
     for event in &fast_events {
-        println!("    [{:>15}]", event_type_label(&event.event_type));
+        info!("    [{:>15}]", event_type_label(&event.event_type));
     }
 
-    println!("\n  chain-slow lifecycle:");
+    info!("\n  chain-slow lifecycle:");
     for event in &slow_events {
-        println!("    [{:>15}]", event_type_label(&event.event_type));
+        info!("    [{:>15}]", event_type_label(&event.event_type));
     }
 
     // chain-fast: 2 steps -> 2 step_completed + 1 chain_completed + 2 chain_advanced
@@ -461,14 +464,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("              ALL SCENARIOS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("              ALL SCENARIOS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

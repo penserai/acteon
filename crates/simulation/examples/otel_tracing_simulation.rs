@@ -23,6 +23,7 @@ use acteon_simulation::prelude::*;
 use acteon_state::lock::DistributedLock;
 use acteon_state::store::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 // =============================================================================
 // Rule definitions
@@ -184,17 +185,17 @@ rules:
 // =============================================================================
 
 fn print_header(title: &str) {
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  {title}");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  {title}");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 }
 
 fn print_trace(lines: &[&str]) {
-    println!("  Expected OTel trace structure:");
+    info!("  Expected OTel trace structure:");
     for line in lines {
-        println!("    {line}");
+        info!("    {line}");
     }
-    println!();
+    info!("");
 }
 
 fn parse_rules(yaml: &str) -> Vec<Rule> {
@@ -211,7 +212,7 @@ async fn timed_dispatch(
     let start = Instant::now();
     let outcome = harness.dispatch(action).await?;
     let elapsed = start.elapsed();
-    println!("  [{elapsed:>8.2?}] {label}: {outcome:?}");
+    info!("  [{elapsed:>8.2?}] {label}: {outcome:?}");
     Ok(outcome)
 }
 
@@ -223,8 +224,8 @@ async fn timed_dispatch(
 async fn scenario_basic_dispatch() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 1: BASIC DISPATCH - FULL SPAN TREE");
 
-    println!("  A single action produces a hierarchy of tracing spans.");
-    println!("  With OTel enabled, each span is exported to the collector.\n");
+    info!("  A single action produces a hierarchy of tracing spans.");
+    info!("  With OTel enabled, each span is exported to the collector.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -242,7 +243,7 @@ async fn scenario_basic_dispatch() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({"to": "user@example.com", "subject": "Welcome!"}),
     );
     timed_dispatch(&harness, &action, "send_welcome via email").await?;
-    println!(
+    info!(
         "  Provider calls: {}\n",
         harness.provider("email").unwrap().call_count()
     );
@@ -267,7 +268,7 @@ async fn scenario_basic_dispatch() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_verdicts_allow_suppress_reroute() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 2a: VERDICTS - ALLOW / SUPPRESS / REROUTE");
 
-    println!("  Different rule verdicts produce different child spans.\n");
+    info!("  Different rule verdicts produce different child spans.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -280,7 +281,7 @@ async fn scenario_verdicts_allow_suppress_reroute() -> Result<(), Box<dyn std::e
     )
     .await?;
 
-    println!("  --- ALLOW (no rule matched) ---");
+    info!("  --- ALLOW (no rule matched) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -295,7 +296,7 @@ async fn scenario_verdicts_allow_suppress_reroute() -> Result<(), Box<dyn std::e
     .await?;
     print_trace(&["gateway.dispatch -> Allow(None) -> execute_action"]);
 
-    println!("  --- SUPPRESS (block-spam) ---");
+    info!("  --- SUPPRESS (block-spam) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -310,7 +311,7 @@ async fn scenario_verdicts_allow_suppress_reroute() -> Result<(), Box<dyn std::e
     .await?;
     print_trace(&["gateway.dispatch -> Suppress(\"block-spam\") [no execute_action]"]);
 
-    println!("  --- REROUTE (reroute-urgent-to-sms) ---");
+    info!("  --- REROUTE (reroute-urgent-to-sms) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -323,7 +324,7 @@ async fn scenario_verdicts_allow_suppress_reroute() -> Result<(), Box<dyn std::e
         "Reroute",
     )
     .await?;
-    println!(
+    info!(
         "  SMS calls: {}",
         harness.provider("sms").unwrap().call_count()
     );
@@ -353,7 +354,7 @@ async fn scenario_verdicts_throttle_dedup_modify() -> Result<(), Box<dyn std::er
     .await?;
 
     // Throttle
-    println!("  --- THROTTLE (throttle-marketing) ---");
+    info!("  --- THROTTLE (throttle-marketing) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -369,7 +370,7 @@ async fn scenario_verdicts_throttle_dedup_modify() -> Result<(), Box<dyn std::er
     print_trace(&["gateway.dispatch -> Throttle(window=60s) [no execute_action]"]);
 
     // Deduplicate
-    println!("  --- DEDUPLICATE (dedup-notifications) ---");
+    info!("  --- DEDUPLICATE (dedup-notifications) ---");
     let n1 = Action::new(
         "notifications",
         "tenant-1",
@@ -394,7 +395,7 @@ async fn scenario_verdicts_throttle_dedup_modify() -> Result<(), Box<dyn std::er
     ]);
 
     // Modify
-    println!("  --- MODIFY (enrich-emails) ---");
+    info!("  --- MODIFY (enrich-emails) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -412,7 +413,7 @@ async fn scenario_verdicts_throttle_dedup_modify() -> Result<(), Box<dyn std::er
     let calls = harness.provider("email").unwrap().calls();
     if let Some(last) = calls.last() {
         let enriched = last.action.payload.get("tracking_enabled").is_some();
-        println!("  Payload enriched: tracking_enabled={enriched}");
+        info!("  Payload enriched: tracking_enabled={enriched}");
     }
     print_trace(&[
         "gateway.dispatch -> Modify(enrich-emails)",
@@ -428,8 +429,8 @@ async fn scenario_verdicts_throttle_dedup_modify() -> Result<(), Box<dyn std::er
 async fn scenario_error_spans() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 3: ERROR SPANS WITH RETRY LOGIC");
 
-    println!("  Provider failures produce error spans. The executor retries");
-    println!("  each attempt as a child span.\n");
+    info!("  Provider failures produce error spans. The executor retries");
+    info!("  each attempt as a child span.\n");
 
     let state = Arc::new(MemoryStateStore::new());
     let lock = Arc::new(MemoryDistributedLock::new());
@@ -460,8 +461,8 @@ async fn scenario_error_spans() -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .await?;
-    println!("  [{:>8.2?}] Flaky: {outcome:?}", start.elapsed());
-    println!("  Calls: {} (2 fail + 1 ok)\n", flaky.call_count());
+    info!("  [{:>8.2?}] Flaky: {outcome:?}", start.elapsed());
+    info!("  Calls: {} (2 fail + 1 ok)\n", flaky.call_count());
 
     print_trace(&[
         "gateway.dispatch -> Allow -> execute_action",
@@ -495,8 +496,8 @@ async fn scenario_error_spans() -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .await?;
-    println!("  [{:>8.2?}] Always-fail: {outcome:?}", start.elapsed());
-    println!("  Calls: {} (all failed)\n", fail.call_count());
+    info!("  [{:>8.2?}] Always-fail: {outcome:?}", start.elapsed());
+    info!("  Calls: {} (all failed)\n", fail.call_count());
 
     print_trace(&[
         "gateway.dispatch -> Allow -> execute_action",
@@ -513,8 +514,8 @@ async fn scenario_error_spans() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_high_concurrency() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 4: HIGH CONCURRENCY - 150 CONCURRENT DISPATCHES");
 
-    println!("  Tracing must not degrade throughput. Dispatches 150 actions");
-    println!("  concurrently and measures wall-clock time and per-action cost.\n");
+    info!("  Tracing must not degrade throughput. Dispatches 150 actions");
+    info!("  concurrently and measures wall-clock time and per-action cost.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -547,17 +548,17 @@ async fn scenario_high_concurrency() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|r| matches!(r, Ok(ActionOutcome::Executed(_))))
         .count();
 
-    println!("  Total time:     {elapsed:>10.2?}");
-    println!("  Successful:     {ok}/{count}");
-    println!("  Executed:       {executed}/{count}");
-    println!(
+    info!("  Total time:     {elapsed:>10.2?}");
+    info!("  Successful:     {ok}/{count}");
+    info!("  Executed:       {executed}/{count}");
+    info!(
         "  Provider calls: {}",
         harness.provider("email").unwrap().call_count()
     );
     let throughput = f64::from(count) / elapsed.as_secs_f64();
     let per_action = elapsed / count;
-    println!("  Throughput:     {throughput:.0} actions/sec");
-    println!("  Avg per action: {per_action:.2?}\n");
+    info!("  Throughput:     {throughput:.0} actions/sec");
+    info!("  Avg per action: {per_action:.2?}\n");
 
     print_trace(&[
         "150 independent root traces, each with:",
@@ -576,7 +577,7 @@ async fn scenario_high_concurrency() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 5: COMPLEX RULE EVALUATION - MULTI-RULE SET");
 
-    println!("  4 rules at priorities 1, 2, 5, 10. First match wins.\n");
+    info!("  4 rules at priorities 1, 2, 5, 10. First match wins.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -588,7 +589,7 @@ async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  --- suppress-debug (p=1) ---");
+    info!("  --- suppress-debug (p=1) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -602,7 +603,7 @@ async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  --- escalate-critical (p=2) ---");
+    info!("  --- escalate-critical (p=2) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -616,7 +617,7 @@ async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  --- dedup-warnings (p=5) ---");
+    info!("  --- dedup-warnings (p=5) ---");
     let w = Action::new(
         "monitoring",
         "acme",
@@ -636,7 +637,7 @@ async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
     .with_dedup_key("latency-w");
     timed_dispatch(&harness, &w2, "Dup warning").await?;
 
-    println!("  --- throttle-info (p=10) ---");
+    info!("  --- throttle-info (p=10) ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -650,7 +651,7 @@ async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  --- no match -> Allow ---");
+    info!("  --- no match -> Allow ---");
     timed_dispatch(
         &harness,
         &Action::new(
@@ -664,7 +665,7 @@ async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!(
+    info!(
         "\n  Final: Slack={}, PagerDuty={}",
         harness.provider("slack").unwrap().call_count(),
         harness.provider("pagerduty").unwrap().call_count(),
@@ -688,8 +689,8 @@ async fn scenario_complex_rules() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_state_machine() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 6: STATE MACHINE TRANSITIONS");
 
-    println!("  State machine verdicts produce spans for fingerprint");
-    println!("  computation, state lookup, and transition validation.\n");
+    info!("  State machine verdicts produce spans for fingerprint");
+    info!("  computation, state lookup, and transition validation.\n");
 
     let sm = StateMachineConfig::new("incident", "open")
         .with_state("open")
@@ -743,8 +744,8 @@ async fn scenario_state_machine() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_group_batching() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 7: GROUP BATCHING");
 
-    println!("  Group verdicts buffer events. Initial dispatch shows");
-    println!("  group assignment; flush is a separate trace.\n");
+    info!("  Group verdicts buffer events. Initial dispatch shows");
+    info!("  group assignment; flush is a separate trace.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -771,7 +772,7 @@ async fn scenario_group_batching() -> Result<(), Box<dyn std::error::Error>> {
         timed_dispatch(&harness, &action, &format!("{source}@{cluster}")).await?;
     }
 
-    println!(
+    info!(
         "\n  Provider calls: {} (buffered, not flushed)",
         harness.provider("slack").unwrap().call_count()
     );
@@ -796,8 +797,8 @@ async fn scenario_group_batching() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_chain_tracing() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 8: CHAIN TRACING - MULTI-STEP PIPELINE");
 
-    println!("  Chain verdicts start an async multi-step pipeline. Each");
-    println!("  step advance produces its own trace linked to the chain.\n");
+    info!("  Chain verdicts start an async multi-step pipeline. Each");
+    info!("  step advance produces its own trace linked to the chain.\n");
 
     let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -866,7 +867,7 @@ async fn scenario_chain_tracing() -> Result<(), Box<dyn std::error::Error>> {
             None,
         )
         .await?;
-    println!("  [{:>8.2?}] Chain dispatch: {outcome:?}", start.elapsed());
+    info!("  [{:>8.2?}] Chain dispatch: {outcome:?}", start.elapsed());
 
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted {
@@ -875,11 +876,11 @@ async fn scenario_chain_tracing() -> Result<(), Box<dyn std::error::Error>> {
             total_steps,
             ..
         } => {
-            println!("  Chain: {chain_name}, steps: {total_steps}, id: {chain_id}");
+            info!("  Chain: {chain_name}, steps: {total_steps}, id: {chain_id}");
             chain_id.clone()
         }
         other => {
-            println!("  Unexpected: {other:?}");
+            info!("  Unexpected: {other:?}");
             gateway.shutdown().await;
             return Ok(());
         }
@@ -891,12 +892,12 @@ async fn scenario_chain_tracing() -> Result<(), Box<dyn std::error::Error>> {
         gateway
             .advance_chain("research", "tenant-1", &chain_id)
             .await?;
-        println!("  [{:>8.2?}] Step {step} advanced", step_start.elapsed());
+        info!("  [{:>8.2?}] Step {step} advanced", step_start.elapsed());
     }
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    println!(
+    info!(
         "\n  Provider calls: search-api={}, llm-api={}, email={}",
         search.call_count(),
         summarize.call_count(),
@@ -907,7 +908,7 @@ async fn scenario_chain_tracing() -> Result<(), Box<dyn std::error::Error>> {
         .get_chain_status("research", "tenant-1", &chain_id)
         .await?
     {
-        println!("  Chain status: {:?}", cs.status);
+        info!("  Chain status: {:?}", cs.status);
     }
 
     print_trace(&[
@@ -932,8 +933,8 @@ async fn scenario_chain_tracing() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_batch_dispatch() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 9: BATCH DISPATCH WITH MIXED VERDICTS");
 
-    println!("  Batch dispatch sends multiple actions. Each action gets");
-    println!("  its own trace. Timing shows batch overhead.\n");
+    info!("  Batch dispatch sends multiple actions. Each action gets");
+    info!("  its own trace. Timing shows batch overhead.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -972,11 +973,11 @@ async fn scenario_batch_dispatch() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("  Batch of 10 in {elapsed:.2?}:");
-    println!("    Allowed:    {allowed}");
-    println!("    Suppressed: {suppressed}");
-    println!("    Rerouted:   {rerouted}");
-    println!("    Avg/action: {:.2?}\n", elapsed / 10);
+    info!("  Batch of 10 in {elapsed:.2?}:");
+    info!("    Allowed:    {allowed}");
+    info!("    Suppressed: {suppressed}");
+    info!("    Rerouted:   {rerouted}");
+    info!("    Avg/action: {:.2?}\n", elapsed / 10);
 
     print_trace(&[
         "10 independent traces with mixed verdicts:",
@@ -995,9 +996,9 @@ async fn scenario_batch_dispatch() -> Result<(), Box<dyn std::error::Error>> {
 async fn scenario_no_collector() -> Result<(), Box<dyn std::error::Error>> {
     print_header("SCENARIO 10: NO COLLECTOR - GRACEFUL DEGRADATION");
 
-    println!("  When OTel is disabled (the default), tracing spans are");
-    println!("  created via the `tracing` crate but not exported. This");
-    println!("  ensures zero overhead without a collector.\n");
+    info!("  When OTel is disabled (the default), tracing spans are");
+    info!("  created via the `tracing` crate but not exported. This");
+    info!("  ensures zero overhead without a collector.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -1020,14 +1021,14 @@ async fn scenario_no_collector() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("\n  OTel disabled: no exporter overhead, spans only in fmt logs.");
-    println!("  Enable with [telemetry] enabled = true in acteon.toml.");
-    println!();
-    println!("  Note: Approval workflow tracing and cross-service context");
-    println!("  propagation (traceparent/tracestate headers) are HTTP-layer");
-    println!("  features. See these simulations for those scenarios:");
-    println!("    - approval_simulation.rs (requires running server)");
-    println!("    - http_client_simulation.rs (requires running server)");
+    info!("\n  OTel disabled: no exporter overhead, spans only in fmt logs.");
+    info!("  Enable with [telemetry] enabled = true in acteon.toml.");
+    info!("");
+    info!("  Note: Approval workflow tracing and cross-service context");
+    info!("  propagation (traceparent/tracestate headers) are HTTP-layer");
+    info!("  features. See these simulations for those scenarios:");
+    info!("    - approval_simulation.rs (requires running server)");
+    info!("    - http_client_simulation.rs (requires running server)");
 
     harness.teardown().await?;
     Ok(())
@@ -1035,13 +1036,15 @@ async fn scenario_no_collector() -> Result<(), Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║        OPENTELEMETRY TRACING SIMULATION DEMO                 ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
-    println!();
-    println!("  Exercises diverse dispatch paths showing the OTel span");
-    println!("  hierarchy. No collector needed -- output describes traces");
-    println!("  and logs per-operation timing.");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║        OPENTELEMETRY TRACING SIMULATION DEMO                 ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
+    info!("");
+    info!("  Exercises diverse dispatch paths showing the OTel span");
+    info!("  hierarchy. No collector needed -- output describes traces");
+    info!("  and logs per-operation timing.");
 
     scenario_basic_dispatch().await?;
     scenario_verdicts_allow_suppress_reroute().await?;
@@ -1055,15 +1058,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     scenario_batch_dispatch().await?;
     scenario_no_collector().await?;
 
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║              OTEL TRACING SIMULATION COMPLETE                ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
-    println!();
-    println!("  To see real traces, enable telemetry in acteon.toml:");
-    println!("    [telemetry]");
-    println!("    enabled = true");
-    println!("    endpoint = \"http://localhost:4317\"");
-    println!("    sample_ratio = 1.0");
+    info!("\n╔══════════════════════════════════════════════════════════════╗");
+    info!("║              OTEL TRACING SIMULATION COMPLETE                ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
+    info!("");
+    info!("  To see real traces, enable telemetry in acteon.toml:");
+    info!("    [telemetry]");
+    info!("    enabled = true");
+    info!("    endpoint = \"http://localhost:4317\"");
+    info!("    sample_ratio = 1.0");
 
     Ok(())
 }

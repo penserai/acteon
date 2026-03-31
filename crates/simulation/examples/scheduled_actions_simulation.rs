@@ -16,6 +16,7 @@
 
 use acteon_core::{Action, ActionOutcome};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 // =============================================================================
 // Rule definitions
@@ -122,19 +123,21 @@ rules:
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║       DELAYED / SCHEDULED ACTIONS SIMULATION DEMO            ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║       DELAYED / SCHEDULED ACTIONS SIMULATION DEMO            ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Delayed Email Reminder
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: DELAYED EMAIL REMINDER");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: DELAYED EMAIL REMINDER");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  When a user signs up, we schedule a welcome email for 24 hours");
-    println!("  later. A cart-abandonment reminder is scheduled for 1 hour.\n");
+    info!("  When a user signs up, we schedule a welcome email for 24 hours");
+    info!("  later. A cart-abandonment reminder is scheduled for 1 hour.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -146,9 +149,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  Started simulation cluster");
-    println!("  Registered 'email' recording provider");
-    println!("  Loaded rules: schedule-welcome-email (24h), schedule-cart-reminder (1h)\n");
+    info!("  Started simulation cluster");
+    info!("  Registered 'email' recording provider");
+    info!("  Loaded rules: schedule-welcome-email (24h), schedule-cart-reminder (1h)\n");
 
     // Sign-up triggers welcome email -- should be scheduled, not executed yet
     let welcome = Action::new(
@@ -163,12 +166,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  [dispatch] Welcome email for alice@example.com");
+    info!("  [dispatch] Welcome email for alice@example.com");
     let outcome = harness.dispatch(&welcome).await?;
     print_scheduled_outcome(&outcome, "welcome_email");
 
     // Provider should NOT have been called yet -- action is scheduled
-    println!(
+    info!(
         "  [verify]   Provider calls: {} (not yet executed -- scheduled for later)",
         harness.provider("email").unwrap().call_count()
     );
@@ -187,11 +190,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("\n  [dispatch] Cart reminder for bob@example.com");
+    info!("\n  [dispatch] Cart reminder for bob@example.com");
     let outcome = harness.dispatch(&cart).await?;
     print_scheduled_outcome(&outcome, "cart_reminder");
 
-    println!(
+    info!(
         "  [verify]   Provider calls: {} (both emails deferred)",
         harness.provider("email").unwrap().call_count()
     );
@@ -210,27 +213,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("\n  [dispatch] Order receipt for alice@example.com (no schedule rule)");
+    info!("\n  [dispatch] Order receipt for alice@example.com (no schedule rule)");
     let outcome = harness.dispatch(&receipt).await?;
-    println!("  [result]   Outcome: {:?}", outcome_label(&outcome));
-    println!(
+    info!("  [result]   Outcome: {:?}", outcome_label(&outcome));
+    info!(
         "  [verify]   Provider calls: {} (receipt sent immediately!)",
         harness.provider("email").unwrap().call_count()
     );
     assert_eq!(harness.provider("email").unwrap().call_count(), 1);
 
     harness.teardown().await?;
-    println!("\n  Simulation shut down\n");
+    info!("\n  Simulation shut down\n");
 
     // =========================================================================
     // SCENARIO 2: Off-Peak Retry
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: OFF-PEAK RETRY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: OFF-PEAK RETRY");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A data synchronization that failed during peak hours is");
-    println!("  rescheduled for off-peak execution via a schedule rule.\n");
+    info!("  A data synchronization that failed during peak hours is");
+    info!("  rescheduled for off-peak execution via a schedule rule.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -241,8 +244,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  Started simulation cluster");
-    println!("  Loaded rule: schedule-off-peak-retry (30s delay)\n");
+    info!("  Started simulation cluster");
+    info!("  Loaded rule: schedule-off-peak-retry (30s delay)\n");
 
     // The retry action matches the schedule rule
     let retry = Action::new(
@@ -259,11 +262,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  [dispatch] Data sync retry (attempt #2, failed during peak)");
+    info!("  [dispatch] Data sync retry (attempt #2, failed during peak)");
     let outcome = harness.dispatch(&retry).await?;
     print_scheduled_outcome(&outcome, "data_sync_retry");
 
-    println!(
+    info!(
         "  [verify]   Provider calls: {} (retry deferred to off-peak window)",
         harness.provider("data-pipeline").unwrap().call_count()
     );
@@ -281,27 +284,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("\n  [dispatch] Fresh data sync (not a retry -- executes immediately)");
+    info!("\n  [dispatch] Fresh data sync (not a retry -- executes immediately)");
     let outcome = harness.dispatch(&immediate_sync).await?;
-    println!("  [result]   Outcome: {:?}", outcome_label(&outcome));
-    println!(
+    info!("  [result]   Outcome: {:?}", outcome_label(&outcome));
+    info!(
         "  [verify]   Provider calls: {} (fresh sync ran immediately)",
         harness.provider("data-pipeline").unwrap().call_count()
     );
     assert_eq!(harness.provider("data-pipeline").unwrap().call_count(), 1);
 
     harness.teardown().await?;
-    println!("\n  Simulation shut down\n");
+    info!("\n  Simulation shut down\n");
 
     // =========================================================================
     // SCENARIO 3: Escalation Workflow
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: ESCALATION WORKFLOW");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: ESCALATION WORKFLOW");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  An alert fires and an escalation is scheduled for 30 minutes.");
-    println!("  Critical alerts bypass scheduling entirely and go to PagerDuty.\n");
+    info!("  An alert fires and an escalation is scheduled for 30 minutes.");
+    info!("  Critical alerts bypass scheduling entirely and go to PagerDuty.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -314,12 +317,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  Started simulation cluster");
-    println!("  Registered 'slack' and 'pagerduty' providers");
-    println!("  Loaded rules:");
-    println!("    - critical-alert-immediate (priority 1, reroute to pagerduty)");
-    println!("    - schedule-non-critical-alert (priority 10, 5-minute delay)");
-    println!("    - schedule-escalation (priority 10, 30-minute delay)\n");
+    info!("  Started simulation cluster");
+    info!("  Registered 'slack' and 'pagerduty' providers");
+    info!("  Loaded rules:");
+    info!("    - critical-alert-immediate (priority 1, reroute to pagerduty)");
+    info!("    - schedule-non-critical-alert (priority 10, 5-minute delay)");
+    info!("    - schedule-escalation (priority 10, 30-minute delay)\n");
 
     // Non-critical alert gets scheduled
     let warning_alert = Action::new(
@@ -334,7 +337,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  [dispatch] WARNING alert from api-gateway");
+    info!("  [dispatch] WARNING alert from api-gateway");
     let outcome = harness.dispatch(&warning_alert).await?;
     print_scheduled_outcome(&outcome, "non-critical alert");
 
@@ -351,10 +354,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("\n  [dispatch] CRITICAL alert from database (bypasses scheduling)");
+    info!("\n  [dispatch] CRITICAL alert from database (bypasses scheduling)");
     let outcome = harness.dispatch(&critical_alert).await?;
-    println!("  [result]   Outcome: {:?}", outcome_label(&outcome));
-    println!(
+    info!("  [result]   Outcome: {:?}", outcome_label(&outcome));
+    info!(
         "  [verify]   PagerDuty calls: {} (critical alert escalated immediately!)",
         harness.provider("pagerduty").unwrap().call_count()
     );
@@ -374,32 +377,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("\n  [dispatch] Escalation for warning alert (scheduled for 30 min)");
+    info!("\n  [dispatch] Escalation for warning alert (scheduled for 30 min)");
     let outcome = harness.dispatch(&escalation).await?;
     print_scheduled_outcome(&outcome, "escalation");
 
-    println!("\n  Final state:");
-    println!(
+    info!("\n  Final state:");
+    info!(
         "    Slack calls: {} (warning alert was scheduled, not sent yet)",
         harness.provider("slack").unwrap().call_count()
     );
-    println!(
+    info!(
         "    PagerDuty calls: {} (only the critical alert executed)",
         harness.provider("pagerduty").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n  Simulation shut down\n");
+    info!("\n  Simulation shut down\n");
 
     // =========================================================================
     // SCENARIO 4: Multi-Tenant Scheduling
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: MULTI-TENANT SCHEDULING");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: MULTI-TENANT SCHEDULING");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Two tenants schedule actions independently. Each tenant's");
-    println!("  scheduled actions are isolated from the other.\n");
+    info!("  Two tenants schedule actions independently. Each tenant's");
+    info!("  scheduled actions are isolated from the other.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -410,8 +413,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  Started simulation cluster");
-    println!("  Loaded rule: schedule-welcome-email (24h delay)\n");
+    info!("  Started simulation cluster");
+    info!("  Loaded rule: schedule-welcome-email (24h delay)\n");
 
     // Tenant A schedules a welcome email
     let tenant_a_action = Action::new(
@@ -425,7 +428,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  [dispatch] Tenant ALPHA: welcome email for user-a@alpha.com");
+    info!("  [dispatch] Tenant ALPHA: welcome email for user-a@alpha.com");
     let outcome_a = harness.dispatch(&tenant_a_action).await?;
     print_scheduled_outcome(&outcome_a, "tenant-alpha");
 
@@ -441,12 +444,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("\n  [dispatch] Tenant BETA: welcome email for user-b@beta.com");
+    info!("\n  [dispatch] Tenant BETA: welcome email for user-b@beta.com");
     let outcome_b = harness.dispatch(&beta_action).await?;
     print_scheduled_outcome(&outcome_b, "tenant-beta");
 
     // Both are scheduled independently
-    println!(
+    info!(
         "\n  [verify]   Provider calls: {} (both tenants' emails deferred)",
         harness.provider("email").unwrap().call_count()
     );
@@ -462,13 +465,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     ) = (&outcome_a, &outcome_b)
     {
-        println!("  [verify]   Tenant ALPHA action_id: {id_a}");
-        println!("  [verify]   Tenant BETA  action_id: {id_b}");
+        info!("  [verify]   Tenant ALPHA action_id: {id_a}");
+        info!("  [verify]   Tenant BETA  action_id: {id_b}");
         assert_ne!(
             id_a, id_b,
             "each tenant should get a unique scheduled action ID"
         );
-        println!("  [verify]   Unique action IDs confirmed (tenant isolation)");
+        info!("  [verify]   Unique action IDs confirmed (tenant isolation)");
     }
 
     // Tenant A sends a non-scheduled action -- only their immediate action runs
@@ -483,28 +486,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("\n  [dispatch] Tenant ALPHA: password reset (immediate)");
+    info!("\n  [dispatch] Tenant ALPHA: password reset (immediate)");
     let outcome = harness.dispatch(&tenant_a_immediate).await?;
-    println!("  [result]   Outcome: {:?}", outcome_label(&outcome));
-    println!(
+    info!("  [result]   Outcome: {:?}", outcome_label(&outcome));
+    info!(
         "  [verify]   Provider calls: {} (only the immediate action executed)",
         harness.provider("email").unwrap().call_count()
     );
     assert_eq!(harness.provider("email").unwrap().call_count(), 1);
 
     harness.teardown().await?;
-    println!("\n  Simulation shut down\n");
+    info!("\n  Simulation shut down\n");
 
     // =========================================================================
     // SCENARIO 5: Batch Processing Window
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: BATCH PROCESSING WINDOW");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: BATCH PROCESSING WINDOW");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Multiple small report-generation requests arrive and are all");
-    println!("  scheduled for a batch processing window (60s delay). When the");
-    println!("  window arrives, the background processor dispatches them all.\n");
+    info!("  Multiple small report-generation requests arrive and are all");
+    info!("  scheduled for a batch processing window (60s delay). When the");
+    info!("  window arrives, the background processor dispatches them all.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -515,8 +518,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("  Started simulation cluster");
-    println!("  Loaded rule: schedule-report-generation (60s batch window)\n");
+    info!("  Started simulation cluster");
+    info!("  Loaded rule: schedule-report-generation (60s batch window)\n");
 
     let report_requests = vec![
         ("acme-corp", "monthly-revenue", "January 2026"),
@@ -540,45 +543,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
         );
 
-        println!("  [dispatch] Report: {report_name} ({period})");
+        info!("  [dispatch] Report: {report_name} ({period})");
         let outcome = harness.dispatch(&action).await?;
 
         if matches!(outcome, ActionOutcome::Scheduled { .. }) {
             scheduled_count += 1;
-            println!("  [result]   Scheduled for batch window");
+            info!("  [result]   Scheduled for batch window");
         } else {
-            println!("  [result]   Unexpected: {:?}", outcome_label(&outcome));
+            info!("  [result]   Unexpected: {:?}", outcome_label(&outcome));
         }
     }
 
-    println!(
+    info!(
         "\n  [summary]  {} of {} reports scheduled for batch processing",
         scheduled_count,
         report_requests.len()
     );
-    println!(
+    info!(
         "  [verify]   Provider calls: {} (nothing executed yet -- all batched)",
         harness.provider("report-engine").unwrap().call_count()
     );
     assert_eq!(scheduled_count, report_requests.len());
     assert_eq!(harness.provider("report-engine").unwrap().call_count(), 0);
 
-    println!("\n  When the 60-second batch window elapses, the background");
-    println!("  processor will dispatch all 5 reports to the report-engine");
-    println!("  provider in a single batch window.");
+    info!("\n  When the 60-second batch window elapses, the background");
+    info!("  processor will dispatch all 5 reports to the report-engine");
+    info!("  provider in a single batch window.");
 
     harness.teardown().await?;
-    println!("\n  Simulation shut down\n");
+    info!("\n  Simulation shut down\n");
 
     // =========================================================================
     // SCENARIO 6: Dry-Run with Schedule Rules
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 6: DRY-RUN WITH SCHEDULE RULES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 6: DRY-RUN WITH SCHEDULE RULES");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Dry-run mode shows what *would* happen without persisting any");
-    println!("  scheduled action. Useful for testing rules before deployment.\n");
+    info!("  Dry-run mode shows what *would* happen without persisting any");
+    info!("  scheduled action. Useful for testing rules before deployment.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -600,9 +603,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  [dry-run]  Welcome email for test@example.com");
+    info!("  [dry-run]  Welcome email for test@example.com");
     let outcome = harness.dispatch_dry_run(&action).await?;
-    println!("  [result]   Outcome: {outcome:?}");
+    info!("  [result]   Outcome: {outcome:?}");
 
     match &outcome {
         ActionOutcome::DryRun {
@@ -610,61 +613,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             matched_rule,
             would_be_provider,
         } => {
-            println!("  [detail]   Verdict: {verdict}");
-            println!("  [detail]   Matched rule: {matched_rule:?}");
-            println!("  [detail]   Would-be provider: {would_be_provider}");
+            info!("  [detail]   Verdict: {verdict}");
+            info!("  [detail]   Matched rule: {matched_rule:?}");
+            info!("  [detail]   Would-be provider: {would_be_provider}");
         }
         _ => {
-            println!(
+            info!(
                 "  [detail]   (non-DryRun outcome: {:?})",
                 outcome_label(&outcome)
             );
         }
     }
 
-    println!(
+    info!(
         "  [verify]   Provider calls: {} (dry-run never executes or schedules)",
         harness.provider("email").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n  Simulation shut down\n");
+    info!("\n  Simulation shut down\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              SCHEDULED ACTIONS DEMO COMPLETE                 ║");
-    println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║                                                              ║");
-    println!("║  Scenarios demonstrated:                                     ║");
-    println!("║                                                              ║");
-    println!("║  1. Delayed Email Reminder                                   ║");
-    println!("║     - Welcome email scheduled for 24h after sign-up          ║");
-    println!("║     - Cart reminder scheduled for 1h                         ║");
-    println!("║     - Immediate emails bypass scheduling                     ║");
-    println!("║                                                              ║");
-    println!("║  2. Off-Peak Retry                                           ║");
-    println!("║     - Failed sync retry deferred to quiet window             ║");
-    println!("║     - Fresh syncs execute immediately                        ║");
-    println!("║                                                              ║");
-    println!("║  3. Escalation Workflow                                      ║");
-    println!("║     - Critical alerts bypass scheduling (rerouted)           ║");
-    println!("║     - Non-critical alerts scheduled for batch delivery       ║");
-    println!("║     - Escalation scheduled for 30-minute follow-up           ║");
-    println!("║                                                              ║");
-    println!("║  4. Multi-Tenant Scheduling                                  ║");
-    println!("║     - Independent scheduling per tenant                      ║");
-    println!("║     - Unique action IDs per tenant (isolation)               ║");
-    println!("║                                                              ║");
-    println!("║  5. Batch Processing Window                                  ║");
-    println!("║     - 5 reports scheduled for 60s batch window               ║");
-    println!("║     - Zero provider calls until window elapses               ║");
-    println!("║                                                              ║");
-    println!("║  6. Dry-Run with Schedule Rules                              ║");
-    println!("║     - Preview scheduling behavior without side effects       ║");
-    println!("║                                                              ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              SCHEDULED ACTIONS DEMO COMPLETE                 ║");
+    info!("╠══════════════════════════════════════════════════════════════╣");
+    info!("║                                                              ║");
+    info!("║  Scenarios demonstrated:                                     ║");
+    info!("║                                                              ║");
+    info!("║  1. Delayed Email Reminder                                   ║");
+    info!("║     - Welcome email scheduled for 24h after sign-up          ║");
+    info!("║     - Cart reminder scheduled for 1h                         ║");
+    info!("║     - Immediate emails bypass scheduling                     ║");
+    info!("║                                                              ║");
+    info!("║  2. Off-Peak Retry                                           ║");
+    info!("║     - Failed sync retry deferred to quiet window             ║");
+    info!("║     - Fresh syncs execute immediately                        ║");
+    info!("║                                                              ║");
+    info!("║  3. Escalation Workflow                                      ║");
+    info!("║     - Critical alerts bypass scheduling (rerouted)           ║");
+    info!("║     - Non-critical alerts scheduled for batch delivery       ║");
+    info!("║     - Escalation scheduled for 30-minute follow-up           ║");
+    info!("║                                                              ║");
+    info!("║  4. Multi-Tenant Scheduling                                  ║");
+    info!("║     - Independent scheduling per tenant                      ║");
+    info!("║     - Unique action IDs per tenant (isolation)               ║");
+    info!("║                                                              ║");
+    info!("║  5. Batch Processing Window                                  ║");
+    info!("║     - 5 reports scheduled for 60s batch window               ║");
+    info!("║     - Zero provider calls until window elapses               ║");
+    info!("║                                                              ║");
+    info!("║  6. Dry-Run with Schedule Rules                              ║");
+    info!("║     - Preview scheduling behavior without side effects       ║");
+    info!("║                                                              ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }
@@ -680,13 +683,13 @@ fn print_scheduled_outcome(outcome: &ActionOutcome, label: &str) {
             action_id,
             scheduled_for,
         } => {
-            println!("  [result]   Outcome: Scheduled");
-            println!("  [detail]   Action ID: {action_id}");
-            println!("  [detail]   Scheduled for: {scheduled_for}");
-            println!("  [detail]   Label: {label}");
+            info!("  [result]   Outcome: Scheduled");
+            info!("  [detail]   Action ID: {action_id}");
+            info!("  [detail]   Scheduled for: {scheduled_for}");
+            info!("  [detail]   Label: {label}");
         }
         other => {
-            println!(
+            info!(
                 "  [result]   Unexpected outcome for {label}: {:?}",
                 outcome_label(other)
             );

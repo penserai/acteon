@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use tracing::{info, warn};
 
 use acteon_swarm::config::SwarmConfig;
 use acteon_swarm::planner::gatherer::gather_plan;
@@ -76,6 +77,15 @@ struct RunArgs {
     /// Skip plan approval (use with --prompt).
     #[arg(long, default_value_t = false)]
     auto_approve: bool,
+    /// Enable adversarial challenge-recovery loop after the primary swarm.
+    #[arg(long, default_value_t = false)]
+    adversarial: bool,
+    /// AI engine for the adversarial swarm (overrides config; e.g., "claude" or "gemini").
+    #[arg(long)]
+    adversarial_engine: Option<String>,
+    /// Maximum adversarial challenge-recovery rounds (overrides config).
+    #[arg(long)]
+    adversarial_rounds: Option<usize>,
 }
 
 #[derive(Parser)]
@@ -134,30 +144,33 @@ fn load_config(path: &std::path::Path) -> Result<SwarmConfig> {
     if path.exists() {
         Ok(SwarmConfig::from_file(path)?)
     } else {
-        tracing::info!("no config file found at {}, using defaults", path.display());
+        info!("no config file found at {}, using defaults", path.display());
         Ok(SwarmConfig::minimal())
     }
 }
 
 async fn cmd_plan_gather(config: &SwarmConfig, prompt: &str, output: &PathBuf) -> Result<()> {
     let engine = config.defaults.engine;
-    println!("Gathering plan from {engine:?}...\n");
+    info!(engine = ?engine, "gathering plan");
     let plan = gather_plan(config, prompt).await?;
 
     let roles = RoleRegistry::with_config(engine, &config.roles);
     let warnings = validate_plan(&plan, &roles.names())?;
 
     for w in &warnings {
-        println!("Warning: {}", w.message);
+        warn!(message = %w.message, "plan validation warning");
     }
 
     let json = serde_json::to_string_pretty(&plan)?;
     std::fs::write(output, &json)?;
-    println!("\nPlan saved to {}", output.display());
-    println!("Tasks: {}", plan.tasks.len());
-    println!("Estimated actions: {}", plan.estimated_actions);
-    println!("\nReview with: acteon-swarm plan show");
-    println!("Approve with: acteon-swarm plan approve");
+    info!(
+        path = %output.display(),
+        tasks = plan.tasks.len(),
+        estimated_actions = plan.estimated_actions,
+        "plan saved"
+    );
+    info!("review with: acteon-swarm plan show");
+    info!("approve with: acteon-swarm plan approve");
 
     Ok(())
 }
@@ -166,34 +179,32 @@ fn cmd_plan_show(path: &PathBuf) -> Result<()> {
     let content = std::fs::read_to_string(path)?;
     let plan: SwarmPlan = serde_json::from_str(&content)?;
 
-    println!("Plan: {} ({})", plan.objective, plan.id);
-    println!(
-        "Status: {}",
-        if plan.is_approved() {
-            "APPROVED"
-        } else {
-            "PENDING"
-        }
+    info!(
+        objective = %plan.objective,
+        id = %plan.id,
+        status = if plan.is_approved() { "APPROVED" } else { "PENDING" },
+        estimated_actions = plan.estimated_actions,
+        tasks = plan.tasks.len(),
+        "plan summary"
     );
-    println!("Estimated actions: {}", plan.estimated_actions);
-    println!("Success criteria:");
+
     for c in &plan.success_criteria {
-        println!("  - {c}");
+        info!(criterion = %c, "success criterion");
     }
-    println!("\nTasks ({}):", plan.tasks.len());
+
     for task in &plan.tasks {
         let deps = if task.depends_on.is_empty() {
             String::new()
         } else {
             format!(" (depends: {})", task.depends_on.join(", "))
         };
-        println!(
-            "  [{}] {} (role: {}){deps}",
-            task.id, task.name, task.assigned_role
+        info!(
+            task_id = %task.id,
+            name = %task.name,
+            role = %task.assigned_role,
+            subtasks = task.subtasks.len(),
+            "task{deps}"
         );
-        for sub in &task.subtasks {
-            println!("    - [{}] {}", sub.id, sub.name);
-        }
     }
 
     Ok(())
@@ -204,14 +215,14 @@ fn cmd_plan_approve(path: &PathBuf) -> Result<()> {
     let mut plan: SwarmPlan = serde_json::from_str(&content)?;
 
     if plan.is_approved() {
-        println!("Plan is already approved.");
+        info!("plan is already approved");
         return Ok(());
     }
 
     plan.approved_at = Some(Utc::now());
     let json = serde_json::to_string_pretty(&plan)?;
     std::fs::write(path, json)?;
-    println!("Plan approved at {}", plan.approved_at.unwrap());
+    info!(approved_at = %plan.approved_at.unwrap(), "plan approved");
 
     Ok(())
 }
@@ -227,7 +238,7 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
             p.approved_at = Some(Utc::now());
             p
         } else {
-            println!("Plan gathered. Approve with: acteon-swarm plan approve");
+            info!("plan gathered — approve with: acteon-swarm plan approve");
             let json = serde_json::to_string_pretty(&plan)?;
             std::fs::write("plan.json", json)?;
             return Ok(());
@@ -240,6 +251,19 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
         anyhow::bail!("plan is not approved. Run: acteon-swarm plan approve");
     }
 
+    // Apply CLI overrides to adversarial config.
+    let mut config = config.clone();
+    if args.adversarial {
+        config.adversarial.enabled = true;
+    }
+    if let Some(ref engine_str) = args.adversarial_engine {
+        config.adversarial.enabled = true;
+        config.adversarial.engine = Some(parse_engine(engine_str)?);
+    }
+    if let Some(rounds) = args.adversarial_rounds {
+        config.adversarial.max_rounds = rounds;
+    }
+
     let roles = RoleRegistry::with_config(config.defaults.engine, &config.roles);
     validate_plan(&plan, &roles.names())?;
 
@@ -249,37 +273,93 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
         .unwrap_or(std::path::Path::new("."))
         .join("acteon-swarm-hook");
 
-    println!("Starting swarm run...");
-    let run = acteon_swarm::execute_swarm(&mut plan, config, &roles, &hooks_binary).await?;
+    info!("starting swarm run");
 
-    println!("\nSwarm run complete:");
-    println!("  Status: {:?}", run.status);
-    println!("  Agents spawned: {}", run.metrics.agents_spawned);
-    println!("  Agents completed: {}", run.metrics.agents_completed);
-    println!("  Agents failed: {}", run.metrics.agents_failed);
-    println!("  Total actions: {}", run.metrics.total_actions);
-    println!("  Refinements: {}", run.metrics.refinements);
+    if config.adversarial.enabled {
+        let adv_engine = config.adversarial.effective_engine(config.defaults.engine);
+        info!(
+            engine = ?adv_engine,
+            max_rounds = config.adversarial.max_rounds,
+            "adversarial mode enabled"
+        );
+    }
+
+    let (run, adversarial_result) =
+        acteon_swarm::execute_swarm_with_adversarial(&mut plan, &config, &roles, &hooks_binary)
+            .await?;
+
+    info!(
+        status = ?run.status,
+        agents_spawned = run.metrics.agents_spawned,
+        agents_completed = run.metrics.agents_completed,
+        agents_failed = run.metrics.agents_failed,
+        total_actions = run.metrics.total_actions,
+        refinements = run.metrics.refinements,
+        "swarm run complete"
+    );
+
+    if let Some(adv) = adversarial_result {
+        info!(
+            rounds = adv.rounds.len(),
+            total_challenges = adv.total_challenges,
+            resolved = adv.total_resolved,
+            accepted = adv.accepted,
+            unresolved = adv.unresolved.len(),
+            "adversarial review"
+        );
+
+        for c in &adv.unresolved {
+            warn!(
+                id = %c.id,
+                severity = ?c.severity,
+                category = %c.category,
+                description = %c.description,
+                "unresolved challenge"
+            );
+        }
+
+        let report_dir = config
+            .defaults
+            .working_directory
+            .as_deref()
+            .unwrap_or(std::path::Path::new("."));
+        info!(
+            path = %format!("{}/adversarial-report-{}.json", report_dir.display(), run.id),
+            "adversarial report saved"
+        );
+    }
 
     Ok(())
+}
+
+fn parse_engine(s: &str) -> Result<acteon_swarm::config::AgentEngine> {
+    match s.to_lowercase().as_str() {
+        "claude" => Ok(acteon_swarm::config::AgentEngine::Claude),
+        "gemini" => Ok(acteon_swarm::config::AgentEngine::Gemini),
+        other => anyhow::bail!("unknown engine: {other} (expected 'claude' or 'gemini')"),
+    }
 }
 
 async fn cmd_status(config: &SwarmConfig, run_id: &str) -> Result<()> {
     let summary = acteon_swarm::acteon::audit_watcher::fetch_audit_summary(config, run_id).await?;
 
-    println!("Swarm run: {run_id}");
-    println!("  Total dispatched: {}", summary.total_dispatched);
-    println!("  Executed: {}", summary.executed);
-    println!("  Suppressed: {}", summary.suppressed);
-    println!("  Throttled: {}", summary.throttled);
-    println!("  Deduplicated: {}", summary.deduplicated);
-    println!("  Pending approval: {}", summary.pending_approval);
-    println!("  Quota exceeded: {}", summary.quota_exceeded);
-    println!("  Rerouted: {}", summary.rerouted);
+    info!(
+        run_id = %run_id,
+        total_dispatched = summary.total_dispatched,
+        executed = summary.executed,
+        suppressed = summary.suppressed,
+        throttled = summary.throttled,
+        deduplicated = summary.deduplicated,
+        pending_approval = summary.pending_approval,
+        quota_exceeded = summary.quota_exceeded,
+        rerouted = summary.rerouted,
+        "swarm run status"
+    );
 
     Ok(())
 }
 
 fn cmd_cancel(_config: &SwarmConfig, run_id: &str) {
     // TODO: Implement cancel via Acteon API + kill agent processes.
-    println!("Cancel not yet implemented for run {run_id}");
+    warn!(run_id = %run_id, "cancel not yet implemented");
 }

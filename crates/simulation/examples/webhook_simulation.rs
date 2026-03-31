@@ -7,6 +7,7 @@
 
 use acteon_core::Action;
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 const REROUTE_TO_WEBHOOK_RULE: &str = r#"
 rules:
@@ -34,16 +35,18 @@ rules:
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║          WEBHOOK PROVIDER SIMULATION DEMO                   ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║          WEBHOOK PROVIDER SIMULATION DEMO                   ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // DEMO 1: Basic Webhook Dispatch
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: BASIC WEBHOOK DISPATCH");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: BASIC WEBHOOK DISPATCH");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -53,8 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster with 1 node");
-    println!("✓ Registered 'webhook' recording provider\n");
+    info!("✓ Started simulation cluster with 1 node");
+    info!("✓ Registered 'webhook' recording provider\n");
 
     let webhook_action = Action::new(
         "integrations",
@@ -75,27 +78,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching webhook action to https://hooks.example.com/alert...");
+    info!("→ Dispatching webhook action to https://hooks.example.com/alert...");
     let outcome = harness.dispatch(&webhook_action).await?;
 
-    println!("  Action ID: {}", webhook_action.id);
-    println!("  Provider: {}", webhook_action.provider);
-    println!("  Action Type: {}", webhook_action.action_type);
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Action ID: {}", webhook_action.id);
+    info!("  Provider: {}", webhook_action.provider);
+    info!("  Action Type: {}", webhook_action.action_type);
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Webhook provider called: {} times\n",
         harness.provider("webhook").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("✓ Simulation cluster shut down\n");
+    info!("✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 2: Rerouting to Webhook
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: REROUTING TO WEBHOOK");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: REROUTING TO WEBHOOK");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -107,9 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster");
-    println!("✓ Registered 'email' and 'webhook' providers");
-    println!("✓ Loaded rule: reroute-to-webhook\n");
+    info!("✓ Started simulation cluster");
+    info!("✓ Registered 'email' and 'webhook' providers");
+    info!("✓ Loaded rule: reroute-to-webhook\n");
 
     // Normal email - goes to email provider
     let email_action = Action::new(
@@ -124,10 +127,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching action with delivery_method='email' to 'email' provider...");
+    info!("→ Dispatching action with delivery_method='email' to 'email' provider...");
     let outcome = harness.dispatch(&email_action).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Email called: {}, Webhook called: {}\n",
         harness.provider("email").unwrap().call_count(),
         harness.provider("webhook").unwrap().call_count(),
@@ -147,24 +150,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("→ Dispatching action with delivery_method='webhook' to 'email' provider...");
+    info!("→ Dispatching action with delivery_method='webhook' to 'email' provider...");
     let outcome = harness.dispatch(&webhook_delivery).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Email called: {} (unchanged), Webhook called: {} (rerouted!)\n",
         harness.provider("email").unwrap().call_count(),
         harness.provider("webhook").unwrap().call_count(),
     );
 
     harness.teardown().await?;
-    println!("✓ Simulation cluster shut down\n");
+    info!("✓ Simulation cluster shut down\n");
 
     // =========================================================================
     // DEMO 3: Webhook with Deduplication
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: WEBHOOK WITH DEDUPLICATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: WEBHOOK WITH DEDUPLICATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -175,8 +178,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("✓ Started simulation cluster");
-    println!("✓ Loaded deduplication rule: dedup-webhook\n");
+    info!("✓ Started simulation cluster");
+    info!("✓ Loaded deduplication rule: dedup-webhook\n");
 
     let first_webhook = Action::new(
         "monitoring",
@@ -193,10 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("incident-web-01-high-cpu");
 
-    println!("→ Dispatching FIRST webhook (dedup_key='incident-web-01-high-cpu')...");
+    info!("→ Dispatching FIRST webhook (dedup_key='incident-web-01-high-cpu')...");
     let outcome = harness.dispatch(&first_webhook).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Webhook called: {} times\n",
         harness.provider("webhook").unwrap().call_count()
     );
@@ -216,10 +219,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("incident-web-01-high-cpu");
 
-    println!("→ Dispatching DUPLICATE webhook (same dedup_key)...");
+    info!("→ Dispatching DUPLICATE webhook (same dedup_key)...");
     let outcome = harness.dispatch(&duplicate_webhook).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Webhook called: {} times (still 1 - duplicate blocked!)\n",
         harness.provider("webhook").unwrap().call_count()
     );
@@ -240,20 +243,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_dedup_key("incident-db-01-disk-full");
 
-    println!("→ Dispatching DIFFERENT webhook (dedup_key='incident-db-01-disk-full')...");
+    info!("→ Dispatching DIFFERENT webhook (dedup_key='incident-db-01-disk-full')...");
     let outcome = harness.dispatch(&different_webhook).await?;
-    println!("  Outcome: {:?}", outcome);
-    println!(
+    info!("  Outcome: {:?}", outcome);
+    info!(
         "  Webhook called: {} times",
         harness.provider("webhook").unwrap().call_count()
     );
 
     harness.teardown().await?;
-    println!("\n✓ Simulation cluster shut down\n");
+    info!("\n✓ Simulation cluster shut down\n");
 
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              WEBHOOK SIMULATION COMPLETE                    ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              WEBHOOK SIMULATION COMPLETE                    ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

@@ -15,6 +15,7 @@ use acteon_core::{
     TransitionEffects,
 };
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 /// State machine rule: route "ticket" actions through the ticket lifecycle.
 const TICKET_RULE: &str = r"
@@ -89,19 +90,21 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("     STATE MACHINE SUBSCRIPTION SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("     STATE MACHINE SUBSCRIPTION SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // SCENARIO 1: Ticket lifecycle — full progression
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 1: TICKET LIFECYCLE (new -> ... -> closed)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 1: TICKET LIFECYCLE (new -> ... -> closed)");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  A ticket goes through: new -> open -> in_progress -> review -> closed");
-    println!("  A subscriber watches state transitions in real time.\n");
+    info!("  A ticket goes through: new -> open -> in_progress -> review -> closed");
+    info!("  A subscriber watches state transitions in real time.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -153,13 +156,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 notify,
             } => {
                 observed_states.push(new_state.clone());
-                println!(
+                info!(
                     "    [{label}] fingerprint={} prev={previous_state} new={new_state} notify={notify}",
                     &fingerprint[..12.min(fingerprint.len())],
                 );
             }
             other => {
-                println!("    [{label}] unexpected: {other:?}");
+                info!("    [{label}] unexpected: {other:?}");
             }
         }
     }
@@ -168,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     let events = drain_events(&mut stream_rx);
 
-    println!("\n  Subscription events ({} total):", events.len());
+    info!("\n  Subscription events ({} total):", events.len());
     let mut state_changed_count = 0;
     for (i, event) in events.iter().enumerate() {
         if let StreamEventType::ActionDispatched {
@@ -183,12 +186,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } = &event.event_type
         {
             state_changed_count += 1;
-            println!(
+            info!(
                 "    #{}: [dispatched/state_changed] {previous_state} -> {new_state} (notify={notify})",
                 i + 1,
             );
         } else {
-            println!(
+            info!(
                 "    #{}: [{:>15}]",
                 i + 1,
                 event_type_label(&event.event_type)
@@ -196,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("\n  State progression: {}", observed_states.join(" -> "));
+    info!("\n  State progression: {}", observed_states.join(" -> "));
     assert_eq!(
         observed_states,
         vec!["open", "in_progress", "review", "closed"],
@@ -208,17 +211,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Rework cycle — review -> in_progress -> review -> closed
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 2: REWORK CYCLE (review -> in_progress -> review)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 2: REWORK CYCLE (review -> in_progress -> review)");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  A ticket reaches review, gets sent back to in_progress,");
-    println!("  then returns to review and closes. Subscriber sees the loop.\n");
+    info!("  A ticket reaches review, gets sent back to in_progress,");
+    info!("  then returns to review and closes. Subscriber sees the loop.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -251,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         harness.dispatch(&action).await?;
     }
 
-    println!("  Advanced ticket to 'review' state");
+    info!("  Advanced ticket to 'review' state");
 
     // Now send it back to in_progress (rework).
     let rework = Action::new(
@@ -265,7 +268,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
     let outcome = harness.dispatch(&rework).await?;
-    println!("  -> Rework: {outcome:?}");
+    info!("  -> Rework: {outcome:?}");
 
     // Return to review.
     let re_review = Action::new(
@@ -279,7 +282,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
     let outcome = harness.dispatch(&re_review).await?;
-    println!("  -> Back to review: {outcome:?}");
+    info!("  -> Back to review: {outcome:?}");
 
     // Close.
     let close = Action::new(
@@ -293,13 +296,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
     let outcome = harness.dispatch(&close).await?;
-    println!("  -> Closed: {outcome:?}");
+    info!("  -> Closed: {outcome:?}");
 
     // Check all subscription events.
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     let events = drain_events(&mut stream_rx);
 
-    println!("\n  Full subscription event log ({} events):", events.len());
+    info!("\n  Full subscription event log ({} events):", events.len());
     let mut state_transitions = Vec::new();
     for (i, event) in events.iter().enumerate() {
         if let StreamEventType::ActionDispatched {
@@ -313,11 +316,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } = &event.event_type
         {
             state_transitions.push(format!("{previous_state}->{new_state}"));
-            println!("    #{}: {previous_state} -> {new_state}", i + 1);
+            info!("    #{}: {previous_state} -> {new_state}", i + 1);
         }
     }
 
-    println!("\n  State transitions: [{}]", state_transitions.join(", "));
+    info!("\n  State transitions: [{}]", state_transitions.join(", "));
 
     // Should see: new->open, open->in_progress, in_progress->review,
     //             review->in_progress, in_progress->review, review->closed
@@ -328,17 +331,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // SCENARIO 3: Multiple tickets with independent state
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  SCENARIO 3: MULTIPLE TICKETS (independent state tracking)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  SCENARIO 3: MULTIPLE TICKETS (independent state tracking)");
+    info!("------------------------------------------------------------------\n");
 
-    println!("  Two tickets progress independently. A subscriber can filter");
-    println!("  events by fingerprint to track each ticket separately.\n");
+    info!("  Two tickets progress independently. A subscriber can filter");
+    info!("  events by fingerprint to track each ticket separately.\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -400,9 +403,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("  Total events: {}", events.len());
-    println!("  Ticket A transitions: {transitions_a}");
-    println!("  Ticket B transitions: {transitions_b}");
+    info!("  Total events: {}", events.len());
+    info!("  Ticket A transitions: {transitions_a}");
+    info!("  Ticket B transitions: {transitions_b}");
 
     assert_eq!(transitions_a, 2, "TICK-A: new->open, open->in_progress");
     assert_eq!(
@@ -411,14 +414,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("              ALL SCENARIOS PASSED");
-    println!("==================================================================");
+    info!("==================================================================");
+    info!("              ALL SCENARIOS PASSED");
+    info!("==================================================================");
 
     Ok(())
 }

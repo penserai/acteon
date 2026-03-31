@@ -20,6 +20,7 @@ use acteon_rules::Rule;
 use acteon_rules_yaml::YamlFrontend;
 use acteon_simulation::prelude::*;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 const CHAIN_RULE: &str = r#"
 rules:
@@ -41,16 +42,18 @@ fn parse_rules(yaml: &str) -> Vec<Rule> {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("           ACTEON SUB-CHAIN SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("           ACTEON SUB-CHAIN SIMULATION");
+    info!("==================================================================\n");
 
     // =========================================================================
     // DEMO 1: Simple Parent -> Sub-Chain -> Continue
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 1: SIMPLE PARENT -> SUB-CHAIN -> CONTINUE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 1: SIMPLE PARENT -> SUB-CHAIN -> CONTINUE");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -136,7 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         serde_json::json!({"alert": "cpu-high"}),
     );
 
-    println!("  Dispatching action to start parent chain...");
+    info!("  Dispatching action to start parent chain...");
     let outcome = gateway.dispatch(action, None).await?;
     let chain_id = match &outcome {
         ActionOutcome::ChainStarted {
@@ -145,12 +148,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             total_steps,
             ..
         } => {
-            println!("  Chain started: {chain_name} ({total_steps} steps)");
-            println!("    chain_id: {chain_id}");
+            info!("  Chain started: {chain_name} ({total_steps} steps)");
+            info!("    chain_id: {chain_id}");
             chain_id.clone()
         }
         other => {
-            println!("  Unexpected outcome: {other:?}");
+            info!("  Unexpected outcome: {other:?}");
             return Ok(());
         }
     };
@@ -159,13 +162,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     gateway
         .advance_chain("incidents", "tenant-1", &chain_id)
         .await?;
-    println!("  Step 0 (check-severity): advanced OK");
+    info!("  Step 0 (check-severity): advanced OK");
 
     // Step 1: escalate (sub-chain) — first advance spawns child, sets WaitingSubChain
     gateway
         .advance_chain("incidents", "tenant-1", &chain_id)
         .await?;
-    println!("  Step 1 (escalate): sub-chain spawned, parent waiting");
+    info!("  Step 1 (escalate): sub-chain spawned, parent waiting");
 
     let parent_state = gateway
         .get_chain_status("incidents", "tenant-1", &chain_id)
@@ -174,17 +177,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(parent_state.status, ChainStatus::WaitingSubChain);
     assert!(!parent_state.child_chain_ids.is_empty());
     let child_id = &parent_state.child_chain_ids[0];
-    println!("    Child chain ID: {child_id}");
+    info!("    Child chain ID: {child_id}");
 
     // Advance the child chain: step 0 (page-oncall), step 1 (notify-channel)
     gateway
         .advance_chain("incidents", "tenant-1", child_id)
         .await?;
-    println!("  Child step 0 (page-oncall): advanced OK");
+    info!("  Child step 0 (page-oncall): advanced OK");
     gateway
         .advance_chain("incidents", "tenant-1", child_id)
         .await?;
-    println!("  Child step 1 (notify-channel): advanced OK");
+    info!("  Child step 1 (notify-channel): advanced OK");
 
     let child_state = gateway
         .get_chain_status("incidents", "tenant-1", child_id)
@@ -192,42 +195,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("child chain state");
     assert_eq!(child_state.status, ChainStatus::Completed);
     assert_eq!(child_state.parent_chain_id.as_deref(), Some(&*chain_id));
-    println!("  Child chain completed");
+    info!("  Child chain completed");
 
     // Now advance the parent again — it should pick up the child result and continue
     gateway
         .advance_chain("incidents", "tenant-1", &chain_id)
         .await?;
-    println!("  Step 1 (escalate): sub-chain result extracted, moving forward");
+    info!("  Step 1 (escalate): sub-chain result extracted, moving forward");
 
     // Step 2: resolve (regular provider step)
     gateway
         .advance_chain("incidents", "tenant-1", &chain_id)
         .await?;
-    println!("  Step 2 (resolve): advanced OK");
+    info!("  Step 2 (resolve): advanced OK");
 
     let final_state = gateway
         .get_chain_status("incidents", "tenant-1", &chain_id)
         .await?
         .expect("final parent chain state");
     assert_eq!(final_state.status, ChainStatus::Completed);
-    println!("\n  Final parent chain status: {:?}", final_state.status);
+    info!("\n  Final parent chain status: {:?}", final_state.status);
 
-    println!("  Provider call counts:");
-    println!("    monitoring-api: {}", check_provider.call_count());
-    println!("    pagerduty:      {}", pagerduty_provider.call_count());
-    println!("    slack:          {}", slack_provider.call_count());
-    println!("    ticketing:      {}", ticketing_provider.call_count());
+    info!("  Provider call counts:");
+    info!("    monitoring-api: {}", check_provider.call_count());
+    info!("    pagerduty:      {}", pagerduty_provider.call_count());
+    info!("    slack:          {}", slack_provider.call_count());
+    info!("    ticketing:      {}", ticketing_provider.call_count());
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 2: Sub-Chain Failure with Abort Policy
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 2: SUB-CHAIN FAILURE (ABORT POLICY)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 2: SUB-CHAIN FAILURE (ABORT POLICY)");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -308,11 +311,11 @@ rules:
 
     // Step 0: first (ok)
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 0 (first): OK");
+    info!("  Step 0 (first): OK");
 
     // Step 1: invoke-child — spawns child
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 1 (invoke-child): sub-chain spawned");
+    info!("  Step 1 (invoke-child): sub-chain spawned");
 
     let parent_state = gateway
         .get_chain_status("test", "tenant-1", &chain_id)
@@ -322,14 +325,14 @@ rules:
 
     // Advance child — failing step
     gateway.advance_chain("test", "tenant-1", child_id).await?;
-    println!("  Child step 0 (failing-step): failed");
+    info!("  Child step 0 (failing-step): failed");
 
     let child_state = gateway
         .get_chain_status("test", "tenant-1", child_id)
         .await?
         .unwrap();
     assert_eq!(child_state.status, ChainStatus::Failed);
-    println!("  Child chain status: {:?}", child_state.status);
+    info!("  Child chain status: {:?}", child_state.status);
 
     // Advance parent — should detect child failure, abort
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
@@ -339,21 +342,21 @@ rules:
         .await?
         .unwrap();
     assert_eq!(final_state.status, ChainStatus::Failed);
-    println!(
+    info!(
         "  Parent chain status: {:?} (aborted due to sub-chain failure)",
         final_state.status
     );
     unreachable.assert_not_called();
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 3: Sub-Chain Failure with Skip Policy
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 3: SUB-CHAIN FAILURE (SKIP POLICY)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 3: SUB-CHAIN FAILURE (SKIP POLICY)");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -438,11 +441,11 @@ rules:
 
     // Step 0
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 0: OK");
+    info!("  Step 0: OK");
 
     // Step 1 — spawn child
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 1: sub-chain spawned");
+    info!("  Step 1: sub-chain spawned");
 
     let ps = gateway
         .get_chain_status("test", "tenant-1", &chain_id)
@@ -452,22 +455,22 @@ rules:
 
     // Advance child — fails
     gateway.advance_chain("test", "tenant-1", child_id).await?;
-    println!("  Child: failed");
+    info!("  Child: failed");
 
     // Advance parent — skip policy, should continue
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 1: sub-chain failure skipped");
+    info!("  Step 1: sub-chain failure skipped");
 
     // Step 2 — final step
     gateway.advance_chain("test", "tenant-1", &chain_id).await?;
-    println!("  Step 2: OK");
+    info!("  Step 2: OK");
 
     let final_state = gateway
         .get_chain_status("test", "tenant-1", &chain_id)
         .await?
         .unwrap();
     assert_eq!(final_state.status, ChainStatus::Completed);
-    println!(
+    info!(
         "\n  Parent completed despite sub-chain failure: {:?}",
         final_state.status
     );
@@ -477,14 +480,14 @@ rules:
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 4: Nested Sub-Chains (depth 2)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 4: NESTED SUB-CHAINS (DEPTH 2)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 4: NESTED SUB-CHAINS (DEPTH 2)");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -574,11 +577,11 @@ rules:
 
     // Grandparent step 0
     gateway.advance_chain("test", "tenant-1", &gp_id).await?;
-    println!("  Grandparent step 0: OK");
+    info!("  Grandparent step 0: OK");
 
     // Grandparent step 1 — spawns mid chain
     gateway.advance_chain("test", "tenant-1", &gp_id).await?;
-    println!("  Grandparent step 1: sub-chain spawned (mid-chain)");
+    info!("  Grandparent step 1: sub-chain spawned (mid-chain)");
 
     let gp_state = gateway
         .get_chain_status("test", "tenant-1", &gp_id)
@@ -588,11 +591,11 @@ rules:
 
     // Mid step 0
     gateway.advance_chain("test", "tenant-1", mid_id).await?;
-    println!("  Mid step 0: OK");
+    info!("  Mid step 0: OK");
 
     // Mid step 1 — spawns leaf chain
     gateway.advance_chain("test", "tenant-1", mid_id).await?;
-    println!("  Mid step 1: sub-chain spawned (leaf-chain)");
+    info!("  Mid step 1: sub-chain spawned (leaf-chain)");
 
     let mid_state = gateway
         .get_chain_status("test", "tenant-1", mid_id)
@@ -602,49 +605,49 @@ rules:
 
     // Leaf step 0
     gateway.advance_chain("test", "tenant-1", leaf_id).await?;
-    println!("  Leaf step 0: OK");
+    info!("  Leaf step 0: OK");
 
     let leaf_state = gateway
         .get_chain_status("test", "tenant-1", leaf_id)
         .await?
         .unwrap();
     assert_eq!(leaf_state.status, ChainStatus::Completed);
-    println!("  Leaf chain completed");
+    info!("  Leaf chain completed");
 
     // Resume mid — picks up leaf result
     gateway.advance_chain("test", "tenant-1", mid_id).await?;
-    println!("  Mid: resumed after leaf completion");
+    info!("  Mid: resumed after leaf completion");
 
     let mid_state = gateway
         .get_chain_status("test", "tenant-1", mid_id)
         .await?
         .unwrap();
     assert_eq!(mid_state.status, ChainStatus::Completed);
-    println!("  Mid chain completed");
+    info!("  Mid chain completed");
 
     // Resume grandparent — picks up mid result
     gateway.advance_chain("test", "tenant-1", &gp_id).await?;
-    println!("  Grandparent: resumed after mid completion");
+    info!("  Grandparent: resumed after mid completion");
 
     let gp_state = gateway
         .get_chain_status("test", "tenant-1", &gp_id)
         .await?
         .unwrap();
     assert_eq!(gp_state.status, ChainStatus::Completed);
-    println!("\n  All three levels completed: {:?}", gp_state.status);
-    println!("  provider-a calls: {}", provider_a.call_count());
-    println!("  provider-b calls: {}", provider_b.call_count());
-    println!("  provider-c calls: {}", provider_c.call_count());
+    info!("\n  All three levels completed: {:?}", gp_state.status);
+    info!("  provider-a calls: {}", provider_a.call_count());
+    info!("  provider-b calls: {}", provider_b.call_count());
+    info!("  provider-c calls: {}", provider_c.call_count());
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 5: Cycle Detection at Build Time
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 5: CROSS-CHAIN CYCLE DETECTION");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 5: CROSS-CHAIN CYCLE DETECTION");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -663,8 +666,8 @@ rules:
 
     match result {
         Err(e) => {
-            println!("  Build correctly rejected cyclic chains:");
-            println!("    Error: {e}");
+            info!("  Build correctly rejected cyclic chains:");
+            info!("    Error: {e}");
             assert!(
                 e.to_string().contains("cycle"),
                 "error should mention cycle"
@@ -675,14 +678,14 @@ rules:
         }
     }
 
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 6: Cancellation Cascade
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 6: CANCELLATION CASCADE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 6: CANCELLATION CASCADE");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -775,7 +778,7 @@ rules:
         .await?
         .unwrap();
     assert_eq!(cs.status, ChainStatus::Running);
-    println!("  Child chain running (1 of 2 steps done)");
+    info!("  Child chain running (1 of 2 steps done)");
 
     // Cancel the parent — should cascade to child
     gateway
@@ -787,34 +790,34 @@ rules:
             Some("test-runner".into()),
         )
         .await?;
-    println!("  Parent chain cancelled");
+    info!("  Parent chain cancelled");
 
     let parent_final = gateway
         .get_chain_status("test", "tenant-1", &chain_id)
         .await?
         .unwrap();
     assert_eq!(parent_final.status, ChainStatus::Cancelled);
-    println!("  Parent status: {:?}", parent_final.status);
+    info!("  Parent status: {:?}", parent_final.status);
 
     let child_final = gateway
         .get_chain_status("test", "tenant-1", &child_id)
         .await?
         .unwrap();
     assert_eq!(child_final.status, ChainStatus::Cancelled);
-    println!(
+    info!(
         "  Child status:  {:?} (cascaded cancellation)",
         child_final.status
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
     // =========================================================================
     // DEMO 7: Origin Action Inherited by Sub-Chain
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  DEMO 7: ORIGIN ACTION INHERITED BY SUB-CHAIN");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  DEMO 7: ORIGIN ACTION INHERITED BY SUB-CHAIN");
+    info!("------------------------------------------------------------------\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -892,18 +895,18 @@ rules:
 
     // Verify the child inherited the origin action's payload
     assert_eq!(child_state.origin_action.payload, origin_payload);
-    println!("  Child chain inherited origin action payload:");
-    println!(
+    info!("  Child chain inherited origin action payload:");
+    info!(
         "    {}",
         serde_json::to_string_pretty(&child_state.origin_action.payload)?
     );
 
     gateway.shutdown().await;
-    println!("\n  PASSED\n");
+    info!("\n  PASSED\n");
 
-    println!("==================================================================");
-    println!("  ALL SUB-CHAIN SIMULATION DEMOS PASSED");
-    println!("==================================================================\n");
+    info!("==================================================================");
+    info!("  ALL SUB-CHAIN SIMULATION DEMOS PASSED");
+    info!("==================================================================\n");
 
     Ok(())
 }

@@ -21,6 +21,9 @@ pub struct SwarmConfig {
     /// Custom role definitions (extend/override built-in roles).
     #[serde(default)]
     pub roles: Vec<AgentRoleConfig>,
+    /// Adversarial swarm configuration.
+    #[serde(default)]
+    pub adversarial: AdversarialConfig,
 }
 
 /// Connection settings for the Acteon gateway.
@@ -124,6 +127,64 @@ impl Default for SwarmDefaults {
     }
 }
 
+/// Adversarial swarm configuration.
+///
+/// When enabled, the primary swarm's output is challenged by an adversarial
+/// swarm that can optionally use a different AI engine (e.g., Claude primary
+/// with Gemini adversarial). The primary swarm then re-processes to recover
+/// from the adversarial feedback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdversarialConfig {
+    /// Enable the adversarial challenge-recovery loop.
+    #[serde(default)]
+    pub enabled: bool,
+    /// AI engine for the adversarial swarm (defaults to the primary engine).
+    #[serde(default)]
+    pub engine: Option<AgentEngine>,
+    /// Maximum challenge-recovery rounds.
+    #[serde(default = "default_adversarial_rounds")]
+    pub max_rounds: usize,
+    /// Maximum concurrent adversarial agents.
+    #[serde(default = "default_adversarial_agents")]
+    pub max_agents: usize,
+    /// Timeout for each challenge phase in seconds.
+    #[serde(default = "default_challenge_timeout")]
+    pub challenge_timeout_seconds: u64,
+    /// Timeout for each recovery phase in seconds.
+    #[serde(default = "default_recovery_timeout")]
+    pub recovery_timeout_seconds: u64,
+    /// Minimum severity (0.0–1.0) for a challenge to trigger recovery.
+    /// Challenges below this threshold are logged but do not block completion.
+    #[serde(default = "default_severity_threshold")]
+    pub severity_threshold: f64,
+    /// Custom adversarial role definitions.
+    #[serde(default)]
+    pub roles: Vec<AgentRoleConfig>,
+}
+
+impl Default for AdversarialConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            engine: None,
+            max_rounds: default_adversarial_rounds(),
+            max_agents: default_adversarial_agents(),
+            challenge_timeout_seconds: default_challenge_timeout(),
+            recovery_timeout_seconds: default_recovery_timeout(),
+            severity_threshold: default_severity_threshold(),
+            roles: Vec::new(),
+        }
+    }
+}
+
+impl AdversarialConfig {
+    /// Returns the engine for the adversarial swarm, falling back to the given
+    /// primary engine if none is explicitly configured.
+    pub fn effective_engine(&self, primary: AgentEngine) -> AgentEngine {
+        self.engine.unwrap_or(primary)
+    }
+}
+
 /// Safety and policy configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SafetyConfig {
@@ -185,6 +246,7 @@ impl SwarmConfig {
             defaults: SwarmDefaults::default(),
             safety: SafetyConfig::default(),
             roles: Vec::new(),
+            adversarial: AdversarialConfig::default(),
         }
     }
 }
@@ -226,6 +288,21 @@ fn default_approval_timeout() -> u64 {
 }
 fn default_max_concurrent() -> usize {
     2
+}
+fn default_adversarial_rounds() -> usize {
+    2
+}
+fn default_adversarial_agents() -> usize {
+    3
+}
+fn default_challenge_timeout() -> u64 {
+    600
+}
+fn default_recovery_timeout() -> u64 {
+    900
+}
+fn default_severity_threshold() -> f64 {
+    0.5
 }
 
 #[cfg(test)]
@@ -274,5 +351,46 @@ allowed_tools = ["Bash", "Read"]
         assert!(!config.safety.require_plan_approval);
         assert_eq!(config.roles.len(), 1);
         assert_eq!(config.roles[0].name, "db-admin");
+        // Adversarial defaults when not specified.
+        assert!(!config.adversarial.enabled);
+        assert_eq!(config.adversarial.max_rounds, 2);
+    }
+
+    #[test]
+    fn test_adversarial_config_from_toml() {
+        let toml_str = r#"
+[adversarial]
+enabled = true
+engine = "gemini"
+max_rounds = 3
+max_agents = 4
+challenge_timeout_seconds = 300
+recovery_timeout_seconds = 600
+severity_threshold = 0.7
+"#;
+        let config: SwarmConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.adversarial.enabled);
+        assert_eq!(config.adversarial.engine, Some(AgentEngine::Gemini));
+        assert_eq!(config.adversarial.max_rounds, 3);
+        assert_eq!(config.adversarial.max_agents, 4);
+        assert_eq!(config.adversarial.challenge_timeout_seconds, 300);
+        assert_eq!(config.adversarial.recovery_timeout_seconds, 600);
+        assert!((config.adversarial.severity_threshold - 0.7).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_adversarial_effective_engine() {
+        let mut config = AdversarialConfig::default();
+        // Falls back to primary when None.
+        assert_eq!(
+            config.effective_engine(AgentEngine::Claude),
+            AgentEngine::Claude
+        );
+        // Uses explicit engine when set.
+        config.engine = Some(AgentEngine::Gemini);
+        assert_eq!(
+            config.effective_engine(AgentEngine::Claude),
+            AgentEngine::Gemini
+        );
     }
 }

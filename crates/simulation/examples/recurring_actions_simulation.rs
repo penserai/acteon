@@ -29,6 +29,7 @@ use acteon_core::{
 };
 use acteon_state::{KeyKind, StateKey, StateStore};
 use acteon_state_memory::MemoryStateStore;
+use tracing::info;
 
 // =============================================================================
 // Helper: create a RecurringAction with sensible defaults
@@ -142,19 +143,21 @@ async fn delete_recurring(
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║          RECURRING ACTIONS SIMULATION DEMO                   ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║          RECURRING ACTIONS SIMULATION DEMO                   ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Daily Digest Email
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: DAILY DIGEST EMAIL");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: DAILY DIGEST EMAIL");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A daily digest email fires at 09:00 UTC every day.");
-    println!("  Cron: 0 9 * * *\n");
+    info!("  A daily digest email fires at 09:00 UTC every day.");
+    info!("  Cron: 0 9 * * *\n");
 
     let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
 
@@ -175,17 +178,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store_recurring(&state, &daily_digest).await?;
 
-    println!("  [create]   ID: {}", daily_digest.id);
-    println!("  [create]   Cron: {}", daily_digest.cron_expr);
-    println!(
+    info!("  [create]   ID: {}", daily_digest.id);
+    info!("  [create]   Cron: {}", daily_digest.cron_expr);
+    info!(
         "  [create]   Provider: {}",
         daily_digest.action_template.provider
     );
-    println!(
+    info!(
         "  [create]   Action type: {}",
         daily_digest.action_template.action_type
     );
-    println!(
+    info!(
         "  [create]   Next execution: {}",
         daily_digest
             .next_execution_at
@@ -199,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(loaded.id, "rec-daily-001");
     assert_eq!(loaded.cron_expr, "0 9 * * *");
     assert!(loaded.enabled);
-    println!("  [verify]   Stored and loaded successfully");
+    info!("  [verify]   Stored and loaded successfully");
 
     // Demonstrate next occurrences
     let cron = validate_cron_expr("0 9 * * *")?;
@@ -208,25 +211,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let first = next_occurrence(&cron, tz, &now).expect("has next");
     let second = next_occurrence(&cron, tz, &first).expect("has next");
     let third = next_occurrence(&cron, tz, &second).expect("has next");
-    println!("  [schedule] Next 3 occurrences:");
-    println!("             1st: {}", first.format("%Y-%m-%d %H:%M UTC"));
-    println!("             2nd: {}", second.format("%Y-%m-%d %H:%M UTC"));
-    println!("             3rd: {}", third.format("%Y-%m-%d %H:%M UTC"));
+    info!("  [schedule] Next 3 occurrences:");
+    info!("             1st: {}", first.format("%Y-%m-%d %H:%M UTC"));
+    info!("             2nd: {}", second.format("%Y-%m-%d %H:%M UTC"));
+    info!("             3rd: {}", third.format("%Y-%m-%d %H:%M UTC"));
     assert_eq!(first.hour(), 9);
     assert_eq!(second.hour(), 9);
     assert_eq!((second - first).num_hours(), 24);
-    println!("  [verify]   All at 09:00, 24h apart\n");
+    info!("  [verify]   All at 09:00, 24h apart\n");
 
     // =========================================================================
     // SCENARIO 2: Weekly Report with Timezone
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: WEEKLY REPORT WITH TIMEZONE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: WEEKLY REPORT WITH TIMEZONE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A weekly report fires every Monday at 08:00 US/Eastern.");
-    println!("  The cron expression is evaluated in the specified timezone,");
-    println!("  so the UTC time shifts with daylight saving time.\n");
+    info!("  A weekly report fires every Monday at 08:00 US/Eastern.");
+    info!("  The cron expression is evaluated in the specified timezone,");
+    info!("  so the UTC time shifts with daylight saving time.\n");
 
     let weekly_report = make_recurring(
         "rec-weekly-001",
@@ -245,12 +248,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store_recurring(&state, &weekly_report).await?;
 
-    println!("  [create]   ID: {}", weekly_report.id);
-    println!(
+    info!("  [create]   ID: {}", weekly_report.id);
+    info!(
         "  [create]   Cron: {} (timezone: {})",
         weekly_report.cron_expr, weekly_report.timezone
     );
-    println!(
+    info!(
         "  [create]   Next execution: {}",
         weekly_report
             .next_execution_at
@@ -262,12 +265,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eastern = validate_timezone("US/Eastern")?;
     let first = next_occurrence(&cron, eastern, &now).expect("has next");
     let second = next_occurrence(&cron, eastern, &first).expect("has next");
-    println!("  [schedule] Next 2 Monday 08:00 ET occurrences (in UTC):");
-    println!(
+    info!("  [schedule] Next 2 Monday 08:00 ET occurrences (in UTC):");
+    info!(
         "             1st: {}",
         first.format("%Y-%m-%d %H:%M UTC (weekday: %A)")
     );
-    println!(
+    info!(
         "             2nd: {}",
         second.format("%Y-%m-%d %H:%M UTC (weekday: %A)")
     );
@@ -281,22 +284,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         7,
         "should be exactly 7 days apart"
     );
-    println!("  [verify]   Both on Monday, 7 days apart");
+    info!("  [verify]   Both on Monday, 7 days apart");
 
     // Validate interval -- weekly is well above the 60-second minimum
     let interval_result = validate_min_interval(&cron, eastern, 60);
     assert!(interval_result.is_ok());
-    println!("  [verify]   Interval validation passed (weekly >> 60s minimum)\n");
+    info!("  [verify]   Interval validation passed (weekly >> 60s minimum)\n");
 
     // =========================================================================
     // SCENARIO 3: Hourly Health Check
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: HOURLY HEALTH CHECK");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: HOURLY HEALTH CHECK");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  An hourly health check pings a webhook every hour on the hour.");
-    println!("  Cron: 0 * * * *\n");
+    info!("  An hourly health check pings a webhook every hour on the hour.");
+    info!("  Cron: 0 * * * *\n");
 
     let health_check = make_recurring(
         "rec-hourly-001",
@@ -315,9 +318,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store_recurring(&state, &health_check).await?;
 
-    println!("  [create]   ID: {}", health_check.id);
-    println!("  [create]   Cron: {}", health_check.cron_expr);
-    println!(
+    info!("  [create]   ID: {}", health_check.id);
+    info!("  [create]   Cron: {}", health_check.cron_expr);
+    info!(
         "  [create]   Next execution: {}",
         health_check
             .next_execution_at
@@ -331,30 +334,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let second = next_occurrence(&cron, tz, &first).expect("has next");
     let third = next_occurrence(&cron, tz, &second).expect("has next");
     let fourth = next_occurrence(&cron, tz, &third).expect("has next");
-    println!("  [schedule] Next 4 occurrences:");
-    println!("             {}", first.format("%H:%M UTC"));
-    println!("             {}", second.format("%H:%M UTC"));
-    println!("             {}", third.format("%H:%M UTC"));
-    println!("             {}", fourth.format("%H:%M UTC"));
+    info!("  [schedule] Next 4 occurrences:");
+    info!("             {}", first.format("%H:%M UTC"));
+    info!("             {}", second.format("%H:%M UTC"));
+    info!("             {}", third.format("%H:%M UTC"));
+    info!("             {}", fourth.format("%H:%M UTC"));
     assert_eq!((second - first).num_minutes(), 60);
     assert_eq!((third - second).num_minutes(), 60);
-    println!("  [verify]   All exactly 60 minutes apart");
+    info!("  [verify]   All exactly 60 minutes apart");
 
     // Validate interval -- hourly passes the default 60-second minimum
     let interval_result = validate_min_interval(&cron, tz, 60);
     assert!(interval_result.is_ok());
-    println!("  [verify]   Interval validation passed (3600s >> 60s minimum)\n");
+    info!("  [verify]   Interval validation passed (3600s >> 60s minimum)\n");
 
     // =========================================================================
     // SCENARIO 4: Business-Hours-Only Notification
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: BUSINESS-HOURS-ONLY NOTIFICATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: BUSINESS-HOURS-ONLY NOTIFICATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Notifications fire hourly only during business hours (9-17)");
-    println!("  on weekdays (Mon-Fri). No weekend or off-hours noise.");
-    println!("  Cron: 0 9-17 * * 1-5\n");
+    info!("  Notifications fire hourly only during business hours (9-17)");
+    info!("  on weekdays (Mon-Fri). No weekend or off-hours noise.");
+    info!("  Cron: 0 9-17 * * 1-5\n");
 
     let biz_hours = make_recurring(
         "rec-bizhours-001",
@@ -372,8 +375,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store_recurring(&state, &biz_hours).await?;
 
-    println!("  [create]   ID: {}", biz_hours.id);
-    println!(
+    info!("  [create]   ID: {}", biz_hours.id);
+    info!(
         "  [create]   Cron: {} (timezone: {})",
         biz_hours.cron_expr, biz_hours.timezone
     );
@@ -381,12 +384,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show how the cron skips weekends
     let cron = validate_cron_expr("0 9-17 * * 1-5")?;
     let ny_tz = validate_timezone("America/New_York")?;
-    println!("  [schedule] Next 5 occurrences (in local time):");
+    info!("  [schedule] Next 5 occurrences (in local time):");
     let mut cursor = now;
     for i in 1..=5 {
         let next = next_occurrence(&cron, ny_tz, &cursor).expect("has next");
         let local = next.with_timezone(&ny_tz);
-        println!(
+        info!(
             "             {i}. {} ({})",
             local.format("%Y-%m-%d %H:%M %Z"),
             local.format("%A"),
@@ -399,18 +402,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert!((9..=17).contains(&hour), "should be 9-17, got {hour}");
         cursor = next;
     }
-    println!("  [verify]   All on weekdays, all within 9:00-17:00\n");
+    info!("  [verify]   All on weekdays, all within 9:00-17:00\n");
 
     // =========================================================================
     // SCENARIO 5: Monthly Billing Reminder with End Date
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: MONTHLY BILLING REMINDER WITH END DATE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: MONTHLY BILLING REMINDER WITH END DATE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A billing reminder fires on the 1st of every month at 10:00.");
-    println!("  It has an end_date set 6 months from now, after which the");
-    println!("  background processor will auto-disable it.\n");
+    info!("  A billing reminder fires on the 1st of every month at 10:00.");
+    info!("  It has an end_date set 6 months from now, after which the");
+    info!("  background processor will auto-disable it.\n");
 
     let ends_at = now + Duration::days(180);
     let mut monthly_billing = make_recurring(
@@ -433,13 +436,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store_recurring(&state, &monthly_billing).await?;
 
-    println!("  [create]   ID: {}", monthly_billing.id);
-    println!("  [create]   Cron: {}", monthly_billing.cron_expr);
-    println!(
+    info!("  [create]   ID: {}", monthly_billing.id);
+    info!("  [create]   Cron: {}", monthly_billing.cron_expr);
+    info!(
         "  [create]   End date: {}",
         ends_at.format("%Y-%m-%d %H:%M UTC")
     );
-    println!(
+    info!(
         "  [create]   Description: {}",
         monthly_billing.description.as_deref().unwrap_or("none")
     );
@@ -447,11 +450,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Show monthly occurrences
     let cron = validate_cron_expr("0 10 1 * *")?;
     let tz = validate_timezone("UTC")?;
-    println!("  [schedule] Next 4 monthly occurrences:");
+    info!("  [schedule] Next 4 monthly occurrences:");
     let mut cursor = now;
     for i in 1..=4 {
         let next = next_occurrence(&cron, tz, &cursor).expect("has next");
-        println!(
+        info!(
             "             {i}. {}",
             next.format("%Y-%m-%d %H:%M UTC (%B)")
         );
@@ -467,18 +470,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(loaded.ends_at.is_some());
     let will_expire = loaded.ends_at.unwrap() <= now + Duration::days(181);
     assert!(will_expire, "should expire within 181 days");
-    println!("  [verify]   End date set -- background processor will auto-disable after expiry\n");
+    info!("  [verify]   End date set -- background processor will auto-disable after expiry\n");
 
     // =========================================================================
     // SCENARIO 6: Max Executions Limit
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 6: RECURRING WITH MAX EXECUTIONS LIMIT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 6: RECURRING WITH MAX EXECUTIONS LIMIT");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A recurring action tracks execution_count. Applications can");
-    println!("  enforce a max-executions limit by disabling the action once");
-    println!("  the count reaches the threshold.\n");
+    info!("  A recurring action tracks execution_count. Applications can");
+    info!("  enforce a max-executions limit by disabling the action once");
+    info!("  the count reaches the threshold.\n");
 
     let max_executions: u64 = 5;
     let mut limited_action = make_recurring(
@@ -500,15 +503,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store_recurring(&state, &limited_action).await?;
 
-    println!("  [create]   ID: {}", limited_action.id);
-    println!("  [create]   Max executions: {max_executions}");
-    println!(
+    info!("  [create]   ID: {}", limited_action.id);
+    info!("  [create]   Max executions: {max_executions}");
+    info!(
         "  [create]   Current count: {}",
         limited_action.execution_count
     );
 
     // Simulate executions incrementing the count
-    println!("\n  Simulating {max_executions} executions...");
+    info!("\n  Simulating {max_executions} executions...");
     for i in 1..=max_executions {
         limited_action.execution_count = i;
         limited_action.last_executed_at = Some(Utc::now());
@@ -517,9 +520,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if i >= max_executions {
             limited_action.enabled = false;
             limited_action.next_execution_at = None;
-            println!("  [exec {i}]   Reached max -- disabling recurring action");
+            info!("  [exec {i}]   Reached max -- disabling recurring action");
         } else {
-            println!("  [exec {i}]   Execution count: {i}/{max_executions}");
+            info!("  [exec {i}]   Execution count: {i}/{max_executions}");
         }
     }
 
@@ -531,21 +534,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!loaded.enabled, "should be disabled after max executions");
     assert_eq!(loaded.execution_count, max_executions);
     assert!(loaded.next_execution_at.is_none());
-    println!("  [verify]   Disabled after {max_executions} executions");
-    println!("  [verify]   execution_count = {}", loaded.execution_count);
-    println!("  [verify]   enabled = {}", loaded.enabled);
-    println!("  [verify]   next_execution_at = none\n");
+    info!("  [verify]   Disabled after {max_executions} executions");
+    info!("  [verify]   execution_count = {}", loaded.execution_count);
+    info!("  [verify]   enabled = {}", loaded.enabled);
+    info!("  [verify]   next_execution_at = none\n");
 
     // =========================================================================
     // SCENARIO 7: Pause and Resume Lifecycle
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 7: PAUSE AND RESUME LIFECYCLE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 7: PAUSE AND RESUME LIFECYCLE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A recurring action can be paused (disabled) and later resumed.");
-    println!("  Pausing removes it from the pending index. Resuming recalculates");
-    println!("  the next execution time and re-indexes it.\n");
+    info!("  A recurring action can be paused (disabled) and later resumed.");
+    info!("  Pausing removes it from the pending index. Resuming recalculates");
+    info!("  the next execution time and re-indexes it.\n");
 
     let lifecycle_state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
 
@@ -565,9 +568,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     store_recurring(&lifecycle_state, &lifecycle_action).await?;
 
-    println!("  [create]   ID: {}", lifecycle_action.id);
-    println!("  [create]   Enabled: {}", lifecycle_action.enabled);
-    println!(
+    info!("  [create]   ID: {}", lifecycle_action.id);
+    info!("  [create]   Enabled: {}", lifecycle_action.enabled);
+    info!(
         "  [create]   Next: {}",
         lifecycle_action
             .next_execution_at
@@ -578,11 +581,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         lifecycle_action.execution_count = i;
         lifecycle_action.last_executed_at = Some(Utc::now());
-        println!("  [exec {i}]   Executed (count: {i})");
+        info!("  [exec {i}]   Executed (count: {i})");
     }
 
     // PAUSE
-    println!("\n  [pause]    Pausing recurring action...");
+    info!("\n  [pause]    Pausing recurring action...");
     lifecycle_action.enabled = false;
     lifecycle_action.next_execution_at = None;
     lifecycle_action.updated_at = Utc::now();
@@ -602,12 +605,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("stored");
     assert!(!loaded.enabled);
     assert!(loaded.next_execution_at.is_none());
-    println!("  [pause]    Enabled: {}", loaded.enabled);
-    println!("  [pause]    Next execution: none");
-    println!("  [pause]    Background processor will skip this action");
+    info!("  [pause]    Enabled: {}", loaded.enabled);
+    info!("  [pause]    Next execution: none");
+    info!("  [pause]    Background processor will skip this action");
 
     // RESUME
-    println!("\n  [resume]   Resuming recurring action...");
+    info!("\n  [resume]   Resuming recurring action...");
     lifecycle_action.enabled = true;
     let cron = validate_cron_expr(&lifecycle_action.cron_expr)?;
     let tz = validate_timezone(&lifecycle_action.timezone)?;
@@ -621,14 +624,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("stored");
     assert!(loaded.enabled);
     assert!(loaded.next_execution_at.is_some());
-    println!("  [resume]   Enabled: {}", loaded.enabled);
-    println!(
+    info!("  [resume]   Enabled: {}", loaded.enabled);
+    info!(
         "  [resume]   Next execution: {}",
         loaded
             .next_execution_at
             .map_or_else(|| "none".to_string(), |t| t.format("%H:%M UTC").to_string())
     );
-    println!(
+    info!(
         "  [resume]   Execution count preserved: {}",
         loaded.execution_count
     );
@@ -636,18 +639,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.execution_count, 3,
         "count should be preserved across pause/resume"
     );
-    println!("  [verify]   Lifecycle: create -> execute x3 -> pause -> resume\n");
+    info!("  [verify]   Lifecycle: create -> execute x3 -> pause -> resume\n");
 
     // =========================================================================
     // SCENARIO 8: Multi-Tenant Concurrent Recurring Actions
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 8: MULTI-TENANT CONCURRENT RECURRING ACTIONS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 8: MULTI-TENANT CONCURRENT RECURRING ACTIONS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Multiple tenants each have their own recurring actions with");
-    println!("  different schedules. Actions are fully isolated per tenant.");
-    println!("  Deleting one tenant's action does not affect others.\n");
+    info!("  Multiple tenants each have their own recurring actions with");
+    info!("  different schedules. Actions are fully isolated per tenant.");
+    info!("  Deleting one tenant's action does not affect others.\n");
 
     let multi_state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
 
@@ -702,13 +705,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Store all
     for action in [&alpha_daily, &alpha_weekly, &beta_hourly, &gamma_frequent] {
         store_recurring(&multi_state, action).await?;
-        println!(
+        info!(
             "  [create]   {} / {} -- cron: {} (tz: {})",
             action.tenant, action.id, action.cron_expr, action.timezone,
         );
     }
 
-    println!();
+    info!("");
 
     // Verify isolation: load each tenant's actions
     let a1 = load_recurring(
@@ -726,7 +729,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(a2.is_some(), "alpha weekly should exist");
     assert!(b1.is_some(), "beta hourly should exist");
     assert!(g1.is_some(), "gamma frequent should exist");
-    println!("  [verify]   All 4 recurring actions stored independently");
+    info!("  [verify]   All 4 recurring actions stored independently");
 
     // Verify cross-tenant isolation: beta can't see alpha's actions
     let cross = load_recurring(
@@ -737,15 +740,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     assert!(cross.is_none(), "beta should not see alpha's actions");
-    println!("  [verify]   Tenant isolation confirmed (beta cannot see alpha's actions)");
+    info!("  [verify]   Tenant isolation confirmed (beta cannot see alpha's actions)");
 
     // Delete one tenant's action -- others remain
-    println!("\n  [delete]   Deleting tenant-beta's hourly health check...");
+    info!("\n  [delete]   Deleting tenant-beta's hourly health check...");
     delete_recurring(&multi_state, "monitoring", "tenant-beta", "rec-beta-001").await?;
 
     let deleted = load_recurring(&multi_state, "monitoring", "tenant-beta", "rec-beta-001").await?;
     assert!(deleted.is_none(), "beta action should be deleted");
-    println!("  [verify]   tenant-beta action deleted");
+    info!("  [verify]   tenant-beta action deleted");
 
     // Verify others are unaffected
     let a1_still = load_recurring(
@@ -759,12 +762,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         load_recurring(&multi_state, "monitoring", "tenant-gamma", "rec-gamma-001").await?;
     assert!(a1_still.is_some(), "alpha should be unaffected");
     assert!(g1_still.is_some(), "gamma should be unaffected");
-    println!("  [verify]   Other tenants' actions unaffected by deletion");
+    info!("  [verify]   Other tenants' actions unaffected by deletion");
 
     // Show concurrent schedule summary
-    println!("\n  Schedule summary (all tenants):");
+    info!("\n  Schedule summary (all tenants):");
     for action in [&alpha_daily, &alpha_weekly, &gamma_frequent] {
-        println!(
+        info!(
             "    {} / {} : next = {}",
             action.tenant,
             action.id,
@@ -773,52 +776,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map_or_else(|| "none".to_string(), |t| t.to_rfc3339()),
         );
     }
-    println!("    tenant-beta / rec-beta-001 : DELETED\n");
+    info!("    tenant-beta / rec-beta-001 : DELETED\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║            RECURRING ACTIONS DEMO COMPLETE                   ║");
-    println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║                                                              ║");
-    println!("║  Scenarios demonstrated:                                     ║");
-    println!("║                                                              ║");
-    println!("║  1. Daily Digest Email                                       ║");
-    println!("║     - Cron: 0 9 * * * (every day at 09:00 UTC)              ║");
-    println!("║     - Verified 24-hour gaps between occurrences              ║");
-    println!("║                                                              ║");
-    println!("║  2. Weekly Report with Timezone                              ║");
-    println!("║     - Cron: 0 8 * * 1 (Monday 08:00 US/Eastern)             ║");
-    println!("║     - Timezone-aware scheduling with DST handling            ║");
-    println!("║                                                              ║");
-    println!("║  3. Hourly Health Check                                      ║");
-    println!("║     - Cron: 0 * * * * (every hour on the hour)              ║");
-    println!("║     - 60-minute intervals, passes min-interval validation    ║");
-    println!("║                                                              ║");
-    println!("║  4. Business-Hours-Only Notification                         ║");
-    println!("║     - Cron: 0 9-17 * * 1-5 (weekdays 9am-5pm)              ║");
-    println!("║     - Skips weekends and off-hours automatically             ║");
-    println!("║                                                              ║");
-    println!("║  5. Monthly Billing Reminder                                 ║");
-    println!("║     - Cron: 0 10 1 * * (1st of month at 10:00)             ║");
-    println!("║     - Auto-expires via end_date after 6 months               ║");
-    println!("║                                                              ║");
-    println!("║  6. Max Executions Limit                                     ║");
-    println!("║     - Tracks execution_count, disables at threshold          ║");
-    println!("║     - Label-based max_executions enforcement                 ║");
-    println!("║                                                              ║");
-    println!("║  7. Pause and Resume Lifecycle                               ║");
-    println!("║     - Pause removes from pending index                       ║");
-    println!("║     - Resume recalculates next_execution_at                  ║");
-    println!("║     - Execution count preserved across lifecycle             ║");
-    println!("║                                                              ║");
-    println!("║  8. Multi-Tenant Concurrent Actions                          ║");
-    println!("║     - 4 tenants with independent schedules/timezones         ║");
-    println!("║     - Full tenant isolation verified                         ║");
-    println!("║     - Delete one tenant's action, others unaffected          ║");
-    println!("║                                                              ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║            RECURRING ACTIONS DEMO COMPLETE                   ║");
+    info!("╠══════════════════════════════════════════════════════════════╣");
+    info!("║                                                              ║");
+    info!("║  Scenarios demonstrated:                                     ║");
+    info!("║                                                              ║");
+    info!("║  1. Daily Digest Email                                       ║");
+    info!("║     - Cron: 0 9 * * * (every day at 09:00 UTC)              ║");
+    info!("║     - Verified 24-hour gaps between occurrences              ║");
+    info!("║                                                              ║");
+    info!("║  2. Weekly Report with Timezone                              ║");
+    info!("║     - Cron: 0 8 * * 1 (Monday 08:00 US/Eastern)             ║");
+    info!("║     - Timezone-aware scheduling with DST handling            ║");
+    info!("║                                                              ║");
+    info!("║  3. Hourly Health Check                                      ║");
+    info!("║     - Cron: 0 * * * * (every hour on the hour)              ║");
+    info!("║     - 60-minute intervals, passes min-interval validation    ║");
+    info!("║                                                              ║");
+    info!("║  4. Business-Hours-Only Notification                         ║");
+    info!("║     - Cron: 0 9-17 * * 1-5 (weekdays 9am-5pm)              ║");
+    info!("║     - Skips weekends and off-hours automatically             ║");
+    info!("║                                                              ║");
+    info!("║  5. Monthly Billing Reminder                                 ║");
+    info!("║     - Cron: 0 10 1 * * (1st of month at 10:00)             ║");
+    info!("║     - Auto-expires via end_date after 6 months               ║");
+    info!("║                                                              ║");
+    info!("║  6. Max Executions Limit                                     ║");
+    info!("║     - Tracks execution_count, disables at threshold          ║");
+    info!("║     - Label-based max_executions enforcement                 ║");
+    info!("║                                                              ║");
+    info!("║  7. Pause and Resume Lifecycle                               ║");
+    info!("║     - Pause removes from pending index                       ║");
+    info!("║     - Resume recalculates next_execution_at                  ║");
+    info!("║     - Execution count preserved across lifecycle             ║");
+    info!("║                                                              ║");
+    info!("║  8. Multi-Tenant Concurrent Actions                          ║");
+    info!("║     - 4 tenants with independent schedules/timezones         ║");
+    info!("║     - Full tenant isolation verified                         ║");
+    info!("║     - Delete one tenant's action, others unaffected          ║");
+    info!("║                                                              ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

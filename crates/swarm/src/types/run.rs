@@ -29,6 +29,8 @@ pub enum SwarmRunStatus {
     Initializing,
     /// Actively executing tasks.
     Running,
+    /// Adversarial challenge-recovery loop is active.
+    Adversarial,
     /// All tasks completed successfully.
     Completed,
     /// One or more tasks failed.
@@ -75,4 +77,13 @@ pub struct RunMetrics {
     pub refinements: u64,
     /// Semantic memories stored in `TesseraiDB`.
     pub memories_stored: u64,
+    /// Number of adversarial challenge-recovery rounds executed.
+    #[serde(default)]
+    pub adversarial_rounds: u64,
+    /// Total challenges raised by adversarial agents.
+    #[serde(default)]
+    pub challenges_raised: u64,
+    /// Total challenges resolved during recovery.
+    #[serde(default)]
+    pub challenges_resolved: u64,
 }

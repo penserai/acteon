@@ -31,6 +31,7 @@ use acteon_provider::{DynProvider, ProviderError};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use async_trait::async_trait;
 use chrono::Utc;
+use tracing::info;
 
 // =============================================================================
 // Mock providers
@@ -57,7 +58,7 @@ impl DynProvider for MockProvider {
         &self,
         action: &Action,
     ) -> Result<acteon_core::ProviderResponse, ProviderError> {
-        println!(
+        info!(
             "    [{}-provider] executed '{}' for tenant '{}'",
             self.name, action.action_type, action.tenant
         );
@@ -74,21 +75,23 @@ impl DynProvider for MockProvider {
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║          DATA RETENTION POLICIES SIMULATION DEMO             ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║          DATA RETENTION POLICIES SIMULATION DEMO             ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     let now = Utc::now();
 
     // =========================================================================
     // SCENARIO 1: Default TTL (no retention policy)
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: DEFAULT TTL (no retention policy)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: DEFAULT TTL (no retention policy)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  When no retention policy is set for a tenant, the gateway-wide");
-    println!("  audit_ttl_seconds is used. Here we set it to 86400 (24 hours).\n");
+    info!("  When no retention policy is set for a tenant, the gateway-wide");
+    info!("  audit_ttl_seconds is used. Here we set it to 86400 (24 hours).\n");
 
     let gateway = GatewayBuilder::new()
         .state(Arc::new(MemoryStateStore::new()))
@@ -97,8 +100,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .audit_ttl_seconds(86_400)
         .build()?;
 
-    println!("  Gateway built with audit_ttl_seconds = 86400 (24h)");
-    println!("  No retention policy registered.\n");
+    info!("  Gateway built with audit_ttl_seconds = 86400 (24h)");
+    info!("  No retention policy registered.\n");
 
     // Dispatch an action to verify the gateway works.
     let action = Action::new(
@@ -122,23 +125,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "expected no retention policies on gateway"
     );
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Retention policies:  0                   │");
-    println!("  │  Dispatch outcome:    Executed             │");
-    println!("  │  Effective audit TTL: gateway default (24h)│");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Retention policies:  0                   │");
+    info!("  │  Dispatch outcome:    Executed             │");
+    info!("  │  Effective audit TTL: gateway default (24h)│");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 2: Per-tenant audit TTL override
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: PER-TENANT AUDIT TTL OVERRIDE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: PER-TENANT AUDIT TTL OVERRIDE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Tenant A has a retention policy with audit_ttl_seconds = 2592000");
-    println!("  (30 days). This overrides the gateway default of 86400 (24h).\n");
+    info!("  Tenant A has a retention policy with audit_ttl_seconds = 2592000");
+    info!("  (30 days). This overrides the gateway default of 86400 (24h).\n");
 
     let gateway = GatewayBuilder::new()
         .state(Arc::new(MemoryStateStore::new()))
@@ -161,9 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    println!("  Gateway built with:");
-    println!("    - Global audit TTL:  86400s (24h)");
-    println!("    - Tenant A audit TTL: 2592000s (30d)\n");
+    info!("  Gateway built with:");
+    info!("    - Global audit TTL:  86400s (24h)");
+    info!("    - Tenant A audit TTL: 2592000s (30d)\n");
 
     let action = Action::new(
         "notifications",
@@ -189,27 +192,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(!policy.compliance_hold);
     assert!(policy.enabled);
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Retention policies:  1                   │");
-    println!("  │  Tenant A audit TTL:  2592000s (30 days)  │");
-    println!("  │  Tenant A state TTL:  604800s (7 days)    │");
-    println!("  │  Tenant A event TTL:  259200s (3 days)    │");
-    println!("  │  Compliance hold:     false                │");
-    println!("  │  Dispatch outcome:    Executed             │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Retention policies:  1                   │");
+    info!("  │  Tenant A audit TTL:  2592000s (30 days)  │");
+    info!("  │  Tenant A state TTL:  604800s (7 days)    │");
+    info!("  │  Tenant A event TTL:  259200s (3 days)    │");
+    info!("  │  Compliance hold:     false                │");
+    info!("  │  Dispatch outcome:    Executed             │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 3: Compliance hold (never-expire)
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: COMPLIANCE HOLD (audit records never expire)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: COMPLIANCE HOLD (audit records never expire)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Tenant B has compliance_hold = true. Even though audit_ttl_seconds");
-    println!("  is set, the effective TTL is None (records never expire). This is");
-    println!("  essential for GDPR, SOC2, and HIPAA compliance scenarios.\n");
+    info!("  Tenant B has compliance_hold = true. Even though audit_ttl_seconds");
+    info!("  is set, the effective TTL is None (records never expire). This is");
+    info!("  essential for GDPR, SOC2, and HIPAA compliance scenarios.\n");
 
     let gateway = GatewayBuilder::new()
         .state(Arc::new(MemoryStateStore::new()))
@@ -237,10 +240,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    println!("  Gateway built with:");
-    println!("    - Global audit TTL:       86400s (24h)");
-    println!("    - Tenant B audit TTL:     86400s (set but overridden)");
-    println!("    - Tenant B compliance_hold: true\n");
+    info!("  Gateway built with:");
+    info!("    - Global audit TTL:       86400s (24h)");
+    info!("    - Tenant B audit TTL:     86400s (set but overridden)");
+    info!("    - Tenant B compliance_hold: true\n");
 
     let action = Action::new(
         "notifications",
@@ -261,24 +264,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(policy.labels.get("compliance"), Some(&"hipaa".to_string()));
     assert_eq!(policy.labels.get("tier"), Some(&"enterprise".to_string()));
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Compliance hold:     true                │");
-    println!("  │  Effective audit TTL: None (never expire)  │");
-    println!("  │  Labels:              compliance=hipaa     │");
-    println!("  │  Dispatch outcome:    Executed             │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Compliance hold:     true                │");
+    info!("  │  Effective audit TTL: None (never expire)  │");
+    info!("  │  Labels:              compliance=hipaa     │");
+    info!("  │  Dispatch outcome:    Executed             │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 4: Disabled retention policy
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: DISABLED RETENTION POLICY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: DISABLED RETENTION POLICY");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Tenant C has a retention policy with enabled = false. The policy");
-    println!("  is registered but ignored; the gateway default TTL applies.\n");
+    info!("  Tenant C has a retention policy with enabled = false. The policy");
+    info!("  is registered but ignored; the gateway default TTL applies.\n");
 
     let gateway = GatewayBuilder::new()
         .state(Arc::new(MemoryStateStore::new()))
@@ -301,9 +304,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    println!("  Gateway built with:");
-    println!("    - Global audit TTL:  86400s (24h)");
-    println!("    - Tenant C enabled:  false\n");
+    info!("  Gateway built with:");
+    info!("    - Global audit TTL:  86400s (24h)");
+    info!("    - Tenant C enabled:  false\n");
 
     let action = Action::new(
         "notifications",
@@ -322,26 +325,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("policy for tenant-c should exist");
     assert!(!policy.enabled, "policy should be disabled");
 
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  Results                                  │");
-    println!("  ├──────────────────────────────────────────┤");
-    println!("  │  Policy enabled:       false               │");
-    println!("  │  Effective audit TTL:  gateway default (24h)│");
-    println!("  │  Dispatch outcome:     Executed             │");
-    println!("  └──────────────────────────────────────────┘\n");
+    info!("  ┌──────────────────────────────────────────┐");
+    info!("  │  Results                                  │");
+    info!("  ├──────────────────────────────────────────┤");
+    info!("  │  Policy enabled:       false               │");
+    info!("  │  Effective audit TTL:  gateway default (24h)│");
+    info!("  │  Dispatch outcome:     Executed             │");
+    info!("  └──────────────────────────────────────────┘\n");
 
     // =========================================================================
     // SCENARIO 5: Multiple tenants with different policies
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: MULTIPLE TENANTS WITH DIFFERENT POLICIES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: MULTIPLE TENANTS WITH DIFFERENT POLICIES");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Three tenants on a single gateway, each with different retention");
-    println!("  requirements:\n");
-    println!("    - free-tier:    no retention policy (gateway default: 24h)");
-    println!("    - pro-tier:     90-day audit, 30-day state, 14-day events");
-    println!("    - enterprise:   compliance hold (never expire)\n");
+    info!("  Three tenants on a single gateway, each with different retention");
+    info!("  requirements:\n");
+    info!("    - free-tier:    no retention policy (gateway default: 24h)");
+    info!("    - pro-tier:     90-day audit, 30-day state, 14-day events");
+    info!("    - enterprise:   compliance hold (never expire)\n");
 
     let gateway = GatewayBuilder::new()
         .state(Arc::new(MemoryStateStore::new()))
@@ -386,7 +389,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build()?;
 
-    println!("  Gateway built with 2 retention policies.\n");
+    info!("  Gateway built with 2 retention policies.\n");
 
     // Dispatch one action per tenant.
     let tenants = ["free-tier", "pro-tier", "enterprise"];
@@ -407,7 +410,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => "Unexpected",
         };
         results.push((tenant, status));
-        println!("  [{tenant}] dispatched -> {status}");
+        info!("  [{tenant}] dispatched -> {status}");
     }
 
     let policies = gateway.retention_policies();
@@ -436,25 +439,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ent = policies.get("notifications:enterprise").unwrap();
     assert!(ent.compliance_hold);
 
-    println!();
-    println!("  ┌───────────────┬──────────────────────────┬────────────┐");
-    println!("  │ Tenant        │ Effective Audit TTL       │ Hold       │");
-    println!("  ├───────────────┼──────────────────────────┼────────────┤");
-    println!("  │ free-tier     │ 86400s (gateway default)  │ false      │");
-    println!("  │ pro-tier      │ 7776000s (90 days)        │ false      │");
-    println!("  │ enterprise    │ None (never expire)       │ true       │");
-    println!("  └───────────────┴──────────────────────────┴────────────┘\n");
+    info!("");
+    info!("  ┌───────────────┬──────────────────────────┬────────────┐");
+    info!("  │ Tenant        │ Effective Audit TTL       │ Hold       │");
+    info!("  ├───────────────┼──────────────────────────┼────────────┤");
+    info!("  │ free-tier     │ 86400s (gateway default)  │ false      │");
+    info!("  │ pro-tier      │ 7776000s (90 days)        │ false      │");
+    info!("  │ enterprise    │ None (never expire)       │ true       │");
+    info!("  └───────────────┴──────────────────────────┴────────────┘\n");
 
     // =========================================================================
     // SCENARIO 6: Runtime policy management and metrics
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 6: RUNTIME POLICY MANAGEMENT AND METRICS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 6: RUNTIME POLICY MANAGEMENT AND METRICS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Retention policies can be added, updated, and removed at runtime");
-    println!("  without restarting the gateway. Retention metrics track reaper");
-    println!("  activity.\n");
+    info!("  Retention policies can be added, updated, and removed at runtime");
+    info!("  without restarting the gateway. Retention metrics track reaper");
+    info!("  activity.\n");
 
     let gateway = GatewayBuilder::new()
         .state(Arc::new(MemoryStateStore::new()))
@@ -465,7 +468,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initially no policies.
     assert!(gateway.retention_policies().is_empty());
-    println!("  1. Initial state: 0 retention policies");
+    info!("  1. Initial state: 0 retention policies");
 
     // Add a policy at runtime.
     gateway.set_retention_policy(RetentionPolicy {
@@ -484,7 +487,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     assert_eq!(gateway.retention_policies().len(), 1);
-    println!("  2. Added policy at runtime: analytics:dynamic-tenant (2-day audit)");
+    info!("  2. Added policy at runtime: analytics:dynamic-tenant (2-day audit)");
 
     // Update the policy.
     gateway.set_retention_policy(RetentionPolicy {
@@ -507,68 +510,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(updated.audit_ttl_seconds, Some(604_800));
     assert_eq!(updated.state_ttl_seconds, Some(172_800));
     assert_eq!(updated.event_ttl_seconds, Some(86_400));
-    println!("  3. Updated policy: audit TTL 2d -> 7d, added event TTL");
+    info!("  3. Updated policy: audit TTL 2d -> 7d, added event TTL");
 
     // Remove the policy.
     let removed = gateway.remove_retention_policy("analytics", "dynamic-tenant");
     assert!(removed.is_some(), "should have removed the policy");
     assert!(gateway.retention_policies().is_empty());
-    println!("  4. Removed policy: 0 policies remaining");
+    info!("  4. Removed policy: 0 policies remaining");
 
     // Check retention metrics (all zero since no reaper ran).
     let snap = gateway.metrics().snapshot();
-    println!();
-    println!("  ┌────────────────────────────────────────────┐");
-    println!("  │  Retention Metrics                          │");
-    println!("  ├────────────────────────────────────────────┤");
-    println!(
+    info!("");
+    info!("  ┌────────────────────────────────────────────┐");
+    info!("  │  Retention Metrics                          │");
+    info!("  ├────────────────────────────────────────────┤");
+    info!(
         "  │  retention_deleted_state:      {:>3}          │",
         snap.retention_deleted_state
     );
-    println!(
+    info!(
         "  │  retention_skipped_compliance: {:>3}          │",
         snap.retention_skipped_compliance
     );
-    println!(
+    info!(
         "  │  retention_errors:             {:>3}          │",
         snap.retention_errors
     );
-    println!("  └────────────────────────────────────────────┘");
+    info!("  └────────────────────────────────────────────┘");
 
     assert_eq!(snap.retention_deleted_state, 0);
     assert_eq!(snap.retention_skipped_compliance, 0);
     assert_eq!(snap.retention_errors, 0);
 
-    println!();
+    info!("");
 
     // =========================================================================
     // Summary Table
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║          DATA RETENTION POLICIES DEMO COMPLETE               ║");
-    println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║                                                              ║");
-    println!("║  ┌──────────────┬──────────┬────────────┬─────────────────┐  ║");
-    println!("║  │ Scenario     │ TTL Src  │ Hold       │ Effective TTL   │  ║");
-    println!("║  ├──────────────┼──────────┼────────────┼─────────────────┤  ║");
-    println!("║  │ No policy    │ Gateway  │ false      │ 86400s (24h)    │  ║");
-    println!("║  │ Per-tenant   │ Policy   │ false      │ 2592000s (30d)  │  ║");
-    println!("║  │ Compliance   │ Policy   │ true       │ None (forever)  │  ║");
-    println!("║  │ Disabled     │ Gateway  │ false      │ 86400s (24h)    │  ║");
-    println!("║  │ Multi-tenant │ Mixed    │ mixed      │ Varies          │  ║");
-    println!("║  │ Runtime mgmt │ Dynamic  │ false      │ Dynamic         │  ║");
-    println!("║  └──────────────┴──────────┴────────────┴─────────────────┘  ║");
-    println!("║                                                              ║");
-    println!("║  Key takeaways:                                              ║");
-    println!("║                                                              ║");
-    println!("║  1. Three-level TTL resolution:                              ║");
-    println!("║     compliance_hold > policy TTL > gateway default           ║");
-    println!("║  2. Disabled policies are transparent (gateway default)      ║");
-    println!("║  3. Policies can be managed at runtime without restart       ║");
-    println!("║  4. Background reaper uses state/event TTLs for cleanup      ║");
-    println!("║  5. Compliance hold preserves audit records indefinitely     ║");
-    println!("║                                                              ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║          DATA RETENTION POLICIES DEMO COMPLETE               ║");
+    info!("╠══════════════════════════════════════════════════════════════╣");
+    info!("║                                                              ║");
+    info!("║  ┌──────────────┬──────────┬────────────┬─────────────────┐  ║");
+    info!("║  │ Scenario     │ TTL Src  │ Hold       │ Effective TTL   │  ║");
+    info!("║  ├──────────────┼──────────┼────────────┼─────────────────┤  ║");
+    info!("║  │ No policy    │ Gateway  │ false      │ 86400s (24h)    │  ║");
+    info!("║  │ Per-tenant   │ Policy   │ false      │ 2592000s (30d)  │  ║");
+    info!("║  │ Compliance   │ Policy   │ true       │ None (forever)  │  ║");
+    info!("║  │ Disabled     │ Gateway  │ false      │ 86400s (24h)    │  ║");
+    info!("║  │ Multi-tenant │ Mixed    │ mixed      │ Varies          │  ║");
+    info!("║  │ Runtime mgmt │ Dynamic  │ false      │ Dynamic         │  ║");
+    info!("║  └──────────────┴──────────┴────────────┴─────────────────┘  ║");
+    info!("║                                                              ║");
+    info!("║  Key takeaways:                                              ║");
+    info!("║                                                              ║");
+    info!("║  1. Three-level TTL resolution:                              ║");
+    info!("║     compliance_hold > policy TTL > gateway default           ║");
+    info!("║  2. Disabled policies are transparent (gateway default)      ║");
+    info!("║  3. Policies can be managed at runtime without restart       ║");
+    info!("║  4. Background reaper uses state/event TTLs for cleanup      ║");
+    info!("║  5. Compliance hold preserves audit records indefinitely     ║");
+    info!("║                                                              ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }

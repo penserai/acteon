@@ -10,10 +10,12 @@ use uuid::Uuid;
 use crate::config::SwarmConfig;
 use crate::error::SwarmError;
 use crate::memory::TesseraiClient;
+use crate::orchestrator::adversarial::run_adversarial_loop;
 use crate::orchestrator::agent_spawner::{AgentResult, spawn_agent, wait_for_agent};
 use crate::orchestrator::monitor::SwarmMonitor;
 use crate::orchestrator::refiner::{apply_refinement, refine_plan};
 use crate::roles::RoleRegistry;
+use crate::types::adversarial::AdversarialResult;
 use crate::types::agent::{AgentRole, AgentSession, AgentSessionStatus};
 use crate::types::plan::{SwarmPlan, SwarmSubtask, SwarmTask};
 use crate::types::run::{RunMetrics, SwarmRun, SwarmRunStatus, TaskRunStatus};
@@ -104,6 +106,85 @@ pub async fn execute_swarm(
     crate::memory::graph::build_swarm_graph(&tesserai, &run_id, plan, &run).await;
 
     Ok(run)
+}
+
+/// Execute a swarm plan with an optional adversarial challenge-recovery loop.
+///
+/// If the adversarial config is enabled, the primary swarm runs first, then
+/// an adversarial swarm challenges the output, and the primary engine recovers.
+/// This can repeat for up to `max_rounds`.
+///
+/// Returns `(SwarmRun, Option<AdversarialResult>)`.
+pub async fn execute_swarm_with_adversarial(
+    plan: &mut SwarmPlan,
+    config: &SwarmConfig,
+    roles: &RoleRegistry,
+    hooks_binary: &std::path::Path,
+) -> Result<(SwarmRun, Option<AdversarialResult>), SwarmError> {
+    let mut run = execute_swarm(plan, config, roles, hooks_binary).await?;
+
+    if !config.adversarial.enabled {
+        return Ok((run, None));
+    }
+
+    // Collect primary output summary from completed task results.
+    let primary_summary = build_primary_summary(plan, &run);
+
+    let adversarial_result = run_adversarial_loop(config, plan, &mut run, &primary_summary).await?;
+
+    // Update final status based on adversarial outcome.
+    if !adversarial_result.accepted && run.status == SwarmRunStatus::Completed {
+        tracing::warn!(
+            unresolved = adversarial_result.unresolved.len(),
+            "adversarial review has unresolved challenges"
+        );
+    }
+
+    // Persist adversarial report to the working directory.
+    save_adversarial_report(config, &run.id, &adversarial_result);
+
+    Ok((run, Some(adversarial_result)))
+}
+
+/// Build a summary of the primary swarm's output for the adversarial phase.
+fn build_primary_summary(plan: &SwarmPlan, run: &SwarmRun) -> String {
+    let mut sections = Vec::new();
+
+    sections.push(format!("## Objective\n{}", plan.objective));
+
+    sections.push(format!(
+        "## Execution Status\n- Status: {:?}\n- Tasks: {}\n- Agents spawned: {}\n- Agents completed: {}\n- Agents failed: {}",
+        run.status,
+        run.task_status.len(),
+        run.metrics.agents_spawned,
+        run.metrics.agents_completed,
+        run.metrics.agents_failed,
+    ));
+
+    let task_statuses: Vec<String> = plan
+        .tasks
+        .iter()
+        .map(|t| {
+            let status = run
+                .task_status
+                .get(&t.id)
+                .map_or_else(|| "Unknown".into(), |s| format!("{s:?}"));
+            format!("- {} ({}): {} — {status}", t.id, t.assigned_role, t.name)
+        })
+        .collect();
+
+    sections.push(format!("## Task Results\n{}", task_statuses.join("\n")));
+
+    sections.push(format!(
+        "## Success Criteria\n{}",
+        plan.success_criteria
+            .iter()
+            .map(|c| format!("- {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ));
+
+    sections.join("\n\n")
 }
 
 // ── Parallel orchestration loop ──────────────────────────────────────────────
@@ -537,6 +618,7 @@ async fn finalize_run(run: &mut SwarmRun, tesserai: &TesseraiClient, run_id: &st
         SwarmRunStatus::Failed => "failed",
         SwarmRunStatus::TimedOut => "timed_out",
         SwarmRunStatus::Cancelled => "cancelled",
+        SwarmRunStatus::Adversarial => "adversarial",
         _ => "unknown",
     };
     if let Err(e) = crate::memory::twins::update_run_status(tesserai, run_id, status_str).await {
@@ -550,6 +632,30 @@ async fn finalize_run(run: &mut SwarmRun, tesserai: &TesseraiClient, run_id: &st
         agents_completed = run.metrics.agents_completed,
         "swarm run finished"
     );
+}
+
+/// Save the adversarial report as JSON in the working directory.
+///
+/// Writes to `<working_dir>/adversarial-report-<run_id>.json`.
+fn save_adversarial_report(config: &SwarmConfig, run_id: &str, result: &AdversarialResult) {
+    let dir = config
+        .defaults
+        .working_directory
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    let filename = format!("adversarial-report-{run_id}.json");
+    let path = dir.join(&filename);
+
+    match serde_json::to_string_pretty(result) {
+        Ok(json) => match std::fs::write(&path, &json) {
+            Ok(()) => tracing::info!(path = %path.display(), "adversarial report saved"),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), "failed to save adversarial report: {e}");
+            }
+        },
+        Err(e) => tracing::warn!("failed to serialize adversarial report: {e}"),
+    }
 }
 
 /// Extract the readable result text from agent output.

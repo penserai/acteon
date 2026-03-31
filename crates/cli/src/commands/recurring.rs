@@ -1,6 +1,7 @@
 use acteon_ops::OpsClient;
 use acteon_ops::acteon_client::{CreateRecurringAction, RecurringFilter, UpdateRecurringAction};
 use clap::{Args, Subcommand};
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 
@@ -117,7 +118,7 @@ pub async fn run(
             tenant,
         } => {
             ops.delete_recurring(id, namespace, tenant).await?;
-            println!("Recurring action '{id}' deleted.");
+            info!(id = %id, "Recurring action deleted");
             Ok(())
         }
         RecurringCommand::Pause {
@@ -149,18 +150,19 @@ async fn run_list(
     let resp = ops.list_recurring(&filter).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("{} recurring actions:", resp.count);
+            info!(count = resp.count, "Recurring actions");
             for r in &resp.recurring_actions {
                 let enabled = if r.enabled { "ON " } else { "OFF" };
-                println!(
-                    "  [{enabled}] {id} | {cron} | {provider}/{action_type}",
-                    id = &r.id[..8.min(r.id.len())],
-                    cron = r.cron_expr,
-                    provider = r.provider,
-                    action_type = r.action_type,
+                info!(
+                    enabled = %enabled,
+                    id = %&r.id[..8.min(r.id.len())],
+                    cron = %r.cron_expr,
+                    provider = %r.provider,
+                    action_type = %r.action_type,
+                    "Recurring action"
                 );
             }
         }
@@ -179,23 +181,23 @@ async fn run_get(
     match resp {
         Some(detail) => match format {
             OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(&detail)?);
+                info!("{}", serde_json::to_string_pretty(&detail)?);
             }
             OutputFormat::Text => {
-                println!("ID:          {}", detail.id);
-                println!("Provider:    {}", detail.provider);
-                println!("Action Type: {}", detail.action_type);
-                println!("Cron:        {}", detail.cron_expr);
-                println!("Timezone:    {}", detail.timezone);
-                println!("Enabled:     {}", detail.enabled);
-                println!("Executions:  {}", detail.execution_count);
+                info!(id = %detail.id, "Recurring action details");
+                info!(provider = %detail.provider, "  Provider");
+                info!(action_type = %detail.action_type, "  Action Type");
+                info!(cron = %detail.cron_expr, "  Cron");
+                info!(timezone = %detail.timezone, "  Timezone");
+                info!(enabled = detail.enabled, "  Enabled");
+                info!(execution_count = detail.execution_count, "  Executions");
                 if let Some(ref next) = detail.next_execution_at {
-                    println!("Next Run:    {next}");
+                    info!(next_run = %next, "  Next Run");
                 }
             }
         },
         None => {
-            println!("Recurring action not found: {id}");
+            warn!(id = %id, "Recurring action not found");
         }
     }
     Ok(())
@@ -207,12 +209,13 @@ async fn run_create(ops: &OpsClient, data: &str, format: &OutputFormat) -> anyho
     let resp = ops.create_recurring(&req).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!(
-                "Created recurring action: {} (status: {})",
-                resp.id, resp.status
+            info!(
+                id = %resp.id,
+                status = %resp.status,
+                "Created recurring action"
             );
         }
     }
@@ -230,10 +233,10 @@ async fn run_update(
     let resp = ops.update_recurring(id, &req).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("Updated recurring action: {}", resp.id);
+            info!(id = %resp.id, "Updated recurring action");
         }
     }
     Ok(())
@@ -249,10 +252,10 @@ async fn run_pause(
     let resp = ops.pause_recurring(id, namespace, tenant).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("Recurring action '{}' paused.", resp.id);
+            info!(id = %resp.id, "Recurring action paused");
         }
     }
     Ok(())
@@ -268,10 +271,10 @@ async fn run_resume(
     let resp = ops.resume_recurring(id, namespace, tenant).await?;
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&resp)?);
+            info!("{}", serde_json::to_string_pretty(&resp)?);
         }
         OutputFormat::Text => {
-            println!("Recurring action '{}' resumed.", resp.id);
+            info!(id = %resp.id, "Recurring action resumed");
         }
     }
     Ok(())

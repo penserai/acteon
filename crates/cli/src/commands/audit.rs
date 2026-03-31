@@ -1,6 +1,7 @@
 use acteon_ops::OpsClient;
 use acteon_ops::acteon_client::{AuditQuery, ReplayQuery};
 use clap::{Args, Subcommand};
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 
@@ -126,23 +127,23 @@ async fn run_query(
 
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&page)?);
+            info!("{}", serde_json::to_string_pretty(&page)?);
         }
         OutputFormat::Text => {
-            println!(
-                "Total: {} records (showing {})",
-                page.total,
-                page.records.len()
+            info!(
+                total = page.total,
+                showing = page.records.len(),
+                "Audit query results"
             );
             for rec in &page.records {
-                println!(
-                    "  [{ts}] {action_type} -> {provider} | {verdict} ({outcome}) [{id}]",
-                    ts = rec.dispatched_at,
-                    action_type = rec.action_type,
-                    provider = rec.provider,
-                    verdict = rec.verdict,
-                    outcome = rec.outcome,
-                    id = &rec.action_id[..8.min(rec.action_id.len())],
+                info!(
+                    timestamp = %rec.dispatched_at,
+                    action_type = %rec.action_type,
+                    provider = %rec.provider,
+                    verdict = %rec.verdict,
+                    outcome = %rec.outcome,
+                    id = %&rec.action_id[..8.min(rec.action_id.len())],
+                    "Audit record"
                 );
             }
         }
@@ -156,25 +157,25 @@ async fn run_get(ops: &OpsClient, action_id: &str, format: &OutputFormat) -> any
     match record {
         Some(rec) => match format {
             OutputFormat::Json => {
-                println!("{}", serde_json::to_string_pretty(&rec)?);
+                info!("{}", serde_json::to_string_pretty(&rec)?);
             }
             OutputFormat::Text => {
-                println!("Action ID:    {}", rec.action_id);
-                println!("Namespace:    {}", rec.namespace);
-                println!("Tenant:       {}", rec.tenant);
-                println!("Provider:     {}", rec.provider);
-                println!("Action Type:  {}", rec.action_type);
-                println!("Verdict:      {}", rec.verdict);
-                println!("Outcome:      {}", rec.outcome);
-                println!("Duration:     {}ms", rec.duration_ms);
-                println!("Dispatched:   {}", rec.dispatched_at);
+                info!(action_id = %rec.action_id, "Audit record details");
+                info!(namespace = %rec.namespace, "  Namespace");
+                info!(tenant = %rec.tenant, "  Tenant");
+                info!(provider = %rec.provider, "  Provider");
+                info!(action_type = %rec.action_type, "  Action Type");
+                info!(verdict = %rec.verdict, "  Verdict");
+                info!(outcome = %rec.outcome, "  Outcome");
+                info!(duration_ms = rec.duration_ms, "  Duration");
+                info!(dispatched_at = %rec.dispatched_at, "  Dispatched");
                 if let Some(ref rule) = rec.matched_rule {
-                    println!("Matched Rule: {rule}");
+                    info!(matched_rule = %rule, "  Matched Rule");
                 }
             }
         },
         None => {
-            println!("Audit record not found: {action_id}");
+            warn!(action_id = %action_id, "Audit record not found");
         }
     }
     Ok(())
@@ -185,17 +186,22 @@ async fn run_replay(ops: &OpsClient, action_id: &str, format: &OutputFormat) -> 
 
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            info!("{}", serde_json::to_string_pretty(&result)?);
         }
         OutputFormat::Text => {
             if result.success {
-                println!(
-                    "Replayed {} -> {} (success)",
-                    result.original_action_id, result.new_action_id
+                info!(
+                    original_id = %result.original_action_id,
+                    new_id = %result.new_action_id,
+                    "Replay succeeded"
                 );
             } else {
                 let err = result.error.as_deref().unwrap_or("unknown");
-                println!("Replay failed for {}: {err}", result.original_action_id);
+                warn!(
+                    original_id = %result.original_action_id,
+                    error = %err,
+                    "Replay failed"
+                );
             }
         }
     }
@@ -224,19 +230,29 @@ async fn run_replay_bulk(
 
     match format {
         OutputFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&summary)?);
+            info!("{}", serde_json::to_string_pretty(&summary)?);
         }
         OutputFormat::Text => {
-            println!(
-                "Replay complete: {} replayed, {} failed, {} skipped",
-                summary.replayed, summary.failed, summary.skipped
+            info!(
+                replayed = summary.replayed,
+                failed = summary.failed,
+                skipped = summary.skipped,
+                "Replay complete"
             );
             for r in &summary.results {
                 if r.success {
-                    println!("  OK  {} -> {}", r.original_action_id, r.new_action_id);
+                    info!(
+                        original_id = %r.original_action_id,
+                        new_id = %r.new_action_id,
+                        "  OK"
+                    );
                 } else {
                     let err = r.error.as_deref().unwrap_or("unknown");
-                    println!("  ERR {} ({err})", r.original_action_id);
+                    warn!(
+                        original_id = %r.original_action_id,
+                        error = %err,
+                        "  ERR"
+                    );
                 }
             }
         }

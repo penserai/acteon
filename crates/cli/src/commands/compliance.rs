@@ -1,6 +1,7 @@
 use acteon_ops::OpsClient;
 use acteon_ops::acteon_client::VerifyHashChainRequest;
 use clap::{Args, Subcommand};
+use tracing::info;
 
 use crate::OutputFormat;
 
@@ -41,13 +42,16 @@ pub async fn run(
             let resp = ops.get_compliance_status().await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Compliance Mode:    {}", resp.mode);
-                    println!("Sync Audit Writes:  {}", resp.sync_audit_writes);
-                    println!("Immutable Audit:    {}", resp.immutable_audit);
-                    println!("Hash Chain:         {}", resp.hash_chain);
+                    info!(mode = %resp.mode, "Compliance Mode");
+                    info!(
+                        sync_audit_writes = resp.sync_audit_writes,
+                        "Sync Audit Writes"
+                    );
+                    info!(immutable_audit = resp.immutable_audit, "Immutable Audit");
+                    info!(hash_chain = resp.hash_chain, "Hash Chain");
                 }
             }
         }
@@ -57,19 +61,19 @@ pub async fn run(
             let resp = ops.verify_audit_chain(&req).await?;
             match format {
                 OutputFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                    info!("{}", serde_json::to_string_pretty(&resp)?);
                 }
                 OutputFormat::Text => {
-                    println!("Valid:           {}", resp.valid);
-                    println!("Records Checked: {}", resp.records_checked);
+                    info!(valid = resp.valid, "Verification result");
+                    info!(records_checked = resp.records_checked, "Records Checked");
                     if let Some(ref broken) = resp.first_broken_at {
-                        println!("First Broken:    {broken}");
+                        info!(first_broken_at = %broken, "First Broken");
                     }
                     if let Some(ref first) = resp.first_record_id {
-                        println!("First Record:    {first}");
+                        info!(first_record_id = %first, "First Record");
                     }
                     if let Some(ref last) = resp.last_record_id {
-                        println!("Last Record:     {last}");
+                        info!(last_record_id = %last, "Last Record");
                     }
                 }
             }

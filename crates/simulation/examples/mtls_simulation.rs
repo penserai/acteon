@@ -19,6 +19,7 @@ use acteon_gateway::GatewayBuilder;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
 use rcgen::{CertificateParams, KeyPair};
 use tokio::sync::RwLock;
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // Certificate generation helpers
@@ -204,21 +205,23 @@ async fn run_tls_server(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
     // Install the ring crypto provider globally — needed because both ring and
     // aws-lc-rs are in the dependency tree (from AWS SDK).
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("failed to install ring CryptoProvider");
 
-    println!(
+    info!(
         "{}",
         "╔══════════════════════════════════════════════════════════════╗"
     );
-    println!(
+    info!(
         "{}",
         "║          mTLS END-TO-END SIMULATION                         ║"
     );
-    println!(
+    info!(
         "{}",
         "╚══════════════════════════════════════════════════════════════╝\n"
     );
@@ -226,28 +229,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // Step 1: Generate certificates
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  STEP 1: CERTIFICATE GENERATION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  STEP 1: CERTIFICATE GENERATION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let bundle = generate_certs();
     let (ca_path, server_cert_path, server_key_path, client_cert_path, client_key_path) =
         write_certs_to_temp(&bundle);
 
-    println!("  Generated at runtime (no pre-existing files needed):");
-    println!("    CA certificate:     {ca_path}");
-    println!("    Server certificate: {server_cert_path}");
-    println!("    Server private key: {server_key_path}");
-    println!("    Client certificate: {client_cert_path}");
-    println!("    Client private key: {client_key_path}");
-    println!();
+    info!("  Generated at runtime (no pre-existing files needed):");
+    info!("    CA certificate:     {ca_path}");
+    info!("    Server certificate: {server_cert_path}");
+    info!("    Server private key: {server_key_path}");
+    info!("    Client certificate: {client_cert_path}");
+    info!("    Client private key: {client_key_path}");
+    info!("");
 
     // =========================================================================
     // Step 2: Build in-process Gateway (memory backend)
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  STEP 2: GATEWAY SETUP (memory backend)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  STEP 2: GATEWAY SETUP (memory backend)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let state: Arc<dyn acteon_state::StateStore> = Arc::new(MemoryStateStore::new());
     let lock: Arc<dyn acteon_state::DistributedLock> = Arc::new(MemoryDistributedLock::new());
@@ -283,18 +286,18 @@ rules:
 
     let gateway = Arc::new(RwLock::new(gateway));
 
-    println!("  State backend:  memory");
-    println!("  Audit backend:  memory");
-    println!("  Provider:       webhook (recording)");
-    println!("  Rules:          block-spam (suppress action_type='spam')");
-    println!();
+    info!("  State backend:  memory");
+    info!("  Audit backend:  memory");
+    info!("  Provider:       webhook (recording)");
+    info!("  Rules:          block-spam (suppress action_type='spam')");
+    info!("");
 
     // =========================================================================
     // Step 3: Start HTTPS server with mTLS
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  STEP 3: START HTTPS SERVER (mTLS enabled)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  STEP 3: START HTTPS SERVER (mTLS enabled)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
     // Bind first to get the actual port
@@ -327,35 +330,35 @@ rules:
     ready_rx.await?;
 
     let base_url = format!("https://127.0.0.1:{}", actual_addr.port());
-    println!("  Server listening at: {base_url}");
-    println!("  TLS version:        1.2+");
-    println!("  Client cert verify: REQUIRED (mTLS)");
-    println!();
+    info!("  Server listening at: {base_url}");
+    info!("  TLS version:        1.2+");
+    info!("  Client cert verify: REQUIRED (mTLS)");
+    info!("");
 
     // =========================================================================
     // Demo 1: Successful mTLS connection
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 1: SUCCESSFUL mTLS CONNECTION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 1: SUCCESSFUL mTLS CONNECTION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let client = ActeonClientBuilder::new(&base_url)
         .ca_cert_path(&ca_path)
         .client_cert(&client_cert_path, &client_key_path)
         .build()?;
 
-    println!("  Client configured with:");
-    println!("    CA cert:     {ca_path}");
-    println!("    Client cert: {client_cert_path}");
-    println!("    Client key:  {client_key_path}\n");
+    info!("  Client configured with:");
+    info!("    CA cert:     {ca_path}");
+    info!("    Client cert: {client_cert_path}");
+    info!("    Client key:  {client_key_path}\n");
 
     // Health check over mTLS
     match client.health().await {
-        Ok(true) => println!("  Health check: PASSED (mTLS handshake successful)"),
-        Ok(false) => println!("  Health check: server unhealthy"),
-        Err(e) => println!("  Health check: FAILED - {e}"),
+        Ok(true) => info!("  Health check: PASSED (mTLS handshake successful)"),
+        Ok(false) => info!("  Health check: server unhealthy"),
+        Err(e) => info!("  Health check: FAILED - {e}"),
     }
-    println!();
+    info!("");
 
     // Dispatch an action over mTLS
     let action = Action::new(
@@ -369,28 +372,28 @@ rules:
         }),
     );
 
-    println!("  Dispatching action over mTLS...");
-    println!("    Provider:    webhook");
-    println!("    Action type: send_alert");
+    info!("  Dispatching action over mTLS...");
+    info!("    Provider:    webhook");
+    info!("    Action type: send_alert");
 
     match client.dispatch(&action).await {
         Ok(outcome) => {
-            println!("    Outcome:     {outcome:?}");
-            println!(
+            info!("    Outcome:     {outcome:?}");
+            info!(
                 "    Provider called: {} time(s)",
                 recording_provider.call_count()
             );
         }
-        Err(e) => println!("    Error: {e}"),
+        Err(e) => info!("    Error: {e}"),
     }
-    println!();
+    info!("");
 
     // =========================================================================
     // Demo 2: Rule enforcement over mTLS
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 2: RULE ENFORCEMENT OVER mTLS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 2: RULE ENFORCEMENT OVER mTLS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let spam_action = Action::new(
         "notifications",
@@ -400,26 +403,26 @@ rules:
         serde_json::json!({"subject": "Buy now!!!"}),
     );
 
-    println!("  Dispatching SPAM action (should be suppressed by rule)...");
+    info!("  Dispatching SPAM action (should be suppressed by rule)...");
     match client.dispatch(&spam_action).await {
         Ok(outcome) => {
             let suppressed = matches!(outcome, ActionOutcome::Suppressed { .. });
-            println!("    Outcome:     {outcome:?}");
-            println!(
+            info!("    Outcome:     {outcome:?}");
+            info!(
                 "    Suppressed:  {} (block-spam rule active)",
                 if suppressed { "YES" } else { "NO" }
             );
         }
-        Err(e) => println!("    Error: {e}"),
+        Err(e) => info!("    Error: {e}"),
     }
-    println!();
+    info!("");
 
     // =========================================================================
     // Demo 3: Batch dispatch over mTLS
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 3: BATCH DISPATCH OVER mTLS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 3: BATCH DISPATCH OVER mTLS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let start = std::time::Instant::now();
     let mut success = 0;
@@ -443,44 +446,44 @@ rules:
     let elapsed = start.elapsed();
     let throughput = count as f64 / elapsed.as_secs_f64();
 
-    println!("  {count} sequential HTTPS+mTLS requests:");
-    println!("    Success:    {success}");
-    println!("    Errors:     {errors}");
-    println!("    Duration:   {elapsed:?}");
-    println!("    Throughput: {throughput:.0} req/sec");
-    println!();
+    info!("  {count} sequential HTTPS+mTLS requests:");
+    info!("    Success:    {success}");
+    info!("    Errors:     {errors}");
+    info!("    Duration:   {elapsed:?}");
+    info!("    Throughput: {throughput:.0} req/sec");
+    info!("");
 
     // =========================================================================
     // Demo 4: Connection WITHOUT client cert (should be rejected)
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 4: REJECTED CONNECTION (no client certificate)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 4: REJECTED CONNECTION (no client certificate)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     let no_cert_client = ActeonClientBuilder::new(&base_url)
         .ca_cert_path(&ca_path)
         // No client_cert() — server should reject
         .build()?;
 
-    println!("  Client configured WITHOUT client certificate");
-    println!("  Attempting health check...");
+    info!("  Client configured WITHOUT client certificate");
+    info!("  Attempting health check...");
 
     match no_cert_client.health().await {
-        Ok(true) => println!("    UNEXPECTED: connection accepted without client cert!"),
-        Ok(false) => println!("    Server returned unhealthy (connection may have succeeded)"),
+        Ok(true) => info!("    UNEXPECTED: connection accepted without client cert!"),
+        Ok(false) => info!("    Server returned unhealthy (connection may have succeeded)"),
         Err(e) => {
-            println!("    REJECTED: {e}");
-            println!("    (Server correctly refused the TLS handshake)");
+            info!("    REJECTED: {e}");
+            info!("    (Server correctly refused the TLS handshake)");
         }
     }
-    println!();
+    info!("");
 
     // =========================================================================
     // Demo 5: Connection with invalid CA (should be rejected by client)
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  DEMO 5: REJECTED CONNECTION (wrong CA - untrusted server)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  DEMO 5: REJECTED CONNECTION (wrong CA - untrusted server)");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     // Generate a different CA that didn't sign the server cert
     let mut rogue_ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
@@ -501,53 +504,53 @@ rules:
         .client_cert(&client_cert_path, &client_key_path)
         .build()?;
 
-    println!("  Client configured with WRONG CA (server cert not trusted)");
-    println!("  Attempting health check...");
+    info!("  Client configured with WRONG CA (server cert not trusted)");
+    info!("  Attempting health check...");
 
     match wrong_ca_client.health().await {
-        Ok(true) => println!("    UNEXPECTED: connection accepted with wrong CA!"),
-        Ok(false) => println!("    Server returned unhealthy"),
+        Ok(true) => info!("    UNEXPECTED: connection accepted with wrong CA!"),
+        Ok(false) => info!("    Server returned unhealthy"),
         Err(e) => {
-            println!("    REJECTED: {e}");
-            println!("    (Client correctly refused the untrusted server certificate)");
+            info!("    REJECTED: {e}");
+            info!("    (Client correctly refused the untrusted server certificate)");
         }
     }
-    println!();
+    info!("");
 
     // =========================================================================
     // Architecture recap
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  ARCHITECTURE");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  ARCHITECTURE");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("    ┌─────────────────┐  TLS 1.2+ (mTLS)  ┌──────────────────┐");
-    println!("    │  ActeonClient   │ ═══════════════════│  HTTPS Server    │");
-    println!("    │  (rustls)       │  client cert +     │  (tokio-rustls)  │");
-    println!("    │                 │  server cert       │                  │");
-    println!("    └─────────────────┘  verified by CA    └────────┬─────────┘");
-    println!("                                                    │");
-    println!("                                           ┌────────▼─────────┐");
-    println!("                                           │    Gateway       │");
-    println!("                                           │  ┌────────────┐  │");
-    println!("                                           │  │   Rules    │  │");
-    println!("                                           │  │ (in-mem)   │  │");
-    println!("                                           │  └────────────┘  │");
-    println!("                                           │  ┌────────────┐  │");
-    println!("                                           │  │   State    │  │");
-    println!("                                           │  │ (memory)   │  │");
-    println!("                                           │  └────────────┘  │");
-    println!("                                           └────────┬─────────┘");
-    println!("                                                    │");
-    println!("                                           ┌────────▼─────────┐");
-    println!("                                           │    Provider      │");
-    println!("                                           │  (recording)     │");
-    println!("                                           └──────────────────┘");
-    println!();
-    println!("  All certificates generated at runtime by rcgen (no openssl needed).");
-    println!("  Server requires client certificates (mTLS enforced).");
-    println!("  Memory backends used for state, audit, and locking.");
-    println!();
+    info!("    ┌─────────────────┐  TLS 1.2+ (mTLS)  ┌──────────────────┐");
+    info!("    │  ActeonClient   │ ═══════════════════│  HTTPS Server    │");
+    info!("    │  (rustls)       │  client cert +     │  (tokio-rustls)  │");
+    info!("    │                 │  server cert       │                  │");
+    info!("    └─────────────────┘  verified by CA    └────────┬─────────┘");
+    info!("                                                    │");
+    info!("                                           ┌────────▼─────────┐");
+    info!("                                           │    Gateway       │");
+    info!("                                           │  ┌────────────┐  │");
+    info!("                                           │  │   Rules    │  │");
+    info!("                                           │  │ (in-mem)   │  │");
+    info!("                                           │  └────────────┘  │");
+    info!("                                           │  ┌────────────┐  │");
+    info!("                                           │  │   State    │  │");
+    info!("                                           │  │ (memory)   │  │");
+    info!("                                           │  └────────────┘  │");
+    info!("                                           └────────┬─────────┘");
+    info!("                                                    │");
+    info!("                                           ┌────────▼─────────┐");
+    info!("                                           │    Provider      │");
+    info!("                                           │  (recording)     │");
+    info!("                                           └──────────────────┘");
+    info!("");
+    info!("  All certificates generated at runtime by rcgen (no openssl needed).");
+    info!("  Server requires client certificates (mTLS enforced).");
+    info!("  Memory backends used for state, audit, and locking.");
+    info!("");
 
     // Shutdown the server
     let _ = shutdown_tx.send(());
@@ -556,15 +559,15 @@ rules:
     let temp_dir = std::env::temp_dir().join(format!("acteon-mtls-sim-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(temp_dir);
 
-    println!(
+    info!(
         "{}",
         "╔══════════════════════════════════════════════════════════════╗"
     );
-    println!(
+    info!(
         "{}",
         "║              mTLS SIMULATION COMPLETE                        ║"
     );
-    println!(
+    info!(
         "{}",
         "╚══════════════════════════════════════════════════════════════╝"
     );

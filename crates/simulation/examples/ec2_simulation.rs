@@ -11,12 +11,15 @@
 
 use acteon_core::{Action, ActionOutcome};
 use acteon_simulation::prelude::*;
+use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("==================================================================");
-    println!("       AWS EC2 & AUTO SCALING SIMULATION");
-    println!("==================================================================\n");
+    tracing_subscriber::fmt::init();
+
+    info!("==================================================================");
+    info!("       AWS EC2 & AUTO SCALING SIMULATION");
+    info!("==================================================================\n");
 
     let harness = SimulationHarness::start(
         SimulationConfig::builder()
@@ -27,17 +30,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    println!("Started simulation cluster with 1 node");
-    println!("Registered providers: aws-ec2, aws-autoscaling\n");
+    info!("Started simulation cluster with 1 node");
+    info!("Registered providers: aws-ec2, aws-autoscaling\n");
 
     let mut results: Vec<(&str, ActionOutcome)> = Vec::new();
 
     // =========================================================================
     // 1. EC2 Start Instances
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  1. EC2 START INSTANCES");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  1. EC2 START INSTANCES");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -49,18 +52,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching start_instances for 2 instances...");
+    info!("  Dispatching start_instances for 2 instances...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/start_instances", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 2. EC2 Stop Instances (basic)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  2. EC2 STOP INSTANCES (basic)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  2. EC2 STOP INSTANCES (basic)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -72,18 +75,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching stop_instances (basic)...");
+    info!("  Dispatching stop_instances (basic)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/stop_instances(basic)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 3. EC2 Stop Instances with hibernate
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  3. EC2 STOP INSTANCES (hibernate)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  3. EC2 STOP INSTANCES (hibernate)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -96,18 +99,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching stop_instances with hibernate=true...");
+    info!("  Dispatching stop_instances with hibernate=true...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/stop_instances(hibernate)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 4. EC2 Stop Instances with force
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  4. EC2 STOP INSTANCES (force)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  4. EC2 STOP INSTANCES (force)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -120,18 +123,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching stop_instances with force=true...");
+    info!("  Dispatching stop_instances with force=true...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/stop_instances(force)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 5. EC2 Reboot Instances
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  5. EC2 REBOOT INSTANCES");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  5. EC2 REBOOT INSTANCES");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -143,18 +146,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching reboot_instances...");
+    info!("  Dispatching reboot_instances...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/reboot_instances", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 6. EC2 Terminate Instances
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  6. EC2 TERMINATE INSTANCES");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  6. EC2 TERMINATE INSTANCES");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -166,18 +169,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching terminate_instances for 2 instances...");
+    info!("  Dispatching terminate_instances for 2 instances...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/terminate_instances", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 7. EC2 Hibernate Instances (sugar action type)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  7. EC2 HIBERNATE INSTANCES (sugar)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  7. EC2 HIBERNATE INSTANCES (sugar)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -189,18 +192,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching hibernate_instances (sugar for stop+hibernate)...");
+    info!("  Dispatching hibernate_instances (sugar for stop+hibernate)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/hibernate_instances", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 8. EC2 Run Instances (minimal)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  8. EC2 RUN INSTANCES (minimal)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  8. EC2 RUN INSTANCES (minimal)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -213,18 +216,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching run_instances (minimal payload)...");
+    info!("  Dispatching run_instances (minimal payload)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/run_instances(minimal)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 9. EC2 Run Instances (full options)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  9. EC2 RUN INSTANCES (full options)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  9. EC2 RUN INSTANCES (full options)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -249,18 +252,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching run_instances (full options with tags, SGs, user data)...");
+    info!("  Dispatching run_instances (full options with tags, SGs, user data)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/run_instances(full)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 10. EC2 Attach Volume
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  10. EC2 ATTACH VOLUME");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  10. EC2 ATTACH VOLUME");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -274,18 +277,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching attach_volume...");
+    info!("  Dispatching attach_volume...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/attach_volume", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 11. EC2 Detach Volume
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  11. EC2 DETACH VOLUME");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  11. EC2 DETACH VOLUME");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -299,18 +302,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching detach_volume...");
+    info!("  Dispatching detach_volume...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/detach_volume", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 12. EC2 Detach Volume with force
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  12. EC2 DETACH VOLUME (force)");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  12. EC2 DETACH VOLUME (force)");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -323,18 +326,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching detach_volume with force=true...");
+    info!("  Dispatching detach_volume with force=true...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/detach_volume(force)", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 13. EC2 Describe Instances
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  13. EC2 DESCRIBE INSTANCES");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  13. EC2 DESCRIBE INSTANCES");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -346,18 +349,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching describe_instances...");
+    info!("  Dispatching describe_instances...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/describe_instances", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 14. ASG Describe Auto Scaling Groups
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  14. ASG DESCRIBE AUTO SCALING GROUPS");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  14. ASG DESCRIBE AUTO SCALING GROUPS");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "scaling",
@@ -369,18 +372,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching describe_auto_scaling_groups...");
+    info!("  Dispatching describe_auto_scaling_groups...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("asg/describe_groups", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 15. ASG Set Desired Capacity
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  15. ASG SET DESIRED CAPACITY");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  15. ASG SET DESIRED CAPACITY");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "scaling",
@@ -394,18 +397,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching set_desired_capacity (desired=6, honor_cooldown)...");
+    info!("  Dispatching set_desired_capacity (desired=6, honor_cooldown)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("asg/set_desired_capacity", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 16. ASG Update Auto Scaling Group
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  16. ASG UPDATE AUTO SCALING GROUP");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  16. ASG UPDATE AUTO SCALING GROUP");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "scaling",
@@ -423,18 +426,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching update_auto_scaling_group (full update)...");
+    info!("  Dispatching update_auto_scaling_group (full update)...");
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("asg/update_group", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 17. EC2 Unknown Action Type (routed to recording provider)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  17. EC2 UNKNOWN ACTION TYPE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  17. EC2 UNKNOWN ACTION TYPE");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "compute",
@@ -446,21 +449,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching unknown EC2 action type 'create_snapshot'...");
-    println!(
+    info!("  Dispatching unknown EC2 action type 'create_snapshot'...");
+    info!(
         "  (Recording provider accepts all action types; real Ec2Provider rejects unknown types)"
     );
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("ec2/unknown_action", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // 18. ASG Unknown Action Type (routed to recording provider)
     // =========================================================================
-    println!("------------------------------------------------------------------");
-    println!("  18. ASG UNKNOWN ACTION TYPE");
-    println!("------------------------------------------------------------------\n");
+    info!("------------------------------------------------------------------");
+    info!("  18. ASG UNKNOWN ACTION TYPE");
+    info!("------------------------------------------------------------------\n");
 
     let action = Action::new(
         "scaling",
@@ -472,34 +475,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     );
 
-    println!("  Dispatching unknown ASG action type 'delete_auto_scaling_group'...");
-    println!(
+    info!("  Dispatching unknown ASG action type 'delete_auto_scaling_group'...");
+    info!(
         "  (Recording provider accepts all action types; real AutoScalingProvider rejects unknown types)"
     );
     let outcome = harness.dispatch(&action).await?;
-    println!("  Outcome: {outcome:?}");
+    info!("  Outcome: {outcome:?}");
     results.push(("asg/unknown_action", outcome));
-    println!();
+    info!("");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("==================================================================");
-    println!("  SUMMARY");
-    println!("==================================================================\n");
+    info!("==================================================================");
+    info!("  SUMMARY");
+    info!("==================================================================\n");
 
     let mut all_passed = true;
     for (name, outcome) in &results {
         let passed = matches!(outcome, ActionOutcome::Executed(_));
         let status = if passed { "PASS" } else { "FAIL" };
-        println!("  [{status}] {name}: {outcome:?}");
+        info!("  [{status}] {name}: {outcome:?}");
         if !passed {
             all_passed = false;
         }
     }
 
-    println!();
-    println!(
+    info!("");
+    info!(
         "  Total dispatched: {}  |  EC2 calls: {}  |  ASG calls: {}",
         results.len(),
         harness.provider("aws-ec2").unwrap().call_count(),
@@ -507,12 +510,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     harness.teardown().await?;
-    println!("\n  Simulation cluster shut down");
+    info!("\n  Simulation cluster shut down");
 
     if all_passed {
-        println!("\n  All EC2 and Auto Scaling actions dispatched successfully.");
+        info!("\n  All EC2 and Auto Scaling actions dispatched successfully.");
     } else {
-        println!("\n  Some actions failed. See details above.");
+        info!("\n  Some actions failed. See details above.");
         std::process::exit(1);
     }
 

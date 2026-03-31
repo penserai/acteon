@@ -13,6 +13,7 @@ use acteon_executor::ExecutorConfig;
 use acteon_gateway::{CircuitBreakerConfig, GatewayBuilder};
 use acteon_simulation::provider::{FailureMode, RecordingProvider};
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use tracing::info;
 
 /// Helper to build a gateway with providers.
 async fn build_gateway(providers: Vec<Arc<RecordingProvider>>) -> acteon_gateway::Gateway {
@@ -55,19 +56,21 @@ fn make_action(provider: &str) -> Action {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║       PROVIDER HEALTH DASHBOARD SIMULATION DEMO            ║");
-    println!("╚══════════════════════════════════════════════════════════════╝\n");
+    tracing_subscriber::fmt::init();
+
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║       PROVIDER HEALTH DASHBOARD SIMULATION DEMO            ║");
+    info!("╚══════════════════════════════════════════════════════════════╝\n");
 
     // =========================================================================
     // SCENARIO 1: Healthy Providers
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 1: HEALTHY PROVIDERS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 1: HEALTHY PROVIDERS");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  Multiple providers processing actions successfully.");
-    println!("  All should show 100% success rate and low latency.\n");
+    info!("  Multiple providers processing actions successfully.");
+    info!("  All should show 100% success rate and low latency.\n");
 
     let email = Arc::new(RecordingProvider::new("email"));
     let slack = Arc::new(RecordingProvider::new("slack"));
@@ -89,9 +92,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Verify metrics
     let metrics = gateway.provider_metrics().snapshot();
-    println!("  Provider Health Metrics:");
+    info!("  Provider Health Metrics:");
     for (name, stats) in &metrics {
-        println!(
+        info!(
             "    {}: {} requests, {:.1}% success, avg {:.2}ms (p50: {:.2}ms, p95: {:.2}ms, p99: {:.2}ms)",
             name,
             stats.total_requests,
@@ -109,17 +112,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 1 passed]\n");
+    info!("\n  [Scenario 1 passed]\n");
 
     // =========================================================================
     // SCENARIO 2: Degraded Provider
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 2: DEGRADED PROVIDER");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 2: DEGRADED PROVIDER");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  One provider has ~30% failure rate.");
-    println!("  Metrics should reflect the degraded state.\n");
+    info!("  One provider has ~30% failure rate.");
+    info!("  Metrics should reflect the degraded state.\n");
 
     // EveryN(3) means every 3rd call fails, giving us ~33% failure rate
     let degraded = Arc::new(
@@ -149,18 +152,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .snapshot_for("healthy-provider")
         .unwrap();
 
-    println!("  Degraded Provider:");
-    println!(
+    info!("  Degraded Provider:");
+    info!(
         "    Requests: {}, Success Rate: {:.1}%, Failures: {}",
         degraded_stats.total_requests, degraded_stats.success_rate, degraded_stats.failures
     );
-    println!(
+    info!(
         "    Last Error: {:?}",
         degraded_stats.last_error.as_deref().unwrap_or("none")
     );
 
-    println!("\n  Healthy Provider:");
-    println!(
+    info!("\n  Healthy Provider:");
+    info!(
         "    Requests: {}, Success Rate: {:.1}%, Failures: {}",
         healthy_stats.total_requests, healthy_stats.success_rate, healthy_stats.failures
     );
@@ -177,17 +180,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!((healthy_stats.success_rate - 100.0).abs() < f64::EPSILON);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 2 passed]\n");
+    info!("\n  [Scenario 2 passed]\n");
 
     // =========================================================================
     // SCENARIO 3: High Latency Provider
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 3: HIGH LATENCY PROVIDER");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 3: HIGH LATENCY PROVIDER");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  One provider has artificial delay added.");
-    println!("  Latency percentiles should reflect the delay distribution.\n");
+    info!("  One provider has artificial delay added.");
+    info!("  Latency percentiles should reflect the delay distribution.\n");
 
     let slow =
         Arc::new(RecordingProvider::new("slow-provider").with_delay(Duration::from_millis(100)));
@@ -210,8 +213,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .snapshot_for("fast-provider")
         .unwrap();
 
-    println!("  Slow Provider (100ms delay):");
-    println!(
+    info!("  Slow Provider (100ms delay):");
+    info!(
         "    Avg: {:.2}ms, p50: {:.2}ms, p95: {:.2}ms, p99: {:.2}ms",
         slow_stats.avg_latency_ms,
         slow_stats.p50_latency_ms,
@@ -219,8 +222,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         slow_stats.p99_latency_ms
     );
 
-    println!("\n  Fast Provider:");
-    println!(
+    info!("\n  Fast Provider:");
+    info!(
         "    Avg: {:.2}ms, p50: {:.2}ms, p95: {:.2}ms, p99: {:.2}ms",
         fast_stats.avg_latency_ms,
         fast_stats.p50_latency_ms,
@@ -238,17 +241,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(fast_stats.avg_latency_ms < 50.0);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 3 passed]\n");
+    info!("\n  [Scenario 3 passed]\n");
 
     // =========================================================================
     // SCENARIO 4: Provider Recovery
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 4: PROVIDER RECOVERY");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 4: PROVIDER RECOVERY");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A provider starts failing, then recovers.");
-    println!("  Metrics should reflect the transition over time.\n");
+    info!("  A provider starts failing, then recovers.");
+    info!("  Metrics should reflect the transition over time.\n");
 
     // FirstN(10) means first 10 calls fail, then succeeds
     let recovering = Arc::new(
@@ -258,7 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gateway = build_gateway(vec![Arc::clone(&recovering)]).await;
 
     // Send 5 requests during failure phase
-    println!("  Phase 1: Failing (first 5 requests)");
+    info!("  Phase 1: Failing (first 5 requests)");
     for i in 1..=5 {
         let _ = gateway
             .dispatch(make_action("recovering-provider"), None)
@@ -267,14 +270,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .provider_metrics()
             .snapshot_for("recovering-provider")
             .unwrap();
-        println!(
+        info!(
             "    Request {}: Success Rate: {:.1}%",
             i, stats.success_rate
         );
     }
 
     // Continue through failure boundary
-    println!("\n  Phase 2: Transition (requests 6-10)");
+    info!("\n  Phase 2: Transition (requests 6-10)");
     for i in 6..=10 {
         let _ = gateway
             .dispatch(make_action("recovering-provider"), None)
@@ -283,14 +286,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .provider_metrics()
             .snapshot_for("recovering-provider")
             .unwrap();
-        println!(
+        info!(
             "    Request {}: Success Rate: {:.1}%",
             i, stats.success_rate
         );
     }
 
     // Send requests during recovery phase
-    println!("\n  Phase 3: Recovered (requests 11-20)");
+    info!("\n  Phase 3: Recovered (requests 11-20)");
     for i in 11..=20 {
         gateway
             .dispatch(make_action("recovering-provider"), None)
@@ -299,7 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .provider_metrics()
             .snapshot_for("recovering-provider")
             .unwrap();
-        println!(
+        info!(
             "    Request {}: Success Rate: {:.1}%",
             i, stats.success_rate
         );
@@ -310,12 +313,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .snapshot_for("recovering-provider")
         .unwrap();
 
-    println!("\n  Final Metrics:");
-    println!(
+    info!("\n  Final Metrics:");
+    info!(
         "    Total: {}, Successes: {}, Failures: {}",
         final_stats.total_requests, final_stats.successes, final_stats.failures
     );
-    println!("    Success Rate: {:.1}%", final_stats.success_rate);
+    info!("    Success Rate: {:.1}%", final_stats.success_rate);
 
     // Verify recovery
     assert_eq!(final_stats.total_requests, 20);
@@ -324,17 +327,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!((final_stats.success_rate - 50.0).abs() < 1.0);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 4 passed]\n");
+    info!("\n  [Scenario 4 passed]\n");
 
     // =========================================================================
     // SCENARIO 5: Multiple Providers with Mixed Health
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 5: MULTIPLE PROVIDERS - MIXED HEALTH");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 5: MULTIPLE PROVIDERS - MIXED HEALTH");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  3+ providers with different health characteristics.");
-    println!("  Verify per-provider isolation and accurate metrics.\n");
+    info!("  3+ providers with different health characteristics.");
+    info!("  Verify per-provider isolation and accurate metrics.\n");
 
     let healthy = Arc::new(RecordingProvider::new("healthy"));
     let slow = Arc::new(RecordingProvider::new("slow").with_delay(Duration::from_millis(50)));
@@ -360,15 +363,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Display all metrics
-    println!("  Provider Health Summary:");
-    println!("  ┌─────────────┬──────────┬────────────┬──────────────┬──────────────┐");
-    println!("  │ Provider    │ Requests │ Success %  │ Avg Lat (ms) │ p99 Lat (ms) │");
-    println!("  ├─────────────┼──────────┼────────────┼──────────────┼──────────────┤");
+    info!("  Provider Health Summary:");
+    info!("  ┌─────────────┬──────────┬────────────┬──────────────┬──────────────┐");
+    info!("  │ Provider    │ Requests │ Success %  │ Avg Lat (ms) │ p99 Lat (ms) │");
+    info!("  ├─────────────┼──────────┼────────────┼──────────────┼──────────────┤");
 
     let all_stats = gateway.provider_metrics().snapshot();
     for name in ["healthy", "slow", "unreliable", "very-slow"] {
         let stats = all_stats.get(name).unwrap();
-        println!(
+        info!(
             "  │ {:11} │ {:8} │ {:9.1}% │ {:12.2} │ {:12.2} │",
             name,
             stats.total_requests,
@@ -377,7 +380,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             stats.p99_latency_ms
         );
     }
-    println!("  └─────────────┴──────────┴────────────┴──────────────┴──────────────┘");
+    info!("  └─────────────┴──────────┴────────────┴──────────────┴──────────────┘");
 
     // Verify each provider
     let healthy_stats = all_stats.get("healthy").unwrap();
@@ -396,17 +399,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(very_slow_stats.avg_latency_ms >= 200.0);
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 5 passed]\n");
+    info!("\n  [Scenario 5 passed]\n");
 
     // =========================================================================
     // SCENARIO 6: Zero Requests Provider
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 6: ZERO REQUESTS PROVIDER");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 6: ZERO REQUESTS PROVIDER");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A provider is registered but never receives actions.");
-    println!("  It should not appear in metrics (lazy initialization).\n");
+    info!("  A provider is registered but never receives actions.");
+    info!("  It should not appear in metrics (lazy initialization).\n");
 
     let active = Arc::new(RecordingProvider::new("active"));
     let _unused = Arc::new(RecordingProvider::new("unused"));
@@ -419,8 +422,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let all_stats = gateway.provider_metrics().snapshot();
-    println!("  Providers with metrics: {}", all_stats.len());
-    println!(
+    info!("  Providers with metrics: {}", all_stats.len());
+    info!(
         "  Active provider requests: {}",
         all_stats.get("active").unwrap().total_requests
     );
@@ -434,17 +437,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(gateway.provider_metrics().snapshot_for("unused").is_none());
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 6 passed]\n");
+    info!("\n  [Scenario 6 passed]\n");
 
     // =========================================================================
     // SCENARIO 7: Circuit Breaker Interaction
     // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  SCENARIO 7: CIRCUIT BREAKER INTERACTION");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("  SCENARIO 7: CIRCUIT BREAKER INTERACTION");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-    println!("  A failing provider triggers circuit breaker.");
-    println!("  Verify both circuit state and provider metrics are consistent.\n");
+    info!("  A failing provider triggers circuit breaker.");
+    info!("  Verify both circuit state and provider metrics are consistent.\n");
 
     let failing =
         Arc::new(RecordingProvider::new("failing").with_failure_mode(FailureMode::Always));
@@ -481,7 +484,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .state()
             .await;
 
-        println!(
+        info!(
             "  Request {}: Outcome: {:?}, Circuit: {}, Provider Failures: {}",
             i,
             outcome
@@ -503,13 +506,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .state()
         .await;
 
-    println!("\n  Final State:");
-    println!("    Circuit Breaker: {}", cb_state);
-    println!("    Provider Stats:");
-    println!("      Total Requests: {}", final_stats.total_requests);
-    println!("      Failures: {}", final_stats.failures);
-    println!("      Success Rate: {:.1}%", final_stats.success_rate);
-    println!(
+    info!("\n  Final State:");
+    info!("    Circuit Breaker: {}", cb_state);
+    info!("    Provider Stats:");
+    info!("      Total Requests: {}", final_stats.total_requests);
+    info!("      Failures: {}", final_stats.failures);
+    info!("      Success Rate: {:.1}%", final_stats.success_rate);
+    info!(
         "      Last Error: {:?}",
         final_stats.last_error.as_deref().unwrap_or("none")
     );
@@ -528,14 +531,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(global_metrics.circuit_open, 2); // Requests 4-5
 
     gateway.shutdown().await;
-    println!("\n  [Scenario 7 passed]\n");
+    info!("\n  [Scenario 7 passed]\n");
 
     // =========================================================================
     // Summary
     // =========================================================================
-    println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║              ALL SCENARIOS PASSED                           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║              ALL SCENARIOS PASSED                           ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())
 }
