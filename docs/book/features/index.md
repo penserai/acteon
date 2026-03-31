@@ -156,8 +156,8 @@ Reconstruct and re-dispatch actions from the audit trail — recover from outage
 </div>
 
 <div class="card" markdown>
-### [Agent Swarm](agent-swarm.md)
-Orchestrate multi-agent swarms with specialist roles, safety enforcement via Acteon, and knowledge sharing via TesseraiDB.
+### [Agent Swarm with Autoresearch](agent-swarm.md)
+Multi-agent swarm orchestrator with adversarial challenge-recovery loop, eval harness (Karpathy-style autoresearch), code-writing recovery agents, and cross-engine critique (Claude + Gemini). Includes program.md constraint generation, SWE-bench-style binary assertions, git keep/revert gating, and polyglot language detection.
 </div>
 
 </div>

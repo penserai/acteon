@@ -161,9 +161,9 @@ In-depth guides that combine multiple Acteon features to solve real-world proble
 
 <div class="card" markdown>
 
-### Agent Swarm Orchestrator
+### Agent Swarm with Autoresearch
 
-Orchestrate multi-agent swarms with parallel execution, AI-powered plan refinement, and knowledge sharing via TesseraiDB. Built-in roles (planner, coder, researcher, reviewer, executor), safety enforcement via Acteon, and digital twin graph modeling of every run.
+Orchestrate multi-agent swarms with a Karpathy-style autoresearch loop: primary agents build, an eval harness scores, adversarial agents critique (optionally cross-engine — Claude + Gemini), and recovery agents fix code — all gated by fitness scoring with automatic git revert on regression. Includes program.md constraint generation, SWE-bench-style binary assertions, and polyglot support for 12 languages.
 
 [Learn more](features/agent-swarm.md)
 

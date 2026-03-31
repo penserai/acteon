@@ -6,7 +6,7 @@ In-depth guides that show how to combine Acteon's features to solve real-world p
 
 <div class="card" markdown>
 ### [AI Agent Swarm Coordination](agent-swarm-coordination.md)
-Use Acteon as a safety and orchestration layer for multi-agent AI systems. Covers identity, permissions, prompt injection defense, rate limiting, approval workflows, and observability.
+Use Acteon as a safety and orchestration layer for multi-agent AI swarms. Covers the autoresearch-style eval harness, adversarial challenge-recovery loop with cross-engine critique, code-writing recovery agents, program.md constraints, identity, permissions, rate limiting, and approval workflows.
 </div>
 
 <div class="card" markdown>
