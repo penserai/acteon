@@ -168,6 +168,8 @@ nav:
     - Basic Usage: examples/basic-usage.md
     - Advanced Patterns: examples/advanced-patterns.md
     - Simulation & Testing: examples/simulation.md
+  - Agent Swarm:
+    - Orchestrator: features/agent-swarm.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
