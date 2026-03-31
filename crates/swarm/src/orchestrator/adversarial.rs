@@ -8,6 +8,7 @@ use crate::config::{AgentEngine, EvalHarnessConfig, RecoveryMode, SwarmConfig};
 use crate::error::SwarmError;
 use crate::orchestrator::agent_spawner::{spawn_agent, wait_for_agent};
 use crate::orchestrator::eval;
+use crate::orchestrator::eval_gen;
 use crate::types::adversarial::{
     AdversarialChallenge, AdversarialResult, AdversarialRound, ChallengeSeverity,
 };
@@ -34,6 +35,7 @@ pub struct AdversarialContext<'a> {
 /// 3. **Recovery phase** — agents address challenges (text analysis or code-writing).
 /// 4. **Eval** — if eval harness is enabled, measure score and revert on regression.
 /// 5. **Check** — if all challenges are resolved (or below threshold), stop early.
+#[allow(clippy::too_many_lines)]
 pub async fn run_adversarial_loop(
     ctx: &AdversarialContext<'_>,
     run: &mut SwarmRun,
@@ -76,11 +78,45 @@ pub async fn run_adversarial_loop(
         )
         .await?;
 
+        // Generate challenge-specific eval script from this round's challenges.
+        if ctx.eval_config.is_some()
+            && let Ok(script) = eval_gen::generate_eval_script(
+                ctx.config,
+                &round_result.challenges,
+                ctx.working_dir,
+                adv.severity_threshold,
+            )
+            .await
+        {
+            let script_path = ctx.working_dir.join("eval-harness.sh");
+            if let Err(e) = tokio::fs::write(&script_path, &script).await {
+                tracing::warn!("failed to write eval script: {e}");
+            } else {
+                tracing::info!(
+                    assertions = round_result.challenges.len(),
+                    "generated challenge-specific eval script"
+                );
+            }
+        }
+
         // Eval gating: run eval after recovery, compare to previous score.
+        // Use the generated eval script if available, fall back to static config.
         if let Some(eval_cfg) = ctx.eval_config {
             round_result.pre_eval_score = current_score;
 
-            match eval::run_eval_harness(eval_cfg, ctx.working_dir).await {
+            let generated_script = ctx.working_dir.join("eval-harness.sh");
+            let effective_eval = if generated_script.exists() {
+                EvalHarnessConfig {
+                    enabled: true,
+                    command: format!("sh {}", generated_script.display()),
+                    timeout_seconds: eval_cfg.timeout_seconds,
+                    pass_threshold: eval_cfg.pass_threshold,
+                }
+            } else {
+                eval_cfg.clone()
+            };
+
+            match eval::run_eval_harness(&effective_eval, ctx.working_dir).await {
                 Ok(eval_result) => {
                     let post_score = eval_result.score;
                     round_result.post_eval_score = Some(post_score);
