@@ -25,7 +25,7 @@ The `acteon-swarm` crate provides a generic multi-agent swarm system that decomp
 | [Security Audit](https://github.com/penserai/acteon/tree/main/examples/swarm-pentest) | Claude | 28 | ~25 min | Vulnerability reports for Acteon itself |
 | [Framework Research](https://github.com/penserai/acteon/tree/main/examples/swarm-deep-research) | Claude | 16 | ~20 min | 7 agent framework analyses |
 | [LLM Survey](https://github.com/penserai/acteon/tree/main/examples/swarm-gemini-llm-survey) | **Gemini** | 8/8 | ~7 min | 7 open source LLM analyses |
-| [Posit Clone MVP](https://github.com/penserai/acteon/tree/main/examples/swarm-posit-clone) | Claude + Gemini adversarial | 9 + adversarial | ~20 min | Web IDE MVP with adversarial review |
+| [Posit Clone MVP](https://github.com/penserai/acteon/tree/main/examples/swarm-posit-clone) | Claude + Gemini adversarial | 7 + 5 recovery | ~35 min | Web IDE MVP with autoresearch-style fixes |
 
 ## How It Works
 
@@ -781,9 +781,9 @@ let roles = RoleRegistry::with_builtins();
 let warnings = validate_plan(&plan, &roles.names()).unwrap();
 ```
 
-## Adversarial Challenge-Recovery Loop
+## Adversarial Loop with Eval Harness (Autoresearch Pattern)
 
-After the primary swarm completes its objective, an optional **adversarial phase** critiques the output using a separate LLM engine, then the primary engine recovers by addressing the valid challenges. This enables cross-engine quality assurance — for example, a Claude primary swarm reviewed by a Gemini adversarial swarm, or vice versa. The loop is configurable: you control the engine, number of rounds, severity threshold, timeouts, and maximum adversarial agents.
+After the primary swarm completes its objective, an optional **adversarial phase** critiques the output using a separate LLM engine, then the primary engine recovers by addressing the valid challenges. This design is inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) pattern, which distills autonomous improvement into three primitives: an **editable asset** (the workspace), a **scalar metric** (the eval score), and **time-boxed cycles** (timeouts). The adversarial critique adds a fourth dimension that autoresearch does not have: **cross-model blind-spot detection**. By pitting a separate engine (e.g., Gemini) against the primary engine (e.g., Claude), the system surfaces assumptions and failure modes that a single model would never flag on its own output.
 
 ### Sequence
 
@@ -791,37 +791,118 @@ After the primary swarm completes its objective, an optional **adversarial phase
 sequenceDiagram
     participant PS as Primary Swarm
     participant OR as Orchestrator
-    participant AS as Adversarial Engine
-    participant FI as Severity Filter
-    participant RE as Recovery Engine
+    participant EV as Eval Harness
+    participant AS as Adversarial Engine (Gemini)
+    participant PM as program.md
+    participant RE as Recovery Agents (Claude)
+    participant GIT as Git Snapshot
 
     PS->>OR: Primary run complete (artifacts)
+    OR->>EV: Run eval (baseline score)
+    EV-->>OR: SCORE: 0.9
+    OR->>PM: Generate program.md (scope + baseline + rules)
     loop Up to max_rounds
         OR->>AS: Challenge phase (adversarial engine)
         AS-->>OR: Challenges (category + severity)
-        OR->>FI: Filter by severity_threshold
-        FI-->>OR: Actionable challenges
+        OR->>OR: Filter by severity_threshold
         alt No actionable challenges
             OR->>OR: Accept output
         else Actionable challenges remain
-            OR->>RE: Recovery phase (primary engine)
-            RE-->>OR: Patched artifacts
-            OR->>OR: Check resolution
+            OR->>GIT: git stash (snapshot)
+            OR->>PM: Inject challenges into program.md
+            OR->>RE: Spawn recovery agents (Claude Code, sequential)
+            RE-->>OR: Files patched
+            OR->>EV: Run eval (post-recovery score)
+            EV-->>OR: SCORE: 0.9
+            alt Score dropped
+                OR->>GIT: git stash pop (revert)
+                OR->>OR: Discard recovery, keep prior state
+            else Score held or improved
+                OR->>GIT: git stash drop (discard snapshot)
+                OR->>OR: Keep recovery changes
+            end
         end
     end
     OR-->>PS: Final output + adversarial report
 ```
 
 1. The primary swarm runs to completion as normal.
-2. The orchestrator hands the output to the adversarial engine for critique.
-3. Challenges below `severity_threshold` are filtered out.
-4. The primary engine spawns recovery agents to address each actionable challenge.
-5. The orchestrator checks whether the challenges are resolved. If unresolved challenges remain and rounds are left, the loop repeats.
-6. A final adversarial report is persisted alongside the swarm output.
+2. The eval harness runs to establish a **baseline score**.
+3. A `program.md` constraint doc is generated and injected into recovery prompts.
+4. The orchestrator hands the output to the adversarial engine for critique.
+5. Challenges below `severity_threshold` are filtered out.
+6. A git snapshot is taken before recovery begins.
+7. The primary engine spawns recovery agents (real Claude Code agents that edit files) to address each actionable challenge.
+8. The eval harness runs again. If the score drops, the recovery is reverted via `git stash pop`. If the score holds or improves, the snapshot is discarded and changes are kept.
+9. If unresolved challenges remain and rounds are left, the loop repeats.
+10. A final adversarial report is persisted alongside the swarm output.
+
+### Eval Harness
+
+The eval harness provides the scalar metric that drives the keep/revert decision. Configure it in `swarm.toml`:
+
+```toml
+[eval_harness]
+enabled = true
+command = "cargo test && cargo clippy"
+timeout_seconds = 300
+pass_threshold = 0.7
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the eval harness |
+| `command` | string | *required* | Shell command to run as the eval (tests, lints, custom scripts) |
+| `timeout_seconds` | u64 | `300` | Maximum time for the eval command to complete |
+| `pass_threshold` | f64 | `0.7` | Minimum score to consider the run passing |
+
+**Score signals.** The harness parses stdout for structured score lines:
+
+| Signal | Format | Example |
+|--------|--------|---------|
+| Explicit score | `SCORE: <f64>` | `SCORE: 0.85` |
+| Test pass rate | `PASS: <n>/<total>` | `PASS: 42/50` (yields 0.84) |
+| Warning count | `WARNINGS: <n>` | `WARNINGS: 3` (penalty applied) |
+
+**Fallback.** If no structured signal is found, the harness uses the exit code: `0` maps to `1.0`, non-zero maps to `0.0`.
+
+**Git snapshot/revert behavior.** Before recovery agents start editing files, the orchestrator runs `git stash` to snapshot the workspace. After recovery, the eval runs again:
+
+- If the post-recovery score is **lower** than the baseline, the orchestrator runs `git stash pop` to revert all recovery changes.
+- If the post-recovery score is **equal or higher**, the orchestrator runs `git stash drop` to discard the snapshot and keep the changes.
+
+### program.md
+
+The orchestrator auto-generates a `program.md` constraint document that is injected into every recovery agent's prompt. It serves as the shared contract between the eval harness and the recovery agents.
+
+**Contents:**
+
+- Plan scope (working directory, objective, success criteria)
+- Eval harness configuration and baseline score
+- Inviolable rules:
+    - Do not modify the eval command or its test files
+    - Do not delete or skip existing tests
+    - Do not introduce new dependencies without justification
+    - Do not modify files outside the working directory
+- Current round number and remaining budget
+- Challenges assigned to this recovery agent
+
+The `program.md` is regenerated after each eval run with the updated baseline score, ensuring recovery agents always work against the latest state.
+
+### Recovery Modes
+
+Recovery agents can operate in two modes, controlled by the `recovery_mode` setting:
+
+| Mode | Behavior |
+|------|----------|
+| `fix` (default) | Spawns real Claude Code agents that **edit files** sequentially, one per actionable challenge. Each agent receives the challenge description and `program.md` as context. |
+| `analyze` | Text-only analysis (the original behavior). Recovery agents produce written recommendations but do not modify any files. Useful for dry-run review. |
+
+The `max_recovery_agents` setting caps how many actionable challenges get assigned a recovery agent per round. If there are more actionable challenges than the cap, they are prioritized by severity (highest first).
 
 ### Configuration
 
-Enable adversarial mode in `swarm.toml`:
+Enable adversarial mode with the eval harness in `swarm.toml`:
 
 ```toml
 [adversarial]
@@ -832,7 +913,17 @@ max_agents = 3
 challenge_timeout_seconds = 300
 recovery_timeout_seconds = 600
 severity_threshold = 0.5
+recovery_mode = "fix"
+max_recovery_agents = 5
+
+[eval_harness]
+enabled = true
+command = "cargo test && cargo clippy"
+timeout_seconds = 300
+pass_threshold = 0.7
 ```
+
+#### Adversarial Parameters
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -843,10 +934,21 @@ severity_threshold = 0.5
 | `challenge_timeout_seconds` | u64 | `300` | Timeout for each challenge phase |
 | `recovery_timeout_seconds` | u64 | `600` | Timeout for each recovery phase |
 | `severity_threshold` | f64 | `0.5` | Minimum severity score for a challenge to be actionable (0.0 - 1.0) |
+| `recovery_mode` | string | `"fix"` | Recovery behavior: `"fix"` (edit files) or `"analyze"` (text-only) |
+| `max_recovery_agents` | u32 | `5` | Maximum number of recovery agents spawned per round |
+
+#### Eval Harness Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the eval harness |
+| `command` | string | *required* | Shell command to run as the eval |
+| `timeout_seconds` | u64 | `300` | Maximum time for the eval command |
+| `pass_threshold` | f64 | `0.7` | Minimum score to consider the run passing |
 
 ### CLI Flags
 
-Override adversarial settings from the command line:
+Override adversarial and eval settings from the command line:
 
 ```bash
 # Enable adversarial mode for a single run
@@ -857,6 +959,15 @@ acteon-swarm run --plan plan.json --adversarial --adversarial-engine gemini
 
 # Limit to a single challenge-recovery round
 acteon-swarm run --plan plan.json --adversarial --adversarial-rounds 1
+
+# Set recovery mode from CLI
+acteon-swarm run --plan plan.json --adversarial --recovery-mode fix
+
+# Configure eval harness from CLI
+acteon-swarm run --plan plan.json --adversarial \
+  --eval-command "cargo test && cargo clippy" \
+  --eval-timeout 300 \
+  --eval-threshold 0.7
 ```
 
 | Flag | Description |
@@ -864,6 +975,10 @@ acteon-swarm run --plan plan.json --adversarial --adversarial-rounds 1
 | `--adversarial` | Enable adversarial mode (overrides `adversarial.enabled` in config) |
 | `--adversarial-engine <ENGINE>` | Set the adversarial engine (`claude` or `gemini`) |
 | `--adversarial-rounds <N>` | Maximum number of challenge-recovery rounds |
+| `--recovery-mode <MODE>` | Recovery behavior: `fix` or `analyze` |
+| `--eval-command <CMD>` | Shell command for the eval harness |
+| `--eval-timeout <SECONDS>` | Timeout for the eval command |
+| `--eval-threshold <FLOAT>` | Minimum passing score (0.0 - 1.0) |
 
 ### Challenge Categories
 
@@ -904,35 +1019,50 @@ The report contains:
 - Which challenges were filtered out by the severity threshold
 - Recovery actions taken and whether each challenge was resolved
 - Per-round timing and agent counts
+- Eval scores (baseline and post-recovery for each round)
+- Git snapshot decisions (kept or reverted)
 - Final accept/reject status
 
 ### Example: Posit Clone MVP
 
-A real-world test run demonstrates the adversarial loop in practice:
+A real-world test run demonstrates the full autoresearch-style adversarial loop:
 
-**Primary phase:** Claude engine, 9 agents, produced 47 files implementing a Posit (RStudio) web IDE clone MVP — including a notebook editor, code execution backend, file browser, and terminal emulator.
+**Primary phase:** Claude engine, 7 agents, all completed. Produced 47 files implementing a Posit (RStudio) web IDE clone MVP -- including a notebook editor, code execution backend, file browser, and terminal emulator.
 
-**Adversarial phase:** Gemini engine identified 10 challenges, of which 7 exceeded the severity threshold and were actionable:
+**Eval baseline:** `SCORE: 0.9` (tests passing, clippy clean).
+
+**Adversarial phase:** Gemini engine identified 8 challenges, of which 5 exceeded the severity threshold and were actionable:
 
 | # | Category | Severity | Finding |
 |---|----------|----------|---------|
-| 1 | correctness | High (0.75) | Kernel sessions are stateless — each cell execution starts a fresh process, losing variable state between cells |
-| 2 | security | Critical (1.0) | No subprocess sandboxing — user code executes with the same privileges as the server process |
-| 3 | performance | High (0.75) | Blocking `std::process::Command` calls on async Tokio runtime — will stall the event loop under load |
-| 4 | style | Medium (0.5) | Server uses Actix Web but the project convention is Axum — inconsistent with the rest of the codebase |
-| 5 | completeness | Medium (0.5) | No WebSocket support for streaming cell output — users see results only after execution completes |
-| 6 | completeness | Medium (0.5) | File browser lacks rename and delete operations |
-| 7 | performance | Medium (0.5) | Terminal emulator spawns a new shell per keystroke instead of maintaining a persistent PTY session |
+| 1 | correctness | High (0.75) | Kernel sessions are stateless -- each cell execution starts a fresh process, losing variable state between cells |
+| 2 | performance | High (0.75) | Blocking `std::process::Command` calls on async Tokio runtime -- will stall the event loop under load |
+| 3 | completeness | Medium (0.5) | No WebSocket support for streaming cell output -- users see results only after execution completes |
+| 4 | completeness | Medium (0.5) | File browser lacks rename and delete operations |
+| 5 | performance | Medium (0.5) | Terminal emulator spawns a new shell per keystroke instead of maintaining a persistent PTY session |
 
 Three challenges were filtered out (severity below 0.5): two Low-severity style suggestions and one Low-severity documentation gap.
 
-**Recovery phase:** Claude engine spawned recovery agents that addressed 6 of the 7 actionable challenges in a single round. The subprocess sandboxing issue (Critical) was partially mitigated with a namespace isolation stub but flagged for manual follow-up.
+**Recovery phase:** 5 Claude Code recovery agents spawned (one per actionable challenge), running sequentially with `program.md` injected. All 5 completed and resolved their assigned challenges:
+
+- `kernel.rs` +322 lines: persistent kernel sessions with variable state across cells
+- `ws.rs`: WebSocket streaming for cell output
+- `NotebookEditor.tsx`: frontend wired to WebSocket streaming
+- File browser: rename and delete operations added
+- Terminal: persistent PTY session management
+
+**Eval post-recovery:** `SCORE: 0.9` (held, no regression).
+
+**Git decision:** Snapshot discarded, recovery changes kept.
+
+**Final result:** `accepted=true`, 12 total agents (7 primary + 5 recovery), 0 failed.
 
 ## See Also
 
-- [Task Chains](chains.md) — Acteon's chain execution model
-- [Deduplication](deduplication.md) — cross-agent file write dedup
-- [Throttling](throttling.md) — per-agent and swarm-wide rate limiting
-- [Tenant Usage Quotas](tenant-usage-quotas.md) — per-run quota budgets
-- [WASM Rule Plugins](wasm-plugins.md) — custom safety rules
-- [Adversarial Challenge-Recovery](#adversarial-challenge-recovery-loop) — cross-engine critique and recovery
+- [Task Chains](chains.md) -- Acteon's chain execution model
+- [Deduplication](deduplication.md) -- cross-agent file write dedup
+- [Throttling](throttling.md) -- per-agent and swarm-wide rate limiting
+- [Tenant Usage Quotas](tenant-usage-quotas.md) -- per-run quota budgets
+- [WASM Rule Plugins](wasm-plugins.md) -- custom safety rules
+- [Adversarial Loop with Eval Harness](#adversarial-loop-with-eval-harness-autoresearch-pattern) -- cross-engine critique and recovery
+- [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) -- the pattern that inspired the eval harness
