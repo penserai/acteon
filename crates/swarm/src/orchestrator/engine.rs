@@ -12,6 +12,7 @@ use crate::error::SwarmError;
 use crate::memory::TesseraiClient;
 use crate::orchestrator::adversarial::run_adversarial_loop;
 use crate::orchestrator::agent_spawner::{AgentResult, spawn_agent, wait_for_agent};
+use crate::orchestrator::eval;
 use crate::orchestrator::monitor::SwarmMonitor;
 use crate::orchestrator::refiner::{apply_refinement, refine_plan};
 use crate::roles::RoleRegistry;
@@ -123,6 +124,30 @@ pub async fn execute_swarm_with_adversarial(
 ) -> Result<(SwarmRun, Option<AdversarialResult>), SwarmError> {
     let mut run = execute_swarm(plan, config, roles, hooks_binary).await?;
 
+    let working_dir = config
+        .defaults
+        .working_directory
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+    // Run baseline eval after primary swarm (if configured).
+    let (eval_cfg, baseline_score) = if config.eval_harness.enabled {
+        match eval::run_eval_harness(&config.eval_harness, &working_dir).await {
+            Ok(result) => {
+                let score = result.score;
+                run.metrics.eval_baseline_score = Some(score);
+                tracing::info!(score, passed = result.passed, "eval harness baseline");
+                (Some(&config.eval_harness), Some(score))
+            }
+            Err(e) => {
+                tracing::warn!("baseline eval failed: {e}");
+                (Some(&config.eval_harness), None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     if !config.adversarial.enabled {
         return Ok((run, None));
     }
@@ -130,7 +155,16 @@ pub async fn execute_swarm_with_adversarial(
     // Collect primary output summary from completed task results.
     let primary_summary = build_primary_summary(plan, &run);
 
-    let adversarial_result = run_adversarial_loop(config, plan, &mut run, &primary_summary).await?;
+    let adversarial_result = run_adversarial_loop(
+        config,
+        plan,
+        &mut run,
+        &primary_summary,
+        eval_cfg,
+        baseline_score,
+        &working_dir,
+    )
+    .await?;
 
     // Update final status based on adversarial outcome.
     if !adversarial_result.accepted && run.status == SwarmRunStatus::Completed {

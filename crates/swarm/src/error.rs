@@ -48,6 +48,9 @@ pub enum SwarmError {
     #[error("adversarial recovery phase failed: {0}")]
     AdversarialRecovery(String),
 
+    #[error("eval harness failed: {0}")]
+    EvalHarness(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

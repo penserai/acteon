@@ -21,6 +21,6 @@ pub use orchestrator::{execute_swarm, execute_swarm_with_adversarial};
 pub use planner::{topological_sort, validate_plan};
 pub use roles::RoleRegistry;
 pub use types::{
-    AdversarialChallenge, AdversarialResult, AdversarialRound, AgentRole, AgentSession, SwarmPlan,
-    SwarmRun,
+    AdversarialChallenge, AdversarialResult, AdversarialRound, AgentRole, AgentSession, EvalResult,
+    SwarmPlan, SwarmRun,
 };

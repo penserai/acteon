@@ -86,6 +86,15 @@ struct RunArgs {
     /// Maximum adversarial challenge-recovery rounds (overrides config).
     #[arg(long)]
     adversarial_rounds: Option<usize>,
+    /// Eval harness command (e.g., "cargo test && cargo clippy").
+    #[arg(long)]
+    eval_command: Option<String>,
+    /// Eval harness timeout in seconds (overrides config).
+    #[arg(long)]
+    eval_timeout: Option<u64>,
+    /// Minimum eval score to consider passing (0.0-1.0, overrides config).
+    #[arg(long)]
+    eval_threshold: Option<f64>,
 }
 
 #[derive(Parser)]
@@ -227,6 +236,7 @@ fn cmd_plan_approve(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
     let mut plan = if let Some(ref plan_path) = args.plan {
         let content = std::fs::read_to_string(plan_path)?;
@@ -263,6 +273,16 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
     if let Some(rounds) = args.adversarial_rounds {
         config.adversarial.max_rounds = rounds;
     }
+    if let Some(ref cmd) = args.eval_command {
+        config.eval_harness.enabled = true;
+        config.eval_harness.command.clone_from(cmd);
+    }
+    if let Some(timeout) = args.eval_timeout {
+        config.eval_harness.timeout_seconds = timeout;
+    }
+    if let Some(threshold) = args.eval_threshold {
+        config.eval_harness.pass_threshold = threshold;
+    }
 
     let roles = RoleRegistry::with_config(config.defaults.engine, &config.roles);
     validate_plan(&plan, &roles.names())?;
@@ -295,6 +315,8 @@ async fn cmd_run(config: &SwarmConfig, args: RunArgs) -> Result<()> {
         agents_failed = run.metrics.agents_failed,
         total_actions = run.metrics.total_actions,
         refinements = run.metrics.refinements,
+        eval_baseline = ?run.metrics.eval_baseline_score,
+        eval_final = ?run.metrics.eval_final_score,
         "swarm run complete"
     );
 

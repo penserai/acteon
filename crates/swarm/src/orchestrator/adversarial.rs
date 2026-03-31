@@ -2,8 +2,11 @@ use std::process::Stdio;
 
 use chrono::Utc;
 
-use crate::config::{AdversarialConfig, AgentEngine, SwarmConfig};
+use std::path::Path;
+
+use crate::config::{AdversarialConfig, AgentEngine, EvalHarnessConfig, SwarmConfig};
 use crate::error::SwarmError;
+use crate::orchestrator::eval;
 use crate::types::adversarial::{
     AdversarialChallenge, AdversarialResult, AdversarialRound, ChallengeSeverity,
 };
@@ -22,6 +25,9 @@ pub async fn run_adversarial_loop(
     plan: &SwarmPlan,
     run: &mut SwarmRun,
     primary_output_summary: &str,
+    eval_config: Option<&EvalHarnessConfig>,
+    baseline_score: Option<f64>,
+    working_dir: &Path,
 ) -> Result<AdversarialResult, SwarmError> {
     let adv = &config.adversarial;
     let primary_engine = config.defaults.engine;
@@ -32,15 +38,24 @@ pub async fn run_adversarial_loop(
         adversarial = ?adversarial_engine,
         max_rounds = adv.max_rounds,
         threshold = adv.severity_threshold,
+        baseline_score,
         "starting adversarial loop"
     );
 
     run.status = crate::types::run::SwarmRunStatus::Adversarial;
     let mut rounds = Vec::new();
     let mut cumulative_context = primary_output_summary.to_string();
+    let mut current_score = baseline_score;
 
     for round_num in 1..=adv.max_rounds {
-        let round_result = execute_adversarial_round(
+        // Git snapshot before recovery (so we can revert if score regresses).
+        let snapshot = if eval_config.is_some() {
+            eval::git_snapshot(working_dir).await
+        } else {
+            String::new()
+        };
+
+        let mut round_result = execute_adversarial_round(
             adv,
             primary_engine,
             adversarial_engine,
@@ -51,6 +66,46 @@ pub async fn run_adversarial_loop(
         )
         .await?;
 
+        // Eval gating: run eval after recovery, compare to previous score.
+        if let Some(eval_cfg) = eval_config {
+            round_result.pre_eval_score = current_score;
+
+            match eval::run_eval_harness(eval_cfg, working_dir).await {
+                Ok(eval_result) => {
+                    let post_score = eval_result.score;
+                    round_result.post_eval_score = Some(post_score);
+
+                    if let Some(prev) = current_score {
+                        if post_score < prev {
+                            tracing::warn!(
+                                round = round_num,
+                                pre = prev,
+                                post = post_score,
+                                "eval score regressed — reverting recovery changes"
+                            );
+                            eval::git_revert_to_snapshot(working_dir, &snapshot).await;
+                            round_result.post_eval_score = current_score;
+                            rounds.push(round_result);
+                            break;
+                        }
+                        tracing::info!(
+                            round = round_num,
+                            pre = prev,
+                            post = post_score,
+                            "eval score held or improved"
+                        );
+                    }
+
+                    eval::git_discard_snapshot(working_dir, &snapshot).await;
+                    current_score = Some(post_score);
+                }
+                Err(e) => {
+                    tracing::warn!(round = round_num, "eval harness failed: {e}");
+                    eval::git_discard_snapshot(working_dir, &snapshot).await;
+                }
+            }
+        }
+
         let stop = round_result.fully_resolved() || round_result.actionable_challenges == 0;
         rounds.push(round_result);
 
@@ -59,12 +114,18 @@ pub async fn run_adversarial_loop(
         }
     }
 
+    // Update final eval score in metrics.
+    if let Some(score) = current_score {
+        run.metrics.eval_final_score = Some(score);
+    }
+
     let result = AdversarialResult::from_rounds(rounds, adv.severity_threshold);
     tracing::info!(
         accepted = result.accepted,
         total_challenges = result.total_challenges,
         total_resolved = result.total_resolved,
         unresolved = result.unresolved.len(),
+        final_score = ?current_score,
         "adversarial loop complete"
     );
 
@@ -113,6 +174,8 @@ async fn execute_adversarial_round(
             resolved_count: 0,
             challenge_started_at,
             recovery_finished_at: Some(Utc::now()),
+            pre_eval_score: None,
+            post_eval_score: None,
         });
     }
 
@@ -152,6 +215,8 @@ async fn execute_adversarial_round(
         resolved_count,
         challenge_started_at,
         recovery_finished_at: Some(Utc::now()),
+        pre_eval_score: None,
+        post_eval_score: None,
     })
 }
 
