@@ -102,47 +102,179 @@ fn build_script(regression: &[Assertion], challenge: &[Assertion]) -> String {
     lines.join("\n")
 }
 
-// ── Regression checks ──────────────────────────────────────────────────────────
+// ── Regression checks (polyglot) ───────────────────────────────────────────────
+
+/// Language/framework detection entry: marker file → build/check command.
+struct LangDetector {
+    /// Files that indicate this language (checked in root and common subdirs).
+    markers: &'static [&'static str],
+    /// Common subdirectory names for this language.
+    subdirs: &'static [&'static str],
+    /// Name for the regression check.
+    name: &'static str,
+    /// Build/check command template. `{dir}` is replaced with the detected directory.
+    command_template: &'static str,
+}
+
+const LANG_DETECTORS: &[LangDetector] = &[
+    // Rust
+    LangDetector {
+        markers: &["Cargo.toml"],
+        subdirs: &["backend", "server", "api", "core", "lib"],
+        name: "rust-build",
+        command_template: "cd {dir} && cargo check 2>&1",
+    },
+    // Node.js / TypeScript
+    LangDetector {
+        markers: &["package.json"],
+        subdirs: &["frontend", "client", "web", "ui", "app"],
+        name: "node-build",
+        command_template: "cd {dir} && (npx tsc --noEmit 2>&1 || npm run build 2>&1)",
+    },
+    // Python
+    LangDetector {
+        markers: &["pyproject.toml", "setup.py", "requirements.txt"],
+        subdirs: &["backend", "api", "src", "app"],
+        name: "python-check",
+        command_template: "cd {dir} && python3 -m py_compile $(find . -name '*.py' -not -path '*/venv/*' -not -path '*/.venv/*' -not -path '*/node_modules/*' | head -20) 2>&1",
+    },
+    // Go
+    LangDetector {
+        markers: &["go.mod"],
+        subdirs: &["backend", "server", "cmd", "api"],
+        name: "go-build",
+        command_template: "cd {dir} && go build ./... 2>&1",
+    },
+    // Java / Kotlin (Maven)
+    LangDetector {
+        markers: &["pom.xml"],
+        subdirs: &["backend", "server", "api"],
+        name: "maven-build",
+        command_template: "cd {dir} && mvn compile -q 2>&1",
+    },
+    // Java / Kotlin (Gradle)
+    LangDetector {
+        markers: &["build.gradle", "build.gradle.kts"],
+        subdirs: &["backend", "server", "api", "app"],
+        name: "gradle-build",
+        command_template: "cd {dir} && ./gradlew compileJava --quiet 2>&1 || gradle compileJava --quiet 2>&1",
+    },
+    // Ruby
+    LangDetector {
+        markers: &["Gemfile"],
+        subdirs: &["backend", "api", "app"],
+        name: "ruby-check",
+        command_template: "cd {dir} && ruby -c $(find . -name '*.rb' -not -path '*/vendor/*' | head -20) 2>&1",
+    },
+    // Swift
+    LangDetector {
+        markers: &["Package.swift"],
+        subdirs: &["Sources", "backend"],
+        name: "swift-build",
+        command_template: "cd {dir} && swift build 2>&1",
+    },
+    // C / C++ (CMake)
+    LangDetector {
+        markers: &["CMakeLists.txt"],
+        subdirs: &["build", "src"],
+        name: "cmake-build",
+        command_template: "cd {dir} && cmake --build build 2>&1 || (mkdir -p build && cd build && cmake .. && make -j$(nproc) 2>&1)",
+    },
+    // .NET / C#
+    LangDetector {
+        markers: &["*.sln", "*.csproj"],
+        subdirs: &["src", "backend", "api"],
+        name: "dotnet-build",
+        command_template: "cd {dir} && dotnet build --nologo -v q 2>&1",
+    },
+    // Elixir
+    LangDetector {
+        markers: &["mix.exs"],
+        subdirs: &["backend", "api"],
+        name: "elixir-build",
+        command_template: "cd {dir} && mix compile 2>&1",
+    },
+    // PHP (Composer)
+    LangDetector {
+        markers: &["composer.json"],
+        subdirs: &["backend", "api", "app"],
+        name: "php-check",
+        command_template: "cd {dir} && php -l $(find . -name '*.php' -not -path '*/vendor/*' | head -20) 2>&1",
+    },
+];
 
 fn generate_regression_checks(working_dir: &Path) -> Vec<Assertion> {
     let mut checks = Vec::new();
 
-    // Detect project type and add appropriate build checks.
-    if working_dir.join("Cargo.toml").exists() || has_child_cargo(working_dir) {
-        let cargo_dir = find_cargo_dir(working_dir);
+    for detector in LANG_DETECTORS {
+        if let Some(dir) = detect_lang_dir(working_dir, detector) {
+            checks.push(Assertion {
+                name: detector.name.into(),
+                command: detector.command_template.replace("{dir}", &dir),
+            });
+        }
+    }
+
+    // Also detect Makefile, Dockerfile as generic build checks.
+    let dir = working_dir.display().to_string();
+    if working_dir.join("Makefile").exists() && checks.is_empty() {
         checks.push(Assertion {
-            name: "rust-build".into(),
-            command: format!("cd {cargo_dir} && cargo check 2>&1"),
+            name: "make-build".into(),
+            command: format!("cd {dir} && make 2>&1"),
         });
     }
 
-    if working_dir.join("package.json").exists() || has_child_package_json(working_dir) {
-        let npm_dir = find_npm_dir(working_dir);
-        checks.push(Assertion {
-            name: "npm-build".into(),
-            command: format!("cd {npm_dir} && npx tsc --noEmit 2>&1 || npm run build 2>&1"),
-        });
-    }
-
-    if working_dir.join("pyproject.toml").exists() || working_dir.join("setup.py").exists() {
-        checks.push(Assertion {
-            name: "python-syntax".into(),
-            command: format!(
-                "python3 -m py_compile $(find {} -name '*.py' -not -path '*/venv/*' | head -20) 2>&1",
-                working_dir.display()
-            ),
-        });
-    }
-
-    // If nothing detected, at least check the directory exists.
     if checks.is_empty() {
         checks.push(Assertion {
             name: "workspace-exists".into(),
-            command: format!("test -d {}", working_dir.display()),
+            command: format!("test -d {dir}"),
         });
     }
 
     checks
+}
+
+/// Check if a language is present in the working dir or common subdirectories.
+fn detect_lang_dir(working_dir: &Path, detector: &LangDetector) -> Option<String> {
+    // Check root directory.
+    for marker in detector.markers {
+        if marker.contains('*') {
+            // Glob pattern (e.g., "*.sln") — check if any matching file exists.
+            if let Ok(entries) = std::fs::read_dir(working_dir) {
+                let ext = marker.trim_start_matches('*');
+                if entries
+                    .filter_map(Result::ok)
+                    .any(|e| e.file_name().to_string_lossy().ends_with(ext))
+                {
+                    return Some(working_dir.display().to_string());
+                }
+            }
+        } else if working_dir.join(marker).exists() {
+            return Some(working_dir.display().to_string());
+        }
+    }
+
+    // Check common subdirectories.
+    for subdir in detector.subdirs {
+        let sub_path = working_dir.join(subdir);
+        for marker in detector.markers {
+            if marker.contains('*') {
+                if let Ok(entries) = std::fs::read_dir(&sub_path) {
+                    let ext = marker.trim_start_matches('*');
+                    if entries
+                        .filter_map(Result::ok)
+                        .any(|e| e.file_name().to_string_lossy().ends_with(ext))
+                    {
+                        return Some(sub_path.display().to_string());
+                    }
+                }
+            } else if sub_path.join(marker).exists() {
+                return Some(sub_path.display().to_string());
+            }
+        }
+    }
+
+    None
 }
 
 // ── LLM-generated assertions ───────────────────────────────────────────────────
@@ -370,36 +502,6 @@ fn escape_sh(s: &str) -> String {
     s.replace('\'', "'\\''")
 }
 
-fn has_child_cargo(dir: &Path) -> bool {
-    ["backend", "server", "api", "src"]
-        .iter()
-        .any(|d| dir.join(d).join("Cargo.toml").exists())
-}
-
-fn has_child_package_json(dir: &Path) -> bool {
-    ["frontend", "client", "web", "ui", "app"]
-        .iter()
-        .any(|d| dir.join(d).join("package.json").exists())
-}
-
-fn find_cargo_dir(dir: &Path) -> String {
-    for sub in ["backend", "server", "api"] {
-        if dir.join(sub).join("Cargo.toml").exists() {
-            return format!("{}/{sub}", dir.display());
-        }
-    }
-    dir.display().to_string()
-}
-
-fn find_npm_dir(dir: &Path) -> String {
-    for sub in ["frontend", "client", "web", "ui", "app"] {
-        if dir.join(sub).join("package.json").exists() {
-            return format!("{}/{sub}", dir.display());
-        }
-    }
-    dir.display().to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,6 +613,48 @@ mod tests {
         std::fs::write(dir.join("backend/Cargo.toml"), "[package]\nname=\"test\"").ok();
         let checks = generate_regression_checks(&dir);
         assert!(checks.iter().any(|c| c.name == "rust-build"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_regression_checks_detect_go() {
+        let dir = std::env::temp_dir().join("eval_gen_test_go");
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("go.mod"), "module example.com/test").ok();
+        let checks = generate_regression_checks(&dir);
+        assert!(checks.iter().any(|c| c.name == "go-build"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_regression_checks_detect_python() {
+        let dir = std::env::temp_dir().join("eval_gen_test_py");
+        std::fs::create_dir_all(&dir).ok();
+        std::fs::write(dir.join("pyproject.toml"), "[project]\nname=\"test\"").ok();
+        let checks = generate_regression_checks(&dir);
+        assert!(checks.iter().any(|c| c.name == "python-check"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_regression_checks_detect_multiple() {
+        let dir = std::env::temp_dir().join("eval_gen_test_multi");
+        std::fs::create_dir_all(dir.join("backend")).ok();
+        std::fs::create_dir_all(dir.join("frontend")).ok();
+        std::fs::write(dir.join("backend/Cargo.toml"), "[package]").ok();
+        std::fs::write(dir.join("frontend/package.json"), "{}").ok();
+        let checks = generate_regression_checks(&dir);
+        assert!(checks.iter().any(|c| c.name == "rust-build"));
+        assert!(checks.iter().any(|c| c.name == "node-build"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_regression_fallback_workspace_exists() {
+        let dir = std::env::temp_dir().join("eval_gen_test_empty");
+        std::fs::create_dir_all(&dir).ok();
+        let checks = generate_regression_checks(&dir);
+        assert!(checks.iter().any(|c| c.name == "workspace-exists"));
         std::fs::remove_dir_all(&dir).ok();
     }
 }
