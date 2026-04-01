@@ -161,8 +161,6 @@ In-depth guides that combine multiple Acteon features to solve real-world proble
 
 </div>
 
-</div>
-
 ---
 
 ## Agent Swarm Orchestrator
