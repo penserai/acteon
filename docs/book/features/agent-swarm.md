@@ -1062,7 +1062,7 @@ Three challenges were filtered out (severity below 0.5): two Low-severity style 
 - [Task Chains](chains.md) -- Acteon's chain execution model
 - [Deduplication](deduplication.md) -- cross-agent file write dedup
 - [Throttling](throttling.md) -- per-agent and swarm-wide rate limiting
-- [Tenant Usage Quotas](tenant-usage-quotas.md) -- per-run quota budgets
+- [Tenant Usage Quotas](tenant-quotas.md) -- per-run quota budgets
 - [WASM Rule Plugins](wasm-plugins.md) -- custom safety rules
 - [Adversarial Loop with Eval Harness](#adversarial-loop-with-eval-harness-autoresearch-pattern) -- cross-engine critique and recovery
 - [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) -- the pattern that inspired the eval harness
