@@ -90,6 +90,7 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
         config: ConfigSnapshot::default(),
         ui_path: None,
         ui_enabled: false,
+        cors_allowed_origins: Vec::new(),
     }
 }
 
@@ -875,6 +876,7 @@ fn build_approval_state_with_providers(
         config: ConfigSnapshot::default(),
         ui_path: None,
         ui_enabled: false,
+        cors_allowed_origins: Vec::new(),
     }
 }
 

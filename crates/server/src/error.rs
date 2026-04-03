@@ -38,8 +38,22 @@ impl IntoResponse for ServerError {
         let (status, message, retry_after) = match &self {
             Self::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone(), None),
             Self::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone(), None),
-            Self::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone(), None),
-            Self::Io(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string(), None),
+            Self::Config(msg) => {
+                tracing::error!(detail = %msg, "configuration error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_owned(),
+                    None,
+                )
+            }
+            Self::Io(e) => {
+                tracing::error!(detail = %e, "io error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_owned(),
+                    None,
+                )
+            }
             Self::Gateway(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.public_message(), None),
             Self::RateLimited { retry_after } => (
                 StatusCode::TOO_MANY_REQUESTS,
