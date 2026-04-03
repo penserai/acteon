@@ -1908,6 +1908,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: config_snapshot,
         ui_path: Some(config.ui.dist_path.clone()),
         ui_enabled: config.ui.enabled,
+        cors_allowed_origins: config.server.cors_allowed_origins.clone(),
     };
     let app = acteon_server::api::router(state);
 

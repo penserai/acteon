@@ -33,7 +33,7 @@ use axum::Router;
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use tokio::sync::RwLock;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -82,6 +82,8 @@ pub struct AppState {
     pub ui_path: Option<String>,
     /// Whether the Admin UI is enabled.
     pub ui_enabled: bool,
+    /// Allowed CORS origins (empty = permissive).
+    pub cors_allowed_origins: Vec<String>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -285,11 +287,25 @@ pub fn router(state: AppState) -> Router {
         }
     }
 
+    let cors = if state.cors_allowed_origins.is_empty() {
+        CorsLayer::permissive()
+    } else {
+        let origins: Vec<axum::http::HeaderValue> = state
+            .cors_allowed_origins
+            .iter()
+            .filter_map(|o| o.parse().ok())
+            .collect();
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods(tower_http::cors::Any)
+            .allow_headers(tower_http::cors::Any)
+    };
+
     router
         .with_state(state)
         // W3C Trace Context propagation (extracts traceparent/tracestate from
         // incoming requests so OTel can link server spans to the caller's trace).
         .layer(middleware::from_fn(trace_context::propagate_trace_context))
         .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+        .layer(cors)
 }

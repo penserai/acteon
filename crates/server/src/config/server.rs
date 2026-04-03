@@ -49,6 +49,13 @@ pub struct ServerConfig {
     /// Defaults to 5,000.
     #[serde(default = "default_max_concurrent_dispatch")]
     pub max_concurrent_dispatch: usize,
+    /// Allowed CORS origins.
+    ///
+    /// When empty (default), CORS allows all origins (permissive).
+    /// Set to a list of specific origins to restrict cross-origin access,
+    /// e.g. `["https://admin.example.com", "http://localhost:3000"]`.
+    #[serde(default)]
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -62,6 +69,7 @@ impl Default for ServerConfig {
             approval_keys: None,
             max_sse_connections_per_tenant: None,
             max_concurrent_dispatch: default_max_concurrent_dispatch(),
+            cors_allowed_origins: Vec::new(),
         }
     }
 }
