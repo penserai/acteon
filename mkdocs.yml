@@ -180,5 +180,6 @@ nav:
     - reference/index.md
     - Type Reference: reference/types.md
     - Error Handling: reference/errors.md
+    - ClickHouse State Migration: reference/migration-clickhouse-state.md
     - Performance Guide: reference/performance.md
     - Deployment: reference/deployment.md

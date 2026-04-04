@@ -63,7 +63,7 @@ Track events through configurable state machines with automatic timeout transiti
 
 ### Pluggable Backends
 
-Choose from Memory, Redis, PostgreSQL, or DynamoDB for state storage. Mix and match with PostgreSQL, ClickHouse, or Elasticsearch for audit trails.
+Choose from Memory, Redis, PostgreSQL, or DynamoDB for state storage. Mix and match with PostgreSQL, ClickHouse, or Elasticsearch for audit trails. (Note: ClickHouse state backend was removed in v0.1.0; see [Migration Guide](reference/migration-clickhouse-state.md)).
 
 [Learn more](backends/index.md)
 

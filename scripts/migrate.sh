@@ -29,7 +29,7 @@ Run database migrations for configured Acteon state and audit backends.
 
 Options:
   -c, --config FILE       Path to acteon.toml config file (default: acteon.toml)
-  -b, --backend BACKEND   State backend: postgres, dynamodb, redis, memory
+  -b, --backend BACKEND   Backend: postgres, dynamodb, clickhouse, redis, memory
                            (auto-detected from config if omitted; sets cargo feature flag)
   -n, --dry-run           Build the binary but don't run migrations
   -h, --help              Show this help message
@@ -103,9 +103,11 @@ if [[ -z "$BACKEND" ]]; then
 fi
 
 # ── Map backend to cargo feature flag ────────────────────────────────────────
+# Note: clickhouse is only supported as an audit backend, while postgres and
+# dynamodb support both state and audit.
 case "$BACKEND" in
-  postgres)
-    CARGO_ARGS="--features postgres"
+  postgres|clickhouse)
+    CARGO_ARGS="--features $BACKEND"
     ;;
   dynamodb)
     CARGO_ARGS="--features dynamodb"
@@ -116,7 +118,7 @@ case "$BACKEND" in
     ;;
   *)
     echo "Error: unknown backend '$BACKEND'"
-    echo "Supported backends: postgres, dynamodb, redis, memory"
+    echo "Supported backends: postgres, dynamodb, clickhouse, redis, memory"
     exit 1
     ;;
 esac
