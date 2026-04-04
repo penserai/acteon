@@ -472,7 +472,6 @@ dependencies = [
  "acteon-rules",
  "acteon-rules-yaml",
  "acteon-state",
- "acteon-state-clickhouse",
  "acteon-state-dynamodb",
  "acteon-state-memory",
  "acteon-state-postgres",
@@ -539,7 +538,6 @@ dependencies = [
  "acteon-rules-yaml",
  "acteon-server",
  "acteon-state",
- "acteon-state-clickhouse",
  "acteon-state-dynamodb",
  "acteon-state-memory",
  "acteon-state-postgres",
@@ -593,22 +591,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
-]
-
-[[package]]
-name = "acteon-state-clickhouse"
-version = "0.1.0"
-dependencies = [
- "acteon-core",
- "acteon-state",
- "async-trait",
- "chrono",
- "clickhouse",
- "serde",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
 ]
 
 [[package]]

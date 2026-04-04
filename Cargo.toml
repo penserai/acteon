@@ -17,7 +17,6 @@ members = [
     "crates/state/postgres",
     "crates/state/redis",
     "crates/state/dynamodb",
-    "crates/state/clickhouse",
 
     # Audit backends
     "crates/audit/audit",
@@ -92,7 +91,6 @@ acteon-state-memory = { path = "crates/state/memory" }
 acteon-state-postgres = { path = "crates/state/postgres" }
 acteon-state-redis = { path = "crates/state/redis" }
 acteon-state-dynamodb = { path = "crates/state/dynamodb" }
-acteon-state-clickhouse = { path = "crates/state/clickhouse" }
 
 # Audit backends
 acteon-audit = { path = "crates/audit/audit" }

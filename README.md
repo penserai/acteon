@@ -36,7 +36,7 @@ Acteon is the force that manages this transformation. It serves as an Action Gat
 
 ### Pluggable Backends
 
-- **State Storage** — Memory, Redis, PostgreSQL, DynamoDB, or ClickHouse for distributed locks and deduplication state
+- **State Storage** — Memory, Redis, PostgreSQL, or DynamoDB for distributed locks and deduplication state
 - **Audit Trail** — Memory, PostgreSQL, ClickHouse, or Elasticsearch for searchable action history with configurable retention
 
 ### Enterprise Ready
@@ -80,7 +80,6 @@ All crates are organized under `crates/` with logical groupings:
 | `crates/state/redis` | Redis state backend |
 | `crates/state/postgres` | PostgreSQL state backend |
 | `crates/state/dynamodb` | DynamoDB state backend |
-| `crates/state/clickhouse` | ClickHouse state backend |
 
 ### Audit Backends
 
@@ -171,7 +170,7 @@ port = 8080
 # dist_path = "ui/dist"
 
 [state]
-backend = "memory"   # "memory", "redis", "postgres", "dynamodb", or "clickhouse"
+backend = "memory"   # "memory", "redis", "postgres", or "dynamodb"
 # url = "redis://localhost:6379"
 # prefix = "acteon"
 # region = "us-east-1"       # DynamoDB only
@@ -224,7 +223,7 @@ The `docker-compose.yml` ships with profiles for every supported backend. Redis 
 | Memory | state, audit | *(none)* | n/a |
 | Redis | state | *(default)* | `redis://localhost:6379` |
 | PostgreSQL | state, audit | `postgres` | `postgres://acteon:acteon@localhost:5432/acteon` |
-| ClickHouse | state, audit | `clickhouse` | `http://localhost:8123` |
+| ClickHouse | audit | `clickhouse` | `http://localhost:8123` |
 | Elasticsearch | audit | `elasticsearch` | `http://localhost:9200` |
 | DynamoDB Local | state | `dynamodb` | `http://localhost:8000` |
 
@@ -255,7 +254,7 @@ docker compose --profile postgres up -d
 scripts/migrate.sh -c examples/postgres.toml
 cargo run -p acteon-server --features postgres -- -c examples/postgres.toml
 
-# ClickHouse state + audit
+# ClickHouse audit (with Redis state)
 docker compose --profile clickhouse up -d
 scripts/migrate.sh -c examples/clickhouse.toml
 cargo run -p acteon-server --features clickhouse -- -c examples/clickhouse.toml

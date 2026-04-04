@@ -1116,7 +1116,7 @@ Authorization = "Bearer token"
 
 | Section | Key | Type | Default | Description |
 |---------|-----|------|---------|-------------|
-| **state** | backend | string | "memory" | State backend: memory/redis/postgres/dynamodb/clickhouse |
+| **state** | backend | string | "memory" | State backend: memory/redis/postgres/dynamodb |
 | | url | string? | none | Connection URL |
 | | prefix | string? | "acteon" | Key prefix |
 | | region | string? | none | AWS region (DynamoDB) |
@@ -1302,7 +1302,6 @@ See `telemetry` section in [Server Configuration Reference](#17-server-configura
 | Redis | `acteon-state-redis` | Production (single-node or cluster) |
 | PostgreSQL | `acteon-state-postgres` | Production (SQL-based) |
 | DynamoDB | `acteon-state-dynamodb` | AWS serverless |
-| ClickHouse | `acteon-state-clickhouse` | Analytics-heavy workloads |
 
 ### StateStore Trait Methods
 | Method | Description |

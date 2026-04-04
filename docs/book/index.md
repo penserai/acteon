@@ -63,7 +63,7 @@ Track events through configurable state machines with automatic timeout transiti
 
 ### Pluggable Backends
 
-Choose from Memory, Redis, PostgreSQL, DynamoDB, or ClickHouse for state storage. Mix and match with PostgreSQL, ClickHouse, or Elasticsearch for audit trails.
+Choose from Memory, Redis, PostgreSQL, or DynamoDB for state storage. Mix and match with PostgreSQL, ClickHouse, or Elasticsearch for audit trails.
 
 [Learn more](backends/index.md)
 
@@ -279,7 +279,6 @@ graph TB
         RED[(Redis)]
         PG[(PostgreSQL)]
         DDB[(DynamoDB)]
-        CH[(ClickHouse)]
     end
 
     subgraph Audit
@@ -304,7 +303,7 @@ graph TB
     PROV --> Discord[Discord]
     PROV --> WH[Webhooks]
     PROV --> AWS[AWS SNS/Lambda/SQS/S3]
-    RE -.-> MEM & RED & PG & DDB & CH
+    RE -.-> MEM & RED & PG & DDB
     EX -.-> AUD_PG & AUD_CH & AUD_ES
 ```
 

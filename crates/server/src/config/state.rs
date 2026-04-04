@@ -3,7 +3,7 @@ use serde::Deserialize;
 /// Configuration for the state store backend.
 #[derive(Debug, Deserialize)]
 pub struct StateConfig {
-    /// Which backend to use: `"memory"`, `"redis"`, `"postgres"`, `"dynamodb"`, or `"clickhouse"`.
+    /// Which backend to use: `"memory"`, `"redis"`, `"postgres"`, or `"dynamodb"`.
     #[serde(default = "default_backend")]
     pub backend: String,
 

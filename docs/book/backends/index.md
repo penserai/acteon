@@ -14,7 +14,6 @@ State backends store distributed locks, deduplication keys, event state, group s
 | [Redis](redis.md) | Strong | ~2,000/s | General purpose, most deployments |
 | [PostgreSQL](postgres.md) | ACID | ~850/s | Strong consistency requirements |
 | [DynamoDB](dynamodb.md) | Strong | ~340/s | AWS-native deployments |
-| [ClickHouse](clickhouse-state.md) | Eventual | ~120/s | Analytics (not for dedup) |
 
 ### Audit Backends
 

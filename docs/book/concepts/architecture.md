@@ -43,7 +43,6 @@ flowchart TB
         Redis["Redis"]
         PG["PostgreSQL"]
         DDB["DynamoDB"]
-        CH["ClickHouse"]
     end
 
     subgraph Audit["Audit Layer"]
@@ -64,6 +63,7 @@ flowchart TB
     Features --> State
 
     Exec -.->|record| Audit
+
 ```
 
 ## Crate Organization
@@ -91,7 +91,6 @@ All crates live under the `crates/` directory with logical groupings:
 | `crates/state/redis` | `acteon-state-redis` | Redis backend (distributed) |
 | `crates/state/postgres` | `acteon-state-postgres` | PostgreSQL backend (ACID) |
 | `crates/state/dynamodb` | `acteon-state-dynamodb` | AWS DynamoDB backend |
-| `crates/state/clickhouse` | `acteon-state-clickhouse` | ClickHouse backend (analytics) |
 
 ### Audit Backends
 

@@ -1,0 +1,100 @@
+# Local development configuration for Acteon.
+# Start: cargo run -p acteon-server -- -c acteon.toml
+
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# ── State ────────────────────────────────────────────────────────────────────
+[state]
+backend = "memory"
+
+# ── Audit ────────────────────────────────────────────────────────────────────
+[audit]
+enabled = true
+backend = "memory"
+store_payload = true
+
+# ── Rules ────────────────────────────────────────────────────────────────────
+[rules]
+directory = "examples/rules"
+
+# ── Executor ─────────────────────────────────────────────────────────────────
+[executor]
+max_retries = 2
+timeout_seconds = 30
+max_concurrent = 10
+
+# ── Providers ────────────────────────────────────────────────────────────────
+# Log providers print the action payload to stdout — no external deps needed.
+
+[[providers]]
+name = "email"
+type = "email"
+smtp_host = "localhost"
+smtp_port = 1025
+from_address = "acteon@localhost"
+tls = false
+
+[[providers]]
+name = "slack"
+type = "log"
+
+[[providers]]
+name = "sms"
+type = "log"
+
+[[providers]]
+name = "pagerduty"
+type = "log"
+
+[[providers]]
+name = "webhook"
+type = "log"
+
+# ── AWS Providers (LocalStack) ───────────────────────────────────────────
+# Requires: docker run -d -p 4566:4566 localstack/localstack
+# All AWS providers point to LocalStack on localhost:4566.
+
+[[providers]]
+name = "sns"
+type = "aws-sns"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+topic_arn = "arn:aws:sns:us-east-1:000000000000:acteon-test"
+
+[[providers]]
+name = "sqs"
+type = "aws-sqs"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+queue_url = "http://localhost:4566/000000000000/acteon-test"
+
+[[providers]]
+name = "lambda"
+type = "aws-lambda"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+function_name = "acteon-test"
+
+[[providers]]
+name = "eventbridge"
+type = "aws-eventbridge"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+event_bus_name = "acteon-test"
+
+[[providers]]
+name = "s3"
+type = "aws-s3"
+aws_region = "us-east-1"
+aws_endpoint_url = "http://localhost:4566"
+bucket_name = "acteon-test"
+
+# ── Circuit Breakers ─────────────────────────────────────────────────────────
+[circuit_breaker]
+enabled = true
+
+# ── Background Processing ────────────────────────────────────────────────────
+[background]
+enabled = true
