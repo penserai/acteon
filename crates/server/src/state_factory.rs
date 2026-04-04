@@ -1,8 +1,6 @@
 use std::sync::Arc;
 
 use acteon_state::{DistributedLock, StateStore};
-#[cfg(feature = "clickhouse")]
-use acteon_state_clickhouse::{ClickHouseConfig, ClickHouseDistributedLock, ClickHouseStateStore};
 #[cfg(feature = "dynamodb")]
 use acteon_state_dynamodb::{
     DynamoConfig, DynamoDistributedLock, DynamoStateStore, build_client, create_table,
@@ -30,8 +28,6 @@ pub async fn create_state(config: &StateConfig) -> Result<StatePair, ServerError
         "postgres" => create_postgres(config).await,
         #[cfg(feature = "dynamodb")]
         "dynamodb" => create_dynamodb(config).await,
-        #[cfg(feature = "clickhouse")]
-        "clickhouse" => create_clickhouse(config).await,
         other => Err(ServerError::Config(format!(
             "unsupported state backend: {other} (is the feature enabled?)"
         ))),
@@ -129,30 +125,6 @@ async fn create_dynamodb(config: &StateConfig) -> Result<StatePair, ServerError>
         DynamoDistributedLock::new(&dynamo_config)
             .await
             .map_err(|e| ServerError::Config(format!("dynamodb lock: {e}")))?,
-    );
-    Ok((store, lock))
-}
-
-#[cfg(feature = "clickhouse")]
-async fn create_clickhouse(config: &StateConfig) -> Result<StatePair, ServerError> {
-    let url = config.url.as_deref().unwrap_or("http://localhost:8123");
-    let ch_config = ClickHouseConfig {
-        url: url.to_owned(),
-        table_prefix: config
-            .prefix
-            .clone()
-            .unwrap_or_else(|| "acteon_".to_owned()),
-        ..ClickHouseConfig::default()
-    };
-    let store = Arc::new(
-        ClickHouseStateStore::new(ch_config.clone())
-            .await
-            .map_err(|e| ServerError::Config(format!("clickhouse store: {e}")))?,
-    );
-    let lock = Arc::new(
-        ClickHouseDistributedLock::new(ch_config)
-            .await
-            .map_err(|e| ServerError::Config(format!("clickhouse lock: {e}")))?,
     );
     Ok((store, lock))
 }

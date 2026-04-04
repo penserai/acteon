@@ -5,7 +5,7 @@ Simulation and testing framework for Acteon. This crate provides tools for end-t
 ## Features
 
 - **Mock Providers**: `RecordingProvider` captures all calls for verification; `FailingProvider` simulates errors
-- **Mixed Backend Testing**: Combine any state backend (Memory, Redis, PostgreSQL, DynamoDB, ClickHouse) with any audit backend
+- **Mixed Backend Testing**: Combine any state backend (Memory, Redis, PostgreSQL, DynamoDB) with any audit backend
 - **Failure Injection**: Simulate timeouts, connection errors, rate limiting, and transient failures
 - **End-to-End Audit Trail**: Verify that all action outcomes (executed, suppressed, deduplicated, throttled, failed) are recorded
 - **Performance Benchmarks**: Measure throughput across different backend combinations
@@ -29,7 +29,7 @@ acteon-simulation = { path = "../acteon-simulation", features = ["redis", "postg
 | `redis` | Enable Redis state backend |
 | `postgres` | Enable PostgreSQL state + audit backends |
 | `dynamodb` | Enable DynamoDB state backend |
-| `clickhouse` | Enable ClickHouse state + audit backends |
+| `clickhouse` | Enable ClickHouse audit backend |
 
 ## Core Components
 
@@ -200,10 +200,6 @@ docker run -d --name acteon-postgres -p 5433:5432 \
   -e POSTGRES_PASSWORD=postgres -e POSTGRES_USER=postgres \
   -e POSTGRES_DB=acteon_test postgres:16-alpine
 
-# ClickHouse
-docker run -d --name acteon-clickhouse -p 8123:8123 -p 9000:9000 \
-  -e CLICKHOUSE_PASSWORD="" clickhouse/clickhouse-server:latest
-
 # DynamoDB Local
 docker run -d --name acteon-dynamodb -p 8000:8000 amazon/dynamodb-local:latest
 ```
@@ -218,9 +214,6 @@ cargo run -p acteon-simulation --example redis_simulation --features redis
 
 # PostgreSQL state + audit
 cargo run -p acteon-simulation --example postgres_simulation --features postgres
-
-# ClickHouse state + audit
-cargo run -p acteon-simulation --example clickhouse_simulation --features clickhouse
 
 # DynamoDB state backend
 cargo run -p acteon-simulation --example dynamodb_simulation --features dynamodb
@@ -339,7 +332,6 @@ Throughput measured with 200 sequential actions (no rules, single provider):
 | Redis | ClickHouse | ~970/sec | Analytics-optimized |
 | PostgreSQL | PostgreSQL | ~850/sec | Single backend for both |
 | DynamoDB | None | ~340/sec | AWS SDK overhead |
-| ClickHouse | ClickHouse | ~120/sec | Eventual consistency model |
 
 ### Concurrent Deduplication Accuracy
 
@@ -351,9 +343,6 @@ With 20 concurrent dispatches using the same dedup_key:
 | Redis | 1 | 19 | Strong locking |
 | PostgreSQL | 1 | 19 | ACID guarantees |
 | DynamoDB | 1 | 19 | Conditional writes |
-| ClickHouse | 10-20 | 0-10 | Eventual consistency* |
-
-*ClickHouse uses ReplacingMergeTree which provides eventual consistency. Not recommended for strict deduplication requirements.
 
 ## Audit Trail Verification
 

@@ -45,8 +45,8 @@ port = 8080                          # Bind port
 
 # ─── State Backend ────────────────────────────────────────
 [state]
-backend = "memory"                   # "memory" | "redis" | "postgres" | "dynamodb" | "clickhouse"
-# url = "redis://localhost:6379"     # Connection URL (redis, postgres, clickhouse, dynamodb-local)
+backend = "memory"                   # "memory" | "redis" | "postgres" | "dynamodb"
+# url = "redis://localhost:6379"     # Connection URL (redis, postgres, dynamodb-local)
 # prefix = "acteon"                  # Key/table prefix
 # region = "us-east-1"              # AWS region (DynamoDB only)
 # table_name = "acteon_state"       # Table name (DynamoDB only)
@@ -423,7 +423,7 @@ Ready-to-use configs are in the `examples/` directory:
 |------|-------------|
 | `examples/redis.toml` | Redis state backend |
 | `examples/postgres.toml` | PostgreSQL state + audit |
-| `examples/clickhouse.toml` | ClickHouse state + audit |
+| `examples/clickhouse.toml` | ClickHouse audit |
 | `examples/elasticsearch-audit.toml` | Redis state + Elasticsearch audit |
 | `examples/dynamodb.toml` | DynamoDB state backend |
 | `examples/full.toml` | All options documented |

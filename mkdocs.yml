@@ -144,7 +144,6 @@ nav:
     - Redis: backends/redis.md
     - PostgreSQL: backends/postgres.md
     - DynamoDB: backends/dynamodb.md
-    - ClickHouse: backends/clickhouse-state.md
     - Audit Backends: backends/audit-backends.md
     - PostgreSQL Audit: backends/postgres-audit.md
     - ClickHouse Audit: backends/clickhouse-audit.md

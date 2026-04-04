@@ -72,7 +72,6 @@ Lock key: "{namespace}:{tenant}:{dedup_key}"
     - **Redis**: Strong locking (single instance)
     - **PostgreSQL**: ACID-guaranteed locks
     - **DynamoDB**: Conditional writes
-    - **ClickHouse**: No locking (eventual consistency)
 
 ### 3. Rule Evaluation
 

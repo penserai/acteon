@@ -25,7 +25,7 @@ cargo build -p acteon-server --features aws-all
 |---------|------------|---------|
 | `redis` | Redis state backend | Yes |
 | `postgres` | PostgreSQL state + audit | No |
-| `clickhouse` | ClickHouse state + audit | No |
+| `clickhouse` | ClickHouse audit | No |
 | `dynamodb` | DynamoDB state + audit | No |
 | `elasticsearch` | Elasticsearch audit | No |
 | `all-backends` | All of the above | No |

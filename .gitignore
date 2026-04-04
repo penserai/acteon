@@ -42,3 +42,5 @@ test-results/
 #.idea/
 .DS_Store
 examples/agent-swarm-coordination/swarm/workspaces/
+posit-clone/
+acteon.toml

@@ -18,7 +18,7 @@ path = "src/main.rs"
 default = ["redis"]
 redis = ["dep:acteon-state-redis"]
 postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
-clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
+clickhouse = ["dep:acteon-audit-clickhouse"]
 dynamodb = ["dep:acteon-state-dynamodb", "dep:acteon-audit-dynamodb"]
 elasticsearch = ["dep:acteon-audit-elasticsearch"]
 all-backends = ["redis", "postgres", "clickhouse", "dynamodb", "elasticsearch"]
@@ -54,7 +54,6 @@ acteon-state-memory = { workspace = true }
 acteon-state-redis = { workspace = true, optional = true }
 acteon-state-postgres = { workspace = true, optional = true }
 acteon-state-dynamodb = { workspace = true, optional = true }
-acteon-state-clickhouse = { workspace = true, optional = true }
 acteon-rules = { workspace = true }
 acteon-rules-yaml = { workspace = true }
 acteon-provider = { workspace = true, features = ["webhook"] }
