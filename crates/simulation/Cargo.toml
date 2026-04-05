@@ -16,7 +16,6 @@ acteon-state-memory.workspace = true
 acteon-state-redis = { workspace = true, optional = true }
 acteon-state-dynamodb = { workspace = true, optional = true }
 acteon-state-postgres = { workspace = true, optional = true }
-acteon-state-clickhouse = { workspace = true, optional = true }
 acteon-audit.workspace = true
 acteon-audit-memory.workspace = true
 acteon-audit-postgres = { workspace = true, optional = true }
@@ -61,7 +60,7 @@ default = []
 redis = ["dep:acteon-state-redis"]
 dynamodb = ["dep:acteon-state-dynamodb"]
 postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
-clickhouse = ["dep:acteon-state-clickhouse", "dep:acteon-audit-clickhouse"]
+clickhouse = ["dep:acteon-audit-clickhouse"]
 
 [[bench]]
 name = "throughput"
@@ -86,10 +85,6 @@ required-features = ["postgres"]
 [[example]]
 name = "postgres_chain_simulation"
 required-features = ["postgres"]
-
-[[example]]
-name = "clickhouse_simulation"
-required-features = ["clickhouse"]
 
 [[example]]
 name = "mixed_backends_simulation"

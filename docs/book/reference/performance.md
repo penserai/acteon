@@ -13,7 +13,6 @@ Measured with 200 sequential actions, no rules, single provider:
 | Redis | ClickHouse | ~970/s | 10ms | Analytics combo |
 | PostgreSQL | PostgreSQL | ~850/s | 12ms | Single backend |
 | DynamoDB | None | ~340/s | 50ms | AWS SDK overhead |
-| ClickHouse | ClickHouse | ~120/s | 100ms | Eventual consistency |
 
 ## Concurrent Deduplication Accuracy
 
@@ -25,7 +24,6 @@ With 20 concurrent dispatches using the same `dedup_key`:
 | Redis | 1 | 19 | 100% |
 | PostgreSQL | 1 | 19 | 100% |
 | DynamoDB | 1 | 19 | 100% |
-| ClickHouse | 10-20 | 0-10 | ~50-80% |
 
 ## Optimization Tips
 
@@ -35,7 +33,7 @@ With 20 concurrent dispatches using the same `dedup_key`:
 flowchart TD
     A[Choose State Backend] --> B{Need strict dedup?}
     B -->|Yes| C{Latency budget?}
-    B -->|No| D[ClickHouse or Memory]
+    B -->|No| D[Memory]
     C -->|< 10ms| E[Redis]
     C -->|< 20ms| F[PostgreSQL]
     C -->|Any| G[DynamoDB]

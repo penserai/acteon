@@ -9,7 +9,6 @@
 #
 # Examples:
 #   scripts/migrate.sh --backend postgres -c acteon.toml
-#   scripts/migrate.sh --backend clickhouse -c config/acteon.toml
 #   scripts/migrate.sh -c examples/incident-response-pipeline/acteon.toml
 set -euo pipefail
 
@@ -30,14 +29,13 @@ Run database migrations for configured Acteon state and audit backends.
 
 Options:
   -c, --config FILE       Path to acteon.toml config file (default: acteon.toml)
-  -b, --backend BACKEND   State backend: postgres, clickhouse, dynamodb, redis, memory
+  -b, --backend BACKEND   Backend: postgres, dynamodb, clickhouse, redis, memory
                            (auto-detected from config if omitted; sets cargo feature flag)
   -n, --dry-run           Build the binary but don't run migrations
   -h, --help              Show this help message
 
 Environment:
   DATABASE_URL            PostgreSQL connection string (used by postgres backend)
-  CLICKHOUSE_URL          ClickHouse connection string (used by clickhouse backend)
   AWS_REGION              AWS region (used by dynamodb backend)
 
 Examples:
@@ -105,12 +103,11 @@ if [[ -z "$BACKEND" ]]; then
 fi
 
 # ── Map backend to cargo feature flag ────────────────────────────────────────
+# Note: clickhouse is only supported as an audit backend, while postgres and
+# dynamodb support both state and audit.
 case "$BACKEND" in
-  postgres)
-    CARGO_ARGS="--features postgres"
-    ;;
-  clickhouse)
-    CARGO_ARGS="--features clickhouse"
+  postgres|clickhouse)
+    CARGO_ARGS="--features $BACKEND"
     ;;
   dynamodb)
     CARGO_ARGS="--features dynamodb"
@@ -121,7 +118,7 @@ case "$BACKEND" in
     ;;
   *)
     echo "Error: unknown backend '$BACKEND'"
-    echo "Supported backends: postgres, clickhouse, dynamodb, redis, memory"
+    echo "Supported backends: postgres, dynamodb, clickhouse, redis, memory"
     exit 1
     ;;
 esac
