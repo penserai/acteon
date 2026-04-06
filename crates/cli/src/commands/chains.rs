@@ -52,6 +52,17 @@ pub enum ChainsCommand {
         #[arg(long)]
         cancelled_by: Option<String>,
     },
+    /// Get per-step execution history with retry attempts.
+    History {
+        /// Chain ID.
+        id: String,
+        /// Namespace.
+        #[arg(long, default_value = "default")]
+        namespace: String,
+        /// Tenant.
+        #[arg(long)]
+        tenant: String,
+    },
     /// Get the DAG for a chain instance.
     Dag {
         /// Chain ID.
@@ -141,6 +152,11 @@ pub async fn run(ops: &OpsClient, args: &ChainsArgs, format: &OutputFormat) -> a
             )
             .await
         }
+        ChainsCommand::History {
+            id,
+            namespace,
+            tenant,
+        } => run_history(ops, id, namespace, tenant, format).await,
         ChainsCommand::Dag {
             id,
             namespace,
@@ -250,6 +266,53 @@ async fn run_cancel(
                 status = %resp.status,
                 "Chain cancelled"
             );
+        }
+    }
+    Ok(())
+}
+
+async fn run_history(
+    ops: &OpsClient,
+    id: &str,
+    namespace: &str,
+    tenant: &str,
+    format: &OutputFormat,
+) -> anyhow::Result<()> {
+    let resp = ops.get_chain_history(id, namespace, tenant).await?;
+    match format {
+        OutputFormat::Json => {
+            info!("{}", serde_json::to_string_pretty(&resp)?);
+        }
+        OutputFormat::Text => {
+            info!(
+                chain_id = %resp.chain_id,
+                chain_name = %resp.chain_name,
+                status = %resp.status,
+                "Chain execution history"
+            );
+            for step in &resp.steps {
+                let max = step
+                    .max_retries
+                    .map_or_else(|| "-".to_string(), |m| m.to_string());
+                info!(
+                    step_index = step.step_index,
+                    name = %step.name,
+                    attempt = step.current_attempt,
+                    max_retries = %max,
+                    total_attempts = step.attempts.len(),
+                    "  Step"
+                );
+                for attempt in &step.attempts {
+                    let err = attempt.error.as_deref().unwrap_or("");
+                    info!(
+                        attempt = attempt.attempt,
+                        success = attempt.success,
+                        duration_ms = attempt.duration_ms,
+                        error = %err,
+                        "    Attempt"
+                    );
+                }
+            }
         }
     }
     Ok(())

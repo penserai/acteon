@@ -361,6 +361,8 @@ mod tests {
             response_body: Some(body),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         })
     }
 
@@ -728,6 +730,8 @@ mod tests {
                 response_body: Some(serde_json::json!({"channel": "#alerts", "ts": "123"})),
                 error: None,
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             },
         );
         let template = serde_json::json!({"ts": "{{steps.notify_slack.body.ts}}"});
@@ -760,6 +764,8 @@ mod tests {
                 response_body: Some(serde_json::json!({"source": "parallel"})),
                 error: None,
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             },
         );
         let template = serde_json::json!({"src": "{{steps.search.body.source}}"});

@@ -98,6 +98,12 @@ pub struct ChainStepStatus {
     /// Running child chain execution ID (if this sub-chain step has spawned a child).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub child_chain_id: Option<String>,
+    /// Current attempt number (1-based) when a retry policy is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    /// Maximum retry count from the step's retry policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
 }
 
 /// Full detail response for a chain execution.
@@ -245,6 +251,9 @@ pub async fn get_chain(
         .await
     {
         Ok(Some(chain_state)) => {
+            // Try to load the chain config for retry metadata.
+            let chain_config = gw.chain_config(&chain_state.chain_name);
+
             // Build per-step status from the chain config and results.
             let steps: Vec<ChainStepStatus> = (0..chain_state.total_steps)
                 .map(|i| {
@@ -262,6 +271,15 @@ pub async fn get_chain(
                     } else {
                         ("pending".to_string(), None, None, None)
                     };
+
+                    // Retry metadata from state + config.
+                    let attempt = chain_state.step_attempts.get(i).copied().filter(|&a| a > 0);
+                    let max_retries = chain_config
+                        .as_ref()
+                        .and_then(|c| c.steps.get(i))
+                        .and_then(|s| s.retry.as_ref())
+                        .map(|r| r.max_retries);
+
                     ChainStepStatus {
                         name: step_name,
                         provider: String::new(),
@@ -271,6 +289,8 @@ pub async fn get_chain(
                         completed_at: completed,
                         sub_chain: None,
                         child_chain_id: None,
+                        attempt,
+                        max_retries,
                     }
                 })
                 .collect();
@@ -507,6 +527,8 @@ fn build_dag_from_state(state: &acteon_core::ChainState) -> DagResponse {
 
         let on_path = state.execution_path.contains(&step_name);
 
+        let attempt = state.step_attempts.get(i).copied().filter(|&a| a > 0);
+
         nodes.push(DagNode {
             name: step_name.clone(),
             node_type: "step".into(),
@@ -518,6 +540,8 @@ fn build_dag_from_state(state: &acteon_core::ChainState) -> DagResponse {
             children: None,
             parallel_children: None,
             parallel_join: None,
+            attempt,
+            max_retries: None,
         });
 
         // Add edge to next step.
@@ -784,6 +808,153 @@ pub async fn delete_definition(
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("chain definition not found: {name}"),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Chain execution history (retry attempts)
+// ---------------------------------------------------------------------------
+
+/// Full execution history for a chain, including all retry attempts per step.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChainHistoryResponse {
+    /// Unique chain execution ID.
+    pub chain_id: String,
+    /// Name of the chain configuration.
+    pub chain_name: String,
+    /// Current status.
+    pub status: String,
+    /// Per-step execution history with retry attempts.
+    pub steps: Vec<StepHistoryEntry>,
+}
+
+/// Execution history for a single chain step.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StepHistoryEntry {
+    /// Step name.
+    pub name: String,
+    /// Step index (0-based).
+    pub step_index: usize,
+    /// Current attempt number (1-based).
+    pub current_attempt: u32,
+    /// Maximum retries from the step's retry policy (if configured).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    /// All recorded attempts for this step.
+    pub attempts: Vec<StepAttemptResponse>,
+}
+
+/// A single execution attempt for a chain step.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StepAttemptResponse {
+    /// 1-based attempt number.
+    pub attempt: u32,
+    /// When this attempt started.
+    pub started_at: DateTime<Utc>,
+    /// When this attempt finished.
+    pub completed_at: DateTime<Utc>,
+    /// Whether the attempt succeeded.
+    pub success: bool,
+    /// Wall-clock duration in milliseconds.
+    pub duration_ms: u64,
+    /// Error message (if failed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// `GET /v1/chains/{chain_id}/history` -- get per-step execution history with retry attempts.
+#[utoipa::path(
+    get,
+    path = "/v1/chains/{chain_id}/history",
+    tag = "Chains",
+    summary = "Get chain execution history",
+    description = "Returns per-step execution history including all retry attempts for a chain execution.",
+    params(
+        ("chain_id" = String, Path, description = "Chain execution ID"),
+        ChainNamespaceParams,
+    ),
+    responses(
+        (status = 200, description = "Chain history", body = ChainHistoryResponse),
+        (status = 404, description = "Chain not found", body = ErrorResponse),
+    )
+)]
+pub async fn get_chain_history(
+    State(state): State<AppState>,
+    Path(chain_id): Path<String>,
+    Query(params): Query<ChainNamespaceParams>,
+) -> impl IntoResponse {
+    let gw = state.gateway.read().await;
+
+    match gw
+        .get_chain_status(&params.namespace, &params.tenant, &chain_id)
+        .await
+    {
+        Ok(Some(chain_state)) => {
+            let chain_config = gw.chain_config(&chain_state.chain_name);
+
+            let steps: Vec<StepHistoryEntry> = (0..chain_state.total_steps)
+                .map(|i| {
+                    let result = chain_state.step_results.get(i).and_then(|r| r.as_ref());
+                    let step_name =
+                        result.map_or_else(|| format!("step-{i}"), |r| r.step_name.clone());
+
+                    let current_attempt = chain_state.step_attempts.get(i).copied().unwrap_or(0);
+                    let max_retries = chain_config
+                        .as_ref()
+                        .and_then(|c| c.steps.get(i))
+                        .and_then(|s| s.retry.as_ref())
+                        .map(|r| r.max_retries);
+
+                    let attempts: Vec<StepAttemptResponse> = chain_state
+                        .step_history
+                        .get(i)
+                        .map(|history| {
+                            history
+                                .iter()
+                                .map(|a| StepAttemptResponse {
+                                    attempt: a.attempt,
+                                    started_at: a.started_at,
+                                    completed_at: a.completed_at,
+                                    success: a.success,
+                                    duration_ms: a.duration_ms,
+                                    error: a.error.clone(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    StepHistoryEntry {
+                        name: step_name,
+                        step_index: i,
+                        current_attempt,
+                        max_retries,
+                        attempts,
+                    }
+                })
+                .collect();
+
+            let resp = ChainHistoryResponse {
+                chain_id: chain_state.chain_id,
+                chain_name: chain_state.chain_name,
+                status: status_to_string(&chain_state.status),
+                steps,
+            };
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("chain not found: {chain_id}"),
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
             }),
         )
             .into_response(),

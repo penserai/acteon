@@ -533,6 +533,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(delay) = step_toml.delay_seconds {
                 step = step.with_delay(delay);
             }
+            if let Some(ref retry_toml) = step_toml.retry {
+                use acteon_core::chain::{RetryBackoffStrategy, RetryPolicy};
+                let strategy = match retry_toml.strategy.as_deref() {
+                    Some("linear") => RetryBackoffStrategy::Linear,
+                    Some("exponential") => RetryBackoffStrategy::Exponential,
+                    _ => RetryBackoffStrategy::Fixed,
+                };
+                step = step.with_retry(RetryPolicy {
+                    max_retries: retry_toml.max_retries,
+                    backoff_ms: retry_toml.backoff_ms.unwrap_or(1000),
+                    strategy,
+                    jitter_ms: retry_toml.jitter_ms,
+                });
+            }
             for branch_toml in &step_toml.branches {
                 let operator = match branch_toml.operator.as_str() {
                     "neq" => BranchOperator::Neq,

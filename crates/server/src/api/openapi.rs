@@ -11,8 +11,9 @@ use super::approvals::{
     ApprovalActionResponse, ApprovalQueryParams, ApprovalStatusResponse, ListApprovalsResponse,
 };
 use super::chains::{
-    ChainCancelRequest, ChainDefinitionSummary, ChainDetailResponse, ChainStepStatus, ChainSummary,
-    ChainValidationErrorResponse, ListChainDefinitionsResponse, ListChainsResponse,
+    ChainCancelRequest, ChainDefinitionSummary, ChainDetailResponse, ChainHistoryResponse,
+    ChainStepStatus, ChainSummary, ChainValidationErrorResponse, ListChainDefinitionsResponse,
+    ListChainsResponse, StepAttemptResponse, StepHistoryEntry,
 };
 use super::dlq::{DlqDrainResponse, DlqEntry, DlqStatsResponse};
 use super::embeddings::{SimilarityRequest, SimilarityResponse};
@@ -97,6 +98,7 @@ use acteon_core::{
         super::chains::list_chains,
         super::chains::get_chain,
         super::chains::cancel_chain,
+        super::chains::get_chain_history,
         super::chains::list_definitions,
         super::chains::get_definition,
         super::chains::put_definition,
@@ -154,6 +156,7 @@ use acteon_core::{
         ApprovalActionResponse, ApprovalStatusResponse, ApprovalQueryParams, ListApprovalsResponse,
         ChainSummary, ListChainsResponse, ChainDetailResponse, ChainStepStatus, ChainCancelRequest,
         ChainDefinitionSummary, ListChainDefinitionsResponse, ChainValidationErrorResponse,
+        ChainHistoryResponse, StepHistoryEntry, StepAttemptResponse,
         SimilarityRequest, SimilarityResponse,
         EmbeddingMetricsResponse,
         CircuitBreakerStatus, ListCircuitBreakersResponse, CircuitBreakerActionResponse,

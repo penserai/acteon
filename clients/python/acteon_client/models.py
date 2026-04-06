@@ -1483,6 +1483,8 @@ class ChainStepStatus:
     sub_chain: Optional[str] = None
     child_chain_id: Optional[str] = None
     parallel_sub_steps: Optional[List["ChainStepStatus"]] = None
+    attempt: Optional[int] = None
+    max_retries: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ChainStepStatus":
@@ -1501,6 +1503,8 @@ class ChainStepStatus:
                 if raw_subs is not None
                 else None
             ),
+            attempt=data.get("attempt"),
+            max_retries=data.get("max_retries"),
         )
 
 
@@ -1588,6 +1592,8 @@ class DagNode:
     children: Optional["DagResponse"] = None
     parallel_children: Optional[List["DagNode"]] = None
     parallel_join: Optional[str] = None
+    attempt: Optional[int] = None
+    max_retries: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DagNode":
@@ -1612,6 +1618,8 @@ class DagNode:
                 else None
             ),
             parallel_join=data.get("parallel_join"),
+            attempt=data.get("attempt"),
+            max_retries=data.get("max_retries"),
         )
 
 
@@ -1668,6 +1676,101 @@ class DagResponse:
             nodes=[DagNode.from_dict(n) for n in data.get("nodes", [])],
             edges=[DagEdge.from_dict(e) for e in data.get("edges", [])],
             execution_path=data.get("execution_path", []),
+        )
+
+
+# =============================================================================
+# Chain History Types (Retry Attempts)
+# =============================================================================
+
+
+@dataclass
+class StepAttemptResponse:
+    """A single execution attempt for a chain step.
+
+    Attributes:
+        attempt: Attempt number (1-based).
+        started_at: When this attempt started.
+        completed_at: When this attempt completed (if finished).
+        success: Whether this attempt succeeded.
+        duration_ms: Duration in milliseconds.
+        error: Error message (if failed).
+    """
+    attempt: int
+    started_at: str
+    success: bool
+    duration_ms: int
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StepAttemptResponse":
+        return cls(
+            attempt=data["attempt"],
+            started_at=data["started_at"],
+            completed_at=data.get("completed_at"),
+            success=data["success"],
+            duration_ms=data["duration_ms"],
+            error=data.get("error"),
+        )
+
+
+@dataclass
+class StepHistoryEntry:
+    """Retry history for a single chain step.
+
+    Attributes:
+        name: Step name.
+        step_index: Step index (0-based).
+        current_attempt: Current attempt number.
+        max_retries: Maximum number of retries configured.
+        attempts: List of execution attempts.
+    """
+    name: str
+    step_index: int
+    current_attempt: int
+    max_retries: int
+    attempts: List[StepAttemptResponse]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StepHistoryEntry":
+        return cls(
+            name=data["name"],
+            step_index=data["step_index"],
+            current_attempt=data["current_attempt"],
+            max_retries=data["max_retries"],
+            attempts=[
+                StepAttemptResponse.from_dict(a)
+                for a in data.get("attempts", [])
+            ],
+        )
+
+
+@dataclass
+class ChainHistoryResponse:
+    """Retry history for a chain execution.
+
+    Attributes:
+        chain_id: Unique chain execution ID.
+        chain_name: Name of the chain configuration.
+        status: Current chain status.
+        steps: Per-step retry history.
+    """
+    chain_id: str
+    chain_name: str
+    status: str
+    steps: List[StepHistoryEntry]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ChainHistoryResponse":
+        return cls(
+            chain_id=data["chain_id"],
+            chain_name=data["chain_name"],
+            status=data["status"],
+            steps=[
+                StepHistoryEntry.from_dict(s)
+                for s in data.get("steps", [])
+            ],
         )
 
 

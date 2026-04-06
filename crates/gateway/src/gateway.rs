@@ -2103,6 +2103,8 @@ impl Gateway {
             child_chain_ids: Vec::new(),
             parallel_state: None,
             parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0; total_steps],
+            step_history: vec![Vec::new(); total_steps],
         };
 
         // Persist chain state.
@@ -2356,6 +2358,8 @@ impl Gateway {
                                 response_body: None,
                                 error: Some(error_msg.clone()),
                                 completed_at: Utc::now(),
+                                attempt: None,
+                                started_at: None,
                             };
                             chain_state.step_results[step_idx] = Some(step_result.clone());
                             chain_state.status = ChainStatus::Running;
@@ -2512,13 +2516,18 @@ impl Gateway {
         );
 
         // Idempotency: ensure this step is not executed twice.
-        // Use step name in the dedup key to handle branching chains where
-        // step indices may not be sequential.
+        // Use step name + attempt number in the dedup key to handle both
+        // branching chains and retries.
+        let next_attempt = if step_idx < chain_state.step_attempts.len() {
+            chain_state.step_attempts[step_idx] + 1
+        } else {
+            1
+        };
         let step_dedup_key = StateKey::new(
             namespace,
             tenant,
             KeyKind::Dedup,
-            format!("chain-step:{chain_id}:{}", step_config.name),
+            format!("chain-step:{chain_id}:{}:a{next_attempt}", step_config.name),
         );
         let dedup_ttl = chain_state.expires_at.map_or(
             Duration::from_secs(86400), // 24h default
@@ -2572,6 +2581,8 @@ impl Gateway {
                 response_body: None,
                 error: Some("step interrupted (duplicate dispatch detected)".to_string()),
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             });
             chain_state.status = ChainStatus::Failed;
             chain_state.updated_at = Utc::now();
@@ -2615,6 +2626,8 @@ impl Gateway {
                         response_body: None,
                         error: Some("quota exceeded — chain step blocked".to_string()),
                         completed_at: now,
+                        attempt: None,
+                        started_at: None,
                     });
                     chain_state.status = ChainStatus::Failed;
                     chain_state.updated_at = now;
@@ -2664,19 +2677,47 @@ impl Gateway {
         }
 
         let step_payload = step_action.payload.clone();
+
+        // Increment attempt counter before execution (retry-aware).
+        if step_idx < chain_state.step_attempts.len() {
+            chain_state.step_attempts[step_idx] += 1;
+        }
+
+        let step_started_at = Utc::now();
         let step_start = std::time::Instant::now();
         let outcome = self.execute_action(&step_action).await;
         let step_duration = step_start.elapsed();
         let now = Utc::now();
 
+        let current_attempt = if step_idx < chain_state.step_attempts.len() {
+            chain_state.step_attempts[step_idx]
+        } else {
+            1
+        };
+
         match &outcome {
             ActionOutcome::Executed(resp) => {
+                // Record successful attempt in history.
+                if step_idx < chain_state.step_history.len() {
+                    chain_state.step_history[step_idx].push(acteon_core::chain::StepAttempt {
+                        attempt: current_attempt,
+                        started_at: step_started_at,
+                        completed_at: now,
+                        success: true,
+                        response_body: Some(resp.body.clone()),
+                        error: None,
+                        duration_ms: step_duration.as_millis().try_into().unwrap_or(u64::MAX),
+                    });
+                }
+
                 let step_result = StepResult {
                     step_name: step_config.name.clone(),
                     success: true,
                     response_body: Some(resp.body.clone()),
                     error: None,
                     completed_at: now,
+                    attempt: Some(current_attempt),
+                    started_at: Some(step_started_at),
                 };
                 chain_state.step_results[step_idx] = Some(step_result.clone());
 
@@ -2774,6 +2815,85 @@ impl Gateway {
                 }
             }
             ActionOutcome::Failed(err) => {
+                let current_attempt = if step_idx < chain_state.step_attempts.len() {
+                    chain_state.step_attempts[step_idx]
+                } else {
+                    1
+                };
+
+                // Record this attempt in step history.
+                if step_idx < chain_state.step_history.len() {
+                    chain_state.step_history[step_idx].push(acteon_core::chain::StepAttempt {
+                        attempt: current_attempt,
+                        started_at: step_started_at,
+                        completed_at: now,
+                        success: false,
+                        response_body: None,
+                        error: Some(err.message.clone()),
+                        duration_ms: step_duration.as_millis().try_into().unwrap_or(u64::MAX),
+                    });
+                }
+
+                // Check retry policy before applying on_failure.
+                if let Some(ref retry_policy) = step_config.retry
+                    && current_attempt <= retry_policy.max_retries
+                    && err.retryable
+                {
+                    let delay_ms = retry_policy.compute_delay_ms(current_attempt);
+                    info!(
+                        chain_id = %chain_id,
+                        step = %step_config.name,
+                        attempt = current_attempt,
+                        max_retries = retry_policy.max_retries,
+                        delay_ms = delay_ms,
+                        "step failed, scheduling retry"
+                    );
+
+                    // Clear dedup key so the retry can execute.
+                    let dedup_key = StateKey::new(
+                        namespace,
+                        tenant,
+                        KeyKind::Dedup,
+                        format!(
+                            "chain-step:{chain_id}:{}:a{current_attempt}",
+                            step_config.name
+                        ),
+                    );
+                    let _ = self.state.delete(&dedup_key).await;
+
+                    // Don't record a final step_result yet — leave it as None for re-execution.
+                    chain_state.step_results[step_idx] = None;
+                    chain_state.updated_at = now;
+                    self.persist_chain_state(&chain_key, &chain_state, None)
+                        .await?;
+
+                    let ready_at =
+                        now.timestamp_millis() + i64::try_from(delay_ms).unwrap_or(i64::MAX);
+                    self.state.index_chain_ready(&pending_key, ready_at).await?;
+
+                    // Emit retry audit event.
+                    let retry_result = StepResult {
+                        step_name: step_config.name.clone(),
+                        success: false,
+                        response_body: None,
+                        error: Some(err.message.clone()),
+                        completed_at: now,
+                        attempt: Some(current_attempt),
+                        started_at: Some(step_started_at),
+                    };
+                    self.emit_chain_step_audit(
+                        &chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_retrying",
+                        &retry_result,
+                        step_duration,
+                        Some(&step_payload),
+                    );
+
+                    return Ok(());
+                }
+
                 let step_policy = step_config
                     .on_failure
                     .as_ref()
@@ -2785,6 +2905,8 @@ impl Gateway {
                     response_body: None,
                     error: Some(err.message.clone()),
                     completed_at: now,
+                    attempt: Some(current_attempt),
+                    started_at: Some(step_started_at),
                 });
 
                 match step_policy {
@@ -3020,6 +3142,8 @@ impl Gateway {
                     response_body: None,
                     error: Some(format!("unexpected outcome: {outcome:?}")),
                     completed_at: now,
+                    attempt: None,
+                    started_at: None,
                 });
                 chain_state.status = ChainStatus::Failed;
                 chain_state.updated_at = now;
@@ -3335,6 +3459,8 @@ impl Gateway {
                 response_body: None,
                 error: Some(format!("parallel group timed out after {group_timeout:?}")),
                 completed_at: now,
+                attempt: None,
+                started_at: None,
             };
             chain_state.step_results[step_idx] = Some(parent_result.clone());
             chain_state.status = ChainStatus::Failed;
@@ -3428,6 +3554,8 @@ impl Gateway {
                 response_body: body.clone(),
                 error,
                 completed_at: now,
+                attempt: None,
+                started_at: None,
             };
             chain_state
                 .parallel_sub_results
@@ -3499,6 +3627,8 @@ impl Gateway {
                 Some("one or more parallel sub-steps failed".to_string())
             },
             completed_at: now,
+            attempt: None,
+            started_at: None,
         };
         chain_state.step_results[step_idx] = Some(parent_result.clone());
         // Clear parallel execution state now that results are collected.
@@ -3967,6 +4097,8 @@ impl Gateway {
             child_chain_ids: Vec::new(),
             parallel_state: None,
             parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0; total_steps],
+            step_history: vec![Vec::new(); total_steps],
         };
 
         // Persist child chain state.
@@ -4045,6 +4177,8 @@ impl Gateway {
                 response_body: child_result.response_body.clone(),
                 error: child_result.error.clone(),
                 completed_at: child_result.completed_at,
+                attempt: None,
+                started_at: None,
             },
             None => StepResult {
                 step_name: format!("sub_chain:{sub_chain_name}"),
@@ -4052,6 +4186,8 @@ impl Gateway {
                 response_body: None,
                 error: None,
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             },
         }
     }
@@ -4192,6 +4328,8 @@ impl Gateway {
                                 children: None,
                                 parallel_children: None,
                                 parallel_join: None,
+                                attempt: None,
+                                max_retries: None,
                             }
                         })
                         .collect();
@@ -4203,6 +4341,12 @@ impl Gateway {
                 } else {
                     (None, None)
                 };
+
+                // Retry metadata from config + runtime state.
+                let attempt = chain_state
+                    .and_then(|s| s.step_attempts.get(i).copied())
+                    .filter(|&a| a > 0);
+                let max_retries = step.retry.as_ref().map(|r| r.max_retries);
 
                 nodes.push(acteon_core::DagNode {
                     name: step.name.clone(),
@@ -4223,6 +4367,8 @@ impl Gateway {
                     children,
                     parallel_children,
                     parallel_join,
+                    attempt,
+                    max_retries,
                 });
 
                 // Build edges: sequential edge to next step.
@@ -8080,6 +8226,8 @@ mod tests {
                 response_body: body,
                 error: None,
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             }
         }
 

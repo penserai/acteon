@@ -173,6 +173,8 @@ export interface ChainStepStatus {
   sub_chain?: string
   child_chain_id?: string
   parallel_sub_steps?: ChainStepStatus[]
+  attempt?: number
+  max_retries?: number
 }
 
 export interface ChainDetailResponse {
@@ -229,6 +231,30 @@ export interface ChainStepConfig {
   parallel?: ParallelStepGroup
 }
 
+export interface StepAttemptResponse {
+  attempt: number
+  started_at: string
+  completed_at: string
+  success: boolean
+  duration_ms: number
+  error: string | null
+}
+
+export interface StepHistoryEntry {
+  name: string
+  step_index: number
+  current_attempt: number
+  max_retries: number | null
+  attempts: StepAttemptResponse[]
+}
+
+export interface ChainHistoryResponse {
+  chain_id: string
+  chain_name: string
+  status: string
+  steps: StepHistoryEntry[]
+}
+
 // ---- Chain Definitions ----
 export interface ChainDefinitionSummary {
   name: string
@@ -264,6 +290,8 @@ export interface DagNode {
   children?: DagResponse
   parallel_children?: DagNode[]
   parallel_join?: string
+  attempt?: number
+  max_retries?: number
 }
 
 export interface DagEdge {

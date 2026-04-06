@@ -145,6 +145,10 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/chains/{chain_id}", get(chains::get_chain))
         .route("/v1/chains/{chain_id}/cancel", post(chains::cancel_chain))
         .route("/v1/chains/{chain_id}/dag", get(chains::get_chain_dag))
+        .route(
+            "/v1/chains/{chain_id}/history",
+            get(chains::get_chain_history),
+        )
         // Chain definitions CRUD
         .route("/v1/chains/definitions", get(chains::list_definitions))
         .route(

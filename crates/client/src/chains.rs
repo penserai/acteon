@@ -171,6 +171,53 @@ pub struct DagResponse {
     pub execution_path: Vec<String>,
 }
 
+/// Full execution history for a chain, including all retry attempts per step.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChainHistoryResponse {
+    /// Unique chain execution ID.
+    pub chain_id: String,
+    /// Name of the chain configuration.
+    pub chain_name: String,
+    /// Current status.
+    pub status: String,
+    /// Per-step execution history with retry attempts.
+    pub steps: Vec<StepHistoryEntry>,
+}
+
+/// Execution history for a single chain step.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StepHistoryEntry {
+    /// Step name.
+    pub name: String,
+    /// Step index (0-based).
+    pub step_index: usize,
+    /// Current attempt number (1-based).
+    pub current_attempt: u32,
+    /// Maximum retries from the step's retry policy (if configured).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+    /// All recorded attempts for this step.
+    pub attempts: Vec<StepAttemptResponse>,
+}
+
+/// A single execution attempt for a chain step.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StepAttemptResponse {
+    /// 1-based attempt number.
+    pub attempt: u32,
+    /// When this attempt started.
+    pub started_at: String,
+    /// When this attempt finished.
+    pub completed_at: String,
+    /// Whether the attempt succeeded.
+    pub success: bool,
+    /// Wall-clock duration in milliseconds.
+    pub duration_ms: u64,
+    /// Error message (if failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Summary of a chain definition.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChainDefinitionSummary {
@@ -293,6 +340,56 @@ impl ActeonClient {
             Err(Error::Http {
                 status: response.status().as_u16(),
                 message: format!("Failed to get chain: {}", response.status()),
+            })
+        }
+    }
+
+    /// Get per-step execution history with retry attempts for a chain.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let history = client.get_chain_history("chain-123", "notifications", "tenant-1").await?;
+    /// for step in &history.steps {
+    ///     println!("{}: {} attempts", step.name, step.attempts.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn get_chain_history(
+        &self,
+        chain_id: &str,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<ChainHistoryResponse, Error> {
+        let url = format!("{}/v1/chains/{}/history", self.base_url, chain_id);
+
+        let response = self
+            .add_auth(self.client.get(&url))
+            .query(&[("namespace", namespace), ("tenant", tenant)])
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+
+        if response.status().is_success() {
+            let result = response
+                .json::<ChainHistoryResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))?;
+            Ok(result)
+        } else if response.status() == reqwest::StatusCode::NOT_FOUND {
+            Err(Error::Http {
+                status: 404,
+                message: format!("Chain not found: {chain_id}"),
+            })
+        } else {
+            Err(Error::Http {
+                status: response.status().as_u16(),
+                message: format!("Failed to get chain history: {}", response.status()),
             })
         }
     }

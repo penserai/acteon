@@ -31,6 +31,12 @@ pub struct DagNode {
     /// Join policy label for parallel steps (e.g., `"all"`, `"any"`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_join: Option<String>,
+    /// Current attempt number (1-based) when a retry policy is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    /// Maximum retry count from the step's retry policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
 }
 
 /// An edge in the chain DAG visualization.
@@ -88,6 +94,8 @@ mod tests {
                     children: None,
                     parallel_children: None,
                     parallel_join: None,
+                    attempt: None,
+                    max_retries: None,
                 },
                 DagNode {
                     name: "invoke-notify".into(),
@@ -107,6 +115,8 @@ mod tests {
                     })),
                     parallel_children: None,
                     parallel_join: None,
+                    attempt: None,
+                    max_retries: None,
                 },
             ],
             edges: vec![DagEdge {
@@ -143,6 +153,8 @@ mod tests {
                 children: None,
                 parallel_children: None,
                 parallel_join: None,
+                attempt: None,
+                max_retries: None,
             }],
             edges: vec![],
             execution_path: vec![],

@@ -12,10 +12,10 @@ pub use error::OpsError;
 
 use acteon_client::{
     ActeonClient, ActeonClientBuilder, ApprovalListResponse, AuditPage, AuditQuery, AuditRecord,
-    BatchResult, ChainDetailResponse, ComplianceStatus, CreateProfileRequest, CreateQuotaRequest,
-    CreateRecurringAction, CreateRecurringResponse, CreateRetentionRequest, CreateTemplateRequest,
-    DagResponse, DlqDrainResponse, DlqStatsResponse, EvaluateRulesOptions, EventListResponse,
-    EventQuery, EventState, FlushGroupResponse, GroupDetail, GroupListResponse,
+    BatchResult, ChainDetailResponse, ChainHistoryResponse, ComplianceStatus, CreateProfileRequest,
+    CreateQuotaRequest, CreateRecurringAction, CreateRecurringResponse, CreateRetentionRequest,
+    CreateTemplateRequest, DagResponse, DlqDrainResponse, DlqStatsResponse, EvaluateRulesOptions,
+    EventListResponse, EventQuery, EventState, FlushGroupResponse, GroupDetail, GroupListResponse,
     HashChainVerification, ListChainDefinitionsResponse, ListChainsResponse, ListPluginsResponse,
     ListProfilesResponse, ListQuotasResponse, ListRecurringResponse, ListTemplatesResponse,
     QuotaPolicy, QuotaUsage, RecurringDetail, RecurringFilter, ReloadResult, RenderPreviewRequest,
@@ -295,6 +295,19 @@ impl OpsClient {
         tenant: &str,
     ) -> Result<ChainDetailResponse, OpsError> {
         Ok(self.inner.get_chain(chain_id, namespace, tenant).await?)
+    }
+
+    /// Get per-step execution history with retry attempts for a chain.
+    pub async fn get_chain_history(
+        &self,
+        chain_id: &str,
+        namespace: &str,
+        tenant: &str,
+    ) -> Result<ChainHistoryResponse, OpsError> {
+        Ok(self
+            .inner
+            .get_chain_history(chain_id, namespace, tenant)
+            .await?)
     }
 
     /// Cancel a running chain.

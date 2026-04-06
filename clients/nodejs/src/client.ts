@@ -71,6 +71,8 @@ import {
   parseChainDetailResponse,
   DagResponse,
   parseDagResponse,
+  ChainHistoryResponse,
+  parseChainHistoryResponse,
   parseDlqStatsResponse,
   parseDlqDrainResponse,
   CreateQuotaRequest,
@@ -1512,6 +1514,25 @@ export class ActeonClient {
       throw new HttpError(404, `Chain definition not found: ${name}`);
     } else {
       throw new HttpError(response.status, "Failed to get chain definition DAG");
+    }
+  }
+
+  /**
+   * Get the retry history for a chain execution.
+   */
+  async getChainHistory(chainId: string, namespace: string, tenant: string): Promise<ChainHistoryResponse> {
+    const params = new URLSearchParams();
+    params.set("namespace", namespace);
+    params.set("tenant", tenant);
+    const response = await this.request("GET", `/v1/chains/${chainId}/history`, { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseChainHistoryResponse(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Chain not found: ${chainId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to get chain history");
     }
   }
 

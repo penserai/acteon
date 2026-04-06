@@ -34,6 +34,11 @@ public class DagNode {
     @JsonProperty("parallel_join")
     private String parallelJoin;
 
+    private Integer attempt;
+
+    @JsonProperty("max_retries")
+    private Integer maxRetries;
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
@@ -63,4 +68,10 @@ public class DagNode {
 
     public String getParallelJoin() { return parallelJoin; }
     public void setParallelJoin(String parallelJoin) { this.parallelJoin = parallelJoin; }
+
+    public Integer getAttempt() { return attempt; }
+    public void setAttempt(Integer attempt) { this.attempt = attempt; }
+
+    public Integer getMaxRetries() { return maxRetries; }
+    public void setMaxRetries(Integer maxRetries) { this.maxRetries = maxRetries; }
 }

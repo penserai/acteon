@@ -1385,6 +1385,10 @@ export interface ChainStepStatus {
   childChainId?: string;
   /** Results from parallel sub-steps, if this is a parallel step. */
   parallelSubSteps?: ChainStepStatus[];
+  /** Current attempt number (1-based), if retries are configured. */
+  attempt?: number;
+  /** Maximum number of retries configured for this step. */
+  maxRetries?: number;
 }
 
 /** Parse a ChainStepStatus from API response. */
@@ -1400,6 +1404,8 @@ export function parseChainStepStatus(data: Record<string, unknown>): ChainStepSt
     subChain: data.sub_chain as string | undefined,
     childChainId: data.child_chain_id as string | undefined,
     parallelSubSteps: rawSubs ? rawSubs.map(parseChainStepStatus) : undefined,
+    attempt: data.attempt as number | undefined,
+    maxRetries: data.max_retries as number | undefined,
   };
 }
 
@@ -1484,6 +1490,10 @@ export interface DagNode {
   parallelChildren?: DagNode[];
   /** Join policy for parallel groups ("all" or "any"). */
   parallelJoin?: string;
+  /** Current attempt number (1-based), if retries are configured. */
+  attempt?: number;
+  /** Maximum number of retries configured for this node. */
+  maxRetries?: number;
 }
 
 /** An edge in the chain DAG. */
@@ -1529,6 +1539,8 @@ export function parseDagNode(data: Record<string, unknown>): DagNode {
     children: children ? parseDagResponse(children) : undefined,
     parallelChildren: rawParallel ? rawParallel.map(parseDagNode) : undefined,
     parallelJoin: data.parallel_join as string | undefined,
+    attempt: data.attempt as number | undefined,
+    maxRetries: data.max_retries as number | undefined,
   };
 }
 
@@ -1553,6 +1565,87 @@ export function parseDagResponse(data: Record<string, unknown>): DagResponse {
     nodes: nodes.map(parseDagNode),
     edges: edges.map(parseDagEdge),
     executionPath: (data.execution_path as string[]) ?? [],
+  };
+}
+
+// =============================================================================
+// Chain History Types (Retry Attempts)
+// =============================================================================
+
+/** A single execution attempt for a chain step. */
+export interface StepAttemptResponse {
+  /** Attempt number (1-based). */
+  attempt: number;
+  /** When this attempt started. */
+  startedAt: string;
+  /** When this attempt completed (if finished). */
+  completedAt?: string;
+  /** Whether this attempt succeeded. */
+  success: boolean;
+  /** Duration in milliseconds. */
+  durationMs: number;
+  /** Error message (if failed). */
+  error?: string;
+}
+
+/** Retry history for a single chain step. */
+export interface StepHistoryEntry {
+  /** Step name. */
+  name: string;
+  /** Step index (0-based). */
+  stepIndex: number;
+  /** Current attempt number. */
+  currentAttempt: number;
+  /** Maximum number of retries configured. */
+  maxRetries: number;
+  /** List of execution attempts. */
+  attempts: StepAttemptResponse[];
+}
+
+/** Retry history for a chain execution. */
+export interface ChainHistoryResponse {
+  /** Unique chain execution ID. */
+  chainId: string;
+  /** Name of the chain configuration. */
+  chainName: string;
+  /** Current chain status. */
+  status: string;
+  /** Per-step retry history. */
+  steps: StepHistoryEntry[];
+}
+
+/** Parse a StepAttemptResponse from API response. */
+export function parseStepAttemptResponse(data: Record<string, unknown>): StepAttemptResponse {
+  return {
+    attempt: data.attempt as number,
+    startedAt: data.started_at as string,
+    completedAt: data.completed_at as string | undefined,
+    success: data.success as boolean,
+    durationMs: data.duration_ms as number,
+    error: data.error as string | undefined,
+  };
+}
+
+/** Parse a StepHistoryEntry from API response. */
+export function parseStepHistoryEntry(data: Record<string, unknown>): StepHistoryEntry {
+  const attempts = (data.attempts as Record<string, unknown>[]) ?? [];
+  return {
+    name: data.name as string,
+    stepIndex: data.step_index as number,
+    currentAttempt: data.current_attempt as number,
+    maxRetries: data.max_retries as number,
+    attempts: attempts.map(parseStepAttemptResponse),
+  };
+}
+
+/** Parse a ChainHistoryResponse from API response. */
+export function parseChainHistoryResponse(data: Record<string, unknown>): ChainHistoryResponse {
+  const steps = (data.steps as Record<string, unknown>[]) ?? [];
+  return {
+    chainId: data.chain_id as string,
+    chainName: data.chain_name as string,
+    status: data.status as string,
+    steps: steps.map(parseStepHistoryEntry),
   };
 }
 
