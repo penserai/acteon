@@ -80,6 +80,10 @@ from .models import (
     SseEvent,
     _parse_sse_stream,
     AnalyticsResponse,
+    CoverageKey,
+    CoverageEntry,
+    CoverageQuery,
+    CoverageReport,
 )
 
 
@@ -2085,6 +2089,57 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to query analytics")
 
     # =========================================================================
+    # Rule Coverage
+    # =========================================================================
+
+    def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+        """Analyze rule coverage by scanning the audit trail.
+
+        Pages through audit records and builds a coverage matrix showing which
+        (namespace, tenant, provider, action_type) combinations were matched
+        by a rule and which were not.
+
+        Args:
+            query: Optional coverage query parameters.
+
+        Returns:
+            A CoverageReport with per-combination coverage statistics.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        if query is None:
+            query = CoverageQuery()
+
+        rules = self.list_rules()
+
+        all_records: list[AuditRecord] = []
+        offset = 0
+        effective_page = min(query.page_size, query.limit)
+
+        while True:
+            remaining = query.limit - offset
+            if remaining <= 0:
+                break
+            this_page = min(effective_page, remaining)
+
+            audit_query = AuditQuery(
+                namespace=query.namespace,
+                tenant=query.tenant,
+                limit=this_page,
+                offset=offset,
+            )
+            page = self.query_audit(audit_query)
+            all_records.extend(page.records)
+
+            if len(page.records) < this_page:
+                break
+            offset += len(page.records)
+
+        return _build_coverage_report(all_records, rules)
+
+    # =========================================================================
     # Subscribe (SSE)
     # =========================================================================
 
@@ -2215,6 +2270,60 @@ class ActeonClient:
             raise ConnectionError(str(e)) from e
         except httpx.TimeoutException as e:
             raise ConnectionError(f"Request timed out: {e}") from e
+
+
+def _build_coverage_report(records: list[AuditRecord], rules: list[RuleInfo]) -> CoverageReport:
+    """Build a coverage report from audit records and rules."""
+    matrix: dict[tuple[str, str, str, str], tuple[int, int, set[str]]] = {}
+
+    for record in records:
+        key = (record.namespace, record.tenant, record.provider, record.action_type)
+        if key not in matrix:
+            matrix[key] = (0, 0, set())
+        total, covered, matched = matrix[key]
+        total += 1
+        if record.matched_rule is not None:
+            covered += 1
+            matched.add(record.matched_rule)
+        matrix[key] = (total, covered, matched)
+
+    entries = []
+    for (ns, tenant, provider, action_type), (total, covered, matched) in sorted(matrix.items()):
+        entries.append(CoverageEntry(
+            key=CoverageKey(
+                namespace=ns,
+                tenant=tenant,
+                provider=provider,
+                action_type=action_type,
+            ),
+            total=total,
+            covered=covered,
+            uncovered=total - covered,
+            matched_rules=sorted(matched),
+        ))
+
+    fully_covered = sum(1 for e in entries if e.uncovered == 0)
+    uncovered_count = sum(1 for e in entries if e.covered == 0)
+    partially_covered = len(entries) - fully_covered - uncovered_count
+
+    all_matched: set[str] = set()
+    for e in entries:
+        all_matched.update(e.matched_rules)
+
+    unmatched_rules = sorted(
+        r.name for r in rules if r.enabled and r.name not in all_matched
+    )
+
+    return CoverageReport(
+        records_scanned=len(records),
+        unique_combinations=len(entries),
+        fully_covered=fully_covered,
+        partially_covered=partially_covered,
+        uncovered=uncovered_count,
+        rules_loaded=len(rules),
+        entries=entries,
+        unmatched_rules=unmatched_rules,
+    )
 
 
 class AsyncActeonClient:
@@ -3340,6 +3449,42 @@ class AsyncActeonClient:
             return AnalyticsResponse.from_dict(response.json())
         else:
             raise HttpError(response.status_code, "Failed to query analytics")
+
+    # =========================================================================
+    # Rule Coverage
+    # =========================================================================
+
+    async def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+        """Analyze rule coverage by scanning the audit trail."""
+        if query is None:
+            query = CoverageQuery()
+
+        rules = await self.list_rules()
+
+        all_records: list[AuditRecord] = []
+        offset = 0
+        effective_page = min(query.page_size, query.limit)
+
+        while True:
+            remaining = query.limit - offset
+            if remaining <= 0:
+                break
+            this_page = min(effective_page, remaining)
+
+            audit_query = AuditQuery(
+                namespace=query.namespace,
+                tenant=query.tenant,
+                limit=this_page,
+                offset=offset,
+            )
+            page = await self.query_audit(audit_query)
+            all_records.extend(page.records)
+
+            if len(page.records) < this_page:
+                break
+            offset += len(page.records)
+
+        return _build_coverage_report(all_records, rules)
 
     # =========================================================================
     # Subscribe (SSE)

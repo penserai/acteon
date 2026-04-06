@@ -133,6 +133,10 @@ import {
   AnalyticsResponse,
   analyticsQueryToParams,
   parseAnalyticsResponse,
+  CoverageKey,
+  CoverageEntry,
+  CoverageQuery,
+  CoverageReport,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 import { readFileSync } from "node:fs";
@@ -1591,6 +1595,115 @@ export class ActeonClient {
     } else {
       throw new HttpError(response.status, "Failed to query analytics");
     }
+  }
+
+  // =========================================================================
+  // Rule Coverage
+  // =========================================================================
+
+  /**
+   * Analyze rule coverage by scanning the audit trail.
+   *
+   * Pages through audit records and builds a coverage matrix showing which
+   * (namespace, tenant, provider, action_type) combinations were matched
+   * by a rule and which were not.
+   */
+  async rulesCoverage(query?: CoverageQuery): Promise<CoverageReport> {
+    const limit = query?.limit ?? 5000;
+    const pageSize = query?.page_size ?? 500;
+    const effectivePage = Math.min(pageSize, limit);
+
+    const rules = await this.listRules();
+
+    const allRecords: AuditRecord[] = [];
+    let offset = 0;
+
+    while (true) {
+      const remaining = limit - offset;
+      if (remaining <= 0) break;
+      const thisPage = Math.min(effectivePage, remaining);
+
+      const auditQuery: AuditQuery = {
+        namespace: query?.namespace,
+        tenant: query?.tenant,
+        limit: thisPage,
+        offset,
+      };
+      const page = await this.queryAudit(auditQuery);
+      allRecords.push(...page.records);
+
+      if (page.records.length < thisPage) break;
+      offset += page.records.length;
+    }
+
+    // Build coverage matrix
+    const matrix = new Map<
+      string,
+      { total: number; covered: number; matchedRules: Set<string>; key: CoverageKey }
+    >();
+
+    for (const record of allRecords) {
+      const mapKey = `${record.namespace}:${record.tenant}:${record.provider}:${record.actionType}`;
+      let entry = matrix.get(mapKey);
+      if (!entry) {
+        entry = {
+          total: 0,
+          covered: 0,
+          matchedRules: new Set(),
+          key: {
+            namespace: record.namespace,
+            tenant: record.tenant,
+            provider: record.provider,
+            action_type: record.actionType,
+          },
+        };
+        matrix.set(mapKey, entry);
+      }
+      entry.total++;
+      if (record.matchedRule) {
+        entry.covered++;
+        entry.matchedRules.add(record.matchedRule);
+      }
+    }
+
+    const entries: CoverageEntry[] = [...matrix.values()]
+      .sort((a, b) => {
+        const ka = `${a.key.namespace}:${a.key.tenant}:${a.key.provider}:${a.key.action_type}`;
+        const kb = `${b.key.namespace}:${b.key.tenant}:${b.key.provider}:${b.key.action_type}`;
+        return ka.localeCompare(kb);
+      })
+      .map((e) => ({
+        key: e.key,
+        total: e.total,
+        covered: e.covered,
+        uncovered: e.total - e.covered,
+        matched_rules: [...e.matchedRules].sort(),
+      }));
+
+    const fullyCovered = entries.filter((e) => e.uncovered === 0).length;
+    const uncoveredCount = entries.filter((e) => e.covered === 0).length;
+    const partiallyCovered = entries.length - fullyCovered - uncoveredCount;
+
+    const allMatched = new Set<string>();
+    for (const e of entries) {
+      for (const r of e.matched_rules) allMatched.add(r);
+    }
+
+    const unmatchedRules = rules
+      .filter((r) => r.enabled && !allMatched.has(r.name))
+      .map((r) => r.name)
+      .sort();
+
+    return {
+      records_scanned: allRecords.length,
+      unique_combinations: entries.length,
+      fully_covered: fullyCovered,
+      partially_covered: partiallyCovered,
+      uncovered: uncoveredCount,
+      rules_loaded: rules.length,
+      entries,
+      unmatched_rules: unmatchedRules,
+    };
   }
 
   // =========================================================================

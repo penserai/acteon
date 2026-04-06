@@ -3534,3 +3534,44 @@ def gcp_storage_delete_payload(
     if bucket is not None:
         payload["bucket"] = bucket
     return payload
+
+
+@dataclass
+class CoverageKey:
+    """A unique combination of coverage dimensions."""
+    namespace: str
+    tenant: str
+    provider: str
+    action_type: str
+
+
+@dataclass
+class CoverageEntry:
+    """Per-combination coverage statistics."""
+    key: CoverageKey
+    total: int
+    covered: int
+    uncovered: int
+    matched_rules: list[str]
+
+
+@dataclass
+class CoverageQuery:
+    """Options for a rule coverage analysis."""
+    limit: int = 5000
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    page_size: int = 500
+
+
+@dataclass
+class CoverageReport:
+    """Full rule coverage report."""
+    records_scanned: int
+    unique_combinations: int
+    fully_covered: int
+    partially_covered: int
+    uncovered: int
+    rules_loaded: int
+    entries: list[CoverageEntry]
+    unmatched_rules: list[str]

@@ -1975,3 +1975,40 @@ func NewGcpStorageDeletePayloadWithContainer(objectName, bucket string) map[stri
 	}
 	return p
 }
+
+// CoverageKey is a unique combination of coverage dimensions.
+type CoverageKey struct {
+	Namespace  string `json:"namespace"`
+	Tenant     string `json:"tenant"`
+	Provider   string `json:"provider"`
+	ActionType string `json:"action_type"`
+}
+
+// CoverageEntry holds per-combination coverage statistics.
+type CoverageEntry struct {
+	Key          CoverageKey `json:"key"`
+	Total        int64       `json:"total"`
+	Covered      int64       `json:"covered"`
+	Uncovered    int64       `json:"uncovered"`
+	MatchedRules []string    `json:"matched_rules"`
+}
+
+// CoverageQuery holds options for a rule coverage analysis.
+type CoverageQuery struct {
+	Limit     int
+	Namespace string
+	Tenant    string
+	PageSize  int
+}
+
+// CoverageReport is the full rule coverage report.
+type CoverageReport struct {
+	RecordsScanned     int64           `json:"records_scanned"`
+	UniqueCombinations int             `json:"unique_combinations"`
+	FullyCovered       int             `json:"fully_covered"`
+	PartiallyCovered   int             `json:"partially_covered"`
+	Uncovered          int             `json:"uncovered"`
+	RulesLoaded        int             `json:"rules_loaded"`
+	Entries            []CoverageEntry `json:"entries"`
+	UnmatchedRules     []string        `json:"unmatched_rules"`
+}

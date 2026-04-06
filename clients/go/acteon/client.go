@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2154,6 +2155,163 @@ func (c *Client) QueryAnalytics(ctx context.Context, query *AnalyticsQuery) (*An
 		return nil, &ConnectionError{Message: err.Error()}
 	}
 	return &result, nil
+}
+
+// =============================================================================
+// Rules Coverage (Client-Side Aggregation)
+// =============================================================================
+
+// RulesCoverage analyzes rule coverage by scanning the audit trail.
+// It pages through audit records and builds a coverage matrix showing which
+// (namespace, tenant, provider, action_type) combinations were matched
+// by a rule and which were not.
+func (c *Client) RulesCoverage(ctx context.Context, query *CoverageQuery) (*CoverageReport, error) {
+	limit := 5000
+	pageSize := 500
+	var namespace, tenant string
+
+	if query != nil {
+		if query.Limit > 0 {
+			limit = query.Limit
+		}
+		if query.PageSize > 0 {
+			pageSize = query.PageSize
+		}
+		namespace = query.Namespace
+		tenant = query.Tenant
+	}
+
+	effectivePage := pageSize
+	if effectivePage > limit {
+		effectivePage = limit
+	}
+
+	rules, err := c.ListRules(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var allRecords []AuditRecord
+	offset := 0
+
+	for {
+		remaining := limit - offset
+		if remaining <= 0 {
+			break
+		}
+		thisPage := effectivePage
+		if thisPage > remaining {
+			thisPage = remaining
+		}
+
+		auditQuery := &AuditQuery{
+			Namespace: namespace,
+			Tenant:    tenant,
+			Limit:     thisPage,
+			Offset:    offset,
+		}
+		page, err := c.QueryAudit(ctx, auditQuery)
+		if err != nil {
+			return nil, err
+		}
+		allRecords = append(allRecords, page.Records...)
+
+		if len(page.Records) < thisPage {
+			break
+		}
+		offset += len(page.Records)
+	}
+
+	return buildCoverageReport(allRecords, rules), nil
+}
+
+func buildCoverageReport(records []AuditRecord, rules []RuleInfo) *CoverageReport {
+	type matrixEntry struct {
+		total        int64
+		covered      int64
+		matchedRules map[string]bool
+	}
+
+	matrix := make(map[string]*matrixEntry)
+	keyMap := make(map[string]CoverageKey)
+
+	for _, record := range records {
+		mapKey := record.Namespace + ":" + record.Tenant + ":" + record.Provider + ":" + record.ActionType
+		entry, ok := matrix[mapKey]
+		if !ok {
+			entry = &matrixEntry{matchedRules: make(map[string]bool)}
+			matrix[mapKey] = entry
+			keyMap[mapKey] = CoverageKey{
+				Namespace:  record.Namespace,
+				Tenant:     record.Tenant,
+				Provider:   record.Provider,
+				ActionType: record.ActionType,
+			}
+		}
+		entry.total++
+		if record.MatchedRule != nil && *record.MatchedRule != "" {
+			entry.covered++
+			entry.matchedRules[*record.MatchedRule] = true
+		}
+	}
+
+	// Sort keys for deterministic output.
+	sortedKeys := make([]string, 0, len(matrix))
+	for k := range matrix {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
+
+	entries := make([]CoverageEntry, 0, len(matrix))
+	for _, mk := range sortedKeys {
+		e := matrix[mk]
+		matched := make([]string, 0, len(e.matchedRules))
+		for r := range e.matchedRules {
+			matched = append(matched, r)
+		}
+		sort.Strings(matched)
+		entries = append(entries, CoverageEntry{
+			Key:          keyMap[mk],
+			Total:        e.total,
+			Covered:      e.covered,
+			Uncovered:    e.total - e.covered,
+			MatchedRules: matched,
+		})
+	}
+
+	fullyCovered := 0
+	uncoveredCount := 0
+	allMatched := make(map[string]bool)
+	for _, e := range entries {
+		if e.Uncovered == 0 {
+			fullyCovered++
+		}
+		if e.Covered == 0 {
+			uncoveredCount++
+		}
+		for _, r := range e.MatchedRules {
+			allMatched[r] = true
+		}
+	}
+
+	var unmatchedRules []string
+	for _, r := range rules {
+		if r.Enabled && !allMatched[r.Name] {
+			unmatchedRules = append(unmatchedRules, r.Name)
+		}
+	}
+	sort.Strings(unmatchedRules)
+
+	return &CoverageReport{
+		RecordsScanned:     int64(len(records)),
+		UniqueCombinations: len(entries),
+		FullyCovered:       fullyCovered,
+		PartiallyCovered:   len(entries) - fullyCovered - uncoveredCount,
+		Uncovered:          uncoveredCount,
+		RulesLoaded:        len(rules),
+		Entries:            entries,
+		UnmatchedRules:     unmatchedRules,
+	}
 }
 
 // =============================================================================

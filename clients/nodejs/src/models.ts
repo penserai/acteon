@@ -3081,3 +3081,44 @@ export function createGcpStorageDeletePayload(
   if (options?.bucket) payload.bucket = options.bucket;
   return payload;
 }
+
+// =========================================================================
+// Rule Coverage
+// =========================================================================
+
+/** A unique combination of coverage dimensions. */
+export interface CoverageKey {
+  namespace: string;
+  tenant: string;
+  provider: string;
+  action_type: string;
+}
+
+/** Per-combination coverage statistics. */
+export interface CoverageEntry {
+  key: CoverageKey;
+  total: number;
+  covered: number;
+  uncovered: number;
+  matched_rules: string[];
+}
+
+/** Options for a rule coverage analysis. */
+export interface CoverageQuery {
+  limit?: number;
+  namespace?: string;
+  tenant?: string;
+  page_size?: number;
+}
+
+/** Full rule coverage report. */
+export interface CoverageReport {
+  records_scanned: number;
+  unique_combinations: number;
+  fully_covered: number;
+  partially_covered: number;
+  uncovered: number;
+  rules_loaded: number;
+  entries: CoverageEntry[];
+  unmatched_rules: string[];
+}

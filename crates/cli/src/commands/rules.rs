@@ -1,11 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
 use acteon_ops::OpsClient;
-use acteon_ops::acteon_client::{AuditQuery, AuditRecord, RuleInfo};
+use acteon_ops::acteon_client::{CoverageQuery, CoverageReport};
 use acteon_ops::test_rules::{self, TestRunSummary};
 use clap::{Args, Subcommand};
-use serde::Serialize;
 use tracing::{info, warn};
 
 use crate::OutputFormat;
@@ -135,156 +133,34 @@ pub async fn run(ops: &OpsClient, args: &RulesArgs, format: &OutputFormat) -> an
             tenant,
             page_size,
         } => {
-            run_coverage(
-                ops,
-                format,
-                *limit,
-                namespace.as_deref(),
-                tenant.as_deref(),
-                *page_size,
-            )
-            .await?;
+            let mut query = CoverageQuery::new().limit(*limit).page_size(*page_size);
+            if let Some(ns) = namespace {
+                query = query.namespace(ns);
+            }
+            if let Some(t) = tenant {
+                query = query.tenant(t);
+            }
+
+            let report = ops.rules_coverage(&query).await?;
+
+            match format {
+                OutputFormat::Json => {
+                    info!("{}", serde_json::to_string_pretty(&report)?);
+                }
+                OutputFormat::Text => {
+                    print_coverage_report(&report);
+                }
+            }
         }
     }
     Ok(())
 }
 
 // =========================================================================
-// Coverage analysis
+// Coverage display
 // =========================================================================
 
-/// A unique combination of the four coverage dimensions.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-struct CoverageKey {
-    namespace: String,
-    tenant: String,
-    provider: String,
-    action_type: String,
-}
-
-/// Per-combination coverage stats.
-#[derive(Debug, Clone, Serialize)]
-struct CoverageEntry {
-    #[serde(flatten)]
-    key: CoverageKey,
-    total: u64,
-    covered: u64,
-    uncovered: u64,
-    matched_rules: Vec<String>,
-}
-
-/// Full coverage report.
-#[derive(Debug, Serialize)]
-struct CoverageReport {
-    records_scanned: u64,
-    unique_combinations: usize,
-    fully_covered: usize,
-    partially_covered: usize,
-    uncovered: usize,
-    rules_loaded: usize,
-    entries: Vec<CoverageEntry>,
-}
-
-async fn run_coverage(
-    ops: &OpsClient,
-    format: &OutputFormat,
-    limit: u32,
-    namespace: Option<&str>,
-    tenant: Option<&str>,
-    page_size: u32,
-) -> anyhow::Result<()> {
-    // Fetch rules for context.
-    let rules: Vec<RuleInfo> = ops.list_rules().await?;
-
-    // Page through audit records.
-    let mut all_records: Vec<AuditRecord> = Vec::new();
-    let mut offset: u32 = 0;
-    let effective_page = page_size.min(limit);
-
-    loop {
-        let remaining = limit.saturating_sub(offset);
-        if remaining == 0 {
-            break;
-        }
-        let this_page = effective_page.min(remaining);
-
-        let query = AuditQuery {
-            namespace: namespace.map(String::from),
-            tenant: tenant.map(String::from),
-            limit: Some(this_page),
-            offset: Some(offset),
-            ..Default::default()
-        };
-
-        let page = ops.query_audit(query).await?;
-        #[allow(clippy::cast_possible_truncation)] // page size is bounded by u32 limit
-        let fetched = page.records.len() as u32;
-        all_records.extend(page.records);
-
-        if fetched < this_page {
-            break; // Last page.
-        }
-        offset += fetched;
-    }
-
-    // Build coverage matrix.
-    let mut matrix: BTreeMap<CoverageKey, (u64, u64, BTreeSet<String>)> = BTreeMap::new();
-
-    for record in &all_records {
-        let key = CoverageKey {
-            namespace: record.namespace.clone(),
-            tenant: record.tenant.clone(),
-            provider: record.provider.clone(),
-            action_type: record.action_type.clone(),
-        };
-
-        let entry = matrix.entry(key).or_insert_with(|| (0, 0, BTreeSet::new()));
-        entry.0 += 1; // total
-        if let Some(ref rule_name) = record.matched_rule {
-            entry.1 += 1; // covered
-            entry.2.insert(rule_name.clone());
-        }
-    }
-
-    // Build report.
-    let entries: Vec<CoverageEntry> = matrix
-        .into_iter()
-        .map(|(key, (total, covered, matched_rules))| CoverageEntry {
-            key,
-            total,
-            covered,
-            uncovered: total - covered,
-            matched_rules: matched_rules.into_iter().collect(),
-        })
-        .collect();
-
-    let fully_covered = entries.iter().filter(|e| e.uncovered == 0).count();
-    let uncovered = entries.iter().filter(|e| e.covered == 0).count();
-    let partially_covered = entries.len() - fully_covered - uncovered;
-
-    let report = CoverageReport {
-        records_scanned: all_records.len() as u64,
-        unique_combinations: entries.len(),
-        fully_covered,
-        partially_covered,
-        uncovered,
-        rules_loaded: rules.len(),
-        entries,
-    };
-
-    match format {
-        OutputFormat::Json => {
-            info!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        OutputFormat::Text => {
-            print_coverage_report(&report, &rules);
-        }
-    }
-
-    Ok(())
-}
-
-fn print_coverage_report(report: &CoverageReport, rules: &[RuleInfo]) {
+fn print_coverage_report(report: &CoverageReport) {
     info!(
         records_scanned = report.records_scanned,
         rules_loaded = report.rules_loaded,
@@ -306,12 +182,13 @@ fn print_coverage_report(report: &CoverageReport, rules: &[RuleInfo]) {
         return;
     }
 
-    print_coverage_table(&report.entries);
-    print_unmatched_rules(report, rules);
+    print_coverage_table(report);
+    print_unmatched_rules(report);
 }
 
-fn print_coverage_table(entries: &[CoverageEntry]) {
-    // Compute column widths.
+fn print_coverage_table(report: &CoverageReport) {
+    let entries = &report.entries;
+
     let ns_w = entries
         .iter()
         .map(|e| e.key.namespace.len())
@@ -346,8 +223,7 @@ fn print_coverage_table(entries: &[CoverageEntry]) {
     info!("{header}");
     info!("{}", "-".repeat(header.len()));
 
-    // Sort: uncovered first, then partially, then fully.
-    let mut sorted: Vec<&CoverageEntry> = entries.iter().collect();
+    let mut sorted: Vec<_> = entries.iter().collect();
     sorted.sort_by_key(|e| {
         let order = if e.covered == 0 {
             0
@@ -395,27 +271,15 @@ fn print_coverage_table(entries: &[CoverageEntry]) {
     }
 }
 
-fn print_unmatched_rules(report: &CoverageReport, rules: &[RuleInfo]) {
-    let matched_set: BTreeSet<&str> = report
-        .entries
-        .iter()
-        .flat_map(|e| e.matched_rules.iter().map(String::as_str))
-        .collect();
-
-    let unmatched_rules: Vec<&RuleInfo> = rules
-        .iter()
-        .filter(|r| r.enabled && !matched_set.contains(r.name.as_str()))
-        .collect();
-
-    if !unmatched_rules.is_empty() {
+fn print_unmatched_rules(report: &CoverageReport) {
+    if !report.unmatched_rules.is_empty() {
         info!("");
         warn!(
-            count = unmatched_rules.len(),
+            count = report.unmatched_rules.len(),
             "Enabled rules with no audit matches (may be dead rules)"
         );
-        for rule in &unmatched_rules {
-            let desc = rule.description.as_deref().unwrap_or("");
-            warn!(name = %rule.name, description = %desc, "  Unmatched rule");
+        for name in &report.unmatched_rules {
+            warn!(name = %name, "  Unmatched rule");
         }
     }
 }
