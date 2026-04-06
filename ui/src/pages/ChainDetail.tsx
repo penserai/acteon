@@ -117,6 +117,14 @@ export function ChainDetail() {
           <div className={styles.stepMetadata}>
             <div><span className="text-gray-500">Provider:</span> {step.provider}</div>
             {step.completed_at && <div><span className="text-gray-500">Completed:</span> {absoluteTime(step.completed_at)}</div>}
+            {step.attempt !== undefined && step.max_retries !== undefined && step.attempt > 1 && (
+              <div>
+                <span className="text-gray-500">Attempt:</span>{' '}
+                <span className={`inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded ${step.status === 'failed' ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/15 text-amber-400'}`}>
+                  &#x21BB; {step.attempt} / {step.max_retries + 1}
+                </span>
+              </div>
+            )}
             {step.error && <div className={styles.stepError}><span className="text-gray-500">Error:</span> {step.error}</div>}
           </div>
           {step.sub_chain && (

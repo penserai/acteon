@@ -71,10 +71,9 @@ impl RetryPolicy {
         let base = match self.strategy {
             RetryBackoffStrategy::Fixed => self.backoff_ms,
             RetryBackoffStrategy::Linear => self.backoff_ms.saturating_mul(u64::from(attempt)),
-            RetryBackoffStrategy::Exponential => {
-                self.backoff_ms
-                    .saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)))
-            }
+            RetryBackoffStrategy::Exponential => self
+                .backoff_ms
+                .saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1))),
         };
         if let Some(jitter) = self.jitter_ms {
             // Deterministic in tests; in production the caller can add randomness.
@@ -2471,20 +2470,29 @@ mod tests {
             jitter_ms: None,
         });
         let errors = config.validate();
-        assert!(errors.iter().any(|e| e.contains("retry") && e.contains("sub-chain")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("retry") && e.contains("sub-chain"))
+        );
     }
 
     #[test]
     fn validate_rejects_retry_on_parallel() {
         let group = ParallelStepGroup {
-            steps: vec![ChainStepConfig::new("sub1", "p", "a", serde_json::json!({}))],
+            steps: vec![ChainStepConfig::new(
+                "sub1",
+                "p",
+                "a",
+                serde_json::json!({}),
+            )],
             join: ParallelJoinPolicy::All,
             on_failure: ParallelFailurePolicy::FailFast,
             timeout_seconds: None,
             max_concurrency: None,
         };
-        let mut config = ChainConfig::new("test")
-            .with_step(ChainStepConfig::new_parallel("step1", group));
+        let mut config =
+            ChainConfig::new("test").with_step(ChainStepConfig::new_parallel("step1", group));
         config.steps[0].retry = Some(RetryPolicy {
             max_retries: 2,
             backoff_ms: 500,
@@ -2492,7 +2500,11 @@ mod tests {
             jitter_ms: None,
         });
         let errors = config.validate();
-        assert!(errors.iter().any(|e| e.contains("retry") && e.contains("parallel")));
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("retry") && e.contains("parallel"))
+        );
     }
 
     #[test]
@@ -2505,9 +2517,14 @@ mod tests {
                         backoff_ms: 1000,
                         strategy: RetryBackoffStrategy::Exponential,
                         jitter_ms: Some(200),
-                    })
+                    }),
             )
-            .with_step(ChainStepConfig::new("step2", "webhook", "confirm", serde_json::json!({})));
+            .with_step(ChainStepConfig::new(
+                "step2",
+                "webhook",
+                "confirm",
+                serde_json::json!({}),
+            ));
         assert!(config.validate().is_empty());
     }
 

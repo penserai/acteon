@@ -4328,6 +4328,8 @@ impl Gateway {
                                 children: None,
                                 parallel_children: None,
                                 parallel_join: None,
+                                attempt: None,
+                                max_retries: None,
                             }
                         })
                         .collect();
@@ -4339,6 +4341,12 @@ impl Gateway {
                 } else {
                     (None, None)
                 };
+
+                // Retry metadata from config + runtime state.
+                let attempt = chain_state
+                    .and_then(|s| s.step_attempts.get(i).copied())
+                    .filter(|&a| a > 0);
+                let max_retries = step.retry.as_ref().map(|r| r.max_retries);
 
                 nodes.push(acteon_core::DagNode {
                     name: step.name.clone(),
@@ -4359,6 +4367,8 @@ impl Gateway {
                     children,
                     parallel_children,
                     parallel_join,
+                    attempt,
+                    max_retries,
                 });
 
                 // Build edges: sequential edge to next step.

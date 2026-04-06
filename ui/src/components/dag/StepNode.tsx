@@ -10,6 +10,8 @@ interface StepNodeData {
   isActive: boolean
   isExecuted: boolean
   error?: string
+  attempt?: number
+  max_retries?: number
   [key: string]: unknown
 }
 
@@ -40,6 +42,11 @@ export const StepNode = memo(function StepNode({ data }: NodeProps) {
         <div className={styles.content}>
           {d.isActive ? <Loader2 className="h-4 w-4 text-primary-400 animate-spin" /> : statusIcons[d.status]}
           <span className={styles.label}>{d.label}</span>
+          {d.attempt !== undefined && d.attempt > 1 && (
+            <span className="ml-1 text-[10px] font-medium text-amber-400" title="Retry attempt">
+              &#x21BB; {d.attempt}
+            </span>
+          )}
         </div>
         {d.error && (
           <p className={styles.error}>{d.error}</p>
