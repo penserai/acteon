@@ -97,6 +97,25 @@ pub struct ChainStepConfigToml {
     /// Mutually exclusive with `provider` and `sub_chain`.
     #[serde(default)]
     pub parallel: Option<Box<ParallelStepGroupToml>>,
+    /// Optional retry policy for this step.
+    #[serde(default)]
+    pub retry: Option<RetryPolicyToml>,
+}
+
+/// Per-step retry policy loaded from TOML.
+#[derive(Debug, Deserialize)]
+pub struct RetryPolicyToml {
+    /// Maximum number of additional attempts.
+    pub max_retries: u32,
+    /// Base backoff delay in milliseconds (default: 1000).
+    #[serde(default)]
+    pub backoff_ms: Option<u64>,
+    /// Backoff strategy: `"fixed"` (default), `"linear"`, or `"exponential"`.
+    #[serde(default)]
+    pub strategy: Option<String>,
+    /// Optional random jitter in milliseconds added to each delay.
+    #[serde(default)]
+    pub jitter_ms: Option<u64>,
 }
 
 /// A parallel step group loaded from TOML.
