@@ -2014,6 +2014,34 @@ func (c *Client) GetChainDefinitionDag(ctx context.Context, name string) (*DagRe
 	return &dag, nil
 }
 
+// GetChainHistory returns the retry history for a chain execution.
+func (c *Client) GetChainHistory(ctx context.Context, chainID, namespace, tenant string) (*ChainHistoryResponse, error) {
+	params := url.Values{}
+	params.Set("namespace", namespace)
+	params.Set("tenant", tenant)
+	path := fmt.Sprintf("/v1/chains/%s/history?%s", chainID, params.Encode())
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Chain not found: %s", chainID)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get chain history"}
+	}
+
+	var history ChainHistoryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&history); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &history, nil
+}
+
 // =============================================================================
 // Dead Letter Queue (DLQ)
 // =============================================================================

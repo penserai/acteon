@@ -829,6 +829,8 @@ type ChainStepStatus struct {
 	SubChain         *string           `json:"sub_chain,omitempty"`
 	ChildChainID     *string           `json:"child_chain_id,omitempty"`
 	ParallelSubSteps []ChainStepStatus `json:"parallel_sub_steps,omitempty"`
+	Attempt          *int              `json:"attempt,omitempty"`
+	MaxRetries       *int              `json:"max_retries,omitempty"`
 }
 
 // ChainDetailResponse is the full detail response for a chain execution.
@@ -865,6 +867,8 @@ type DagNode struct {
 	Children         *DagResponse `json:"children,omitempty"`
 	ParallelChildren []DagNode    `json:"parallel_children,omitempty"`
 	ParallelJoin     *string      `json:"parallel_join,omitempty"`
+	Attempt          *int         `json:"attempt,omitempty"`
+	MaxRetries       *int         `json:"max_retries,omitempty"`
 }
 
 // DagEdge is an edge in the chain DAG.
@@ -891,6 +895,37 @@ type CancelChainRequest struct {
 	Tenant      string  `json:"tenant"`
 	Reason      *string `json:"reason,omitempty"`
 	CancelledBy *string `json:"cancelled_by,omitempty"`
+}
+
+// =============================================================================
+// Chain History Types (Retry Attempts)
+// =============================================================================
+
+// StepAttemptResponse is a single execution attempt for a chain step.
+type StepAttemptResponse struct {
+	Attempt     int     `json:"attempt"`
+	StartedAt   string  `json:"started_at"`
+	CompletedAt *string `json:"completed_at,omitempty"`
+	Success     bool    `json:"success"`
+	DurationMs  int     `json:"duration_ms"`
+	Error       *string `json:"error,omitempty"`
+}
+
+// StepHistoryEntry is the retry history for a single chain step.
+type StepHistoryEntry struct {
+	Name           string                `json:"name"`
+	StepIndex      int                   `json:"step_index"`
+	CurrentAttempt int                   `json:"current_attempt"`
+	MaxRetries     int                   `json:"max_retries"`
+	Attempts       []StepAttemptResponse `json:"attempts"`
+}
+
+// ChainHistoryResponse is the retry history for a chain execution.
+type ChainHistoryResponse struct {
+	ChainID   string             `json:"chain_id"`
+	ChainName string             `json:"chain_name"`
+	Status    string             `json:"status"`
+	Steps     []StepHistoryEntry `json:"steps"`
 }
 
 // =============================================================================

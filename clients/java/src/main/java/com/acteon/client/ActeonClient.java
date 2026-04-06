@@ -2250,6 +2250,40 @@ public class ActeonClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Gets the retry history for a chain execution.
+     *
+     * @param chainId   chain execution ID
+     * @param namespace namespace the chain belongs to
+     * @param tenant    tenant the chain belongs to
+     */
+    public ChainHistoryResponse getChainHistory(String chainId, String namespace, String tenant) throws ActeonException {
+        try {
+            String path = "/v1/chains/" + URLEncoder.encode(chainId, StandardCharsets.UTF_8)
+                + "/history?namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8)
+                + "&tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ChainHistoryResponse.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Chain not found: " + chainId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get chain history");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
     // =========================================================================
     // Dead-Letter Queue (DLQ)
     // =========================================================================

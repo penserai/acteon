@@ -34,6 +34,11 @@ public class ChainStepStatus {
     @JsonProperty("parallel_sub_steps")
     private List<ChainStepStatus> parallelSubSteps;
 
+    private Integer attempt;
+
+    @JsonProperty("max_retries")
+    private Integer maxRetries;
+
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
@@ -60,4 +65,10 @@ public class ChainStepStatus {
 
     public List<ChainStepStatus> getParallelSubSteps() { return parallelSubSteps; }
     public void setParallelSubSteps(List<ChainStepStatus> parallelSubSteps) { this.parallelSubSteps = parallelSubSteps; }
+
+    public Integer getAttempt() { return attempt; }
+    public void setAttempt(Integer attempt) { this.attempt = attempt; }
+
+    public Integer getMaxRetries() { return maxRetries; }
+    public void setMaxRetries(Integer maxRetries) { this.maxRetries = maxRetries; }
 }

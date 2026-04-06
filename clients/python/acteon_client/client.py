@@ -71,6 +71,7 @@ from .models import (
     ChainSummary,
     ListChainsResponse,
     ChainDetailResponse,
+    ChainHistoryResponse,
     DagNode,
     DagEdge,
     DagResponse,
@@ -1935,6 +1936,38 @@ class ActeonClient:
                 response.status_code, "Failed to get chain definition DAG"
             )
 
+    def get_chain_history(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> ChainHistoryResponse:
+        """Get the retry history for a chain execution.
+
+        Args:
+            chain_id: The chain execution ID.
+            namespace: The namespace.
+            tenant: The tenant.
+
+        Returns:
+            The chain history response with per-step attempt details.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the chain is not found (404) or server returns an error.
+        """
+        response = self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/history",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+
+        if response.status_code == 200:
+            return ChainHistoryResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain history"
+            )
+
     # =========================================================================
     # DLQ (Dead-Letter Queue)
     # =========================================================================
@@ -3193,6 +3226,24 @@ class AsyncActeonClient:
         else:
             raise HttpError(
                 response.status_code, "Failed to get chain definition DAG"
+            )
+
+    async def get_chain_history(
+        self, chain_id: str, namespace: str, tenant: str
+    ) -> ChainHistoryResponse:
+        """Get the retry history for a chain execution."""
+        response = await self._request(
+            "GET",
+            f"/v1/chains/{chain_id}/history",
+            params={"namespace": namespace, "tenant": tenant},
+        )
+        if response.status_code == 200:
+            return ChainHistoryResponse.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Chain not found: {chain_id}")
+        else:
+            raise HttpError(
+                response.status_code, "Failed to get chain history"
             )
 
     # =========================================================================
