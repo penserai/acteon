@@ -852,6 +852,8 @@ mod tests {
             child_chain_ids: Vec::new(),
             parallel_state: None,
             parallel_sub_results: std::collections::HashMap::new(),
+            step_attempts: vec![],
+            step_history: vec![],
         }
     }
 
@@ -862,6 +864,8 @@ mod tests {
             response_body: Some(serde_json::json!({"ok": true})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         }
     }
 

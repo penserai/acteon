@@ -2103,6 +2103,8 @@ impl Gateway {
             child_chain_ids: Vec::new(),
             parallel_state: None,
             parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0; total_steps],
+            step_history: vec![Vec::new(); total_steps],
         };
 
         // Persist chain state.
@@ -2356,6 +2358,8 @@ impl Gateway {
                                 response_body: None,
                                 error: Some(error_msg.clone()),
                                 completed_at: Utc::now(),
+                                attempt: None,
+                                started_at: None,
                             };
                             chain_state.step_results[step_idx] = Some(step_result.clone());
                             chain_state.status = ChainStatus::Running;
@@ -2572,6 +2576,8 @@ impl Gateway {
                 response_body: None,
                 error: Some("step interrupted (duplicate dispatch detected)".to_string()),
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             });
             chain_state.status = ChainStatus::Failed;
             chain_state.updated_at = Utc::now();
@@ -2615,6 +2621,8 @@ impl Gateway {
                         response_body: None,
                         error: Some("quota exceeded — chain step blocked".to_string()),
                         completed_at: now,
+                        attempt: None,
+                        started_at: None,
                     });
                     chain_state.status = ChainStatus::Failed;
                     chain_state.updated_at = now;
@@ -2677,6 +2685,8 @@ impl Gateway {
                     response_body: Some(resp.body.clone()),
                     error: None,
                     completed_at: now,
+                    attempt: None,
+                    started_at: None,
                 };
                 chain_state.step_results[step_idx] = Some(step_result.clone());
 
@@ -2785,6 +2795,8 @@ impl Gateway {
                     response_body: None,
                     error: Some(err.message.clone()),
                     completed_at: now,
+                    attempt: None,
+                    started_at: None,
                 });
 
                 match step_policy {
@@ -3020,6 +3032,8 @@ impl Gateway {
                     response_body: None,
                     error: Some(format!("unexpected outcome: {outcome:?}")),
                     completed_at: now,
+                    attempt: None,
+                    started_at: None,
                 });
                 chain_state.status = ChainStatus::Failed;
                 chain_state.updated_at = now;
@@ -3335,6 +3349,8 @@ impl Gateway {
                 response_body: None,
                 error: Some(format!("parallel group timed out after {group_timeout:?}")),
                 completed_at: now,
+                attempt: None,
+                started_at: None,
             };
             chain_state.step_results[step_idx] = Some(parent_result.clone());
             chain_state.status = ChainStatus::Failed;
@@ -3428,6 +3444,8 @@ impl Gateway {
                 response_body: body.clone(),
                 error,
                 completed_at: now,
+                attempt: None,
+                started_at: None,
             };
             chain_state
                 .parallel_sub_results
@@ -3499,6 +3517,8 @@ impl Gateway {
                 Some("one or more parallel sub-steps failed".to_string())
             },
             completed_at: now,
+            attempt: None,
+            started_at: None,
         };
         chain_state.step_results[step_idx] = Some(parent_result.clone());
         // Clear parallel execution state now that results are collected.
@@ -3967,6 +3987,8 @@ impl Gateway {
             child_chain_ids: Vec::new(),
             parallel_state: None,
             parallel_sub_results: HashMap::new(),
+            step_attempts: vec![0; total_steps],
+            step_history: vec![Vec::new(); total_steps],
         };
 
         // Persist child chain state.
@@ -4045,6 +4067,8 @@ impl Gateway {
                 response_body: child_result.response_body.clone(),
                 error: child_result.error.clone(),
                 completed_at: child_result.completed_at,
+                attempt: None,
+                started_at: None,
             },
             None => StepResult {
                 step_name: format!("sub_chain:{sub_chain_name}"),
@@ -4052,6 +4076,8 @@ impl Gateway {
                 response_body: None,
                 error: None,
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             },
         }
     }
@@ -8080,6 +8106,8 @@ mod tests {
                 response_body: body,
                 error: None,
                 completed_at: Utc::now(),
+                attempt: None,
+                started_at: None,
             }
         }
 

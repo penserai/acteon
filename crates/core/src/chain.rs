@@ -26,6 +26,87 @@ pub enum StepFailurePolicy {
     Dlq,
 }
 
+/// Backoff strategy for step retry policies.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryBackoffStrategy {
+    /// Constant delay: `backoff_ms` on every retry.
+    #[default]
+    Fixed,
+    /// Linear delay: `backoff_ms * attempt`.
+    Linear,
+    /// Exponential delay: `backoff_ms * 2^(attempt-1)`.
+    Exponential,
+}
+
+/// Per-step retry policy with configurable backoff.
+///
+/// When a step fails with a retryable error, the chain re-schedules the step
+/// up to `max_retries` additional times with a delay computed from the backoff
+/// strategy. The step's `on_failure` policy only fires after all retries are
+/// exhausted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    /// Maximum number of additional attempts (e.g., 3 means up to 4 total executions).
+    pub max_retries: u32,
+    /// Base backoff delay in milliseconds.
+    #[serde(default = "default_retry_backoff_ms")]
+    pub backoff_ms: u64,
+    /// Backoff scaling strategy.
+    #[serde(default)]
+    pub strategy: RetryBackoffStrategy,
+    /// Optional random jitter (`0..=jitter_ms`) added to each delay.
+    #[serde(default)]
+    pub jitter_ms: Option<u64>,
+}
+
+fn default_retry_backoff_ms() -> u64 {
+    1000
+}
+
+impl RetryPolicy {
+    /// Compute the delay in milliseconds for a given attempt number (1-based).
+    #[must_use]
+    pub fn compute_delay_ms(&self, attempt: u32) -> u64 {
+        let base = match self.strategy {
+            RetryBackoffStrategy::Fixed => self.backoff_ms,
+            RetryBackoffStrategy::Linear => self.backoff_ms.saturating_mul(u64::from(attempt)),
+            RetryBackoffStrategy::Exponential => {
+                self.backoff_ms
+                    .saturating_mul(2u64.saturating_pow(attempt.saturating_sub(1)))
+            }
+        };
+        if let Some(jitter) = self.jitter_ms {
+            // Deterministic in tests; in production the caller can add randomness.
+            base.saturating_add(jitter / 2)
+        } else {
+            base
+        }
+    }
+}
+
+/// Record of a single step execution attempt.
+///
+/// A step may have multiple attempts when a [`RetryPolicy`] is configured.
+/// The full list of attempts is stored in [`ChainState::step_history`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepAttempt {
+    /// 1-based attempt number.
+    pub attempt: u32,
+    /// When this attempt started executing.
+    pub started_at: DateTime<Utc>,
+    /// When this attempt finished.
+    pub completed_at: DateTime<Utc>,
+    /// Whether the attempt succeeded.
+    pub success: bool,
+    /// Response body from the provider (if successful).
+    pub response_body: Option<serde_json::Value>,
+    /// Error message (if failed).
+    pub error: Option<String>,
+    /// Wall-clock duration in milliseconds.
+    pub duration_ms: u64,
+}
+
 /// Join policy for parallel step groups.
 ///
 /// Determines when a parallel group is considered complete.
@@ -307,6 +388,12 @@ pub struct ChainStepConfig {
     /// overflows in debug builds with deeply nested async state machines).
     #[serde(default)]
     pub parallel: Option<Box<ParallelStepGroup>>,
+    /// Optional retry policy for this step. When set, a failed step is
+    /// re-scheduled up to `max_retries` times with configurable backoff
+    /// before the `on_failure` policy fires. Not supported on sub-chain
+    /// or parallel parent steps.
+    #[serde(default)]
+    pub retry: Option<RetryPolicy>,
 }
 
 impl ChainStepConfig {
@@ -329,6 +416,7 @@ impl ChainStepConfig {
             default_next: None,
             sub_chain: None,
             parallel: None,
+            retry: None,
         }
     }
 
@@ -346,6 +434,7 @@ impl ChainStepConfig {
             default_next: None,
             sub_chain: Some(sub_chain_name.into()),
             parallel: None,
+            retry: None,
         }
     }
 
@@ -363,6 +452,7 @@ impl ChainStepConfig {
             default_next: None,
             sub_chain: None,
             parallel: Some(Box::new(group)),
+            retry: None,
         }
     }
 
@@ -410,6 +500,13 @@ impl ChainStepConfig {
     #[must_use]
     pub fn with_default_next(mut self, step_name: impl Into<String>) -> Self {
         self.default_next = Some(step_name.into());
+        self
+    }
+
+    /// Set a retry policy for this step.
+    #[must_use]
+    pub fn with_retry(mut self, policy: RetryPolicy) -> Self {
+        self.retry = Some(policy);
         self
     }
 
@@ -606,6 +703,22 @@ impl ChainConfig {
             }
         }
 
+        // Reject retry policies on sub-chain and parallel parent steps.
+        for step in &self.steps {
+            if step.retry.is_some() && step.is_sub_chain() {
+                errors.push(format!(
+                    "step `{}` has a retry policy on a sub-chain step; retry is only supported on provider steps",
+                    step.name
+                ));
+            }
+            if step.retry.is_some() && step.is_parallel() {
+                errors.push(format!(
+                    "step `{}` has a retry policy on a parallel step; retry is only supported on provider steps",
+                    step.name
+                ));
+            }
+        }
+
         // Check that all branch targets reference existing steps.
         for step in &self.steps {
             for branch in &step.branches {
@@ -713,6 +826,43 @@ pub struct StepResult {
     pub error: Option<String>,
     /// When this step completed.
     pub completed_at: DateTime<Utc>,
+    /// Which attempt produced this result (1-based). `None` for chains
+    /// created before retry support was added.
+    #[serde(default)]
+    pub attempt: Option<u32>,
+    /// When this attempt started executing.
+    #[serde(default)]
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+impl StepResult {
+    /// Create a new step result without retry metadata.
+    #[must_use]
+    pub fn new(
+        step_name: impl Into<String>,
+        success: bool,
+        response_body: Option<serde_json::Value>,
+        error: Option<String>,
+        completed_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            step_name: step_name.into(),
+            success,
+            response_body,
+            error,
+            completed_at,
+            attempt: None,
+            started_at: None,
+        }
+    }
+
+    /// Create a new step result with retry metadata.
+    #[must_use]
+    pub fn with_attempt(mut self, attempt: u32, started_at: DateTime<Utc>) -> Self {
+        self.attempt = Some(attempt);
+        self.started_at = Some(started_at);
+        self
+    }
 }
 
 /// Runtime state of a chain execution.
@@ -771,6 +921,16 @@ pub struct ChainState {
     /// Accessible via `{{steps.SUB_STEP_NAME.body.*}}` templates.
     #[serde(default)]
     pub parallel_sub_results: HashMap<String, StepResult>,
+    /// Current attempt number for each step (1-based, indexed parallel to
+    /// `step_results`). Defaults to zeros for chains created before retry
+    /// support was added.
+    #[serde(default)]
+    pub step_attempts: Vec<u32>,
+    /// Full execution history per step: all attempts including retries.
+    /// Outer `Vec` is indexed by step position, inner `Vec` is ordered by
+    /// attempt number.
+    #[serde(default)]
+    pub step_history: Vec<Vec<StepAttempt>>,
 }
 
 /// DFS coloring for cycle detection.
@@ -972,6 +1132,8 @@ mod tests {
             response_body: None,
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result));
     }
@@ -990,6 +1152,8 @@ mod tests {
             response_body: Some(serde_json::json!({"status": "critical", "count": 5})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result));
     }
@@ -1008,6 +1172,8 @@ mod tests {
             response_body: Some(serde_json::json!({"level": "error"})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result));
     }
@@ -1026,6 +1192,8 @@ mod tests {
             response_body: Some(serde_json::json!({"message": "connection timeout after 30s"})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result));
     }
@@ -1039,6 +1207,8 @@ mod tests {
             response_body: Some(serde_json::json!({"data": [1, 2, 3]})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result));
 
@@ -1048,6 +1218,8 @@ mod tests {
             response_body: Some(serde_json::json!({"other": true})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result_no_data));
     }
@@ -1066,6 +1238,8 @@ mod tests {
             response_body: Some(serde_json::json!({"other": 1})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result));
     }
@@ -1547,6 +1721,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 10})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result_true));
 
@@ -1557,6 +1733,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 3})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result_false));
     }
@@ -1576,6 +1754,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 3})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result_true));
 
@@ -1586,6 +1766,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 10})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result_false));
     }
@@ -1605,6 +1787,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 10})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result_above));
 
@@ -1615,6 +1799,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 5})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result_equal));
 
@@ -1625,6 +1811,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 3})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result_below));
     }
@@ -1644,6 +1832,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 3})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result_below));
 
@@ -1654,6 +1844,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 5})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result_equal));
 
@@ -1664,6 +1856,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 10})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result_above));
     }
@@ -1683,6 +1877,8 @@ mod tests {
             response_body: Some(serde_json::json!({"grade": "b"})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(cond.evaluate(&result_true));
 
@@ -1693,6 +1889,8 @@ mod tests {
             response_body: Some(serde_json::json!({"grade": "a"})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result_equal));
     }
@@ -1712,6 +1910,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": "not-a-number"})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result));
     }
@@ -1730,6 +1930,8 @@ mod tests {
             response_body: Some(serde_json::json!({"other": 10})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result));
     }
@@ -1744,6 +1946,8 @@ mod tests {
             response_body: Some(serde_json::json!({"count": 10})),
             error: None,
             completed_at: Utc::now(),
+            attempt: None,
+            started_at: None,
         };
         assert!(!cond.evaluate(&result));
     }
@@ -2187,5 +2391,161 @@ mod tests {
         let config = ChainConfig::new("good").with_step(ChainStepConfig::new_parallel("p", group));
         let errors = config.validate();
         assert!(errors.is_empty(), "expected no errors: {errors:?}");
+    }
+
+    #[test]
+    fn retry_policy_compute_delay_fixed() {
+        let policy = RetryPolicy {
+            max_retries: 3,
+            backoff_ms: 1000,
+            strategy: RetryBackoffStrategy::Fixed,
+            jitter_ms: None,
+        };
+        assert_eq!(policy.compute_delay_ms(1), 1000);
+        assert_eq!(policy.compute_delay_ms(2), 1000);
+        assert_eq!(policy.compute_delay_ms(3), 1000);
+    }
+
+    #[test]
+    fn retry_policy_compute_delay_linear() {
+        let policy = RetryPolicy {
+            max_retries: 3,
+            backoff_ms: 500,
+            strategy: RetryBackoffStrategy::Linear,
+            jitter_ms: None,
+        };
+        assert_eq!(policy.compute_delay_ms(1), 500);
+        assert_eq!(policy.compute_delay_ms(2), 1000);
+        assert_eq!(policy.compute_delay_ms(3), 1500);
+    }
+
+    #[test]
+    fn retry_policy_compute_delay_exponential() {
+        let policy = RetryPolicy {
+            max_retries: 3,
+            backoff_ms: 100,
+            strategy: RetryBackoffStrategy::Exponential,
+            jitter_ms: None,
+        };
+        assert_eq!(policy.compute_delay_ms(1), 100);
+        assert_eq!(policy.compute_delay_ms(2), 200);
+        assert_eq!(policy.compute_delay_ms(3), 400);
+    }
+
+    #[test]
+    fn retry_policy_compute_delay_with_jitter() {
+        let policy = RetryPolicy {
+            max_retries: 3,
+            backoff_ms: 1000,
+            strategy: RetryBackoffStrategy::Fixed,
+            jitter_ms: Some(200),
+        };
+        // Deterministic jitter: base + jitter/2 = 1000 + 100 = 1100
+        assert_eq!(policy.compute_delay_ms(1), 1100);
+    }
+
+    #[test]
+    fn retry_policy_serde_roundtrip() {
+        let policy = RetryPolicy {
+            max_retries: 5,
+            backoff_ms: 2000,
+            strategy: RetryBackoffStrategy::Exponential,
+            jitter_ms: Some(500),
+        };
+        let json = serde_json::to_string(&policy).unwrap();
+        let parsed: RetryPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.max_retries, 5);
+        assert_eq!(parsed.backoff_ms, 2000);
+        assert_eq!(parsed.strategy, RetryBackoffStrategy::Exponential);
+        assert_eq!(parsed.jitter_ms, Some(500));
+    }
+
+    #[test]
+    fn validate_rejects_retry_on_sub_chain() {
+        let mut config = ChainConfig::new("test")
+            .with_step(ChainStepConfig::new_sub_chain("step1", "other-chain"));
+        config.steps[0].retry = Some(RetryPolicy {
+            max_retries: 3,
+            backoff_ms: 1000,
+            strategy: RetryBackoffStrategy::Fixed,
+            jitter_ms: None,
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("retry") && e.contains("sub-chain")));
+    }
+
+    #[test]
+    fn validate_rejects_retry_on_parallel() {
+        let group = ParallelStepGroup {
+            steps: vec![ChainStepConfig::new("sub1", "p", "a", serde_json::json!({}))],
+            join: ParallelJoinPolicy::All,
+            on_failure: ParallelFailurePolicy::FailFast,
+            timeout_seconds: None,
+            max_concurrency: None,
+        };
+        let mut config = ChainConfig::new("test")
+            .with_step(ChainStepConfig::new_parallel("step1", group));
+        config.steps[0].retry = Some(RetryPolicy {
+            max_retries: 2,
+            backoff_ms: 500,
+            strategy: RetryBackoffStrategy::Linear,
+            jitter_ms: None,
+        });
+        let errors = config.validate();
+        assert!(errors.iter().any(|e| e.contains("retry") && e.contains("parallel")));
+    }
+
+    #[test]
+    fn validate_allows_retry_on_provider_step() {
+        let config = ChainConfig::new("test")
+            .with_step(
+                ChainStepConfig::new("step1", "webhook", "notify", serde_json::json!({}))
+                    .with_retry(RetryPolicy {
+                        max_retries: 3,
+                        backoff_ms: 1000,
+                        strategy: RetryBackoffStrategy::Exponential,
+                        jitter_ms: Some(200),
+                    })
+            )
+            .with_step(ChainStepConfig::new("step2", "webhook", "confirm", serde_json::json!({})));
+        assert!(config.validate().is_empty());
+    }
+
+    #[test]
+    fn step_result_backward_compat_deserialize() {
+        // Old StepResult without attempt/started_at fields.
+        let json = r#"{"step_name":"s1","success":true,"response_body":null,"error":null,"completed_at":"2026-01-01T00:00:00Z"}"#;
+        let result: StepResult = serde_json::from_str(json).unwrap();
+        assert!(result.attempt.is_none());
+        assert!(result.started_at.is_none());
+    }
+
+    #[test]
+    fn chain_state_backward_compat_deserialize() {
+        // Verify that old ChainState JSON without step_attempts/step_history deserializes.
+        let json = serde_json::json!({
+            "chain_id": "c1",
+            "chain_name": "test",
+            "origin_action": {
+                "id": "a1",
+                "namespace": "ns",
+                "tenant": "t",
+                "provider": "p",
+                "action_type": "at",
+                "payload": {},
+                "created_at": "2026-01-01T00:00:00Z"
+            },
+            "current_step": 0,
+            "total_steps": 1,
+            "status": "running",
+            "step_results": [null],
+            "started_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "namespace": "ns",
+            "tenant": "t"
+        });
+        let state: ChainState = serde_json::from_value(json).unwrap();
+        assert!(state.step_attempts.is_empty());
+        assert!(state.step_history.is_empty());
     }
 }
