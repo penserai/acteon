@@ -510,6 +510,16 @@ pub struct GetChainParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetChainHistoryParams {
+    /// Chain instance ID.
+    pub chain_id: String,
+    /// Namespace.
+    pub namespace: String,
+    /// Tenant.
+    pub tenant: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CancelChainParams {
     /// Chain instance ID.
     pub chain_id: String,
@@ -992,6 +1002,27 @@ impl ActeonMcpServer {
         match self
             .ops
             .get_chain(&p.chain_id, &p.namespace, &p.tenant)
+            .await
+        {
+            Ok(resp) => {
+                let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                Ok(CallToolResult::success(vec![Content::text(json)]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    /// Get per-step execution history with retry attempts for a chain.
+    #[tool(
+        description = "Get the execution history of a chain, showing all retry attempts per step. Useful for debugging failed steps and understanding retry behavior."
+    )]
+    async fn get_chain_history(
+        &self,
+        Parameters(p): Parameters<GetChainHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .ops
+            .get_chain_history(&p.chain_id, &p.namespace, &p.tenant)
             .await
         {
             Ok(resp) => {
