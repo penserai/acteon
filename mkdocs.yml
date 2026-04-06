@@ -183,3 +183,4 @@ nav:
     - ClickHouse State Migration: reference/migration-clickhouse-state.md
     - Performance Guide: reference/performance.md
     - Deployment: reference/deployment.md
+    - Roadmap: reference/roadmap.md

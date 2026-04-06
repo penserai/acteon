@@ -29,4 +29,9 @@ Production deployment patterns, Docker, and operational guidance.
 Feature flags, profile overrides, nextest, and CI caching for fast builds.
 </div>
 
+<div class="card" markdown>
+### [Roadmap](roadmap.md)
+Planned features and enhancements, ordered by value/effort ratio.
+</div>
+
 </div>
