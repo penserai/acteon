@@ -7,6 +7,7 @@ pub mod chain_dag;
 pub mod circuit_breaker;
 pub mod compliance;
 pub mod context;
+pub mod coverage;
 pub mod enrichment;
 pub mod error;
 pub mod fingerprint;
@@ -41,6 +42,9 @@ pub use circuit_breaker::{
 };
 pub use compliance::{ComplianceConfig, ComplianceMode, HashChainVerification};
 pub use context::ActionContext;
+pub use coverage::{
+    CoverageAggregate, CoverageEntry, CoverageKey, CoverageQuery, CoverageReport, build_report,
+};
 pub use enrichment::{EnrichmentConfig, EnrichmentFailurePolicy, EnrichmentOutcome};
 pub use error::ActeonError;
 pub use fingerprint::compute_fingerprint;

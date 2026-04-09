@@ -141,6 +141,7 @@ use acteon_core::{
         super::templates::delete_profile,
         super::templates::render_preview,
         super::analytics::query_analytics,
+        super::rules::rule_coverage,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -179,6 +180,8 @@ use acteon_core::{
         TemplateProfileField,
         AnalyticsMetric, AnalyticsInterval, AnalyticsQuery, AnalyticsResponse,
         AnalyticsBucket, AnalyticsTopEntry,
+        acteon_core::coverage::CoverageQuery, acteon_core::coverage::CoverageKey,
+        acteon_core::coverage::CoverageEntry, acteon_core::coverage::CoverageReport,
     ))
 )]
 pub struct ApiDoc;

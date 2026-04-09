@@ -2,15 +2,16 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use axum::Json;
-use axum::extract::{self, State};
+use axum::extract::{self, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use acteon_core::Action;
+use acteon_core::coverage::{CoverageQuery, CoverageReport, build_report};
 use acteon_rules::{RuleTraceEntry, SemanticMatchDetail};
 use acteon_rules_yaml::YamlFrontend;
 
@@ -406,4 +407,116 @@ pub async fn evaluate_rules(
             })),
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Rule coverage
+// ---------------------------------------------------------------------------
+
+/// Query parameters for the rule coverage endpoint.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct CoverageParams {
+    /// Filter by namespace.
+    pub namespace: Option<String>,
+    /// Filter by tenant.
+    pub tenant: Option<String>,
+    /// Start of time range (RFC 3339). Defaults to 7 days ago.
+    pub from: Option<DateTime<Utc>>,
+    /// End of time range (RFC 3339). Defaults to now.
+    pub to: Option<DateTime<Utc>>,
+}
+
+/// `GET /v1/rules/coverage` -- analyze rule coverage from the audit trail.
+///
+/// Aggregates audit records by (namespace, tenant, provider, `action_type`,
+/// `matched_rule`) within the requested time window and cross-references the
+/// result with the currently-loaded rule set. No raw audit records are
+/// returned — only the aggregated report.
+#[utoipa::path(
+    get,
+    path = "/v1/rules/coverage",
+    tag = "Rules",
+    summary = "Analyze rule coverage",
+    description = "Returns a coverage matrix across (namespace, tenant, provider, action_type) showing which combinations matched a rule in the scanned window and which did not. Dead-rule detection is window-scoped — a rule listed as unmatched may still fire outside the scanned window.",
+    params(CoverageParams),
+    responses(
+        (status = 200, description = "Coverage report", body = CoverageReport),
+        (status = 404, description = "Analytics not available", body = ErrorResponse),
+        (status = 403, description = "Tenant access denied", body = ErrorResponse)
+    )
+)]
+pub async fn rule_coverage(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(params): Query<CoverageParams>,
+) -> impl IntoResponse {
+    let Some(ref analytics) = state.analytics else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!(ErrorResponse {
+                error: "analytics is not available (audit may be disabled)".into(),
+            })),
+        );
+    };
+
+    // Enforce tenant access.
+    if let Some(ref requested_tenant) = params.tenant
+        && let Some(allowed) = identity.allowed_tenants()
+        && !allowed.contains(&requested_tenant.as_str())
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!(ErrorResponse {
+                error: format!("no grant covers tenant={requested_tenant}"),
+            })),
+        );
+    }
+
+    let mut tenant = params.tenant.clone();
+    // Inject single-tenant caller's tenant if not specified.
+    if tenant.is_none()
+        && let Some(allowed) = identity.allowed_tenants()
+        && allowed.len() == 1
+    {
+        tenant = Some(allowed[0].to_owned());
+    }
+
+    let query = CoverageQuery {
+        namespace: params.namespace,
+        tenant,
+        from: params.from,
+        to: params.to,
+    };
+
+    let aggregates = match analytics.rule_coverage(&query).await {
+        Ok(a) => a,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!(ErrorResponse {
+                    error: e.to_string(),
+                })),
+            );
+        }
+    };
+
+    // Effective time window (same defaults the backends use).
+    let now = Utc::now();
+    let scanned_from = query
+        .from
+        .unwrap_or_else(|| now - chrono::Duration::days(7));
+    let scanned_to = query.to.unwrap_or(now);
+
+    // Build the report using the currently-loaded rules.
+    let gw = state.gateway.read().await;
+    let rules: Vec<(String, bool)> = gw
+        .rules()
+        .iter()
+        .map(|r| (r.name.clone(), r.enabled))
+        .collect();
+    drop(gw);
+
+    let report: CoverageReport = build_report(&aggregates, &rules, scanned_from, scanned_to);
+
+    (StatusCode::OK, Json(serde_json::json!(report)))
 }

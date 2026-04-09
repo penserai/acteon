@@ -2494,6 +2494,65 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Rule Coverage
+    // =========================================================================
+
+    /**
+     * Analyzes rule coverage by querying the server's aggregation endpoint.
+     *
+     * <p>The server groups audit records by
+     * (namespace, tenant, provider, action_type, matched_rule) and
+     * cross-references the result with the currently-loaded rule set.
+     * No raw audit records are transferred over the wire.</p>
+     *
+     * @param query Coverage query options (may be null for defaults).
+     * @return A coverage report with per-combination statistics.
+     * @throws ActeonException If a network or server error occurs.
+     */
+    public CoverageReport rulesCoverage(CoverageQuery query) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/rules/coverage");
+            List<String> params = new ArrayList<>();
+
+            if (query != null) {
+                if (query.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (query.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (query.getFrom() != null) {
+                    params.add("from=" + URLEncoder.encode(query.getFrom(), StandardCharsets.UTF_8));
+                }
+                if (query.getTo() != null) {
+                    params.add("to=" + URLEncoder.encode(query.getTo(), StandardCharsets.UTF_8));
+                }
+            }
+
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString())
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, CoverageReport.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get rule coverage");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Stream (SSE -- General)
     // =========================================================================
 

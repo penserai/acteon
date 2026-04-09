@@ -76,6 +76,10 @@ from .models import (
     AnalyticsBucket,
     AnalyticsTopEntry,
     AnalyticsResponse,
+    CoverageKey,
+    CoverageEntry,
+    CoverageQuery,
+    CoverageReport,
 )
 
 __version__ = "0.1.0"
@@ -159,4 +163,8 @@ __all__ = [
     "AnalyticsBucket",
     "AnalyticsTopEntry",
     "AnalyticsResponse",
+    "CoverageKey",
+    "CoverageEntry",
+    "CoverageQuery",
+    "CoverageReport",
 ]

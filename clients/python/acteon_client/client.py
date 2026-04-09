@@ -80,6 +80,10 @@ from .models import (
     SseEvent,
     _parse_sse_stream,
     AnalyticsResponse,
+    CoverageKey,
+    CoverageEntry,
+    CoverageQuery,
+    CoverageReport,
 )
 
 
@@ -2085,6 +2089,46 @@ class ActeonClient:
             raise HttpError(response.status_code, "Failed to query analytics")
 
     # =========================================================================
+    # Rule Coverage
+    # =========================================================================
+
+    def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+        """Analyze rule coverage by querying the server's aggregation endpoint.
+
+        The server groups audit records by
+        ``(namespace, tenant, provider, action_type, matched_rule)`` and
+        cross-references the result with the currently-loaded rule set.
+        No raw audit records are transferred over the wire.
+
+        Args:
+            query: Optional coverage query parameters.
+
+        Returns:
+            A CoverageReport with per-combination coverage statistics.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {}
+        if query is not None:
+            if query.namespace is not None:
+                params["namespace"] = query.namespace
+            if query.tenant is not None:
+                params["tenant"] = query.tenant
+            if query.from_time is not None:
+                params["from"] = query.from_time
+            if query.to_time is not None:
+                params["to"] = query.to_time
+
+        response = self._request("GET", "/v1/rules/coverage", params=params)
+
+        if response.status_code == 200:
+            return CoverageReport.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get rule coverage")
+
+    # =========================================================================
     # Subscribe (SSE)
     # =========================================================================
 
@@ -3340,6 +3384,46 @@ class AsyncActeonClient:
             return AnalyticsResponse.from_dict(response.json())
         else:
             raise HttpError(response.status_code, "Failed to query analytics")
+
+    # =========================================================================
+    # Rule Coverage
+    # =========================================================================
+
+    async def rules_coverage(self, query: Optional[CoverageQuery] = None) -> CoverageReport:
+        """Analyze rule coverage by querying the server's aggregation endpoint.
+
+        The server groups audit records by
+        ``(namespace, tenant, provider, action_type, matched_rule)`` and
+        cross-references the result with the currently-loaded rule set.
+        No raw audit records are transferred over the wire.
+
+        Args:
+            query: Optional coverage query parameters.
+
+        Returns:
+            A CoverageReport with per-combination coverage statistics.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict[str, str] = {}
+        if query is not None:
+            if query.namespace is not None:
+                params["namespace"] = query.namespace
+            if query.tenant is not None:
+                params["tenant"] = query.tenant
+            if query.from_time is not None:
+                params["from"] = query.from_time
+            if query.to_time is not None:
+                params["to"] = query.to_time
+
+        response = await self._request("GET", "/v1/rules/coverage", params=params)
+
+        if response.status_code == 200:
+            return CoverageReport.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to get rule coverage")
 
     # =========================================================================
     # Subscribe (SSE)
