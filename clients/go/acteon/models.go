@@ -1985,25 +1985,30 @@ type CoverageKey struct {
 }
 
 // CoverageEntry holds per-combination coverage statistics.
+//
+// Note: the server serializes key fields flattened at the top level, so we
+// embed CoverageKey to match the JSON shape.
 type CoverageEntry struct {
-	Key          CoverageKey `json:"key"`
-	Total        int64       `json:"total"`
-	Covered      int64       `json:"covered"`
-	Uncovered    int64       `json:"uncovered"`
-	MatchedRules []string    `json:"matched_rules"`
+	CoverageKey
+	Total        int64    `json:"total"`
+	Covered      int64    `json:"covered"`
+	Uncovered    int64    `json:"uncovered"`
+	MatchedRules []string `json:"matched_rules"`
 }
 
 // CoverageQuery holds options for a rule coverage analysis.
 type CoverageQuery struct {
-	Limit     int
 	Namespace string
 	Tenant    string
-	PageSize  int
+	From      *time.Time
+	To        *time.Time
 }
 
 // CoverageReport is the full rule coverage report.
 type CoverageReport struct {
-	RecordsScanned     int64           `json:"records_scanned"`
+	ScannedFrom        time.Time       `json:"scanned_from"`
+	ScannedTo          time.Time       `json:"scanned_to"`
+	TotalActions       int64           `json:"total_actions"`
 	UniqueCombinations int             `json:"unique_combinations"`
 	FullyCovered       int             `json:"fully_covered"`
 	PartiallyCovered   int             `json:"partially_covered"`

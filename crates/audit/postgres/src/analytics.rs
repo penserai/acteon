@@ -8,6 +8,7 @@ use acteon_core::analytics::{
     AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
     AnalyticsTopEntry,
 };
+use acteon_core::coverage::{CoverageAggregate, CoverageQuery};
 
 /// Map an `AnalyticsInterval` to the Postgres `date_trunc` argument.
 fn interval_to_trunc(interval: AnalyticsInterval) -> &'static str {
@@ -114,6 +115,17 @@ struct BucketRow {
 #[derive(sqlx::FromRow)]
 struct TopRow {
     label: String,
+    cnt: i64,
+}
+
+/// Row type for rule coverage aggregation queries.
+#[derive(sqlx::FromRow)]
+struct CoverageRow {
+    namespace: String,
+    tenant: String,
+    provider: String,
+    action_type: String,
+    matched_rule: Option<String>,
     cnt: i64,
 }
 
@@ -288,5 +300,69 @@ impl AnalyticsStore for PostgresAnalyticsStore {
             top_entries,
             total_count,
         })
+    }
+
+    async fn rule_coverage(
+        &self,
+        query: &CoverageQuery,
+    ) -> Result<Vec<CoverageAggregate>, AuditError> {
+        let now = Utc::now();
+        let from = query
+            .from
+            .unwrap_or_else(|| now - chrono::Duration::days(7));
+        let to = query.to.unwrap_or(now);
+
+        let mut conditions = Vec::new();
+        let mut binds: Vec<String> = Vec::new();
+        let mut idx = 1u32;
+
+        if let Some(ref ns) = query.namespace {
+            conditions.push(format!("namespace = ${idx}"));
+            binds.push(ns.clone());
+            idx += 1;
+        }
+        if let Some(ref t) = query.tenant {
+            conditions.push(format!("tenant = ${idx}"));
+            binds.push(t.clone());
+            idx += 1;
+        }
+
+        conditions.push(format!("dispatched_at >= ${idx}"));
+        idx += 1;
+        conditions.push(format!("dispatched_at <= ${idx}"));
+
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
+
+        let sql = format!(
+            "SELECT namespace, tenant, provider, action_type, matched_rule, COUNT(*) AS cnt \
+             FROM {table} {where_clause} \
+             GROUP BY namespace, tenant, provider, action_type, matched_rule \
+             ORDER BY namespace, tenant, provider, action_type, matched_rule",
+            table = self.table_name(),
+        );
+
+        let mut q = sqlx::query_as::<_, CoverageRow>(&sql);
+        for b in &binds {
+            q = q.bind(b);
+        }
+        q = q.bind(from).bind(to);
+
+        let rows: Vec<CoverageRow> = q
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| AuditError::Storage(e.to_string()))?;
+
+        #[allow(clippy::cast_sign_loss)]
+        Ok(rows
+            .into_iter()
+            .map(|row| CoverageAggregate {
+                namespace: row.namespace,
+                tenant: row.tenant,
+                provider: row.provider,
+                action_type: row.action_type,
+                matched_rule: row.matched_rule,
+                count: row.cnt as u64,
+            })
+            .collect())
     }
 }

@@ -3086,6 +3086,16 @@ export function createGcpStorageDeletePayload(
 // Rule Coverage
 // =========================================================================
 
+/** Options for a rule coverage analysis. */
+export interface CoverageQuery {
+  namespace?: string;
+  tenant?: string;
+  /** Start of the time range (RFC 3339). */
+  from?: string;
+  /** End of the time range (RFC 3339). */
+  to?: string;
+}
+
 /** A unique combination of coverage dimensions. */
 export interface CoverageKey {
   namespace: string;
@@ -3103,17 +3113,11 @@ export interface CoverageEntry {
   matched_rules: string[];
 }
 
-/** Options for a rule coverage analysis. */
-export interface CoverageQuery {
-  limit?: number;
-  namespace?: string;
-  tenant?: string;
-  page_size?: number;
-}
-
 /** Full rule coverage report. */
 export interface CoverageReport {
-  records_scanned: number;
+  scanned_from: string;
+  scanned_to: string;
+  total_actions: number;
   unique_combinations: number;
   fully_covered: number;
   partially_covered: number;
@@ -3121,4 +3125,38 @@ export interface CoverageReport {
   rules_loaded: number;
   entries: CoverageEntry[];
   unmatched_rules: string[];
+}
+
+/** Parse a raw CoverageReport JSON payload from the server.
+ *
+ * The server serializes each entry with its key fields (namespace/tenant/
+ * provider/action_type) flattened at the top level, not nested under "key".
+ */
+export function parseCoverageReport(data: Record<string, unknown>): CoverageReport {
+  const rawEntries = (data.entries as Array<Record<string, unknown>>) ?? [];
+  const entries: CoverageEntry[] = rawEntries.map((e) => ({
+    key: {
+      namespace: String(e.namespace),
+      tenant: String(e.tenant),
+      provider: String(e.provider),
+      action_type: String(e.action_type),
+    },
+    total: Number(e.total),
+    covered: Number(e.covered),
+    uncovered: Number(e.uncovered),
+    matched_rules: (e.matched_rules as string[]) ?? [],
+  }));
+
+  return {
+    scanned_from: String(data.scanned_from),
+    scanned_to: String(data.scanned_to),
+    total_actions: Number(data.total_actions),
+    unique_combinations: Number(data.unique_combinations),
+    fully_covered: Number(data.fully_covered),
+    partially_covered: Number(data.partially_covered),
+    uncovered: Number(data.uncovered),
+    rules_loaded: Number(data.rules_loaded),
+    entries,
+    unmatched_rules: (data.unmatched_rules as string[]) ?? [],
+  };
 }

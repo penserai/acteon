@@ -8,8 +8,12 @@ import java.util.List;
  * Full rule coverage report.
  */
 public class CoverageReport {
-    @JsonProperty("records_scanned")
-    private long recordsScanned;
+    @JsonProperty("scanned_from")
+    private String scannedFrom;
+    @JsonProperty("scanned_to")
+    private String scannedTo;
+    @JsonProperty("total_actions")
+    private long totalActions;
     @JsonProperty("unique_combinations")
     private int uniqueCombinations;
     @JsonProperty("fully_covered")
@@ -23,8 +27,14 @@ public class CoverageReport {
     @JsonProperty("unmatched_rules")
     private List<String> unmatchedRules;
 
-    public long getRecordsScanned() { return recordsScanned; }
-    public void setRecordsScanned(long recordsScanned) { this.recordsScanned = recordsScanned; }
+    public String getScannedFrom() { return scannedFrom; }
+    public void setScannedFrom(String scannedFrom) { this.scannedFrom = scannedFrom; }
+
+    public String getScannedTo() { return scannedTo; }
+    public void setScannedTo(String scannedTo) { this.scannedTo = scannedTo; }
+
+    public long getTotalActions() { return totalActions; }
+    public void setTotalActions(long totalActions) { this.totalActions = totalActions; }
 
     public int getUniqueCombinations() { return uniqueCombinations; }
     public void setUniqueCombinations(int uniqueCombinations) { this.uniqueCombinations = uniqueCombinations; }

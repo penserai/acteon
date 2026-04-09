@@ -116,6 +116,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/dispatch/batch", post(dispatch::dispatch_batch))
         // Rules management
         .route("/v1/rules", get(rules::list_rules))
+        .route("/v1/rules/coverage", get(rules::rule_coverage))
         .route("/v1/rules/reload", post(rules::reload_rules))
         .route("/v1/rules/{name}/enabled", put(rules::set_rule_enabled))
         .route("/v1/rules/evaluate", post(rules::evaluate_rules))

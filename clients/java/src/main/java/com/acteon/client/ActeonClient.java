@@ -2498,120 +2498,58 @@ public class ActeonClient implements AutoCloseable {
     // =========================================================================
 
     /**
-     * Analyzes rule coverage by scanning the audit trail.
+     * Analyzes rule coverage by querying the server's aggregation endpoint.
      *
-     * <p>Pages through audit records and builds a coverage matrix showing which
-     * (namespace, tenant, provider, action_type) combinations were matched
-     * by a rule and which were not.</p>
+     * <p>The server groups audit records by
+     * (namespace, tenant, provider, action_type, matched_rule) and
+     * cross-references the result with the currently-loaded rule set.
+     * No raw audit records are transferred over the wire.</p>
      *
      * @param query Coverage query options (may be null for defaults).
      * @return A coverage report with per-combination statistics.
      * @throws ActeonException If a network or server error occurs.
      */
     public CoverageReport rulesCoverage(CoverageQuery query) throws ActeonException {
-        int limit = 5000;
-        int pageSize = 500;
-        String namespace = null;
-        String tenant = null;
+        try {
+            StringBuilder path = new StringBuilder("/v1/rules/coverage");
+            List<String> params = new ArrayList<>();
 
-        if (query != null) {
-            if (query.getLimit() > 0) limit = query.getLimit();
-            if (query.getPageSize() > 0) pageSize = query.getPageSize();
-            namespace = query.getNamespace();
-            tenant = query.getTenant();
-        }
-
-        int effectivePage = Math.min(pageSize, limit);
-
-        List<RuleInfo> rules = listRules();
-        List<AuditRecord> allRecords = new ArrayList<>();
-        int offset = 0;
-
-        while (true) {
-            int remaining = limit - offset;
-            if (remaining <= 0) break;
-            int thisPage = Math.min(effectivePage, remaining);
-
-            AuditQuery auditQuery = new AuditQuery();
-            auditQuery.setNamespace(namespace);
-            auditQuery.setTenant(tenant);
-            auditQuery.setLimit(thisPage);
-            auditQuery.setOffset(offset);
-
-            AuditPage page = queryAudit(auditQuery);
-            allRecords.addAll(page.getRecords());
-
-            if (page.getRecords().size() < thisPage) break;
-            offset += page.getRecords().size();
-        }
-
-        return buildCoverageReport(allRecords, rules);
-    }
-
-    private CoverageReport buildCoverageReport(List<AuditRecord> records, List<RuleInfo> rules) {
-        Map<String, long[]> counts = new java.util.LinkedHashMap<>();
-        Map<String, java.util.Set<String>> matchedMap = new java.util.LinkedHashMap<>();
-        Map<String, CoverageKey> keyMap = new java.util.LinkedHashMap<>();
-
-        for (AuditRecord record : records) {
-            String mapKey = record.getNamespace() + ":" + record.getTenant() + ":" +
-                record.getProvider() + ":" + record.getActionType();
-
-            counts.computeIfAbsent(mapKey, k -> new long[2]);
-            matchedMap.computeIfAbsent(mapKey, k -> new java.util.TreeSet<>());
-            keyMap.computeIfAbsent(mapKey, k -> new CoverageKey(
-                record.getNamespace(), record.getTenant(),
-                record.getProvider(), record.getActionType()));
-
-            counts.get(mapKey)[0]++;
-            if (record.getMatchedRule() != null) {
-                counts.get(mapKey)[1]++;
-                matchedMap.get(mapKey).add(record.getMatchedRule());
+            if (query != null) {
+                if (query.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(query.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (query.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(query.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (query.getFrom() != null) {
+                    params.add("from=" + URLEncoder.encode(query.getFrom(), StandardCharsets.UTF_8));
+                }
+                if (query.getTo() != null) {
+                    params.add("to=" + URLEncoder.encode(query.getTo(), StandardCharsets.UTF_8));
+                }
             }
-        }
 
-        List<String> sortedKeys = new ArrayList<>(counts.keySet());
-        java.util.Collections.sort(sortedKeys);
-
-        List<CoverageEntry> entries = new ArrayList<>();
-        for (String mk : sortedKeys) {
-            long[] c = counts.get(mk);
-            CoverageEntry entry = new CoverageEntry();
-            entry.setKey(keyMap.get(mk));
-            entry.setTotal(c[0]);
-            entry.setCovered(c[1]);
-            entry.setUncovered(c[0] - c[1]);
-            entry.setMatchedRules(new ArrayList<>(matchedMap.get(mk)));
-            entries.add(entry);
-        }
-
-        int fullyCovered = 0;
-        int uncoveredCount = 0;
-        java.util.Set<String> allMatched = new java.util.HashSet<>();
-        for (CoverageEntry e : entries) {
-            if (e.getUncovered() == 0) fullyCovered++;
-            if (e.getCovered() == 0) uncoveredCount++;
-            allMatched.addAll(e.getMatchedRules());
-        }
-
-        List<String> unmatchedRules = new ArrayList<>();
-        for (RuleInfo r : rules) {
-            if (r.isEnabled() && !allMatched.contains(r.getName())) {
-                unmatchedRules.add(r.getName());
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
             }
-        }
-        java.util.Collections.sort(unmatchedRules);
 
-        CoverageReport report = new CoverageReport();
-        report.setRecordsScanned(records.size());
-        report.setUniqueCombinations(entries.size());
-        report.setFullyCovered(fullyCovered);
-        report.setPartiallyCovered(entries.size() - fullyCovered - uncoveredCount);
-        report.setUncovered(uncoveredCount);
-        report.setRulesLoaded(rules.size());
-        report.setEntries(entries);
-        report.setUnmatchedRules(unmatchedRules);
-        return report;
+            HttpRequest request = requestBuilder(path.toString())
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, CoverageReport.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get rule coverage");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
     }
 
     // =========================================================================

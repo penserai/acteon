@@ -1,6 +1,7 @@
 package com.acteon.client.models;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
 
 import java.util.List;
 
@@ -8,6 +9,7 @@ import java.util.List;
  * Per-combination coverage statistics.
  */
 public class CoverageEntry {
+    @JsonUnwrapped
     private CoverageKey key;
     private long total;
     private long covered;

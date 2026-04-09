@@ -100,5 +100,19 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
     );
     sqlx::query(&attachment_stmt).execute(pool).await?;
 
+    // Covering index for rule coverage aggregation.
+    //
+    // `/v1/rules/coverage` issues
+    //   SELECT namespace, tenant, provider, action_type, matched_rule, COUNT(*)
+    //   FROM audit
+    //   WHERE namespace = ? AND tenant = ? AND dispatched_at BETWEEN ? AND ?
+    //   GROUP BY namespace, tenant, provider, action_type, matched_rule
+    // which benefits from a multi-column index matching the GROUP BY prefix.
+    let coverage_idx = format!(
+        "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_coverage ON {table} \
+         (namespace, tenant, provider, action_type, matched_rule, dispatched_at DESC)"
+    );
+    sqlx::query(&coverage_idx).execute(pool).await?;
+
     Ok(())
 }

@@ -7,6 +7,7 @@ use acteon_core::analytics::{
     AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
     AnalyticsTopEntry,
 };
+use acteon_core::coverage::{CoverageAggregate, CoverageQuery};
 
 /// Map an `AnalyticsInterval` to the `ClickHouse` time-truncation function.
 fn interval_to_ch_func(interval: AnalyticsInterval) -> &'static str {
@@ -118,6 +119,21 @@ struct BucketRow {
 #[derive(clickhouse::Row, serde::Deserialize)]
 struct TopRow {
     label: String,
+    cnt: u64,
+}
+
+/// Row type for rule coverage aggregation.
+///
+/// `ClickHouse` does not support `NULL` in plain columns; `matched_rule` is
+/// stored as an empty string when no rule matched. We translate empty strings
+/// to `None` when emitting [`CoverageAggregate`].
+#[derive(clickhouse::Row, serde::Deserialize)]
+struct CoverageRow {
+    namespace: String,
+    tenant: String,
+    provider: String,
+    action_type: String,
+    matched_rule: String,
     cnt: u64,
 }
 
@@ -281,5 +297,65 @@ impl AnalyticsStore for ClickHouseAnalyticsStore {
             top_entries,
             total_count,
         })
+    }
+
+    async fn rule_coverage(
+        &self,
+        query: &CoverageQuery,
+    ) -> Result<Vec<CoverageAggregate>, AuditError> {
+        let now = Utc::now();
+        let from = query
+            .from
+            .unwrap_or_else(|| now - chrono::Duration::days(7));
+        let to = query.to.unwrap_or(now);
+
+        let mut conditions: Vec<String> = Vec::new();
+        let mut binds: Vec<BindValue> = Vec::new();
+
+        if let Some(ref ns) = query.namespace {
+            conditions.push("namespace = ?".to_string());
+            binds.push(BindValue::Str(ns.clone()));
+        }
+        if let Some(ref t) = query.tenant {
+            conditions.push("tenant = ?".to_string());
+            binds.push(BindValue::Str(t.clone()));
+        }
+
+        conditions.push("dispatched_at >= ?".to_string());
+        binds.push(BindValue::Millis(from.timestamp_millis()));
+        conditions.push("dispatched_at <= ?".to_string());
+        binds.push(BindValue::Millis(to.timestamp_millis()));
+
+        let where_clause = format!("WHERE {}", conditions.join(" AND "));
+
+        let sql = format!(
+            "SELECT namespace, tenant, provider, action_type, matched_rule, count() AS cnt \
+             FROM {table} {where_clause} \
+             GROUP BY namespace, tenant, provider, action_type, matched_rule \
+             ORDER BY namespace, tenant, provider, action_type, matched_rule",
+            table = self.table_name(),
+        );
+
+        let q = apply_binds(self.client().query(&sql), &binds);
+        let rows: Vec<CoverageRow> = q
+            .fetch_all::<CoverageRow>()
+            .await
+            .map_err(|e| AuditError::Storage(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| CoverageAggregate {
+                namespace: row.namespace,
+                tenant: row.tenant,
+                provider: row.provider,
+                action_type: row.action_type,
+                matched_rule: if row.matched_rule.is_empty() {
+                    None
+                } else {
+                    Some(row.matched_rule)
+                },
+                count: row.cnt,
+            })
+            .collect())
     }
 }

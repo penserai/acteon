@@ -3554,20 +3554,37 @@ class CoverageEntry:
     uncovered: int
     matched_rules: list[str]
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CoverageEntry":
+        return cls(
+            key=CoverageKey(
+                namespace=data["namespace"],
+                tenant=data["tenant"],
+                provider=data["provider"],
+                action_type=data["action_type"],
+            ),
+            total=data["total"],
+            covered=data["covered"],
+            uncovered=data["uncovered"],
+            matched_rules=data.get("matched_rules", []),
+        )
+
 
 @dataclass
 class CoverageQuery:
     """Options for a rule coverage analysis."""
-    limit: int = 5000
     namespace: Optional[str] = None
     tenant: Optional[str] = None
-    page_size: int = 500
+    from_time: Optional[str] = None  # RFC 3339 timestamp
+    to_time: Optional[str] = None    # RFC 3339 timestamp
 
 
 @dataclass
 class CoverageReport:
     """Full rule coverage report."""
-    records_scanned: int
+    scanned_from: str  # RFC 3339 timestamp
+    scanned_to: str    # RFC 3339 timestamp
+    total_actions: int
     unique_combinations: int
     fully_covered: int
     partially_covered: int
@@ -3575,3 +3592,18 @@ class CoverageReport:
     rules_loaded: int
     entries: list[CoverageEntry]
     unmatched_rules: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "CoverageReport":
+        return cls(
+            scanned_from=data["scanned_from"],
+            scanned_to=data["scanned_to"],
+            total_actions=data["total_actions"],
+            unique_combinations=data["unique_combinations"],
+            fully_covered=data["fully_covered"],
+            partially_covered=data["partially_covered"],
+            uncovered=data["uncovered"],
+            rules_loaded=data["rules_loaded"],
+            entries=[CoverageEntry.from_dict(e) for e in data.get("entries", [])],
+            unmatched_rules=data.get("unmatched_rules", []),
+        )
