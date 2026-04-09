@@ -29,13 +29,6 @@ Native `acteon-kafka` provider for publishing actions to Kafka topics with topic
 **Crates:** New `acteon-kafka` crate, `acteon-server`
 **Complexity:** Medium (~1500 LOC)
 
-### Tenant-Scoped API Keys
-
-Extend the auth system with `allowed_tenants`, `allowed_namespaces`, `allowed_providers`, and `allowed_action_types` fields on API keys. Validate dispatch requests against key scopes before rule evaluation. Support hierarchical tenants (e.g., `acme.us-east` inherits from `acme`).
-
-**Crates:** `acteon-server` (auth module)
-**Complexity:** Medium (~800 LOC)
-
 ### Action Signing & Tamper-Proof Dispatch
 
 Ed25519/ECDSA signing of dispatch requests with a `signature` and `signer_id` on each action. Validate incoming actions against a keyring. Provide `GET /v1/actions/{id}/verify` for cryptographic proof of action origin. Export signed audit records for downstream verification.
