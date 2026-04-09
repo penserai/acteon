@@ -17,6 +17,10 @@ use acteon_provider::{DynProvider, ProviderError};
 use acteon_rules::ir::expr::{BinaryOp, Expr};
 use acteon_rules::ir::rule::{Rule, RuleAction};
 use acteon_server::api::AppState;
+use acteon_server::auth::AuthProvider;
+use acteon_server::auth::api_key::hash_api_key;
+use acteon_server::auth::config::{ApiKeyConfig, AuthFileConfig, AuthSettings, Grant};
+use acteon_server::auth::crypto::SecretString;
 use acteon_server::config::ConfigSnapshot;
 use acteon_state::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
@@ -109,6 +113,48 @@ fn build_test_state_with_audit_and_analytics(
         ui_enabled: false,
         cors_allowed_origins: Vec::new(),
     }
+}
+
+/// Build a test `AppState` with auth enabled. The provided grant set is
+/// bound to a single API key named `"test-key"` whose raw value is
+/// `"test-raw-key"`. Callers authenticate by sending
+/// `Authorization: Bearer test-raw-key` on requests.
+fn build_test_state_with_auth(grants: Vec<Grant>) -> AppState {
+    let mut state = build_test_state(vec![]);
+
+    let api_key_config = ApiKeyConfig {
+        name: "test-key".to_string(),
+        key_hash: SecretString::new(hash_api_key("test-raw-key")),
+        role: "admin".to_string(),
+        grants,
+    };
+    let auth_config = AuthFileConfig {
+        settings: AuthSettings {
+            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string()),
+            jwt_expiry_seconds: 3600,
+        },
+        users: vec![],
+        api_keys: vec![api_key_config],
+    };
+
+    let state_store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let provider = AuthProvider::new(&auth_config, state_store).expect("auth provider");
+    state.auth = Some(Arc::new(provider));
+    state
+}
+
+/// Standard single-grant for "tenant-1, notifications, email, send_email".
+fn default_test_grant() -> Grant {
+    Grant {
+        tenants: vec!["tenant-1".to_string()],
+        namespaces: vec!["notifications".to_string()],
+        providers: vec!["email".to_string()],
+        actions: vec!["send_email".to_string()],
+    }
+}
+
+fn auth_headers() -> (http::HeaderName, &'static str) {
+    (http::header::AUTHORIZATION, "Bearer test-raw-key")
 }
 
 fn test_action() -> Action {
@@ -2036,4 +2082,229 @@ async fn rule_coverage_aggregates_dispatched_actions() {
 
     // No rules loaded -> no unmatched rules.
     assert!(json["unmatched_rules"].as_array().unwrap().is_empty());
+}
+
+// =========================================================================
+// Tenant-scoped API key dispatch enforcement
+// =========================================================================
+
+async fn dispatch_with_key(app: axum::Router, action: &Action) -> StatusCode {
+    let body = serde_json::to_string(action).unwrap();
+    let (header_name, header_val) = auth_headers();
+    app.oneshot(
+        Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/dispatch")
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(header_name, header_val)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+fn action_for(namespace: &str, tenant: &str, provider: &str, action_type: &str) -> Action {
+    Action::new(
+        namespace,
+        tenant,
+        provider,
+        action_type,
+        serde_json::json!({"to": "user@example.com"}),
+    )
+}
+
+#[tokio::test]
+async fn scoped_api_key_allows_in_scope_dispatch() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "email", "send_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn scoped_api_key_denies_wrong_tenant() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-2", "email", "send_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scoped_api_key_denies_wrong_namespace() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("alerts", "tenant-1", "email", "send_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scoped_api_key_denies_wrong_provider() {
+    // Provider scoping is the new dimension — verify it actually fires.
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "sms", "send_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scoped_api_key_denies_wrong_action_type() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "email", "draft_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scoped_api_key_allows_hierarchical_child_tenant() {
+    // Grant on parent tenant "tenant-1" should cover child "tenant-1.us-east".
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1.us-east", "email", "send_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn scoped_api_key_hierarchical_matching_is_one_way() {
+    // Grant on child "tenant-1.us-east" should NOT cover parent "tenant-1".
+    let mut grant = default_test_grant();
+    grant.tenants = vec!["tenant-1.us-east".to_string()];
+    let state = build_test_state_with_auth(vec![grant]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "email", "send_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn scoped_api_key_hierarchical_does_not_match_prefix_without_dot() {
+    // Grant on "tenant-1" should NOT match "tenant-1-corp" (no dot separator).
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1-corp", "email", "send_email");
+    assert_eq!(dispatch_with_key(app, &action).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn api_key_via_bearer_header_authenticates() {
+    // Regression: SDKs send API keys via `Authorization: Bearer`, not
+    // `x-api-key`. Previously the middleware tried JWT validation first,
+    // failed, and returned 401. It should fall back to API-key lookup.
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "email", "send_email");
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, "Bearer test-raw-key")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn api_key_via_x_api_key_header_still_works() {
+    // The legacy `X-API-Key` header path must remain supported for curl
+    // examples and non-SDK tooling.
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "email", "send_email");
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header("x-api-key", "test-raw-key")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn missing_credentials_returns_401() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "email", "send_email");
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn invalid_api_key_returns_401() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+    let action = action_for("notifications", "tenant-1", "email", "send_email");
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, "Bearer not-a-real-key")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn scoped_api_key_batch_dispatch_denies_any_out_of_scope_action() {
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+
+    let batch = vec![
+        action_for("notifications", "tenant-1", "email", "send_email"),
+        // Second action is out-of-scope on provider → whole batch rejected.
+        action_for("notifications", "tenant-1", "sms", "send_email"),
+    ];
+    let body = serde_json::to_string(&batch).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch/batch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, "Bearer test-raw-key")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

@@ -115,8 +115,13 @@ pub async fn get_audit_by_action(
 
     match audit.get_by_action_id(&action_id).await {
         Ok(Some(record)) => {
-            // Verify the caller has access to this record's tenant/namespace.
-            if !identity.is_authorized(&record.tenant, &record.namespace, &record.action_type) {
+            // Verify the caller has access to this record's tenant/namespace/provider.
+            if !identity.is_authorized(
+                &record.tenant,
+                &record.namespace,
+                &record.provider,
+                &record.action_type,
+            ) {
                 return (
                     StatusCode::FORBIDDEN,
                     Json(serde_json::json!(ErrorResponse {
