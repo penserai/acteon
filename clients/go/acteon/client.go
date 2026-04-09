@@ -2157,6 +2157,53 @@ func (c *Client) QueryAnalytics(ctx context.Context, query *AnalyticsQuery) (*An
 }
 
 // =============================================================================
+// Rules Coverage
+// =============================================================================
+
+// RulesCoverage analyzes rule coverage by querying the server's aggregation
+// endpoint. The server groups audit records by
+// (namespace, tenant, provider, action_type, matched_rule) and cross-references
+// the result with the currently-loaded rule set. No raw audit records are
+// transferred over the wire.
+func (c *Client) RulesCoverage(ctx context.Context, query *CoverageQuery) (*CoverageReport, error) {
+	path := "/v1/rules/coverage"
+	if query != nil {
+		params := url.Values{}
+		if query.Namespace != "" {
+			params.Set("namespace", query.Namespace)
+		}
+		if query.Tenant != "" {
+			params.Set("tenant", query.Tenant)
+		}
+		if query.From != nil {
+			params.Set("from", query.From.Format(time.RFC3339))
+		}
+		if query.To != nil {
+			params.Set("to", query.To.Format(time.RFC3339))
+		}
+		if len(params) > 0 {
+			path = path + "?" + params.Encode()
+		}
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get rule coverage"}
+	}
+
+	var report CoverageReport
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &report, nil
+}
+
+// =============================================================================
 // Subscribe (SSE)
 // =============================================================================
 

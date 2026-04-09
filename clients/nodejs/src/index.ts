@@ -101,4 +101,8 @@ export {
   type AnalyticsBucket,
   type AnalyticsTopEntry,
   type AnalyticsResponse,
+  type CoverageKey,
+  type CoverageEntry,
+  type CoverageQuery,
+  type CoverageReport,
 } from "./models.js";

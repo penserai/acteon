@@ -7,6 +7,7 @@ use acteon_core::analytics::{
     AnalyticsBucket, AnalyticsInterval, AnalyticsMetric, AnalyticsQuery, AnalyticsResponse,
     AnalyticsTopEntry,
 };
+use acteon_core::coverage::{CoverageAggregate, CoverageQuery};
 
 use crate::error::AuditError;
 use crate::record::AuditQuery;
@@ -23,6 +24,23 @@ pub trait AnalyticsStore: Send + Sync {
         &self,
         query: &AnalyticsQuery,
     ) -> Result<AnalyticsResponse, AuditError>;
+
+    /// Aggregate audit records for rule coverage analysis.
+    ///
+    /// Returns one row per unique combination of
+    /// `(namespace, tenant, provider, action_type, matched_rule)` within the
+    /// requested time range. The server combines these rows with the
+    /// currently-loaded rule set to build a
+    /// [`CoverageReport`](acteon_core::coverage::CoverageReport).
+    ///
+    /// Implementations backed by SQL (Postgres, `ClickHouse`) should use a
+    /// native `GROUP BY`. Other backends fall back through
+    /// [`InMemoryAnalytics`], which pages through audit records server-side
+    /// and aggregates in bounded memory.
+    async fn rule_coverage(
+        &self,
+        query: &CoverageQuery,
+    ) -> Result<Vec<CoverageAggregate>, AuditError>;
 }
 
 /// In-memory analytics implementation that works with any `AuditStore`.
@@ -286,6 +304,83 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
             top_entries,
             total_count,
         })
+    }
+
+    async fn rule_coverage(
+        &self,
+        query: &CoverageQuery,
+    ) -> Result<Vec<CoverageAggregate>, AuditError> {
+        let now = Utc::now();
+        let from = query
+            .from
+            .unwrap_or_else(|| now - chrono::Duration::days(7));
+        let to = query.to.unwrap_or(now);
+
+        // Key: (namespace, tenant, provider, action_type, matched_rule).
+        let mut matrix: HashMap<(String, String, String, String, Option<String>), u64> =
+            HashMap::new();
+
+        let batch_size = 1000u32;
+        let mut offset = 0u32;
+
+        loop {
+            let audit_query = AuditQuery {
+                namespace: query.namespace.clone(),
+                tenant: query.tenant.clone(),
+                from: Some(from),
+                to: Some(to),
+                limit: Some(batch_size),
+                offset: Some(offset),
+                ..Default::default()
+            };
+
+            let page = self.store.query(&audit_query).await?;
+            let fetched = page.records.len();
+
+            for record in page.records {
+                let key = (
+                    record.namespace,
+                    record.tenant,
+                    record.provider,
+                    record.action_type,
+                    record.matched_rule,
+                );
+                *matrix.entry(key).or_insert(0) += 1;
+            }
+
+            if fetched < batch_size as usize {
+                break;
+            }
+            offset = offset.saturating_add(batch_size);
+        }
+
+        let mut aggregates: Vec<CoverageAggregate> = matrix
+            .into_iter()
+            .map(
+                |((namespace, tenant, provider, action_type, matched_rule), count)| {
+                    CoverageAggregate {
+                        namespace,
+                        tenant,
+                        provider,
+                        action_type,
+                        matched_rule,
+                        count,
+                    }
+                },
+            )
+            .collect();
+
+        // Deterministic order for tests and stable API output.
+        aggregates.sort_by(|a, b| {
+            a.namespace
+                .cmp(&b.namespace)
+                .then_with(|| a.tenant.cmp(&b.tenant))
+                .then_with(|| a.provider.cmp(&b.provider))
+                .then_with(|| a.action_type.cmp(&b.action_type))
+                .then_with(|| a.matched_rule.cmp(&b.matched_rule))
+        });
+
+        Ok(aggregates)
     }
 }
 
@@ -691,5 +786,238 @@ mod tests {
 
         let monthly = truncate_to_interval(dt, AnalyticsInterval::Monthly);
         assert_eq!(monthly, Utc.with_ymd_and_hms(2026, 2, 1, 0, 0, 0).unwrap());
+    }
+
+    // =========================================================================
+    // rule_coverage tests
+    // =========================================================================
+
+    fn make_record_with_rule(
+        namespace: &str,
+        tenant: &str,
+        provider: &str,
+        action_type: &str,
+        matched_rule: Option<&str>,
+        dispatched_at: DateTime<Utc>,
+    ) -> AuditRecord {
+        let mut r = make_record(
+            namespace,
+            tenant,
+            provider,
+            action_type,
+            "executed",
+            100,
+            dispatched_at,
+        );
+        r.matched_rule = matched_rule.map(String::from);
+        r
+    }
+
+    #[tokio::test]
+    async fn rule_coverage_groups_by_all_five_dimensions() {
+        let store = Arc::new(MemoryAuditStore::new());
+        let now = Utc::now();
+
+        // Same dimensions, matched twice by "block-email".
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "email",
+            "send",
+            Some("block-email"),
+            now - Duration::hours(1),
+        ));
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "email",
+            "send",
+            Some("block-email"),
+            now - Duration::hours(2),
+        ));
+        // Same provider+action_type but a different rule matched.
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "email",
+            "send",
+            Some("throttle"),
+            now - Duration::hours(3),
+        ));
+        // No rule matched.
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "email",
+            "send",
+            None,
+            now - Duration::hours(4),
+        ));
+        // Different dimensions.
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "sms",
+            "send",
+            None,
+            now - Duration::hours(5),
+        ));
+
+        let analytics = InMemoryAnalytics::new(store);
+        let query = CoverageQuery {
+            namespace: Some("prod".into()),
+            tenant: Some("acme".into()),
+            from: None,
+            to: None,
+        };
+        let aggregates = analytics.rule_coverage(&query).await.unwrap();
+
+        // Expected: 4 distinct aggregate rows for (email, send) — two rules,
+        // one None, and the three matched emails split across 2 rules + 1 None.
+        // email/send: (block-email, 2), (throttle, 1), (None, 1)
+        // sms/send: (None, 1)
+        assert_eq!(aggregates.len(), 4);
+
+        let total: u64 = aggregates.iter().map(|a| a.count).sum();
+        assert_eq!(total, 5);
+
+        // Find the (email, send, block-email) aggregate.
+        let block_email = aggregates
+            .iter()
+            .find(|a| a.provider == "email" && a.matched_rule.as_deref() == Some("block-email"))
+            .unwrap();
+        assert_eq!(block_email.count, 2);
+
+        // Find the (email, send, None) aggregate.
+        let email_none = aggregates
+            .iter()
+            .find(|a| a.provider == "email" && a.matched_rule.is_none())
+            .unwrap();
+        assert_eq!(email_none.count, 1);
+    }
+
+    #[tokio::test]
+    async fn rule_coverage_respects_namespace_filter() {
+        let store = Arc::new(MemoryAuditStore::new());
+        let now = Utc::now();
+
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "email",
+            "send",
+            Some("rule-a"),
+            now - Duration::hours(1),
+        ));
+        store.add_record(make_record_with_rule(
+            "dev",
+            "acme",
+            "email",
+            "send",
+            Some("rule-b"),
+            now - Duration::hours(1),
+        ));
+
+        let analytics = InMemoryAnalytics::new(store);
+        let query = CoverageQuery {
+            namespace: Some("prod".into()),
+            tenant: None,
+            from: None,
+            to: None,
+        };
+        let aggregates = analytics.rule_coverage(&query).await.unwrap();
+
+        assert_eq!(aggregates.len(), 1);
+        assert_eq!(aggregates[0].namespace, "prod");
+        assert_eq!(aggregates[0].matched_rule.as_deref(), Some("rule-a"));
+    }
+
+    #[tokio::test]
+    async fn rule_coverage_respects_time_range() {
+        let store = Arc::new(MemoryAuditStore::new());
+        let now = Utc::now();
+
+        // Inside the window (2 hours ago).
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "email",
+            "send",
+            Some("rule-inside"),
+            now - Duration::hours(2),
+        ));
+        // Outside the window (10 days ago — beyond the 7-day default AND
+        // beyond an explicit 3-hour window).
+        store.add_record(make_record_with_rule(
+            "prod",
+            "acme",
+            "email",
+            "send",
+            Some("rule-outside"),
+            now - Duration::days(10),
+        ));
+
+        let analytics = InMemoryAnalytics::new(store);
+        let query = CoverageQuery {
+            namespace: None,
+            tenant: None,
+            from: Some(now - Duration::hours(3)),
+            to: Some(now),
+        };
+        let aggregates = analytics.rule_coverage(&query).await.unwrap();
+
+        assert_eq!(aggregates.len(), 1);
+        assert_eq!(aggregates[0].matched_rule.as_deref(), Some("rule-inside"));
+    }
+
+    #[tokio::test]
+    async fn rule_coverage_handles_empty_store() {
+        let store = Arc::new(MemoryAuditStore::new());
+        let analytics = InMemoryAnalytics::new(store);
+        let aggregates = analytics
+            .rule_coverage(&CoverageQuery::default())
+            .await
+            .unwrap();
+        assert!(aggregates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rule_coverage_pages_through_large_result_sets() {
+        // Seed more than one batch_size (1000) of records to exercise the
+        // pagination loop.
+        let store = Arc::new(MemoryAuditStore::new());
+        let now = Utc::now();
+        for i in 0..1500 {
+            // Split into 3 distinct (provider, action_type, matched_rule)
+            // combinations so aggregation actually happens.
+            let (provider, action_type, rule) = match i % 3 {
+                0 => ("email", "send", Some("rule-a")),
+                1 => ("sms", "send", Some("rule-b")),
+                _ => ("webhook", "post", None),
+            };
+            store.add_record(make_record_with_rule(
+                "prod",
+                "acme",
+                provider,
+                action_type,
+                rule,
+                now - Duration::minutes(i_as_i64(i)),
+            ));
+        }
+
+        let analytics = InMemoryAnalytics::new(store);
+        let aggregates = analytics
+            .rule_coverage(&CoverageQuery::default())
+            .await
+            .unwrap();
+
+        // 3 distinct (ns, tenant, provider, action_type, matched_rule) tuples.
+        assert_eq!(aggregates.len(), 3);
+        let total: u64 = aggregates.iter().map(|a| a.count).sum();
+        assert_eq!(total, 1500);
+    }
+
+    fn i_as_i64(i: usize) -> i64 {
+        i64::try_from(i).unwrap_or(0)
     }
 }

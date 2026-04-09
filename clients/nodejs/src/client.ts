@@ -133,6 +133,9 @@ import {
   AnalyticsResponse,
   analyticsQueryToParams,
   parseAnalyticsResponse,
+  CoverageQuery,
+  CoverageReport,
+  parseCoverageReport,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 import { readFileSync } from "node:fs";
@@ -1590,6 +1593,35 @@ export class ActeonClient {
       return parseAnalyticsResponse(data);
     } else {
       throw new HttpError(response.status, "Failed to query analytics");
+    }
+  }
+
+  // =========================================================================
+  // Rule Coverage
+  // =========================================================================
+
+  /**
+   * Analyze rule coverage by querying the server's aggregation endpoint.
+   *
+   * The server groups audit records by (namespace, tenant, provider,
+   * action_type, matched_rule) and cross-references the result with the
+   * currently-loaded rule set. No raw audit records are transferred over
+   * the wire.
+   */
+  async rulesCoverage(query?: CoverageQuery): Promise<CoverageReport> {
+    const params = new URLSearchParams();
+    if (query?.namespace) params.set("namespace", query.namespace);
+    if (query?.tenant) params.set("tenant", query.tenant);
+    if (query?.from) params.set("from", query.from);
+    if (query?.to) params.set("to", query.to);
+
+    const response = await this.request("GET", "/v1/rules/coverage", { params });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseCoverageReport(data);
+    } else {
+      throw new HttpError(response.status, "Failed to get rule coverage");
     }
   }
 

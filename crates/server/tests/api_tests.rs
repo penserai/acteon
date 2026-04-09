@@ -7,6 +7,7 @@ use axum::http::{self, Request, StatusCode};
 use tokio::sync::RwLock;
 use tower::ServiceExt;
 
+use acteon_audit::analytics::{AnalyticsStore, InMemoryAnalytics};
 use acteon_audit::store::AuditStore;
 use acteon_audit_memory::MemoryAuditStore;
 use acteon_core::{Action, ProviderResponse};
@@ -56,6 +57,14 @@ fn build_test_state(rules: Vec<Rule>) -> AppState {
 }
 
 fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStore>>) -> AppState {
+    build_test_state_with_audit_and_analytics(rules, audit, false)
+}
+
+fn build_test_state_with_audit_and_analytics(
+    rules: Vec<Rule>,
+    audit: Option<Arc<dyn AuditStore>>,
+    with_analytics: bool,
+) -> AppState {
     let store = Arc::new(MemoryStateStore::new());
     let lock = Arc::new(MemoryDistributedLock::new());
 
@@ -77,10 +86,18 @@ fn build_test_state_with_audit(rules: Vec<Rule>, audit: Option<Arc<dyn AuditStor
 
     let gw = builder.build().expect("gateway should build");
 
+    let analytics: Option<Arc<dyn AnalyticsStore>> = if with_analytics {
+        audit
+            .as_ref()
+            .map(|a| Arc::new(InMemoryAnalytics::new(Arc::clone(a))) as Arc<dyn AnalyticsStore>)
+    } else {
+        None
+    };
+
     AppState {
         gateway: Arc::new(RwLock::new(gw)),
         audit,
-        analytics: None,
+        analytics,
         auth: None,
         rate_limiter: None,
         embedding: None,
@@ -1925,4 +1942,98 @@ async fn recurring_list_with_status_filter() {
         .unwrap();
     let list: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(list["count"].as_u64().unwrap(), 1);
+}
+
+// =========================================================================
+// Rule coverage endpoint
+// =========================================================================
+
+#[tokio::test]
+async fn rule_coverage_returns_404_without_analytics() {
+    // No analytics wired up.
+    let state = build_test_state(vec![]);
+    let app = build_app(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/rules/coverage")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rule_coverage_aggregates_dispatched_actions() {
+    let audit: Arc<dyn AuditStore> = Arc::new(MemoryAuditStore::new());
+    let state = build_test_state_with_audit_and_analytics(vec![], Some(Arc::clone(&audit)), true);
+
+    // Dispatch three actions through the gateway so the audit store receives
+    // real records.
+    let app = build_app(state.clone());
+    for _ in 0..3 {
+        let action_body = serde_json::to_string(&test_action()).unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/v1/dispatch")
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(action_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // Give async audit writes time to land.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Query coverage.
+    let response = build_app(state)
+        .oneshot(
+            Request::builder()
+                .uri("/v1/rules/coverage")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    // Shape checks: fields from the new server-side report.
+    assert!(json["scanned_from"].is_string());
+    assert!(json["scanned_to"].is_string());
+    assert_eq!(json["total_actions"].as_u64().unwrap(), 3);
+    assert_eq!(json["unique_combinations"].as_u64().unwrap(), 1);
+    // No rules were loaded, so all three actions are uncovered.
+    assert_eq!(json["uncovered"].as_u64().unwrap(), 1);
+    assert_eq!(json["fully_covered"].as_u64().unwrap(), 0);
+    assert_eq!(json["rules_loaded"].as_u64().unwrap(), 0);
+
+    let entries = json["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry["namespace"], "notifications");
+    assert_eq!(entry["tenant"], "tenant-1");
+    assert_eq!(entry["provider"], "email");
+    assert_eq!(entry["action_type"], "send_email");
+    assert_eq!(entry["total"].as_u64().unwrap(), 3);
+    assert_eq!(entry["covered"].as_u64().unwrap(), 0);
+    assert_eq!(entry["uncovered"].as_u64().unwrap(), 3);
+
+    // No rules loaded -> no unmatched rules.
+    assert!(json["unmatched_rules"].as_array().unwrap().is_empty());
 }

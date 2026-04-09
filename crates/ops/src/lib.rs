@@ -12,17 +12,18 @@ pub use error::OpsError;
 
 use acteon_client::{
     ActeonClient, ActeonClientBuilder, ApprovalListResponse, AuditPage, AuditQuery, AuditRecord,
-    BatchResult, ChainDetailResponse, ChainHistoryResponse, ComplianceStatus, CreateProfileRequest,
-    CreateQuotaRequest, CreateRecurringAction, CreateRecurringResponse, CreateRetentionRequest,
-    CreateTemplateRequest, DagResponse, DlqDrainResponse, DlqStatsResponse, EvaluateRulesOptions,
-    EventListResponse, EventQuery, EventState, FlushGroupResponse, GroupDetail, GroupListResponse,
-    HashChainVerification, ListChainDefinitionsResponse, ListChainsResponse, ListPluginsResponse,
-    ListProfilesResponse, ListQuotasResponse, ListRecurringResponse, ListTemplatesResponse,
-    QuotaPolicy, QuotaUsage, RecurringDetail, RecurringFilter, ReloadResult, RenderPreviewRequest,
-    RenderPreviewResponse, ReplayQuery, ReplayResult, ReplaySummary, RetentionPolicy,
-    RuleEvaluationTrace, RuleInfo, TemplateInfo, TemplateProfileInfo, TransitionResponse,
-    UpdateProfileRequest, UpdateQuotaRequest, UpdateRecurringAction, UpdateRetentionRequest,
-    UpdateTemplateRequest, VerifyHashChainRequest,
+    BatchResult, ChainDetailResponse, ChainHistoryResponse, ComplianceStatus, CoverageQuery,
+    CoverageReport, CreateProfileRequest, CreateQuotaRequest, CreateRecurringAction,
+    CreateRecurringResponse, CreateRetentionRequest, CreateTemplateRequest, DagResponse,
+    DlqDrainResponse, DlqStatsResponse, EvaluateRulesOptions, EventListResponse, EventQuery,
+    EventState, FlushGroupResponse, GroupDetail, GroupListResponse, HashChainVerification,
+    ListChainDefinitionsResponse, ListChainsResponse, ListPluginsResponse, ListProfilesResponse,
+    ListQuotasResponse, ListRecurringResponse, ListTemplatesResponse, QuotaPolicy, QuotaUsage,
+    RecurringDetail, RecurringFilter, ReloadResult, RenderPreviewRequest, RenderPreviewResponse,
+    ReplayQuery, ReplayResult, ReplaySummary, RetentionPolicy, RuleEvaluationTrace, RuleInfo,
+    TemplateInfo, TemplateProfileInfo, TransitionResponse, UpdateProfileRequest,
+    UpdateQuotaRequest, UpdateRecurringAction, UpdateRetentionRequest, UpdateTemplateRequest,
+    VerifyHashChainRequest,
 };
 use acteon_core::{
     Action, ActionOutcome, CircuitBreakerActionResponse, ListCircuitBreakersResponse,
@@ -119,6 +120,11 @@ impl OpsClient {
     /// List routing rules.
     pub async fn list_rules(&self) -> Result<Vec<RuleInfo>, OpsError> {
         Ok(self.inner.list_rules().await?)
+    }
+
+    /// Analyze rule coverage from the audit trail.
+    pub async fn rules_coverage(&self, query: &CoverageQuery) -> Result<CoverageReport, OpsError> {
+        Ok(self.inner.rules_coverage(query).await?)
     }
 
     /// Evaluate rules against a test action.
