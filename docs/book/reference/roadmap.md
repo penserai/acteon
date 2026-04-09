@@ -4,13 +4,6 @@ Planned features and enhancements for Acteon, ordered by estimated value/effort 
 
 ## Quick Wins
 
-### Rule Coverage CLI
-
-`acteon rules coverage` command that analyzes loaded rules and generates a coverage matrix (namespace x tenant x provider x action_type). Identifies unmatched combinations and blind spots in safety policy. Optionally integrates with the audit trail to surface real unmatched actions.
-
-**Crates:** `acteon-cli`, `acteon-rules`
-**Complexity:** Small (~500 LOC)
-
 ### Prometheus Alerting Rules Export
 
 `acteon metrics export-alerts` command and `GET /v1/metrics/alerts/prometheus.yaml` endpoint that auto-generates Prometheus alert rules from your Acteon config — per-provider SLO thresholds, quota utilization alerts, circuit breaker trip alerts, compliance mode audit failures, and retention TTL warnings.
@@ -19,6 +12,15 @@ Planned features and enhancements for Acteon, ordered by estimated value/effort 
 **Complexity:** Small (~400 LOC)
 
 ## Medium Effort
+
+### Cursor-Based Audit Pagination
+
+`AuditQuery` currently uses offset-based pagination exclusively. This is efficient for Postgres/ClickHouse because rule coverage aggregation uses native `GROUP BY` and bypasses paging, but non-SQL audit backends (Memory, Elasticsearch, DynamoDB) fall through to `InMemoryAnalytics`, which pages with offsets internally and hits the classic linear-degradation anti-pattern on large scans.
+
+Replace offset with cursor-based pagination (`after_id` / `before_timestamp` / opaque continuation tokens) across all audit backends and their client SDKs. Unlocks efficient deep scans for rule coverage, audit replay, and compliance exports on non-SQL backends. Also eliminates pagination-drift bugs when new records land mid-scan.
+
+**Crates:** `acteon-audit`, `acteon-audit-*` (all backends), `acteon-client`, polyglot SDKs, `acteon-cli`
+**Complexity:** Medium (~1500 LOC; touches every audit backend and every SDK's query surface)
 
 ### Kafka Provider Integration
 
