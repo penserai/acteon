@@ -191,12 +191,18 @@ pub struct Gateway {
     pub(crate) template_profiles: parking_lot::RwLock<
         HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
     >,
-    /// Active silences indexed by `(namespace, tenant)` → list of silences
-    /// with pre-compiled regex matchers. Evaluated after rule evaluation
-    /// but before provider dispatch.
-    pub(crate) silences: parking_lot::RwLock<
-        HashMap<(String, String), Vec<crate::silence_enforcement::CachedSilence>>,
-    >,
+    /// Active silences indexed by `namespace` → list of silences with
+    /// pre-compiled regex matchers. Evaluated after rule evaluation but
+    /// before provider dispatch.
+    ///
+    /// The cache is keyed by namespace only (not `(namespace, tenant)`)
+    /// so that hierarchical tenant matching works at dispatch time — a
+    /// silence on tenant `acme` correctly covers dispatches to
+    /// `acme.us-east`. The tenant is matched per-silence inside the
+    /// iteration using the [`tenant_matches`](crate::Gateway::check_silence)
+    /// helper.
+    pub(crate) silences:
+        parking_lot::RwLock<HashMap<String, Vec<crate::silence_enforcement::CachedSilence>>>,
     /// Per-provider execution metrics (latency, success/failure counters).
     pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
     /// Optional WASM plugin runtime for rule condition evaluation.

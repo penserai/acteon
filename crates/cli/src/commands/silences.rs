@@ -25,14 +25,20 @@ pub enum SilencesCommand {
         /// Namespace this silence applies to.
         #[arg(long)]
         namespace: String,
-        /// Tenant this silence applies to.
+        /// Tenant this silence applies to. Hierarchical matching applies —
+        /// a silence on `acme` also covers `acme.us-east`.
         #[arg(long)]
         tenant: String,
         /// Label matcher in `key=value`, `key!=value`, `key=~regex`, or
         /// `key!~regex` form. Repeat for multiple matchers (AND).
         #[arg(long = "matcher", required = true)]
         matchers: Vec<String>,
-        /// Duration in hours from now. Mutually exclusive with `--ends-at`.
+        /// Explicit start time as RFC 3339. Defaults to now. Useful for
+        /// scheduling a future maintenance window.
+        #[arg(long)]
+        starts_at: Option<DateTime<Utc>>,
+        /// Duration in hours from `starts_at`. Mutually exclusive with
+        /// `--ends-at`.
         #[arg(long, conflicts_with = "ends_at")]
         hours: Option<u64>,
         /// Explicit end time as RFC 3339.
@@ -60,6 +66,12 @@ pub enum SilencesCommand {
         id: String,
     },
     /// Extend the end time or edit the comment of a silence.
+    ///
+    /// **Matchers are immutable** — to change which actions a silence
+    /// covers, expire the silence with `acteon silences expire` and
+    /// create a new one with the desired matcher set. This prevents
+    /// race conditions where an active silence's shape changes
+    /// mid-window.
     Update {
         /// Silence ID.
         id: String,
@@ -87,19 +99,13 @@ pub async fn run(
             namespace,
             tenant,
             matchers,
+            starts_at,
             hours,
             ends_at,
             comment,
         } => {
             create_silence(
-                ops,
-                format,
-                namespace,
-                tenant,
-                matchers,
-                *hours,
-                *ends_at,
-                comment,
+                ops, format, namespace, tenant, matchers, *starts_at, *hours, *ends_at, comment,
             )
             .await
         }
@@ -138,6 +144,7 @@ async fn create_silence(
     namespace: &str,
     tenant: &str,
     matchers: &[String],
+    starts_at: Option<DateTime<Utc>>,
     hours: Option<u64>,
     ends_at: Option<DateTime<Utc>>,
     comment: &str,
@@ -153,7 +160,7 @@ async fn create_silence(
         namespace: namespace.to_owned(),
         tenant: tenant.to_owned(),
         matchers: parsed,
-        starts_at: None,
+        starts_at,
         ends_at,
         duration_seconds,
         comment: comment.to_owned(),

@@ -453,6 +453,10 @@ pub struct BackgroundSnapshot {
     pub enable_template_sync: bool,
     /// Template sync interval in seconds.
     pub template_sync_interval_seconds: u64,
+    /// Whether silence sync is enabled.
+    pub enable_silence_sync: bool,
+    /// Silence sync interval in seconds.
+    pub silence_sync_interval_seconds: u64,
 }
 
 impl Default for BackgroundSnapshot {
@@ -481,6 +485,8 @@ impl From<&BackgroundProcessingConfig> for BackgroundSnapshot {
             retention_check_interval_seconds: cfg.retention_check_interval_seconds,
             enable_template_sync: cfg.enable_template_sync,
             template_sync_interval_seconds: cfg.template_sync_interval_seconds,
+            enable_silence_sync: cfg.enable_silence_sync,
+            silence_sync_interval_seconds: cfg.silence_sync_interval_seconds,
         }
     }
 }

@@ -2564,11 +2564,14 @@ async fn silence_update_extends_end_time() {
 }
 
 #[tokio::test]
-async fn silence_delete_removes_from_cache() {
+async fn silence_delete_hides_from_active_list() {
+    // DELETE soft-expires: the default list (active only) is empty
+    // after delete, while `include_expired=true` and `GET /{id}` still
+    // return the soft-expired record. See also
+    // `deleted_silence_remains_resolvable_for_audit_references` below.
     let state = build_test_state_with_auth(vec![default_test_grant()]);
     let app = build_app(state);
 
-    // Create.
     let create = serde_json::json!({
         "namespace": "notifications",
         "tenant": "tenant-1",
@@ -2585,7 +2588,6 @@ async fn silence_delete_removes_from_cache() {
     .await;
     let id = created["id"].as_str().unwrap().to_owned();
 
-    // Delete.
     let (status, _) = silence_crud_request(
         app.clone(),
         http::Method::DELETE,
@@ -2595,7 +2597,6 @@ async fn silence_delete_removes_from_cache() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // List should be empty.
     let (_, json) = silence_crud_request(app, http::Method::GET, "/v1/silences", None).await;
     assert_eq!(json["count"].as_u64().unwrap(), 0);
 }
@@ -2710,6 +2711,257 @@ async fn silence_does_not_intercept_non_matching_dispatch() {
     assert!(
         outcome.get("Silenced").is_none(),
         "action should not be silenced: {outcome}"
+    );
+}
+
+#[tokio::test]
+async fn silence_on_parent_tenant_covers_child_dispatch() {
+    // Grant with hierarchical tenant "tenant-1" covers dispatches to
+    // "tenant-1.us-east" when combined with a silence on "tenant-1".
+    // This test exercises the dispatch-path hierarchical matching that
+    // was added in the review follow-up.
+    let grant = Grant {
+        tenants: vec!["tenant-1".into()],
+        namespaces: vec!["notifications".into()],
+        providers: vec!["email".into()],
+        actions: vec!["send_email".into()],
+    };
+    let state = build_test_state_with_auth(vec![grant]);
+    let app = build_app(state);
+
+    // Create a silence on the parent tenant with severity=warning.
+    let create = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "matchers": [{ "name": "severity", "value": "warning", "op": "equal" }],
+        "duration_seconds": 3600,
+        "comment": "parent-tenant silence"
+    });
+    let (status, _) = silence_crud_request(
+        app.clone(),
+        http::Method::POST,
+        "/v1/silences",
+        Some(create),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Dispatch an action for the CHILD tenant "tenant-1.us-east".
+    let mut action = test_action();
+    action.tenant = "tenant-1.us-east".into();
+    action
+        .metadata
+        .labels
+        .insert("severity".into(), "warning".into());
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, "Bearer test-raw-key")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+    assert!(
+        outcome.get("Silenced").is_some(),
+        "child tenant dispatch should be silenced by parent-tenant silence: {outcome}"
+    );
+}
+
+#[tokio::test]
+async fn silence_on_child_tenant_does_not_cover_parent_dispatch() {
+    // Inverse — grant covers "tenant-1", silence on "tenant-1.us-east"
+    // must NOT mute dispatches to the parent "tenant-1".
+    let grant = Grant {
+        tenants: vec!["tenant-1".into()],
+        namespaces: vec!["notifications".into()],
+        providers: vec!["email".into()],
+        actions: vec!["send_email".into()],
+    };
+    let state = build_test_state_with_auth(vec![grant]);
+    let app = build_app(state);
+
+    let create = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1.us-east",
+        "matchers": [{ "name": "severity", "value": "warning", "op": "equal" }],
+        "duration_seconds": 3600,
+        "comment": "child-tenant silence"
+    });
+    let (status, _) = silence_crud_request(
+        app.clone(),
+        http::Method::POST,
+        "/v1/silences",
+        Some(create),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let mut action = test_action(); // tenant "tenant-1"
+    action
+        .metadata
+        .labels
+        .insert("severity".into(), "warning".into());
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, "Bearer test-raw-key")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        outcome.get("Silenced").is_none(),
+        "parent dispatch must NOT be silenced by child-tenant silence: {outcome}"
+    );
+}
+
+#[tokio::test]
+async fn deleted_silence_remains_resolvable_for_audit_references() {
+    // Soft-delete: after DELETE, the silence record is kept (with
+    // ends_at = now) so audit references to its silence_id remain
+    // resolvable via GET /v1/silences/{id}.
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+
+    let create = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "matchers": [{ "name": "severity", "value": "warning", "op": "equal" }],
+        "duration_seconds": 3600,
+        "comment": "audit reference test"
+    });
+    let (_, created) = silence_crud_request(
+        app.clone(),
+        http::Method::POST,
+        "/v1/silences",
+        Some(create),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    // Delete.
+    let (status, _) = silence_crud_request(
+        app.clone(),
+        http::Method::DELETE,
+        &format!("/v1/silences/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // GET by id must still return the record, with active=false.
+    let (status, json) = silence_crud_request(
+        app.clone(),
+        http::Method::GET,
+        &format!("/v1/silences/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["id"], id);
+    assert_eq!(json["active"], false);
+    assert_eq!(json["comment"], "audit reference test");
+
+    // List without include_expired should NOT return it.
+    let (_, list_json) =
+        silence_crud_request(app.clone(), http::Method::GET, "/v1/silences", None).await;
+    assert_eq!(list_json["count"].as_u64().unwrap(), 0);
+
+    // List with include_expired=true SHOULD return it.
+    let (_, list_all) = silence_crud_request(
+        app,
+        http::Method::GET,
+        "/v1/silences?include_expired=true",
+        None,
+    )
+    .await;
+    assert_eq!(list_all["count"].as_u64().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn deleted_silence_no_longer_blocks_new_dispatches() {
+    // After DELETE, matching dispatches must proceed normally even
+    // though the silence record still exists in the state store.
+    let state = build_test_state_with_auth(vec![default_test_grant()]);
+    let app = build_app(state);
+
+    let create = serde_json::json!({
+        "namespace": "notifications",
+        "tenant": "tenant-1",
+        "matchers": [{ "name": "severity", "value": "warning", "op": "equal" }],
+        "duration_seconds": 3600,
+        "comment": "to delete"
+    });
+    let (_, created) = silence_crud_request(
+        app.clone(),
+        http::Method::POST,
+        "/v1/silences",
+        Some(create),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_owned();
+
+    let (_, _) = silence_crud_request(
+        app.clone(),
+        http::Method::DELETE,
+        &format!("/v1/silences/{id}"),
+        None,
+    )
+    .await;
+
+    let mut action = test_action();
+    action
+        .metadata
+        .labels
+        .insert("severity".into(), "warning".into());
+    let body = serde_json::to_string(&action).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::AUTHORIZATION, "Bearer test-raw-key")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        outcome.get("Silenced").is_none(),
+        "deleted silence must not block new dispatches: {outcome}"
     );
 }
 

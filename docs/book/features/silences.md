@@ -213,14 +213,39 @@ acteon audit list --outcome silenced --from 2026-04-10T00:00:00Z
 - **Expiry is eager at dispatch time** — silences whose `ends_at` has
   passed do not match new dispatches, even if the in-memory cache still
   holds them. This makes the system self-correcting.
+- **DELETE is a soft-expire, not a hard delete** — `DELETE /v1/silences/{id}`
+  sets `ends_at = now` and persists the updated record. The silence
+  record itself is preserved so that audit trail references to its
+  `silence_id` (recorded on previously silenced dispatches) remain
+  resolvable via `GET /v1/silences/{id}` and
+  `GET /v1/silences?include_expired=true`. A background reaper (Phase
+  1.5) will eventually purge tombstoned records.
 - **Empty matcher lists are rejected** — guards against accidentally
   muting everything with a bare silence.
 - **Hierarchical matching is one-way** — a silence on `acme` covers
-  `acme.us-east` but NOT vice versa. This prevents child tenants from
-  silencing their parent's traffic.
-- **Matchers are immutable on update** — to change matchers, delete the
+  `acme.us-east` but NOT vice versa. Sibling tenants (`acme.us-east`
+  vs. `acme.eu-west`) do not cover each other. Dot-strict: `acme`
+  does NOT match `acme-corp`.
+- **Matchers are immutable on update** — to change matchers, expire the
   silence and create a new one. This prevents race conditions where an
   active silence changes shape mid-window.
+
+## HA / distributed deployments
+
+Silences are eventually consistent across gateway instances. When an
+operator creates a silence via one instance, the change is visible on
+that instance immediately and propagates to peer instances via a
+background sync task that rebuilds the cache from the state store.
+
+| Setting | Default | Description |
+|---|---|---|
+| `background.enable_silence_sync` | `true` | Enable periodic silence cache refresh from the state store |
+| `background.silence_sync_interval_seconds` | `10` | How often to refresh |
+
+For production HA deployments, leave `enable_silence_sync` enabled.
+The 10-second sync interval is the upper bound on how long a silence
+created on instance A will take to start muting dispatches on instance
+B. Disabling sync is only appropriate for single-instance deployments.
 
 See `docs/design-alertmanager-parity.md` for the Alertmanager feature
 parity initiative this silence implementation is part of.

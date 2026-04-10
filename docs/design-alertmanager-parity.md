@@ -140,6 +140,39 @@ Acteon caps regex matchers at creation time:
 
 Invalid regexes are rejected with `400 Bad Request` at silence creation. No way to create a silence that could ReDoS the dispatch path.
 
+### 4.2b Cache layout and hierarchical enforcement
+
+The in-memory cache is keyed by namespace alone — `HashMap<Namespace, Vec<CachedSilence>>`.
+Each silence's tenant is checked at dispatch time against the action's
+tenant using a dot-strict hierarchical match: a silence on tenant
+`acme` covers dispatches to `acme`, `acme.us-east`, and
+`acme.us-east.prod`, but not `acme-corp` (no dot separator) or
+`acme.eu-west.prod` → `acme.eu-west` (no inheritance upward).
+
+The cache is NOT keyed by `(namespace, tenant)` because that would
+prevent hierarchical inheritance — an exact hashmap lookup on
+`(acme.us-east, ...)` would miss a silence created on parent `acme`.
+
+### 4.2c Distributed synchronization (HA)
+
+Silences are eventually consistent across gateway instances via the
+background processor's `enable_silence_sync` tick (default: 10 seconds).
+Each tick calls `Gateway::sync_silences_from_store`, which rebuilds
+the cache from `KeyKind::Silence` entries. This means:
+
+- An operator creating a silence via instance A will see it take
+  effect immediately on instance A (CRUD updates the local cache
+  synchronously).
+- Other instances will pick up the new silence within the sync
+  interval (default 10s).
+- Deletes propagate the same way: the soft-expired silence still
+  exists in the state store but peer instances will observe
+  `ends_at < now` after their next sync.
+
+For production deployments, operators should leave `enable_silence_sync`
+at its default `true`. Disabling it is only appropriate for single-instance
+deployments where split-brain is not a concern.
+
 ### 4.3 Where silences are evaluated in the dispatch pipeline
 
 **After rule evaluation, before provider dispatch.**
@@ -192,23 +225,28 @@ Silences live in the state store under key prefix `silence:{namespace}:{tenant}:
 
 Not persisted in the state store but stored in the cache: compiled regex matchers. Rebuilt on cache reload.
 
-### 4.8 Expiry semantics
+### 4.8 Expiry semantics (soft-delete)
 
-Silences expire naturally: `CachedSilence::applies_to` checks `is_active_at(now)`
-first and skips expired entries, so the dispatch-path enforcement is
-self-correcting — expired silences in memory are harmless.
+Silences are never hard-deleted via the API. `DELETE /v1/silences/{id}`
+sets `ends_at = now` and persists the updated record. Rationale:
 
-**Background reaper is deferred to Phase 1.5** as a small polish follow-up.
-In Phase 1, cleanup happens via:
-1. Explicit `DELETE /v1/silences/{id}` removes the silence from both cache
-   and state store.
-2. Operators issuing `GET /v1/silences` see only active silences (expired
-   entries are filtered at list time).
+- **Audit-reference integrity**: `ActionOutcome::Silenced` records a
+  `silence_id` in the audit trail. An operator later investigating "why
+  was this alert silenced?" must be able to resolve the ID back to the
+  original matchers + comment + creator. A hard delete leaves a dangling
+  reference.
+- **Dispatch-path correctness**: once `ends_at = now`, the cached
+  entry's `is_active_at(now)` check returns false, so the next
+  dispatch is not silenced. The cache entry remains in memory (its
+  pre-compiled regex is still valid) and is listed via
+  `GET /v1/silences?include_expired=true` until a future reaper
+  removes the tombstone from the state store.
 
-The state store does accumulate expired silence records over time without a
-reaper. For typical ops usage (<100 silences per tenant per month) this is
-negligible; a background reaper becomes necessary only at scale and will be
-added in a short follow-up PR.
+**Background reaper is deferred to Phase 1.5**. In Phase 1, the state
+store accumulates soft-expired silences indefinitely. For typical ops
+usage (<100 silences per tenant per month) this is negligible; a reaper
+will be added in a short follow-up PR that tombstones entries older
+than 7 days.
 
 ### 4.9 API
 

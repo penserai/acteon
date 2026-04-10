@@ -13,8 +13,26 @@ use chrono::{DateTime, Utc};
 use regex::{Regex, RegexBuilder};
 use tracing::{debug, warn};
 
-use acteon_core::silence::{MAX_REGEX_SIZE, MatchOp, Silence, SilenceMatcher};
+use acteon_core::silence::{
+    MAX_REGEX_PATTERN_LEN, MAX_REGEX_SIZE, MatchOp, Silence, SilenceMatcher,
+};
 use acteon_core::{Action, ActionMetadata};
+
+/// Hierarchical tenant match: the silence's tenant is either equal to
+/// the action's tenant, or is a strict prefix of it delimited by `.`.
+///
+/// This mirrors the grant system's `tenant_matches` helper but for a
+/// single pattern → single tenant comparison. A silence on `acme`
+/// covers `acme`, `acme.us-east`, and `acme.us-east.prod`; it does NOT
+/// cover `acme-corp` (no dot) or `acme-staging` (different suffix).
+fn silence_tenant_covers(silence_tenant: &str, action_tenant: &str) -> bool {
+    if silence_tenant == action_tenant {
+        return true;
+    }
+    action_tenant.len() > silence_tenant.len() + 1
+        && action_tenant.starts_with(silence_tenant)
+        && action_tenant.as_bytes()[silence_tenant.len()] == b'.'
+}
 use acteon_state::{KeyKind, StateKey};
 
 use crate::error::GatewayError;
@@ -34,14 +52,27 @@ pub struct CachedSilence {
 impl CachedSilence {
     /// Build a cached silence from a raw silence, compiling any regex matchers.
     ///
+    /// This is the single safety gate for state-store records: bad
+    /// silences (oversized regex, malformed pattern, over-length pattern)
+    /// are rejected here, so [`Gateway::load_silences_from_state_store`]
+    /// will skip them with a warning rather than load them into the
+    /// dispatch-path cache. A malicious or corrupted state-store write
+    /// cannot take down the gateway.
+    ///
     /// # Errors
     ///
-    /// Returns an error string if any regex matcher fails to compile.
+    /// Returns an error string if any regex matcher exceeds the pattern
+    /// length cap or fails to compile within the DFA size cap.
     pub fn new(silence: Silence) -> Result<Self, String> {
         let mut compiled = Vec::with_capacity(silence.matchers.len());
         for matcher in &silence.matchers {
             match matcher.op {
                 MatchOp::Regex | MatchOp::NotRegex => {
+                    if matcher.value.len() > MAX_REGEX_PATTERN_LEN {
+                        return Err(format!(
+                            "regex pattern exceeds {MAX_REGEX_PATTERN_LEN}-character limit"
+                        ));
+                    }
                     compiled.push(Some(compile_anchored_regex(&matcher.value)?));
                 }
                 MatchOp::Equal | MatchOp::NotEqual => {
@@ -123,17 +154,27 @@ impl Gateway {
     /// Returns the ID of the first matching silence, or `None`. Called
     /// from the dispatch pipeline after rule evaluation but before the
     /// verdict is executed.
+    ///
+    /// **Hierarchical tenant matching** is enforced here: a silence on
+    /// tenant `acme` covers actions dispatched to `acme.us-east` and
+    /// `acme.us-east.prod`. The cache is keyed by namespace alone, and
+    /// each silence's `tenant` is checked against the action's tenant
+    /// via a dot-strict prefix match.
     #[must_use]
     pub fn check_silence(&self, action: &Action) -> Option<String> {
         let now = Utc::now();
-        let key = (action.namespace.to_string(), action.tenant.to_string());
         let silences = self.silences.read();
-        let list = silences.get(&key)?;
+        let list = silences.get(action.namespace.as_str())?;
         let labels = action_labels(&action.metadata);
         for cached in list {
+            if !silence_tenant_covers(&cached.silence.tenant, action.tenant.as_str()) {
+                continue;
+            }
             if cached.applies_to(labels, now) {
                 debug!(
                     silence_id = %cached.silence.id,
+                    silence_tenant = %cached.silence.tenant,
+                    action_tenant = %action.tenant,
                     action_id = %action.id,
                     "action silenced"
                 );
@@ -153,12 +194,9 @@ impl Gateway {
     /// Returns an error if the silence has invalid regex matchers.
     pub fn upsert_silence_cache(&self, silence: Silence) -> Result<(), String> {
         let cached = CachedSilence::new(silence)?;
-        let key = (
-            cached.silence.namespace.clone(),
-            cached.silence.tenant.clone(),
-        );
+        let namespace = cached.silence.namespace.clone();
         let mut silences = self.silences.write();
-        let list = silences.entry(key).or_default();
+        let list = silences.entry(namespace).or_default();
         // Remove any existing entry with the same ID, then push the new one.
         list.retain(|s| s.silence.id != cached.silence.id);
         list.push(cached);
@@ -166,27 +204,29 @@ impl Gateway {
     }
 
     /// Remove a silence from the in-memory cache by ID.
-    pub fn remove_silence_cache(&self, namespace: &str, tenant: &str, silence_id: &str) {
-        let key = (namespace.to_string(), tenant.to_string());
+    pub fn remove_silence_cache(&self, namespace: &str, _tenant: &str, silence_id: &str) {
         let mut silences = self.silences.write();
-        if let Some(list) = silences.get_mut(&key) {
+        if let Some(list) = silences.get_mut(namespace) {
             list.retain(|s| s.silence.id != silence_id);
             if list.is_empty() {
-                silences.remove(&key);
+                silences.remove(namespace);
             }
         }
     }
 
     /// Load all silences from the state store into the in-memory cache.
     ///
-    /// Called from server startup after the gateway is constructed. Idempotent —
-    /// can be called repeatedly to refresh the cache.
+    /// Called from server startup after the gateway is constructed, and
+    /// periodically from the background processor to pick up changes
+    /// made by peer instances. Idempotent — replaces the entire cache
+    /// atomically.
+    ///
+    /// Malformed silences (bad regex, failed JSON parse) are logged and
+    /// skipped so that one bad record cannot take down the gateway.
     ///
     /// # Errors
     ///
-    /// Returns an error if the state store scan fails. Individual silences
-    /// that fail to deserialize or compile are logged and skipped so one
-    /// bad record doesn't prevent the rest from loading.
+    /// Returns an error only if the state store scan itself fails.
     pub async fn load_silences_from_state_store(&self) -> Result<usize, GatewayError> {
         let entries = self
             .state
@@ -194,7 +234,7 @@ impl Gateway {
             .await
             .map_err(GatewayError::from)?;
 
-        let mut new_cache: HashMap<(String, String), Vec<CachedSilence>> = HashMap::new();
+        let mut new_cache: HashMap<String, Vec<CachedSilence>> = HashMap::new();
         let mut loaded = 0usize;
 
         for (_key, value) in entries {
@@ -204,11 +244,8 @@ impl Gateway {
             };
             match CachedSilence::new(silence) {
                 Ok(cached) => {
-                    let key = (
-                        cached.silence.namespace.clone(),
-                        cached.silence.tenant.clone(),
-                    );
-                    new_cache.entry(key).or_default().push(cached);
+                    let namespace = cached.silence.namespace.clone();
+                    new_cache.entry(namespace).or_default().push(cached);
                     loaded += 1;
                 }
                 Err(e) => {
@@ -219,6 +256,21 @@ impl Gateway {
 
         *self.silences.write() = new_cache;
         Ok(loaded)
+    }
+
+    /// Periodically-invoked sync from the state store.
+    ///
+    /// Delegates to [`load_silences_from_state_store`](Self::load_silences_from_state_store).
+    /// Called from the background processor so that silences created on
+    /// peer gateway instances become visible here within the sync
+    /// interval (default: 10 seconds), preventing split-brain silence
+    /// behavior in HA deployments.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the underlying state store scan fails.
+    pub async fn sync_silences_from_store(&self) -> Result<usize, GatewayError> {
+        self.load_silences_from_state_store().await
     }
 
     /// Persist a silence to the state store.
@@ -268,15 +320,23 @@ impl Gateway {
 
     /// List silences in the in-memory cache, optionally filtered by
     /// namespace/tenant.
+    ///
+    /// Filtering is **exact** at list time — a `tenant=acme` filter does
+    /// NOT return silences created for `acme.us-east`. Hierarchical
+    /// inheritance only applies to dispatch-path enforcement, not to
+    /// the list view (which is about "show me silences explicitly
+    /// created for this tenant").
     #[must_use]
     pub fn list_silences(&self, namespace: Option<&str>, tenant: Option<&str>) -> Vec<Silence> {
         let silences = self.silences.read();
         silences
             .iter()
-            .filter(|((ns, t), _)| {
-                namespace.is_none_or(|n| n == ns) && tenant.is_none_or(|x| x == t)
+            .filter(|(ns, _)| namespace.is_none_or(|n| n == ns.as_str()))
+            .flat_map(|(_, list)| {
+                list.iter()
+                    .filter(|c| tenant.is_none_or(|t| t == c.silence.tenant.as_str()))
+                    .map(|c| c.silence.clone())
             })
-            .flat_map(|(_, list)| list.iter().map(|c| c.silence.clone()))
             .collect()
     }
 
@@ -294,10 +354,14 @@ impl Gateway {
     pub fn expired_silence_ids(&self, now: DateTime<Utc>) -> Vec<(String, String, String)> {
         let silences = self.silences.read();
         let mut out = Vec::new();
-        for ((ns, tenant), list) in silences.iter() {
+        for (ns, list) in silences.iter() {
             for cached in list {
                 if cached.silence.ends_at <= now {
-                    out.push((ns.clone(), tenant.clone(), cached.silence.id.clone()));
+                    out.push((
+                        ns.clone(),
+                        cached.silence.tenant.clone(),
+                        cached.silence.id.clone(),
+                    ));
                 }
             }
         }
@@ -371,5 +435,157 @@ mod tests {
         );
         let cached = CachedSilence::new(s).unwrap();
         assert!(!cached.applies_to(&labels(&[("severity", "warning")]), Utc::now()));
+    }
+
+    // =========================================================================
+    // Hierarchical tenant covers — pure-function tests
+    // =========================================================================
+
+    #[test]
+    fn hierarchical_tenant_exact_match() {
+        assert!(silence_tenant_covers("acme", "acme"));
+    }
+
+    #[test]
+    fn hierarchical_tenant_child() {
+        assert!(silence_tenant_covers("acme", "acme.us-east"));
+        assert!(silence_tenant_covers("acme", "acme.us-east.prod"));
+    }
+
+    #[test]
+    fn hierarchical_tenant_sibling_does_not_match() {
+        assert!(!silence_tenant_covers("acme.us-east", "acme.eu-west"));
+    }
+
+    #[test]
+    fn hierarchical_tenant_child_does_not_cover_parent() {
+        assert!(!silence_tenant_covers("acme.us-east", "acme"));
+    }
+
+    #[test]
+    fn hierarchical_tenant_dot_strict() {
+        // Prefix match without the `.` separator must NOT match.
+        assert!(!silence_tenant_covers("acme", "acme-corp"));
+        assert!(!silence_tenant_covers("acme", "acmecorp"));
+        assert!(!silence_tenant_covers("acme", "acmecar"));
+    }
+
+    #[test]
+    fn hierarchical_tenant_unrelated_does_not_match() {
+        assert!(!silence_tenant_covers("acme", "other"));
+        assert!(!silence_tenant_covers("acme", ""));
+    }
+
+    // =========================================================================
+    // Load-path safety: malformed state store entries must not panic
+    // =========================================================================
+
+    use crate::GatewayBuilder;
+    use acteon_state::{StateKey, StateStore};
+    use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+
+    /// Build a minimal gateway for load-path tests.
+    async fn build_test_gateway() -> (crate::Gateway, std::sync::Arc<MemoryStateStore>) {
+        let store = std::sync::Arc::new(MemoryStateStore::new());
+        let lock = std::sync::Arc::new(MemoryDistributedLock::new());
+        let gw = GatewayBuilder::new()
+            .state(store.clone())
+            .lock(lock)
+            .build()
+            .expect("build gateway");
+        (gw, store)
+    }
+
+    fn silence_json(id: &str, pattern: &str) -> String {
+        // Build the JSON directly so we can inject a regex that bypasses
+        // the `SilenceMatcher::new` validator. This simulates a malicious
+        // direct state-store write or an old server version that didn't
+        // enforce the current caps.
+        let now = chrono::Utc::now();
+        let later = now + chrono::Duration::hours(1);
+        format!(
+            r#"{{
+                "id": "{id}",
+                "namespace": "prod",
+                "tenant": "acme",
+                "matchers": [
+                    {{
+                        "name": "severity",
+                        "value": {pattern:?},
+                        "op": "regex"
+                    }}
+                ],
+                "starts_at": "{now_s}",
+                "ends_at": "{later_s}",
+                "created_by": "test",
+                "comment": "load-path test",
+                "created_at": "{now_s}",
+                "updated_at": "{now_s}"
+            }}"#,
+            now_s = now.to_rfc3339(),
+            later_s = later.to_rfc3339(),
+        )
+    }
+
+    #[tokio::test]
+    async fn load_skips_malformed_regex_without_panic() {
+        let (gw, store) = build_test_gateway().await;
+
+        // 1) A valid silence with a simple regex.
+        let ok_id = "ok-silence";
+        let ok_json = silence_json(ok_id, "warning");
+        store
+            .set(
+                &StateKey::new("_system", "_silences", KeyKind::Silence, ok_id),
+                &ok_json,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // 2) A silence with an oversized regex pattern that would fail the
+        //    complexity cap at compile time.
+        let bad_id = "bad-silence";
+        let oversized = "a".repeat(1024);
+        let bad_json = silence_json(bad_id, &oversized);
+        store
+            .set(
+                &StateKey::new("_system", "_silences", KeyKind::Silence, bad_id),
+                &bad_json,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // 3) A completely malformed JSON entry.
+        let garbage_id = "garbage";
+        store
+            .set(
+                &StateKey::new("_system", "_silences", KeyKind::Silence, garbage_id),
+                "not valid json at all",
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Load must succeed and return count = 1 (only the valid silence).
+        let loaded = gw.load_silences_from_state_store().await.unwrap();
+        assert_eq!(
+            loaded, 1,
+            "only the valid silence should load; oversized and garbage are skipped"
+        );
+
+        // The valid silence is usable.
+        let all = gw.list_silences(None, None);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, ok_id);
+    }
+
+    #[tokio::test]
+    async fn load_handles_empty_state_store() {
+        let (gw, _store) = build_test_gateway().await;
+        let loaded = gw.load_silences_from_state_store().await.unwrap();
+        assert_eq!(loaded, 0);
+        assert_eq!(gw.silence_cache_size(), 0);
     }
 }

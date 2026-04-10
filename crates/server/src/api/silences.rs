@@ -440,13 +440,13 @@ pub async fn update_silence(
         .into_response()
 }
 
-/// `DELETE /v1/silences/{id}` -- expire a silence immediately.
+/// `DELETE /v1/silences/{id}` -- expire a silence immediately (soft).
 #[utoipa::path(
     delete,
     path = "/v1/silences/{id}",
     tag = "Silences",
     summary = "Expire a silence",
-    description = "Removes the silence from the cache and state store. Audit records for previously silenced dispatches are preserved.",
+    description = "Soft-expires the silence by setting `ends_at = now` and persisting. The record itself is NOT deleted, so audit references to the silence ID remain resolvable via `GET /v1/silences/{id}` and `GET /v1/silences?include_expired=true`. Matching dispatches immediately stop being silenced because the cache entry is removed and `is_active_at` now returns false. A background reaper (Phase 1.5) will eventually purge tombstoned records after their retention window.",
     params(("id" = String, Path, description = "Silence ID")),
     responses(
         (status = 204, description = "Silence expired"),
@@ -467,7 +467,7 @@ pub async fn delete_silence(
     }
 
     let gw = state.gateway.read().await;
-    let silence = match gw.get_silence(&id).await {
+    let mut silence = match gw.get_silence(&id).await {
         Ok(Some(s)) => s,
         Ok(None) => {
             return error_response(StatusCode::NOT_FOUND, &format!("silence not found: {id}"));
@@ -484,11 +484,21 @@ pub async fn delete_silence(
         );
     }
 
-    if let Err(e) = gw.delete_silence(&id).await {
+    // Soft-expire: set ends_at = now, persist the updated record, and
+    // refresh the cache entry in place. The dispatch path ignores the
+    // entry naturally via `is_active_at`, but `list_silences?include_expired=true`
+    // and `get_silence/{id}` can still see it so audit references remain
+    // resolvable.
+    let now = Utc::now();
+    silence.ends_at = now;
+    silence.updated_at = now;
+    if let Err(e) = gw.persist_silence(&silence).await {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
-    gw.remove_silence_cache(&silence.namespace, &silence.tenant, &id);
+    if let Err(e) = gw.upsert_silence_cache(silence.clone()) {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
+    }
 
-    info!(silence_id = %id, "silence expired");
+    info!(silence_id = %id, "silence expired (soft)");
     StatusCode::NO_CONTENT.into_response()
 }

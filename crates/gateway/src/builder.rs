@@ -803,23 +803,23 @@ impl Default for GatewayBuilder {
     }
 }
 
-/// Compile a list of silences into the gateway cache, keyed by
-/// `(namespace, tenant)`. Rejects malformed silences with a configuration error.
+/// Compile a list of silences into the gateway cache, keyed by namespace.
+///
+/// The cache is keyed by namespace alone (not `(namespace, tenant)`) so
+/// that hierarchical tenant matching works at dispatch time — a silence
+/// on tenant `acme` can cover dispatches to `acme.us-east`. See
+/// [`Gateway::check_silence`](crate::Gateway::check_silence) for the
+/// match logic.
 fn build_silence_cache(
     silences: Vec<acteon_core::Silence>,
-) -> Result<HashMap<(String, String), Vec<crate::silence_enforcement::CachedSilence>>, GatewayError>
-{
-    let mut out: HashMap<(String, String), Vec<crate::silence_enforcement::CachedSilence>> =
-        HashMap::new();
+) -> Result<HashMap<String, Vec<crate::silence_enforcement::CachedSilence>>, GatewayError> {
+    let mut out: HashMap<String, Vec<crate::silence_enforcement::CachedSilence>> = HashMap::new();
     for silence in silences {
         silence.validate().map_err(GatewayError::Configuration)?;
         let cached = crate::silence_enforcement::CachedSilence::new(silence)
             .map_err(GatewayError::Configuration)?;
-        let key = (
-            cached.silence.namespace.clone(),
-            cached.silence.tenant.clone(),
-        );
-        out.entry(key).or_default().push(cached);
+        let namespace = cached.silence.namespace.clone();
+        out.entry(namespace).or_default().push(cached);
     }
     Ok(out)
 }
