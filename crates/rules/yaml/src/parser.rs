@@ -231,16 +231,29 @@ pub enum YamlAction {
         fingerprint_fields: Vec<String>,
     },
     /// Group events for batched notification.
+    ///
+    /// `group_wait_seconds` controls the initial batching window.
+    /// `group_interval_seconds` controls re-batching between flushes
+    /// for a persistent group. `repeat_interval_seconds` (optional)
+    /// forces the group to persist and re-flush periodically — omit
+    /// it for the pre-Phase-2 ephemeral-group behavior.
     Group {
         /// Fields to group events by.
         group_by: Vec<String>,
-        /// Seconds to wait before sending first notification.
+        /// Seconds to wait between first event and first flush.
         #[serde(default = "default_group_wait")]
         group_wait_seconds: u64,
-        /// Minimum seconds between notifications for same group.
+        /// Seconds to wait between flushes for a persistent group when
+        /// new events arrive. Honored only if `repeat_interval_seconds`
+        /// is also set.
         #[serde(default = "default_group_interval")]
         group_interval_seconds: u64,
-        /// Maximum events in a single group.
+        /// Optional seconds between forced re-flushes for a persistent
+        /// group with no new events. Omit for ephemeral groups (single
+        /// flush, then delete).
+        #[serde(default)]
+        repeat_interval_seconds: Option<u64>,
+        /// Maximum events in a single group before dropping the oldest.
         #[serde(default = "default_max_group_size")]
         max_group_size: usize,
         /// Optional template name for group notification.
@@ -501,12 +514,16 @@ rules:
                 group_by,
                 group_wait_seconds,
                 group_interval_seconds,
+                repeat_interval_seconds,
                 max_group_size,
                 template,
             } => {
                 assert_eq!(group_by.len(), 2);
                 assert_eq!(*group_wait_seconds, 60);
                 assert_eq!(*group_interval_seconds, 300);
+                // `repeat_interval_seconds` is absent in this fixture, should
+                // default to `None` (ephemeral group — Phase-1 behavior).
+                assert_eq!(*repeat_interval_seconds, None);
                 assert_eq!(*max_group_size, 50);
                 assert_eq!(template.as_deref(), Some("alert_group_template"));
             }

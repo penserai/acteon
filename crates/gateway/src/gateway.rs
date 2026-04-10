@@ -671,6 +671,7 @@ impl Gateway {
                 group_by,
                 group_wait_seconds,
                 group_interval_seconds,
+                repeat_interval_seconds,
                 max_group_size,
                 template: _,
             } => {
@@ -679,6 +680,7 @@ impl Gateway {
                     group_by,
                     *group_wait_seconds,
                     *group_interval_seconds,
+                    *repeat_interval_seconds,
                     *max_group_size,
                 )
                 .await?
@@ -1948,13 +1950,15 @@ impl Gateway {
 
     /// Handle the group verdict: add event to group for batched notification.
     #[instrument(name = "gateway.handle_group", skip_all)]
+    #[allow(clippy::too_many_arguments)]
     async fn handle_group(
         &self,
         action: &Action,
         group_by: &[String],
         group_wait_seconds: u64,
-        _group_interval_seconds: u64,
-        _max_group_size: usize,
+        group_interval_seconds: u64,
+        repeat_interval_seconds: Option<u64>,
+        max_group_size: usize,
     ) -> Result<ActionOutcome, GatewayError> {
         let (group_id, group_key, group_size, notify_at) = self
             .group_manager
@@ -1962,6 +1966,9 @@ impl Gateway {
                 action,
                 group_by,
                 group_wait_seconds,
+                group_interval_seconds,
+                repeat_interval_seconds,
+                max_group_size,
                 self.state.as_ref(),
                 self.payload_encryptor.as_deref(),
             )

@@ -124,11 +124,32 @@ impl GroupManager {
     ///
     /// Returns a tuple of (group ID, group key, current group size, notify at time).
     /// If an encryptor is provided, group metadata is encrypted before storage.
+    ///
+    /// ## Scheduling
+    ///
+    /// The `notify_at` timestamp is computed differently depending on
+    /// the group's current state:
+    ///
+    /// - **New group**: `notify_at = now + group_wait_seconds`
+    /// - **Existing Pending group**: `notify_at` is unchanged — the
+    ///   group is already waiting its `group_wait` window.
+    /// - **Existing Notified group** (persistent, has `repeat_interval`):
+    ///   the group transitions back to Pending. `notify_at` is set to
+    ///   `max(last_notified_at + group_interval_seconds, now)`, so the
+    ///   next flush respects the batching window since the last flush.
+    ///
+    /// The `max_group_size` cap is enforced by
+    /// [`EventGroup::add_event`], which drops the oldest event when
+    /// the group is at capacity.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn add_to_group(
         &self,
         action: &Action,
         group_by: &[String],
         group_wait_seconds: u64,
+        group_interval_seconds: u64,
+        repeat_interval_seconds: Option<u64>,
+        max_group_size: usize,
         state: &dyn StateStore,
         encryptor: Option<&PayloadEncryptor>,
     ) -> Result<(String, String, usize, DateTime<Utc>), GatewayError> {
@@ -156,7 +177,24 @@ impl GroupManager {
             let mut groups = self.groups.write();
 
             if let Some(group) = groups.get_mut(&group_key) {
-                // Add to existing group
+                // Existing group: handle the Notified → Pending
+                // transition for persistent groups, then append the
+                // event (dropping oldest if at capacity).
+                let now = Utc::now();
+                if matches!(group.state, GroupState::Notified) {
+                    // Only persistent groups (with repeat_interval) can
+                    // be in Notified state at this point; ephemeral
+                    // groups are deleted after flush. Resurrect with
+                    // the next flush scheduled group_interval from
+                    // last_notified (or now if that's in the past).
+                    group.state = GroupState::Pending;
+                    #[allow(clippy::cast_possible_wrap)]
+                    let interval = chrono::Duration::seconds(group.group_interval_seconds as i64);
+                    let candidate = group
+                        .last_notified_at
+                        .map_or_else(|| now + interval, |t| t + interval);
+                    group.notify_at = candidate.max(now);
+                }
                 group.add_event(grouped_event);
                 let events = group.events.clone();
                 let labels = group.labels.clone();
@@ -170,11 +208,17 @@ impl GroupManager {
                     trace,
                 )
             } else {
-                // Create new group
+                // New group. Record timing params from the rule so
+                // future transitions don't need to re-plumb them.
                 let group_id = Uuid::new_v4().to_string();
                 #[allow(clippy::cast_possible_wrap)]
                 let notify_at = Utc::now() + chrono::Duration::seconds(group_wait_seconds as i64);
-                let mut group = EventGroup::new(&group_id, &group_key, notify_at);
+                let mut group = EventGroup::new(&group_id, &group_key, notify_at).with_timing(
+                    group_wait_seconds,
+                    group_interval_seconds,
+                    repeat_interval_seconds,
+                    max_group_size,
+                );
 
                 // Capture trace context from the first event in the group
                 group.trace_context.clone_from(&action.trace_context);
@@ -258,30 +302,69 @@ impl GroupManager {
     }
 
     /// Get all groups that are ready to be flushed.
+    ///
+    /// A group is ready if `notify_at <= now` and it is either in
+    /// `Pending` state (normal flush) or in `Notified` state with a
+    /// `repeat_interval_seconds` set (forced re-notification of a
+    /// persistent group that has had no new events).
     #[must_use]
     pub fn get_ready_groups(&self) -> Vec<EventGroup> {
         let now = Utc::now();
         self.groups
             .read()
             .values()
-            .filter(|g| matches!(g.state, GroupState::Pending) && g.notify_at <= now)
+            .filter(|g| {
+                if g.notify_at > now {
+                    return false;
+                }
+                match g.state {
+                    GroupState::Pending => true,
+                    GroupState::Notified => g.is_persistent(),
+                    GroupState::Resolved => false,
+                }
+            })
             .cloned()
             .collect()
     }
 
-    /// Flush a group (mark as notified and return events).
+    /// Flush a group — mark as notified and return the current event snapshot.
     ///
-    /// Returns the group if it was pending, None if already processed.
+    /// For persistent groups (`repeat_interval_seconds` set), the next
+    /// `notify_at` is scheduled at `now + repeat_interval_seconds` so
+    /// the group continues to fire periodic reminders with no new
+    /// events. For ephemeral groups, the state machine still
+    /// transitions to `Notified`, but the caller (see
+    /// `flush_ready_groups` in the background worker) is expected to
+    /// delete the group shortly after.
+    ///
+    /// Returns the group snapshot if it was ready for flush, or
+    /// `None` if the group no longer exists or is in a state that
+    /// rejects flushing.
     pub fn flush_group(&self, group_key: &str) -> Option<EventGroup> {
         let mut groups = self.groups.write();
-        if let Some(group) = groups.get_mut(group_key)
-            && matches!(group.state, GroupState::Pending)
-        {
-            group.state = GroupState::Notified;
-            group.updated_at = Utc::now();
-            return Some(group.clone());
+        let group = groups.get_mut(group_key)?;
+
+        let flushable = matches!(group.state, GroupState::Pending)
+            || (matches!(group.state, GroupState::Notified) && group.is_persistent());
+        if !flushable {
+            return None;
         }
-        None
+
+        let now = Utc::now();
+        group.state = GroupState::Notified;
+        group.last_notified_at = Some(now);
+        group.updated_at = now;
+
+        // Schedule the next re-notification if this is a persistent group.
+        // Ephemeral groups have their notify_at left unchanged; they are
+        // deleted by the background worker after this call.
+        if let Some(repeat) = group.repeat_interval_seconds {
+            #[allow(clippy::cast_possible_wrap)]
+            let next = now + chrono::Duration::seconds(repeat as i64);
+            group.notify_at = next;
+        }
+
+        Some(group.clone())
     }
 
     /// Remove a group after it has been fully processed.
@@ -417,7 +500,16 @@ mod tests {
         let action = test_action();
 
         let (group_id, _group_key, size, notify_at) = manager
-            .add_to_group(&action, &["metadata.cluster".to_string()], 60, &state, None)
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                300,
+                None,
+                100,
+                &state,
+                None,
+            )
             .await
             .unwrap();
 
@@ -439,6 +531,9 @@ mod tests {
                 &action1,
                 &["metadata.cluster".to_string()],
                 60,
+                300,
+                None,
+                100,
                 &state,
                 None,
             )
@@ -450,6 +545,9 @@ mod tests {
                 &action2,
                 &["metadata.cluster".to_string()],
                 60,
+                300,
+                None,
+                100,
                 &state,
                 None,
             )
@@ -494,8 +592,264 @@ mod tests {
         assert!(flushed.is_some());
         assert!(matches!(flushed.unwrap().state, GroupState::Notified));
 
-        // Second flush should return None
+        // Second flush should return None — ephemeral group cannot
+        // be re-flushed once Notified.
         let flushed2 = manager.flush_group("key-1");
         assert!(flushed2.is_none());
+    }
+
+    // =========================================================================
+    // Phase 2: group_interval, repeat_interval, max_group_size
+    // =========================================================================
+
+    #[tokio::test]
+    async fn persistent_group_survives_flush() {
+        // A group with repeat_interval set is kept alive after flush
+        // so it can re-fire with the same or additional events later.
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+
+        let (_, _, _, _) = manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,         // group_wait
+                300,        // group_interval
+                Some(3600), // repeat_interval → persistent
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let group_key = manager
+            .groups
+            .read()
+            .keys()
+            .next()
+            .cloned()
+            .expect("group created");
+
+        let flushed = manager.flush_group(&group_key).expect("flushable");
+        assert!(matches!(flushed.state, GroupState::Notified));
+        assert!(flushed.is_persistent());
+
+        // Group is still in the manager after flush — ready to re-fire.
+        assert!(manager.get_group(&group_key).is_some());
+    }
+
+    #[tokio::test]
+    async fn persistent_flush_advances_notify_at_by_repeat_interval() {
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+        let before = Utc::now();
+
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                300,
+                Some(1_800), // 30 minutes
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+        let flushed = manager.flush_group(&group_key).unwrap();
+
+        // last_notified_at set to ~now, notify_at = last_notified + 1800s.
+        let last = flushed.last_notified_at.expect("last_notified populated");
+        assert!(last >= before);
+        assert!(flushed.notify_at >= last + chrono::Duration::seconds(1_800));
+        assert!(flushed.notify_at < last + chrono::Duration::seconds(1_801));
+    }
+
+    #[tokio::test]
+    async fn notified_persistent_group_reopens_on_new_event() {
+        // After a flush, a new event on the same group key transitions
+        // the group back to Pending and recomputes notify_at based on
+        // `last_notified + group_interval` (bounded to at least now).
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                120, // 2-minute group_interval
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+        let flushed = manager.flush_group(&group_key).unwrap();
+        assert!(matches!(flushed.state, GroupState::Notified));
+        let last_notified = flushed.last_notified_at.unwrap();
+
+        // New event arrives on the same group.
+        let action2 = test_action();
+        let (_, _, size, notify_at) = manager
+            .add_to_group(
+                &action2,
+                &["metadata.cluster".to_string()],
+                60,
+                120,
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Group size is now 2 (original 1 + new one, no cap hit).
+        assert_eq!(size, 2);
+
+        // State is back to Pending.
+        let group = manager.get_group(&group_key).unwrap();
+        assert!(matches!(group.state, GroupState::Pending));
+
+        // notify_at is at least last_notified + group_interval.
+        let expected = last_notified + chrono::Duration::seconds(120);
+        assert!(
+            notify_at >= expected - chrono::Duration::seconds(1),
+            "notify_at should be >= last_notified + group_interval"
+        );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_group_state_unchanged() {
+        // Backward compat: a group without repeat_interval behaves
+        // exactly as Phase 1 — single flush and the caller deletes.
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                300,
+                None, // no repeat_interval → ephemeral
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+        let flushed = manager.flush_group(&group_key).unwrap();
+        assert!(!flushed.is_persistent());
+        assert!(matches!(flushed.state, GroupState::Notified));
+
+        // Second flush returns None — ephemeral groups cannot re-fire.
+        assert!(manager.flush_group(&group_key).is_none());
+    }
+
+    #[tokio::test]
+    async fn max_group_size_drops_oldest_event() {
+        // Filling a group beyond its max_group_size drops the oldest
+        // event, not the newest. This matches Alertmanager's cap
+        // semantics and is important for long-running persistent
+        // groups whose event list would otherwise grow unbounded.
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+
+        // Fill to exactly max_group_size=3 with 5 events.
+        for i in 0..5 {
+            let mut action = test_action();
+            action.id = acteon_core::types::ActionId::new(format!("action-{i}"));
+            manager
+                .add_to_group(
+                    &action,
+                    &["metadata.cluster".to_string()],
+                    60,
+                    300,
+                    Some(3_600),
+                    3, // max_group_size
+                    &state,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+        let group = manager.get_group(&group_key).unwrap();
+        assert_eq!(group.size(), 3, "size should be capped at max_group_size");
+
+        // The retained events should be the LAST three (action-2, -3, -4).
+        let retained_ids: Vec<String> = group
+            .events
+            .iter()
+            .map(|e| e.action_id.as_str().to_string())
+            .collect();
+        assert_eq!(
+            retained_ids,
+            vec!["action-2", "action-3", "action-4"],
+            "oldest events should be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_ready_groups_picks_up_persistent_at_repeat_time() {
+        // A persistent group in Notified state should be picked up
+        // by get_ready_groups once its notify_at (= last_notified +
+        // repeat_interval) arrives.
+        let manager = GroupManager::new();
+        let now = Utc::now();
+
+        // Manually insert a persistent group in Notified state with
+        // notify_at already in the past, simulating a repeat_interval
+        // that just elapsed.
+        let mut group = EventGroup::new("group-1", "key-1", now - chrono::Duration::seconds(5))
+            .with_timing(60, 300, Some(600), 100);
+        group.state = GroupState::Notified;
+        group.last_notified_at = Some(now - chrono::Duration::seconds(605));
+        group.add_event(GroupedEvent::new(
+            acteon_core::types::ActionId::new("a".to_string()),
+            serde_json::json!({}),
+        ));
+        manager.groups.write().insert("key-1".to_string(), group);
+
+        let ready = manager.get_ready_groups();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].group_key, "key-1");
+    }
+
+    #[tokio::test]
+    async fn get_ready_groups_ignores_ephemeral_in_notified_state() {
+        // An ephemeral group that somehow remained in Notified state
+        // (e.g., the flush worker was interrupted between flush and
+        // remove) should NOT be re-picked by get_ready_groups —
+        // they fire once and only once.
+        let manager = GroupManager::new();
+        let now = Utc::now();
+
+        let mut group = EventGroup::new("group-1", "key-1", now - chrono::Duration::seconds(5));
+        // Ephemeral: no repeat_interval.
+        group.state = GroupState::Notified;
+        manager.groups.write().insert("key-1".to_string(), group);
+
+        let ready = manager.get_ready_groups();
+        assert!(
+            ready.is_empty(),
+            "ephemeral Notified group must not re-fire"
+        );
     }
 }

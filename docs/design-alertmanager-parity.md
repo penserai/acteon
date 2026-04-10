@@ -33,7 +33,7 @@ A fresh audit against Alertmanager v0.27 features found the following gaps.
 | # | Alertmanager capability | Acteon status | Severity |
 |---|---|---|---|
 | 1 | **Silences** (time-bounded label-pattern mutes) | **Missing** — no `Silence` type, no CRUD, no dispatch-path enforcement | **Critical** |
-| 2 | `group_wait` / `group_interval` / `repeat_interval` | Partial — `group_wait` implemented, other two are stubbed but unused | Medium |
+| 2 | `group_wait` / `group_interval` / `repeat_interval` | **Shipped in Phase 2.** `group_wait` was already implemented; `group_interval` is now honored on persistent groups; `repeat_interval` is a new optional field that makes the group persistent and re-fire periodically. | ~~Medium~~ Done |
 | 3 | Per-receiver rate limits | Partial — tenant/namespace quotas exist, no provider-level enforcement | Medium |
 | 4 | OpsGenie receiver | Missing | Medium |
 | 5 | VictorOps receiver | Missing | Medium |
@@ -71,10 +71,20 @@ Each phase is an independent, shippable PR. Phases 2–5 can be reordered or par
 
 Silences are the biggest functional gap and the single feature that blocks the parity claim. Ops teams use silences during maintenance windows to temporarily mute alerts without modifying rules. Without this, Acteon is strictly less capable than Alertmanager for any on-call team.
 
-### Phase 2 — Complete event grouping intervals
+### Phase 2 — Complete event grouping intervals ✅ Shipped
 **Gap**: #2
-**Scope**: ~500 LOC
-**Follow-up**: wire `group_interval_seconds` to batch subsequent events before re-notifying; add `repeat_interval_seconds` for persistent re-notifications of groups that remain in `Pending` or re-enter it.
+**Status**: Shipped.
+**Scope as built**: ~700 LOC across core types, gateway group manager, background worker, rule IR/YAML, and tests.
+
+`group_interval_seconds` is now honored on persistent groups (those with `repeat_interval_seconds` set). `repeat_interval_seconds` is a new optional field on the Group rule action; when present, the group survives its first flush, re-batches new events using `group_interval_seconds`, and re-fires on the repeat interval with no new events. Ephemeral groups (no `repeat_interval_seconds`) preserve pre-Phase-2 behavior exactly for backward compatibility.
+
+Implementation notes:
+- `EventGroup` gains `last_notified_at`, `group_wait_seconds`, `group_interval_seconds`, `repeat_interval_seconds`, `max_group_size`. All new fields use serde defaults so old state-store records deserialize cleanly.
+- `GroupManager::add_to_group` handles the `Notified → Pending` transition on new events for persistent groups, recomputing `notify_at` as `max(last_notified_at + group_interval, now)`.
+- `GroupManager::flush_group` schedules the next `notify_at` at `now + repeat_interval` for persistent groups.
+- `get_ready_groups` picks up persistent `Notified` groups whose `notify_at` has arrived, but ignores ephemeral groups stuck in `Notified` (fail-safe against the flush worker being interrupted between `flush` and `remove`).
+- `max_group_size` is now actually enforced — `EventGroup::add_event` drops the oldest event when at capacity.
+- The background flush worker only deletes ephemeral groups; persistent groups stay alive in memory.
 
 ### Phase 3 — Per-provider rate limits
 **Gap**: #3
