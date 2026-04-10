@@ -196,6 +196,7 @@ pub fn outcome_category(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Scheduled { .. } => "scheduled",
         ActionOutcome::RecurringCreated { .. } => "recurring_created",
         ActionOutcome::QuotaExceeded { .. } => "quota_exceeded",
+        ActionOutcome::Silenced { .. } => "silenced",
     }
 }
 

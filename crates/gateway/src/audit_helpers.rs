@@ -46,6 +46,7 @@ pub(crate) fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Scheduled { .. } => "scheduled",
         ActionOutcome::RecurringCreated { .. } => "recurring_created",
         ActionOutcome::QuotaExceeded { .. } => "quota_exceeded",
+        ActionOutcome::Silenced { .. } => "silenced",
     }
 }
 
@@ -209,6 +210,13 @@ pub(crate) fn build_audit_record(
             "limit": limit,
             "used": used,
             "overage_behavior": overage_behavior,
+        }),
+        ActionOutcome::Silenced {
+            silence_id,
+            matched_rule,
+        } => serde_json::json!({
+            "silence_id": silence_id,
+            "matched_rule": matched_rule,
         }),
     };
 

@@ -60,6 +60,15 @@ pub struct BackgroundConfig {
     pub enable_template_sync: bool,
     /// How often to sync templates from the state store (default: 30 seconds).
     pub template_sync_interval: Duration,
+    /// Whether periodic silence sync from state store is enabled (default: true).
+    ///
+    /// Required for HA deployments: silences created on one gateway
+    /// instance must propagate to peer instances within the sync
+    /// interval, otherwise an operator silencing an alert via one
+    /// instance will see notifications continue to fire from its peers.
+    pub enable_silence_sync: bool,
+    /// How often to sync silences from the state store (default: 10 seconds).
+    pub silence_sync_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -85,6 +94,8 @@ impl Default for BackgroundConfig {
             retention_check_interval: Duration::from_secs(3600),
             enable_template_sync: false,
             template_sync_interval: Duration::from_secs(30),
+            enable_silence_sync: true,
+            silence_sync_interval: Duration::from_secs(10),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -335,6 +346,7 @@ impl BackgroundProcessor {
         let mut recurring_interval = interval(self.config.recurring_check_interval);
         let mut retention_interval = interval(self.config.retention_check_interval);
         let mut template_sync_interval = interval(self.config.template_sync_interval);
+        let mut silence_sync_interval = interval(self.config.silence_sync_interval);
 
         loop {
             tokio::select! {
@@ -384,6 +396,23 @@ impl BackgroundProcessor {
                             }
                             Err(e) => {
                                 error!(error = %e, "error syncing templates from store");
+                            }
+                        }
+                    }
+                }
+                // Silence sync: rebuild the in-memory silence cache from
+                // the state store so that silences created on peer
+                // gateway instances become visible here. Required for
+                // HA deployments to avoid "zombie silence" behavior.
+                _ = silence_sync_interval.tick(), if self.config.enable_silence_sync => {
+                    if let Some(ref gw) = self.gateway {
+                        let gw = gw.read().await;
+                        match gw.sync_silences_from_store().await {
+                            Ok(count) => {
+                                debug!(count, "silence sync completed");
+                            }
+                            Err(e) => {
+                                error!(error = %e, "error syncing silences from store");
                             }
                         }
                     }
@@ -622,6 +651,8 @@ mod tests {
                 retention_check_interval: Duration::from_secs(3600),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
+                enable_silence_sync: false,
+                silence_sync_interval: Duration::from_secs(10),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -742,6 +773,8 @@ mod tests {
                 retention_check_interval: Duration::from_secs(3600),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
+                enable_silence_sync: false,
+                silence_sync_interval: Duration::from_secs(10),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -853,6 +886,8 @@ mod tests {
                 retention_check_interval: Duration::from_secs(3600),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
+                enable_silence_sync: false,
+                silence_sync_interval: Duration::from_secs(10),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -955,6 +990,8 @@ mod tests {
                 retention_check_interval: Duration::from_secs(3600),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
+                enable_silence_sync: false,
+                silence_sync_interval: Duration::from_secs(10),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })

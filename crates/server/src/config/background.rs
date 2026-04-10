@@ -52,6 +52,17 @@ pub struct BackgroundProcessingConfig {
     /// How often to sync templates from the state store (seconds).
     #[serde(default = "default_template_sync_interval")]
     pub template_sync_interval_seconds: u64,
+    /// Whether to periodically sync silences from the state store.
+    ///
+    /// Required for HA deployments: silences created on one gateway
+    /// instance must propagate to peer instances within the sync
+    /// interval, otherwise an operator silencing an alert via one
+    /// instance will see notifications continue to fire from its peers.
+    #[serde(default = "default_enable_silence_sync")]
+    pub enable_silence_sync: bool,
+    /// How often to sync silences from the state store (seconds).
+    #[serde(default = "default_silence_sync_interval")]
+    pub silence_sync_interval_seconds: u64,
     /// Namespace to scan for timeouts (required for timeout processing).
     #[serde(default)]
     pub namespace: String,
@@ -79,10 +90,20 @@ impl Default for BackgroundProcessingConfig {
             retention_check_interval_seconds: default_retention_check_interval(),
             enable_template_sync: default_enable_template_sync(),
             template_sync_interval_seconds: default_template_sync_interval(),
+            enable_silence_sync: default_enable_silence_sync(),
+            silence_sync_interval_seconds: default_silence_sync_interval(),
             namespace: String::new(),
             tenant: String::new(),
         }
     }
+}
+
+fn default_enable_silence_sync() -> bool {
+    true
+}
+
+fn default_silence_sync_interval() -> u64 {
+    10
 }
 
 fn default_retention_check_interval() -> u64 {

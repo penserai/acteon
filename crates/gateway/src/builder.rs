@@ -65,6 +65,7 @@ pub struct GatewayBuilder {
     resource_lookups: HashMap<String, Arc<dyn ResourceLookup>>,
     templates: HashMap<(String, String), HashMap<String, acteon_core::Template>>,
     template_profiles: HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
+    silences: Vec<acteon_core::Silence>,
     max_inline_bytes: u64,
     max_attachments_per_action: usize,
 }
@@ -109,6 +110,7 @@ impl GatewayBuilder {
             resource_lookups: HashMap::new(),
             templates: HashMap::new(),
             template_profiles: HashMap::new(),
+            silences: Vec::new(),
             max_inline_bytes: 5_242_880,
             max_attachments_per_action: 10,
         }
@@ -509,6 +511,17 @@ impl GatewayBuilder {
         self
     }
 
+    /// Seed the gateway silence cache with a set of silences.
+    ///
+    /// In production, silences are also loaded from the state store at
+    /// startup via [`Gateway::load_silences_from_state_store`](crate::Gateway::load_silences_from_state_store).
+    /// This setter is primarily for tests and for initial bootstrapping.
+    #[must_use]
+    pub fn silences(mut self, silences: Vec<acteon_core::Silence>) -> Self {
+        self.silences = silences;
+        self
+    }
+
     /// Validate quota policies and wrap them in [`CachedPolicy`] for TTL tracking.
     fn validate_and_wrap_quota_policies(
         policies: HashMap<String, acteon_core::QuotaPolicy>,
@@ -777,6 +790,7 @@ impl GatewayBuilder {
             resource_lookups: self.resource_lookups,
             templates: parking_lot::RwLock::new(self.templates),
             template_profiles: parking_lot::RwLock::new(self.template_profiles),
+            silences: parking_lot::RwLock::new(build_silence_cache(self.silences)?),
             max_inline_bytes: self.max_inline_bytes,
             max_attachments_per_action: self.max_attachments_per_action,
         })
@@ -787,6 +801,27 @@ impl Default for GatewayBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Compile a list of silences into the gateway cache, keyed by namespace.
+///
+/// The cache is keyed by namespace alone (not `(namespace, tenant)`) so
+/// that hierarchical tenant matching works at dispatch time — a silence
+/// on tenant `acme` can cover dispatches to `acme.us-east`. See
+/// [`Gateway::check_silence`](crate::Gateway::check_silence) for the
+/// match logic.
+fn build_silence_cache(
+    silences: Vec<acteon_core::Silence>,
+) -> Result<HashMap<String, Vec<crate::silence_enforcement::CachedSilence>>, GatewayError> {
+    let mut out: HashMap<String, Vec<crate::silence_enforcement::CachedSilence>> = HashMap::new();
+    for silence in silences {
+        silence.validate().map_err(GatewayError::Configuration)?;
+        let cached = crate::silence_enforcement::CachedSilence::new(silence)
+            .map_err(GatewayError::Configuration)?;
+        let namespace = cached.silence.namespace.clone();
+        out.entry(namespace).or_default().push(cached);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

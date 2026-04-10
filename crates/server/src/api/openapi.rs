@@ -142,6 +142,11 @@ use acteon_core::{
         super::templates::render_preview,
         super::analytics::query_analytics,
         super::rules::rule_coverage,
+        super::silences::create_silence,
+        super::silences::list_silences,
+        super::silences::get_silence,
+        super::silences::update_silence,
+        super::silences::delete_silence,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -182,6 +187,11 @@ use acteon_core::{
         AnalyticsBucket, AnalyticsTopEntry,
         acteon_core::coverage::CoverageQuery, acteon_core::coverage::CoverageKey,
         acteon_core::coverage::CoverageEntry, acteon_core::coverage::CoverageReport,
+        acteon_core::silence::MatchOp, acteon_core::silence::SilenceMatcher,
+        acteon_core::silence::Silence,
+        super::silences::CreateSilenceRequest, super::silences::UpdateSilenceRequest,
+        super::silences::MatcherInput, super::silences::SilenceResponse,
+        super::silences::ListSilencesResponse,
     ))
 )]
 pub struct ApiDoc;

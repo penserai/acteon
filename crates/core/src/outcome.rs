@@ -116,6 +116,19 @@ pub enum ActionOutcome {
         /// The overage behavior that was applied.
         overage_behavior: String,
     },
+    /// Action was suppressed because it matched an active silence.
+    ///
+    /// Silences are evaluated after rule evaluation but before provider
+    /// dispatch, so `matched_rule` captures whichever rule verdict would
+    /// have applied had the silence not been in place. This lets operators
+    /// trace silenced dispatches with full context.
+    Silenced {
+        /// ID of the silence that matched this action.
+        silence_id: String,
+        /// Name of the rule that matched before silence evaluation, if any.
+        #[serde(default)]
+        matched_rule: Option<String>,
+    },
 }
 
 /// Response from a provider after executing an action.
@@ -418,6 +431,49 @@ mod tests {
                 assert_eq!(overage_behavior, "block");
             }
             other => panic!("expected QuotaExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_silenced() {
+        let outcome = ActionOutcome::Silenced {
+            silence_id: "sil-123".into(),
+            matched_rule: Some("allow-email".into()),
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        assert!(json.contains("Silenced"));
+        assert!(json.contains("sil-123"));
+        assert!(json.contains("allow-email"));
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::Silenced {
+                silence_id,
+                matched_rule,
+            } => {
+                assert_eq!(silence_id, "sil-123");
+                assert_eq!(matched_rule.unwrap(), "allow-email");
+            }
+            other => panic!("expected Silenced, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outcome_silenced_without_matched_rule() {
+        let outcome = ActionOutcome::Silenced {
+            silence_id: "sil-456".into(),
+            matched_rule: None,
+        };
+        let json = serde_json::to_string(&outcome).unwrap();
+        let back: ActionOutcome = serde_json::from_str(&json).unwrap();
+        match back {
+            ActionOutcome::Silenced {
+                silence_id,
+                matched_rule,
+            } => {
+                assert_eq!(silence_id, "sil-456");
+                assert!(matched_rule.is_none());
+            }
+            other => panic!("expected Silenced, got {other:?}"),
         }
     }
 

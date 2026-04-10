@@ -20,6 +20,7 @@ uuid = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 croner = { workspace = true }
+regex = { workspace = true }
 utoipa = { workspace = true, optional = true }
 
 [lints]

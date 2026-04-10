@@ -242,3 +242,4 @@ an operator cannot reload rules even with `actions = ["*"]`.
 - [Compliance Mode](compliance-mode.md) — tamper-evident audit chain
 - [Audit Trail](audit-trail.md) — the scoped read surface
 - [Rule Coverage](rule-coverage.md) — tenant-scoped coverage analysis
+- [Silences](silences.md) — time-bounded mutes enforced against the same grant model

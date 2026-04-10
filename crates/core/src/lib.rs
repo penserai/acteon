@@ -18,6 +18,7 @@ pub mod provider_health;
 pub mod quota;
 pub mod recurring;
 pub mod retention;
+pub mod silence;
 pub mod state_machine;
 pub mod stream;
 pub mod template;
@@ -61,6 +62,7 @@ pub use recurring::{
     next_occurrence, validate_cron_expr, validate_min_interval, validate_timezone,
 };
 pub use retention::RetentionPolicy;
+pub use silence::{MatchOp, Silence, SilenceMatcher};
 pub use state_machine::{StateMachineConfig, TimeoutConfig, TransitionConfig, TransitionEffects};
 pub use stream::{
     StreamEvent, StreamEventType, outcome_category, reconstruct_outcome, sanitize_outcome,

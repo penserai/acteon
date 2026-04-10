@@ -191,6 +191,18 @@ pub struct Gateway {
     pub(crate) template_profiles: parking_lot::RwLock<
         HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
     >,
+    /// Active silences indexed by `namespace` → list of silences with
+    /// pre-compiled regex matchers. Evaluated after rule evaluation but
+    /// before provider dispatch.
+    ///
+    /// The cache is keyed by namespace only (not `(namespace, tenant)`)
+    /// so that hierarchical tenant matching works at dispatch time — a
+    /// silence on tenant `acme` correctly covers dispatches to
+    /// `acme.us-east`. The tenant is matched per-silence inside the
+    /// iteration using the [`tenant_matches`](crate::Gateway::check_silence)
+    /// helper.
+    pub(crate) silences:
+        parking_lot::RwLock<HashMap<String, Vec<crate::silence_enforcement::CachedSilence>>>,
     /// Per-provider execution metrics (latency, success/failure counters).
     pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
     /// Optional WASM plugin runtime for rule condition evaluation.
@@ -564,6 +576,59 @@ impl Gateway {
                 matched_rule: matched_rule_name(&verdict),
                 would_be_provider,
             });
+        }
+
+        // 3d. Silence check — if the action matches an active silence,
+        //     short-circuit to the Silenced outcome before executing the
+        //     verdict. This preserves the rule verdict in the audit record
+        //     while preventing actual provider delivery.
+        if let Some(silence_id) = self.check_silence(&action) {
+            let outcome = ActionOutcome::Silenced {
+                silence_id,
+                matched_rule: matched_rule_name(&verdict),
+            };
+
+            // Emit audit + stream events and release the lock, mirroring
+            // the happy-path tail below. We intentionally do not call
+            // `execute_action` or any verdict handler.
+            if let Some(ref audit) = self.audit {
+                let record = build_audit_record(
+                    event_id.clone(),
+                    &action,
+                    &verdict,
+                    &outcome,
+                    dispatched_at,
+                    start.elapsed(),
+                    self.effective_audit_ttl(&action.namespace, &action.tenant),
+                    self.audit_store_payload,
+                    caller,
+                );
+                self.emit_audit_record(audit, record).await;
+            }
+
+            let stream_event = StreamEvent {
+                id: event_id,
+                timestamp: dispatched_at,
+                event_type: StreamEventType::ActionDispatched {
+                    outcome: sanitize_outcome(&outcome),
+                    provider: action.provider.to_string(),
+                },
+                namespace: action.namespace.to_string(),
+                tenant: action.tenant.to_string(),
+                action_type: Some(action.action_type.clone()),
+                action_id: Some(action.id.to_string()),
+            };
+            let _ = self.stream_tx.send(stream_event);
+
+            if let Some(guard) = guard {
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            }
+
+            info!(?outcome, "dispatch complete (silenced)");
+            return Ok(outcome);
         }
 
         // 4. Handle the verdict.

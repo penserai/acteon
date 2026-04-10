@@ -104,6 +104,21 @@ impl CallerIdentity {
         Some(providers)
     }
 
+    /// Check whether this caller has any grant covering the given
+    /// `(tenant, namespace)` pair, ignoring provider/action scoping.
+    ///
+    /// Used by tenant-scoped CRUD endpoints (silences, quotas, retention)
+    /// where provider and action-type scoping don't apply to the
+    /// resource itself. Hierarchical tenant matching applies — a grant
+    /// on `"acme"` covers `"acme.us-east"`.
+    pub fn can_manage_scope(&self, tenant: &str, namespace: &str) -> bool {
+        self.grants.iter().any(|g| {
+            super::config::tenant_matches(&g.tenants, tenant)
+                && (g.namespaces.iter().any(|n| n == "*")
+                    || g.namespaces.iter().any(|n| n == namespace))
+        })
+    }
+
     /// Convert to the minimal `Caller` for audit threading.
     pub fn to_caller(&self) -> Caller {
         Caller {
