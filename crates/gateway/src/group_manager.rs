@@ -62,58 +62,35 @@ impl GroupManager {
             } else {
                 raw_value
             };
-            if let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&value) {
-                let group_id = metadata
-                    .get("group_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let group_key = metadata
-                    .get("group_key")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let notify_at = metadata
-                    .get("notify_at")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map_or_else(Utc::now, |dt| dt.with_timezone(&Utc));
-                let trace_context: HashMap<String, String> = metadata
-                    .get("trace_context")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
+            // Try to deserialize the full EventGroup first (Phase 2+
+            // write format). Fall back to the old partial-JSON format
+            // for backward compatibility with records written by the
+            // pre-Phase-2 server — that format did not include the
+            // `state`, `created_at`, or `updated_at` fields at the
+            // top level so direct deserialization fails.
+            let group: Option<EventGroup> = serde_json::from_str::<EventGroup>(&value)
+                .ok()
+                .or_else(|| parse_legacy_group(&value));
 
-                // Restore events and labels if present (backward compatible:
-                // old entries without these keys get empty defaults).
-                let events: Vec<GroupedEvent> = metadata
-                    .get("events")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
-                let labels: HashMap<String, String> = metadata
-                    .get("labels")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
-
-                // Only recover if not already in memory
-                if !groups.contains_key(&group_key) {
-                    let event_count = events.len();
-                    let mut group = EventGroup::new(&group_id, &group_key, notify_at);
-                    group.trace_context = trace_context;
-                    group.labels = labels;
-                    for event in events {
-                        group.add_event(event);
+            match group {
+                Some(group) => {
+                    let group_key_local = group.group_key.clone();
+                    if !groups.contains_key(&group_key_local) {
+                        let event_count = group.size();
+                        let group_id_local = group.group_id.clone();
+                        groups.insert(group_key_local.clone(), group);
+                        recovered += 1;
+                        tracing::info!(
+                            group_id = %group_id_local,
+                            group_key = %group_key_local,
+                            event_count,
+                            "recovered pending group from state store"
+                        );
                     }
-                    groups.insert(group_key.clone(), group);
-                    recovered += 1;
-                    tracing::info!(
-                        group_id = %group_id,
-                        group_key = %group_key,
-                        event_count,
-                        "recovered pending group from state store"
-                    );
                 }
-            } else {
-                tracing::warn!(key = %key, "failed to parse group metadata");
+                None => {
+                    tracing::warn!(key = %key, "failed to parse group metadata");
+                }
             }
         }
 
@@ -171,9 +148,11 @@ impl GroupManager {
         };
 
         // Check if group exists or create new one.
-        // We capture events + labels snapshots while holding the lock so
-        // they can be persisted (encrypted) alongside the metadata.
-        let (group_id, group_size, notify_at, events_snapshot, labels_snapshot, trace_ctx) = {
+        // We capture a full snapshot of the updated group while holding
+        // the lock so the entire record can be persisted — including
+        // the Phase-2 timing fields (`last_notified_at`, `idle_flushes`,
+        // timing parameters, etc.) that would otherwise be lost on restart.
+        let group_snapshot: EventGroup = {
             let mut groups = self.groups.write();
 
             if let Some(group) = groups.get_mut(&group_key) {
@@ -184,41 +163,39 @@ impl GroupManager {
                 if matches!(group.state, GroupState::Notified) {
                     // Only persistent groups (with repeat_interval) can
                     // be in Notified state at this point; ephemeral
-                    // groups are deleted after flush. Resurrect with
-                    // the next flush scheduled group_interval from
-                    // last_notified (or now if that's in the past).
+                    // groups are deleted after flush by the worker.
+                    //
+                    // Alertmanager semantics: `group_interval_seconds`
+                    // is the quiet period that begins when a NEW event
+                    // arrives on an already-flushed group, not the
+                    // minimum time between successive flushes. So the
+                    // next flush fires at `now + group_interval`
+                    // regardless of how long ago the last flush was.
                     group.state = GroupState::Pending;
                     #[allow(clippy::cast_possible_wrap)]
                     let interval = chrono::Duration::seconds(group.group_interval_seconds as i64);
-                    let candidate = group
-                        .last_notified_at
-                        .map_or_else(|| now + interval, |t| t + interval);
-                    group.notify_at = candidate.max(now);
+                    group.notify_at = now + interval;
+                    // Reset the idle-flush counter; this group just
+                    // saw activity.
+                    group.idle_flushes = 0;
                 }
                 group.add_event(grouped_event);
-                let events = group.events.clone();
-                let labels = group.labels.clone();
-                let trace = group.trace_context.clone();
-                (
-                    group.group_id.clone(),
-                    group.size(),
-                    group.notify_at,
-                    events,
-                    labels,
-                    trace,
-                )
+                group.clone()
             } else {
-                // New group. Record timing params from the rule so
-                // future transitions don't need to re-plumb them.
+                // New group. Record timing params + scope from the
+                // action so future transitions / restarts don't need
+                // to re-plumb them.
                 let group_id = Uuid::new_v4().to_string();
                 #[allow(clippy::cast_possible_wrap)]
                 let notify_at = Utc::now() + chrono::Duration::seconds(group_wait_seconds as i64);
-                let mut group = EventGroup::new(&group_id, &group_key, notify_at).with_timing(
-                    group_wait_seconds,
-                    group_interval_seconds,
-                    repeat_interval_seconds,
-                    max_group_size,
-                );
+                let mut group = EventGroup::new(&group_id, &group_key, notify_at)
+                    .with_timing(
+                        group_wait_seconds,
+                        group_interval_seconds,
+                        repeat_interval_seconds,
+                        max_group_size,
+                    )
+                    .with_scope(action.namespace.as_str(), action.tenant.as_str());
 
                 // Capture trace context from the first event in the group
                 group.trace_context.clone_from(&action.trace_context);
@@ -233,44 +210,24 @@ impl GroupManager {
                 group = group.with_labels(labels);
                 group.add_event(grouped_event);
 
-                let size = group.size();
-                let notify = group.notify_at;
-                let events = group.events.clone();
-                let labels = group.labels.clone();
-                let trace = group.trace_context.clone();
+                let snapshot = group.clone();
                 groups.insert(group_key.clone(), group);
-
-                (group_id, size, notify, events, labels, trace)
+                snapshot
             }
         };
 
-        // Persist group state (encrypted if encryptor is provided).
-        // Events and labels are included so they survive crash recovery.
-        let state_key = StateKey::new(
-            action.namespace.as_str(),
-            action.tenant.as_str(),
-            KeyKind::Group,
-            &group_key,
-        );
-        let group_value = serde_json::json!({
-            "group_id": &group_id,
-            "group_key": &group_key,
-            "size": group_size,
-            "notify_at": notify_at.to_rfc3339(),
-            "trace_context": &trace_ctx,
-            "labels": &labels_snapshot,
-            "events": &events_snapshot,
-        });
-        let group_value_str = if let Some(enc) = encryptor {
-            enc.encrypt_str(&group_value.to_string()).map_err(|e| {
-                GatewayError::Configuration(format!("group metadata encryption failed: {e}"))
-            })?
-        } else {
-            group_value.to_string()
-        };
-        state.set(&state_key, &group_value_str, None).await?;
+        let group_id = group_snapshot.group_id.clone();
+        let group_size = group_snapshot.size();
+        let notify_at = group_snapshot.notify_at;
 
-        // Add to pending groups index
+        // Persist the full EventGroup (encrypted if encryptor is
+        // provided). Writing the entire record — not just a subset of
+        // fields — ensures that `last_notified_at`, `idle_flushes`,
+        // and the Phase-2 timing fields survive a gateway restart.
+        persist_group(&group_snapshot, state, encryptor).await?;
+
+        // Update the pending-groups index so the recover path can
+        // find this group on startup.
         let pending_key = StateKey::new(
             action.namespace.as_str(),
             action.tenant.as_str(),
@@ -282,6 +239,60 @@ impl GroupManager {
             .await?;
 
         Ok((group_id, group_key, group_size, notify_at))
+    }
+
+    /// Rebuild the in-memory cache from the state store.
+    ///
+    /// Called periodically from the background processor (controlled
+    /// by `enable_group_sync`) so that changes made by peer gateway
+    /// instances become visible locally. Required for HA deployments
+    /// to prevent split-brain behavior where instance A flushes a
+    /// group but instance B's local cache still shows it as pending.
+    ///
+    /// Returns the number of groups loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GatewayError`] if the state store scan fails.
+    /// Individual records that fail to parse are logged and skipped.
+    pub async fn sync_groups_from_store(
+        &self,
+        state: &dyn StateStore,
+        encryptor: Option<&PayloadEncryptor>,
+    ) -> Result<usize, GatewayError> {
+        let entries = state
+            .scan_keys_by_kind(KeyKind::Group)
+            .await
+            .map_err(|e| GatewayError::Configuration(format!("group sync scan failed: {e}")))?;
+
+        let mut new_cache: HashMap<String, EventGroup> = HashMap::new();
+
+        for (_key, raw_value) in entries {
+            let value = if let Some(enc) = encryptor {
+                enc.decrypt_str(&raw_value).unwrap_or(raw_value)
+            } else {
+                raw_value
+            };
+
+            // Try full EventGroup JSON first; fall back to legacy
+            // partial-JSON format for pre-Phase-2 records.
+            let group: Option<EventGroup> = serde_json::from_str::<EventGroup>(&value)
+                .ok()
+                .or_else(|| parse_legacy_group(&value));
+
+            match group {
+                Some(g) => {
+                    new_cache.insert(g.group_key.clone(), g);
+                }
+                None => {
+                    tracing::warn!("group sync: failed to parse group record");
+                }
+            }
+        }
+
+        let count = new_cache.len();
+        *self.groups.write() = new_cache;
+        Ok(count)
     }
 
     /// Get a group by its key.
@@ -344,8 +355,9 @@ impl GroupManager {
         let mut groups = self.groups.write();
         let group = groups.get_mut(group_key)?;
 
+        let was_already_notified = matches!(group.state, GroupState::Notified);
         let flushable = matches!(group.state, GroupState::Pending)
-            || (matches!(group.state, GroupState::Notified) && group.is_persistent());
+            || (was_already_notified && group.is_persistent());
         if !flushable {
             return None;
         }
@@ -354,6 +366,19 @@ impl GroupManager {
         group.state = GroupState::Notified;
         group.last_notified_at = Some(now);
         group.updated_at = now;
+
+        // If this flush was triggered by the repeat interval (group
+        // was already in Notified state), increment the idle-flush
+        // counter. The background worker will evict the group once
+        // this exceeds MAX_IDLE_FLUSHES, preventing persistent groups
+        // with dynamic keys from leaking forever.
+        //
+        // Ephemeral groups never reach this branch because they are
+        // in Pending state until their single flush; ephemeral groups
+        // stuck in Notified are rejected above.
+        if was_already_notified {
+            group.idle_flushes = group.idle_flushes.saturating_add(1);
+        }
 
         // Schedule the next re-notification if this is a persistent group.
         // Ephemeral groups have their notify_at left unchanged; they are
@@ -377,6 +402,101 @@ impl GroupManager {
     pub fn active_group_count(&self) -> usize {
         self.groups.read().len()
     }
+}
+
+/// Parse a pre-Phase-2 legacy partial-JSON group record.
+///
+/// Old records looked like:
+/// ```json
+/// {
+///   "group_id": "...",
+///   "group_key": "...",
+///   "size": 3,
+///   "notify_at": "2026-04-01T00:00:00Z",
+///   "trace_context": {...},
+///   "labels": {...},
+///   "events": [...]
+/// }
+/// ```
+///
+/// They lack the Phase-2 timing fields, `state`, `created_at`,
+/// `updated_at`, etc. This helper reconstructs an [`EventGroup`]
+/// with sensible defaults for the missing fields — the group is
+/// restored as ephemeral (no `repeat_interval`), in Pending state,
+/// which is the safest assumption since we don't know the original
+/// rule's timing parameters.
+fn parse_legacy_group(raw: &str) -> Option<EventGroup> {
+    let metadata: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let group_id = metadata.get("group_id")?.as_str()?.to_string();
+    let group_key = metadata.get("group_key")?.as_str()?.to_string();
+    let notify_at = metadata
+        .get("notify_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map_or_else(Utc::now, |dt| dt.with_timezone(&Utc));
+
+    let trace_context: HashMap<String, String> = metadata
+        .get("trace_context")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let events: Vec<GroupedEvent> = metadata
+        .get("events")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let labels: HashMap<String, String> = metadata
+        .get("labels")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
+    let mut group = EventGroup::new(&group_id, &group_key, notify_at);
+    group.trace_context = trace_context;
+    group.labels = labels;
+    for event in events {
+        group.add_event(event);
+    }
+    Some(group)
+}
+
+/// Persist a full [`EventGroup`] to the state store.
+///
+/// This is the shared write path used by [`GroupManager::add_to_group`]
+/// and the background flush worker after calling
+/// [`GroupManager::flush_group`]. Persisting the full record (not a
+/// subset of fields) ensures that Phase-2 timing state
+/// (`last_notified_at`, `idle_flushes`, etc.) survives a gateway
+/// restart, so a persistent group with `repeat_interval_seconds: 3600`
+/// does not fire immediately after a restart just because the reloaded
+/// `last_notified_at` was `None`.
+///
+/// The group's `namespace` and `tenant` fields must be set — they
+/// determine the state-store key. [`EventGroup::with_scope`] sets both.
+///
+/// # Errors
+///
+/// Returns [`GatewayError`] if JSON serialization, encryption, or the
+/// state store write fails.
+pub async fn persist_group(
+    group: &EventGroup,
+    state: &dyn StateStore,
+    encryptor: Option<&PayloadEncryptor>,
+) -> Result<(), GatewayError> {
+    let state_key = StateKey::new(
+        group.namespace.as_str(),
+        group.tenant.as_str(),
+        KeyKind::Group,
+        &group.group_key,
+    );
+    let group_json = serde_json::to_string(group)
+        .map_err(|e| GatewayError::Configuration(format!("group serialize failed: {e}")))?;
+    let value = if let Some(enc) = encryptor {
+        enc.encrypt_str(&group_json).map_err(|e| {
+            GatewayError::Configuration(format!("group metadata encryption failed: {e}"))
+        })?
+    } else {
+        group_json
+    };
+    state.set(&state_key, &value, None).await?;
+    Ok(())
 }
 
 /// Compute a group key from action fields.
@@ -674,8 +794,10 @@ mod tests {
     #[tokio::test]
     async fn notified_persistent_group_reopens_on_new_event() {
         // After a flush, a new event on the same group key transitions
-        // the group back to Pending and recomputes notify_at based on
-        // `last_notified + group_interval` (bounded to at least now).
+        // the group back to Pending. notify_at is set to
+        // `now + group_interval_seconds` — the quiet window begins
+        // when the new event arrives, matching Alertmanager's
+        // `group_interval` semantic.
         let manager = GroupManager::new();
         let state = MemoryStateStore::new();
         let action = test_action();
@@ -697,9 +819,9 @@ mod tests {
         let group_key = manager.groups.read().keys().next().cloned().unwrap();
         let flushed = manager.flush_group(&group_key).unwrap();
         assert!(matches!(flushed.state, GroupState::Notified));
-        let last_notified = flushed.last_notified_at.unwrap();
 
         // New event arrives on the same group.
+        let before_add = Utc::now();
         let action2 = test_action();
         let (_, _, size, notify_at) = manager
             .add_to_group(
@@ -722,11 +844,83 @@ mod tests {
         let group = manager.get_group(&group_key).unwrap();
         assert!(matches!(group.state, GroupState::Pending));
 
-        // notify_at is at least last_notified + group_interval.
-        let expected = last_notified + chrono::Duration::seconds(120);
+        // notify_at is `now_when_event_arrived + group_interval`.
+        // Allow a small fudge for the computation delay.
+        let expected_min = before_add + chrono::Duration::seconds(120);
+        let expected_max = Utc::now() + chrono::Duration::seconds(121);
         assert!(
-            notify_at >= expected - chrono::Duration::seconds(1),
-            "notify_at should be >= last_notified + group_interval"
+            notify_at >= expected_min && notify_at <= expected_max,
+            "notify_at should be roughly `now + group_interval`; got {notify_at}, expected around {expected_min}..={expected_max}"
+        );
+    }
+
+    #[tokio::test]
+    async fn group_interval_uses_new_event_arrival_time_not_last_notified() {
+        // Regression test for issue #5: previously `notify_at` was
+        // computed from `last_notified + group_interval`, which meant
+        // that if the group had been quiescent longer than
+        // `group_interval`, a new event would fire *immediately*
+        // (notify_at in the past). That defeats the batching purpose
+        // of `group_interval`.
+        //
+        // With the fix, a new event always gets a fresh
+        // `group_interval` batch window regardless of how long ago
+        // the last flush was.
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+
+        // Set up a persistent group and flush it, then rewrite
+        // last_notified_at to something far in the past to simulate
+        // a long-quiescent group.
+        let action = test_action();
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                120, // 2-minute group_interval
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+        manager.flush_group(&group_key).unwrap();
+
+        // Rewrite last_notified_at to 1 hour ago.
+        {
+            let mut groups = manager.groups.write();
+            let group = groups.get_mut(&group_key).unwrap();
+            group.last_notified_at = Some(Utc::now() - chrono::Duration::hours(1));
+            group.notify_at = Utc::now() - chrono::Duration::minutes(55);
+        }
+
+        // New event arrives. Without the fix, notify_at would be
+        // `last_notified + group_interval` = "58 minutes ago" →
+        // bounded to "now" → immediate flush with zero batching.
+        // With the fix, notify_at = now + 120s.
+        let before_add = Utc::now();
+        let action2 = test_action();
+        let (_, _, _, notify_at) = manager
+            .add_to_group(
+                &action2,
+                &["metadata.cluster".to_string()],
+                60,
+                120,
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let min_expected = before_add + chrono::Duration::seconds(119);
+        assert!(
+            notify_at >= min_expected,
+            "new event should get fresh group_interval batching window; notify_at={notify_at}, min_expected={min_expected}"
         );
     }
 
@@ -830,6 +1024,224 @@ mod tests {
         let ready = manager.get_ready_groups();
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].group_key, "key-1");
+    }
+
+    // =========================================================================
+    // Review-follow-up regression tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn idle_flushes_increment_on_repeat_fire() {
+        // A persistent group that re-fires on its repeat interval
+        // with no new events should see idle_flushes increment on
+        // each subsequent flush.
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                300,
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+
+        // First flush transitions Pending → Notified. Does NOT count
+        // as idle — the group had unflushed events.
+        let f1 = manager.flush_group(&group_key).unwrap();
+        assert_eq!(f1.idle_flushes, 0);
+
+        // Second flush: group was already Notified, no new events.
+        // This is a repeat-interval fire → idle_flushes increments.
+        let f2 = manager.flush_group(&group_key).unwrap();
+        assert_eq!(f2.idle_flushes, 1);
+
+        // Third flush → idle_flushes = 2.
+        let f3 = manager.flush_group(&group_key).unwrap();
+        assert_eq!(f3.idle_flushes, 2);
+    }
+
+    #[tokio::test]
+    async fn idle_flushes_reset_on_new_event() {
+        // A new event on an idle persistent group resets the counter.
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                300,
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+
+        // Flush + re-fire to accumulate idle flushes.
+        manager.flush_group(&group_key).unwrap();
+        manager.flush_group(&group_key).unwrap();
+        manager.flush_group(&group_key).unwrap();
+        let before = manager.get_group(&group_key).unwrap();
+        assert_eq!(before.idle_flushes, 2);
+
+        // New event arrives → counter should reset.
+        let action2 = test_action();
+        manager
+            .add_to_group(
+                &action2,
+                &["metadata.cluster".to_string()],
+                60,
+                300,
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let after = manager.get_group(&group_key).unwrap();
+        assert_eq!(after.idle_flushes, 0);
+    }
+
+    #[tokio::test]
+    async fn should_evict_fires_after_max_idle_flushes() {
+        use acteon_core::group::MAX_IDLE_FLUSHES;
+
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                300,
+                Some(3_600),
+                100,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+
+        // Initial flush is NOT idle.
+        let first = manager.flush_group(&group_key).unwrap();
+        assert!(!first.should_evict());
+
+        // Subsequent idle re-fires accumulate — should_evict becomes
+        // true after MAX_IDLE_FLUSHES additional flushes.
+        for i in 1..=MAX_IDLE_FLUSHES {
+            let flushed = manager.flush_group(&group_key).unwrap();
+            assert_eq!(flushed.idle_flushes, i);
+        }
+        let final_state = manager.get_group(&group_key).unwrap();
+        assert!(
+            final_state.should_evict(),
+            "should_evict should fire after {MAX_IDLE_FLUSHES} idle flushes"
+        );
+    }
+
+    #[tokio::test]
+    async fn persisted_group_preserves_timing_fields_across_reload() {
+        // Regression test for issue #3: the persist path must write
+        // `last_notified_at`, `idle_flushes`, and the Phase-2 timing
+        // fields so a restart doesn't reset them.
+        let manager = GroupManager::new();
+        let state = MemoryStateStore::new();
+        let action = test_action();
+
+        manager
+            .add_to_group(
+                &action,
+                &["metadata.cluster".to_string()],
+                60,
+                120,
+                Some(1_800),
+                50,
+                &state,
+                None,
+            )
+            .await
+            .unwrap();
+        let group_key = manager.groups.read().keys().next().cloned().unwrap();
+        let flushed = manager.flush_group(&group_key).unwrap();
+        let original_last_notified = flushed.last_notified_at.unwrap();
+        let original_notify_at = flushed.notify_at;
+
+        // Simulate a restart by persisting then recovering into a
+        // fresh manager. persist_group mirrors what the background
+        // flush worker does after a successful flush.
+        persist_group(&flushed, &state, None).await.unwrap();
+
+        let fresh = GroupManager::new();
+        fresh
+            .recover_groups(&state, "notifications", "tenant-1", None)
+            .await
+            .unwrap();
+        let reloaded = fresh.get_group(&group_key).expect("group recovered");
+
+        assert_eq!(reloaded.last_notified_at, Some(original_last_notified));
+        assert_eq!(reloaded.notify_at, original_notify_at);
+        assert_eq!(reloaded.group_wait_seconds, 60);
+        assert_eq!(reloaded.group_interval_seconds, 120);
+        assert_eq!(reloaded.repeat_interval_seconds, Some(1_800));
+        assert_eq!(reloaded.max_group_size, 50);
+        assert!(reloaded.is_persistent());
+    }
+
+    #[tokio::test]
+    async fn recover_groups_backward_compat_with_legacy_format() {
+        // The pre-Phase-2 server wrote a partial JSON format. This
+        // test simulates finding one of those records in the state
+        // store after an upgrade and verifies it still reloads
+        // cleanly (as an ephemeral group with default timings).
+        let state = MemoryStateStore::new();
+        let legacy_json = serde_json::json!({
+            "group_id": "legacy-1",
+            "group_key": "legacy-key",
+            "size": 2,
+            "notify_at": (Utc::now() + chrono::Duration::seconds(60)).to_rfc3339(),
+            "trace_context": {},
+            "labels": {"cluster": "prod"},
+            "events": [],
+        });
+        state
+            .set(
+                &StateKey::new("notifications", "tenant-1", KeyKind::Group, "legacy-key"),
+                &legacy_json.to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let manager = GroupManager::new();
+        let recovered = manager
+            .recover_groups(&state, "notifications", "tenant-1", None)
+            .await
+            .unwrap();
+        assert_eq!(recovered, 1);
+        let reloaded = manager.get_group("legacy-key").unwrap();
+        assert_eq!(reloaded.group_id, "legacy-1");
+        // Legacy records restore as ephemeral (no repeat_interval).
+        assert!(!reloaded.is_persistent());
+        assert_eq!(reloaded.max_group_size, 100); // default applied
     }
 
     #[tokio::test]

@@ -34,6 +34,16 @@ pub struct EventGroup {
     /// Key used to group events (hash of `group_by` field values).
     pub group_key: String,
 
+    /// Namespace the first event was dispatched to. Used by the
+    /// background flush worker to persist updated group state back
+    /// to the state store without needing the original action.
+    #[serde(default)]
+    pub namespace: String,
+
+    /// Tenant the first event was dispatched to.
+    #[serde(default)]
+    pub tenant: String,
+
     /// Common labels shared by all events in the group.
     #[serde(default)]
     pub labels: HashMap<String, String>,
@@ -80,9 +90,18 @@ pub struct EventGroup {
     pub repeat_interval_seconds: Option<u64>,
 
     /// Maximum number of events held in the group. When a new event
-    /// arrives at capacity, the oldest event is dropped.
+    /// arrives at capacity, the oldest event is dropped (FIFO).
     #[serde(default = "default_max_group_size")]
     pub max_group_size: usize,
+
+    /// Number of consecutive re-notification flushes that fired with
+    /// no new events since the previous flush. Reset to zero whenever
+    /// a new event arrives. Used by the background worker to evict
+    /// idle persistent groups — a group that has quietly re-fired
+    /// [`MAX_IDLE_FLUSHES`](crate::group::MAX_IDLE_FLUSHES) times in
+    /// a row is considered resolved and removed from the cache.
+    #[serde(default)]
+    pub idle_flushes: u32,
 
     /// Captured trace context from the first event in the group.
     /// Used to link the batched notification back to the original trigger.
@@ -90,6 +109,15 @@ pub struct EventGroup {
     #[cfg_attr(feature = "openapi", schema(value_type = HashMap<String, String>))]
     pub trace_context: HashMap<String, String>,
 }
+
+/// Maximum number of consecutive idle re-flushes before a persistent
+/// group is evicted from the in-memory cache.
+///
+/// An "idle flush" is a repeat-interval re-fire that happens with no
+/// new events since the previous flush. After this many in a row,
+/// the background worker assumes the underlying condition has
+/// resolved and removes the group.
+pub const MAX_IDLE_FLUSHES: u32 = 3;
 
 fn default_group_wait_seconds() -> u64 {
     30
@@ -117,6 +145,8 @@ impl EventGroup {
         Self {
             group_id: group_id.into(),
             group_key: group_key.into(),
+            namespace: String::new(),
+            tenant: String::new(),
             labels: HashMap::new(),
             events: Vec::new(),
             notify_at,
@@ -128,8 +158,17 @@ impl EventGroup {
             group_interval_seconds: default_group_interval_seconds(),
             repeat_interval_seconds: None,
             max_group_size: default_max_group_size(),
+            idle_flushes: 0,
             trace_context: HashMap::new(),
         }
+    }
+
+    /// Set the `(namespace, tenant)` routing pair for this group.
+    #[must_use]
+    pub fn with_scope(mut self, namespace: impl Into<String>, tenant: impl Into<String>) -> Self {
+        self.namespace = namespace.into();
+        self.tenant = tenant.into();
+        self
     }
 
     /// Set the timing parameters and max size on this group. Typically
@@ -196,6 +235,17 @@ impl EventGroup {
     #[must_use]
     pub fn is_persistent(&self) -> bool {
         self.repeat_interval_seconds.is_some()
+    }
+
+    /// Whether this persistent group has been idle (re-firing with no
+    /// new events) long enough to be evicted from the cache.
+    ///
+    /// Returns `false` for ephemeral groups — they are deleted by the
+    /// flush worker immediately after their single flush and never
+    /// reach the eviction path.
+    #[must_use]
+    pub fn should_evict(&self) -> bool {
+        self.is_persistent() && self.idle_flushes >= MAX_IDLE_FLUSHES
     }
 }
 

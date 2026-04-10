@@ -73,8 +73,12 @@ Silences are the biggest functional gap and the single feature that blocks the p
 
 ### Phase 2 — Complete event grouping intervals ✅ Shipped
 **Gap**: #2
-**Status**: Shipped.
-**Scope as built**: ~700 LOC across core types, gateway group manager, background worker, rule IR/YAML, and tests.
+**Status**: Shipped in PR #84 + post-review follow-up.
+**Scope as built**: ~1200 LOC across core types, gateway group manager, background worker, rule IR/YAML, HA plumbing, and tests.
+
+### Phase 2.1 — Known follow-ups
+- **Configurable `max_group_size` drop policy**: Phase 2 hard-codes drop-oldest (FIFO). A future revision should expose `drop_policy: {oldest, newest, middle}` per rule so operators whose "first events are most important" (typical root-cause investigation) can opt into keep-first. Documented in `docs/book/features/event-grouping.md`.
+- **Pending-groups index usage**: the `KeyKind::PendingGroups` secondary index is still only written, never read by the flush discovery path. Cleanup is a small polish item.
 
 `group_interval_seconds` is now honored on persistent groups (those with `repeat_interval_seconds` set). `repeat_interval_seconds` is a new optional field on the Group rule action; when present, the group survives its first flush, re-batches new events using `group_interval_seconds`, and re-fires on the repeat interval with no new events. Ephemeral groups (no `repeat_interval_seconds`) preserve pre-Phase-2 behavior exactly for backward compatibility.
 
