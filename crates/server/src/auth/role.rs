@@ -28,7 +28,8 @@ impl Role {
             Permission::Dispatch
             | Permission::RulesManage
             | Permission::CircuitBreakerManage
-            | Permission::PluginsManage => matches!(self, Self::Admin | Self::Operator),
+            | Permission::PluginsManage
+            | Permission::SilencesManage => matches!(self, Self::Admin | Self::Operator),
             Permission::AuditRead
             | Permission::RulesRead
             | Permission::RulesTest
@@ -58,4 +59,6 @@ pub enum Permission {
     CircuitBreakerManage,
     PluginsManage,
     StreamSubscribe,
+    /// Create, update, or expire silences. Held by admin and operator.
+    SilencesManage,
 }

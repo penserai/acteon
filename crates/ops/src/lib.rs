@@ -14,16 +14,17 @@ use acteon_client::{
     ActeonClient, ActeonClientBuilder, ApprovalListResponse, AuditPage, AuditQuery, AuditRecord,
     BatchResult, ChainDetailResponse, ChainHistoryResponse, ComplianceStatus, CoverageQuery,
     CoverageReport, CreateProfileRequest, CreateQuotaRequest, CreateRecurringAction,
-    CreateRecurringResponse, CreateRetentionRequest, CreateTemplateRequest, DagResponse,
-    DlqDrainResponse, DlqStatsResponse, EvaluateRulesOptions, EventListResponse, EventQuery,
-    EventState, FlushGroupResponse, GroupDetail, GroupListResponse, HashChainVerification,
-    ListChainDefinitionsResponse, ListChainsResponse, ListPluginsResponse, ListProfilesResponse,
-    ListQuotasResponse, ListRecurringResponse, ListTemplatesResponse, QuotaPolicy, QuotaUsage,
-    RecurringDetail, RecurringFilter, ReloadResult, RenderPreviewRequest, RenderPreviewResponse,
-    ReplayQuery, ReplayResult, ReplaySummary, RetentionPolicy, RuleEvaluationTrace, RuleInfo,
+    CreateRecurringResponse, CreateRetentionRequest, CreateSilenceRequest, CreateTemplateRequest,
+    DagResponse, DlqDrainResponse, DlqStatsResponse, EvaluateRulesOptions, EventListResponse,
+    EventQuery, EventState, FlushGroupResponse, GroupDetail, GroupListResponse,
+    HashChainVerification, ListChainDefinitionsResponse, ListChainsResponse, ListPluginsResponse,
+    ListProfilesResponse, ListQuotasResponse, ListRecurringResponse, ListSilencesQuery,
+    ListSilencesResponse, ListTemplatesResponse, QuotaPolicy, QuotaUsage, RecurringDetail,
+    RecurringFilter, ReloadResult, RenderPreviewRequest, RenderPreviewResponse, ReplayQuery,
+    ReplayResult, ReplaySummary, RetentionPolicy, RuleEvaluationTrace, RuleInfo, SilenceResponse,
     TemplateInfo, TemplateProfileInfo, TransitionResponse, UpdateProfileRequest,
-    UpdateQuotaRequest, UpdateRecurringAction, UpdateRetentionRequest, UpdateTemplateRequest,
-    VerifyHashChainRequest,
+    UpdateQuotaRequest, UpdateRecurringAction, UpdateRetentionRequest, UpdateSilenceRequest,
+    UpdateTemplateRequest, VerifyHashChainRequest,
 };
 use acteon_core::{
     Action, ActionOutcome, CircuitBreakerActionResponse, ListCircuitBreakersResponse,
@@ -125,6 +126,45 @@ impl OpsClient {
     /// Analyze rule coverage from the audit trail.
     pub async fn rules_coverage(&self, query: &CoverageQuery) -> Result<CoverageReport, OpsError> {
         Ok(self.inner.rules_coverage(query).await?)
+    }
+
+    // =========================================================================
+    // Silences
+    // =========================================================================
+
+    /// Create a silence.
+    pub async fn create_silence(
+        &self,
+        req: &CreateSilenceRequest,
+    ) -> Result<SilenceResponse, OpsError> {
+        Ok(self.inner.create_silence(req).await?)
+    }
+
+    /// List silences.
+    pub async fn list_silences(
+        &self,
+        query: &ListSilencesQuery,
+    ) -> Result<ListSilencesResponse, OpsError> {
+        Ok(self.inner.list_silences(query).await?)
+    }
+
+    /// Fetch a single silence.
+    pub async fn get_silence(&self, id: &str) -> Result<Option<SilenceResponse>, OpsError> {
+        Ok(self.inner.get_silence(id).await?)
+    }
+
+    /// Update a silence.
+    pub async fn update_silence(
+        &self,
+        id: &str,
+        req: &UpdateSilenceRequest,
+    ) -> Result<SilenceResponse, OpsError> {
+        Ok(self.inner.update_silence(id, req).await?)
+    }
+
+    /// Expire a silence.
+    pub async fn delete_silence(&self, id: &str) -> Result<(), OpsError> {
+        Ok(self.inner.delete_silence(id).await?)
     }
 
     /// Evaluate rules against a test action.

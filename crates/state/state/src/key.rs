@@ -50,6 +50,10 @@ pub enum KeyKind {
     TemplateProfile,
     /// Chain definition (editable at runtime).
     ChainDefinition,
+    /// Silence (time-bounded label-pattern mute).
+    Silence,
+    /// Index of active silences for fast dispatch-path lookup.
+    ActiveSilences,
     Custom(String),
 }
 
@@ -83,6 +87,8 @@ impl KeyKind {
             Self::Template => "template",
             Self::TemplateProfile => "template_profile",
             Self::ChainDefinition => "chain_def",
+            Self::Silence => "silence",
+            Self::ActiveSilences => "active_silences",
             Self::Custom(s) => s.as_str(),
         }
     }

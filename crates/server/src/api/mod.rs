@@ -22,6 +22,7 @@ pub mod replay;
 pub mod retention;
 pub mod rules;
 pub mod schemas;
+pub mod silences;
 pub mod stream;
 pub mod subscribe;
 pub mod templates;
@@ -190,6 +191,17 @@ pub fn router(state: AppState) -> Router {
                 .delete(quotas::delete_quota),
         )
         .route("/v1/quotas/{id}/usage", get(quotas::get_quota_usage))
+        // Silences
+        .route(
+            "/v1/silences",
+            get(silences::list_silences).post(silences::create_silence),
+        )
+        .route(
+            "/v1/silences/{id}",
+            get(silences::get_silence)
+                .put(silences::update_silence)
+                .delete(silences::delete_silence),
+        )
         // Retention policies
         .route(
             "/v1/retention",

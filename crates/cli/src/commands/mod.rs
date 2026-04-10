@@ -13,4 +13,5 @@ pub mod quotas;
 pub mod recurring;
 pub mod retention;
 pub mod rules;
+pub mod silences;
 pub mod templates;

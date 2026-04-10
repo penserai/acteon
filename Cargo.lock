@@ -172,6 +172,7 @@ dependencies = [
  "chrono-tz",
  "croner",
  "hex",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

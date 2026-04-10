@@ -82,6 +82,7 @@ mod quotas;
 mod recurring;
 mod retention;
 mod rules;
+mod silences;
 mod streaming;
 mod templates;
 
@@ -107,6 +108,7 @@ pub use quotas::*;
 pub use recurring::*;
 pub use retention::*;
 pub use rules::*;
+pub use silences::*;
 pub use templates::*;
 
 use std::time::Duration;
