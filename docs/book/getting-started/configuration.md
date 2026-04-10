@@ -98,10 +98,16 @@ max_concurrent = 10                  # Max concurrent executions
 # object_prefix = "acteon/"
 
 # ─── Authentication ───────────────────────────────────────
+# Users and API keys live in auth.toml, a separate file referenced from
+# here. Each principal is authorized via a list of grants that scope them
+# to specific tenants, namespaces, providers, and action types. Tenant
+# grants support hierarchical matching — a grant on "acme" covers
+# "acme.us-east" and "acme.us-east.prod". See the "API Key Scoping"
+# feature page for the full grant model and worked examples.
 [auth]
 enabled = false                      # Enable authentication
-# config_path = "auth.toml"         # Path to auth config
-# watch = true                       # Hot-reload on file changes
+# config_path = "auth.toml"         # Path to auth config (relative to acteon.toml)
+# watch = true                       # Hot-reload auth.toml on file changes
 
 # ─── Background Processing ───────────────────────────────
 [background]

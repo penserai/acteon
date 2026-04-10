@@ -69,13 +69,18 @@ pub async fn dispatch(
     }
 
     // Check grant-level authorization.
-    if !identity.is_authorized(&action.tenant, &action.namespace, &action.action_type) {
+    if !identity.is_authorized(
+        &action.tenant,
+        &action.namespace,
+        &action.provider,
+        &action.action_type,
+    ) {
         return Ok((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!(ErrorResponse {
                 error: format!(
-                    "forbidden: no grant covers tenant={}, namespace={}, action={}",
-                    action.tenant, action.namespace, action.action_type
+                    "forbidden: no grant covers tenant={}, namespace={}, provider={}, action={}",
+                    action.tenant, action.namespace, action.provider, action.action_type
                 ),
             })),
         ));
@@ -172,13 +177,18 @@ pub async fn dispatch_batch(
 
     // Check each action individually for grant authorization.
     for action in &actions {
-        if !identity.is_authorized(&action.tenant, &action.namespace, &action.action_type) {
+        if !identity.is_authorized(
+            &action.tenant,
+            &action.namespace,
+            &action.provider,
+            &action.action_type,
+        ) {
             return Ok((
                 StatusCode::FORBIDDEN,
                 Json(vec![serde_json::json!(ErrorResponse {
                     error: format!(
-                        "forbidden: no grant covers tenant={}, namespace={}, action={}",
-                        action.tenant, action.namespace, action.action_type
+                        "forbidden: no grant covers tenant={}, namespace={}, provider={}, action={}",
+                        action.tenant, action.namespace, action.provider, action.action_type,
                     ),
                 })]),
             ));
