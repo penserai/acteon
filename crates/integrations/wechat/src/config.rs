@@ -8,6 +8,12 @@ use crate::error::WeChatError;
 /// an in-flight dispatch.
 pub const DEFAULT_TOKEN_REFRESH_BUFFER_SECONDS: u64 = 300;
 
+/// Maximum duplicate-check window the `WeChat` API accepts (in
+/// seconds). Per the upstream docs, values above this produce a
+/// runtime `errcode: 40058`. The provider clamps in its builder
+/// so misconfigured callers never hit that error.
+pub const MAX_DUPLICATE_CHECK_INTERVAL_SECONDS: u32 = 1800;
+
 /// Recipient selection for a `WeChat` Work message.
 ///
 /// `WeChat` lets a single `POST /cgi-bin/message/send` target
@@ -197,10 +203,29 @@ impl WeChatConfig {
     }
 
     /// Enable server-side duplicate-check over the given window.
+    ///
+    /// `interval_seconds` is **clamped** to
+    /// [`MAX_DUPLICATE_CHECK_INTERVAL_SECONDS`] (1800, the
+    /// upstream API's documented maximum). Values above the cap
+    /// are silently reduced to 1800 and a `warn!` log is emitted
+    /// so operators notice. The alternative — letting the
+    /// out-of-range value through and hitting `errcode: 40058`
+    /// at dispatch time — surfaces as a generic `ExecutionFailed`
+    /// and is much harder to diagnose.
     #[must_use]
     pub fn with_duplicate_check(mut self, interval_seconds: u32) -> Self {
+        let clamped = if interval_seconds > MAX_DUPLICATE_CHECK_INTERVAL_SECONDS {
+            tracing::warn!(
+                requested = interval_seconds,
+                cap = MAX_DUPLICATE_CHECK_INTERVAL_SECONDS,
+                "WeChat duplicate_check_interval exceeds API maximum — clamping"
+            );
+            MAX_DUPLICATE_CHECK_INTERVAL_SECONDS
+        } else {
+            interval_seconds
+        };
         self.enable_duplicate_check = true;
-        self.duplicate_check_interval = Some(interval_seconds);
+        self.duplicate_check_interval = Some(clamped);
         self
     }
 
@@ -266,6 +291,30 @@ mod tests {
         assert_eq!(recipients.touser.as_deref(), Some("@all"));
         assert!(recipients.toparty.is_none());
         assert!(recipients.totag.is_none());
+    }
+
+    #[test]
+    fn with_duplicate_check_clamps_over_max() {
+        let config = WeChatConfig::new("c", "s", 1).with_duplicate_check(99_999);
+        assert!(config.enable_duplicate_check);
+        assert_eq!(
+            config.duplicate_check_interval,
+            Some(MAX_DUPLICATE_CHECK_INTERVAL_SECONDS),
+            "values above 1800 should be clamped"
+        );
+    }
+
+    #[test]
+    fn with_duplicate_check_accepts_in_range_value() {
+        let config = WeChatConfig::new("c", "s", 1).with_duplicate_check(600);
+        assert!(config.enable_duplicate_check);
+        assert_eq!(config.duplicate_check_interval, Some(600));
+    }
+
+    #[test]
+    fn with_duplicate_check_accepts_exactly_max() {
+        let config = WeChatConfig::new("c", "s", 1).with_duplicate_check(1800);
+        assert_eq!(config.duplicate_check_interval, Some(1800));
     }
 
     #[test]

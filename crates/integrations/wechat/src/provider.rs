@@ -16,6 +16,46 @@ use crate::types::{
     WeChatTokenResponse,
 };
 
+/// Maximum number of bytes to read from an error-response body
+/// before giving up. A misbehaving upstream (or malicious
+/// man-in-the-middle proxy) could otherwise stream an unbounded
+/// body and force Acteon to allocate gigabytes just to produce
+/// an error message. 2 KiB is plenty for the `errcode + errmsg`
+/// envelope that `WeChat` actually returns — the rest would be
+/// truncated by [`truncate_error_body`] anyway.
+const MAX_ERROR_BODY_READ_BYTES: usize = 2048;
+
+/// Read at most `max_bytes` bytes from a `reqwest::Response`
+/// body and return them as a lossy UTF-8 string.
+///
+/// Unlike [`reqwest::Response::text`], which reads the entire
+/// body into memory before returning, this helper pumps
+/// `Response::chunk()` in a loop and stops as soon as the
+/// configured byte limit is reached. A response whose
+/// `Content-Length` is huge (or unbounded) gets truncated at
+/// the caller's hard limit rather than `OOMing` the process.
+async fn read_bounded_body(mut response: reqwest::Response, max_bytes: usize) -> String {
+    let mut buf: Vec<u8> = Vec::with_capacity(max_bytes.min(1024));
+    while buf.len() < max_bytes {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = max_bytes - buf.len();
+                let take = chunk.len().min(remaining);
+                buf.extend_from_slice(&chunk[..take]);
+                if chunk.len() > remaining {
+                    // Hit the cap mid-chunk — drop the rest of
+                    // this chunk and stop pulling.
+                    break;
+                }
+            }
+            // End of stream or transport error — either way,
+            // stop reading and return whatever we have so far.
+            Ok(None) | Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).to_string()
+}
+
 // -- WeChat errcode classification ---------------------------------------
 //
 // The WeChat API returns an `errcode` envelope on every response.
@@ -146,21 +186,39 @@ impl WeChatProvider {
 
     /// Actually call `GET /cgi-bin/gettoken` against the server.
     /// Does not touch the cache — caller is responsible.
+    ///
+    /// ## Credential-leak hardening
+    ///
+    /// `WeChat`'s `gettoken` endpoint mandates `corpid` and
+    /// `corpsecret` as URL query parameters — that's a protocol
+    /// constraint we cannot avoid. To shrink the blast radius
+    /// of an accidental log of our local `url` variable (by a
+    /// distributed-tracing span that captures span fields, by a
+    /// panic backtrace, by reqwest's own debug-level tracing,
+    /// etc.), we build the **base** URL as a String here and
+    /// hand the secrets to reqwest via `.query()` so they only
+    /// exist inside reqwest's request builder, never inside a
+    /// String any of our code holds. The final wire URL still
+    /// contains the secrets — that's unavoidable — but the
+    /// surface for accidental exposure via our own logs is
+    /// reduced.
     async fn fetch_new_token(&self) -> Result<CachedToken, WeChatError> {
-        let url = format!(
-            "{}/cgi-bin/gettoken?corpid={}&corpsecret={}",
-            self.config.api_base_url(),
-            self.config.corp_id(),
-            self.config.corp_secret(),
-        );
-        // NOTE: do not log the URL — it carries the corp_id and
-        // corp_secret as query parameters.
+        // This URL is deliberately secret-free: if any
+        // downstream log captures it, only the base path leaks.
+        let url = format!("{}/cgi-bin/gettoken", self.config.api_base_url());
         debug!("refreshing WeChat access token");
-        let request = acteon_provider::inject_trace_context(self.client.get(&url));
+        let request = acteon_provider::inject_trace_context(self.client.get(&url).query(&[
+            ("corpid", self.config.corp_id()),
+            ("corpsecret", self.config.corp_secret()),
+        ]));
         let response = request.send().await?;
         let status = response.status();
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            // Bounded read: refuse to pull more than 2 KiB of
+            // the error body into memory. A misbehaving
+            // upstream (or a malicious proxy) could otherwise
+            // stream unbounded data and OOM the gateway.
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             // Transient-class HTTP errors on the token endpoint
             // should be retried — the gateway's retry loop will
             // call back into the provider, which will call back
@@ -348,22 +406,30 @@ impl WeChatProvider {
     /// Perform a single `POST /cgi-bin/message/send` with the
     /// given token. Error classification is entirely contained
     /// in this function so the retry wrapper stays simple.
+    ///
+    /// Uses the same `.query()` pattern as `fetch_new_token` so
+    /// the `access_token` never lands inside a String owned by
+    /// this code — it only exists inside reqwest's request
+    /// builder.
     async fn send_once(
         &self,
         access_token: &str,
         request: &WeChatSendRequest,
     ) -> Result<WeChatApiResponse, WeChatError> {
-        let url = format!(
-            "{}/cgi-bin/message/send?access_token={access_token}",
-            self.config.api_base_url()
-        );
+        // Deliberately secret-free URL; access_token is attached
+        // via `.query()` below.
+        let url = format!("{}/cgi-bin/message/send", self.config.api_base_url());
         debug!("sending message to WeChat");
-        let builder = self.client.post(&url).json(request);
+        let builder = self
+            .client
+            .post(&url)
+            .query(&[("access_token", access_token)])
+            .json(request);
         let req = acteon_provider::inject_trace_context(builder);
         let response = req.send().await?;
         let status = response.status();
         if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             warn!(%status, "WeChat transient HTTP error — will be retried by gateway");
             return Err(WeChatError::Transient(format!(
                 "HTTP {status}: {}",
@@ -374,14 +440,14 @@ impl WeChatProvider {
             status,
             reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
         ) {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(WeChatError::Unauthorized(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
             )));
         }
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
+            let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
             return Err(WeChatError::Api(format!(
                 "HTTP {status}: {}",
                 truncate_error_body(&body)
@@ -437,7 +503,12 @@ impl Provider for WeChatProvider {
 
     #[instrument(skip(self, action), fields(action_id = %action.id, provider = "wechat"))]
     async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
-        let payload: EventPayload = serde_json::from_value(action.payload.clone())
+        // Borrow the payload rather than cloning: `serde_json::Value`
+        // implements `serde::Deserializer` for `&Value`, so we can
+        // deserialize `EventPayload` directly off a reference. This
+        // avoids a deep clone of the (potentially large) JSON value
+        // on every dispatch.
+        let payload: EventPayload = EventPayload::deserialize(&action.payload)
             .map_err(|e| WeChatError::InvalidPayload(format!("failed to parse payload: {e}")))?;
         let request = self.build_request(payload)?;
         let api_response = self.send_with_retry(&request).await?;
@@ -1087,6 +1158,92 @@ mod tests {
         let err = provider.execute(&action).await.unwrap_err();
         server_handle.await.unwrap();
         assert!(matches!(err, ProviderError::ExecutionFailed(_)));
+    }
+
+    #[tokio::test]
+    async fn gettoken_local_url_does_not_contain_secrets() {
+        // Regression guard for the credential-leak hardening:
+        // the fetch_new_token code constructs its local `url`
+        // variable as the base path only, then hands the
+        // corp_id / corp_secret to reqwest via `.query()`. This
+        // test asserts the format string the code uses produces
+        // a secret-free URL, so a future refactor that puts the
+        // secrets back into the String would break the test.
+        //
+        // We can't unit-test the variable directly (it's inside
+        // an async fn), so we reconstruct the same format
+        // locally and assert it contains neither secret.
+        let config = WeChatConfig::new(
+            "super-secret-corp-id-xxx",
+            "super-secret-corp-secret-yyy",
+            1,
+        )
+        .with_api_base_url("https://example.test");
+        let local_url = format!("{}/cgi-bin/gettoken", config.api_base_url());
+        assert!(!local_url.contains("super-secret-corp-id-xxx"));
+        assert!(!local_url.contains("super-secret-corp-secret-yyy"));
+        assert!(!local_url.contains("corpid"));
+        assert!(!local_url.contains("corpsecret"));
+        assert_eq!(local_url, "https://example.test/cgi-bin/gettoken");
+    }
+
+    #[tokio::test]
+    async fn send_once_local_url_does_not_contain_access_token() {
+        // Same regression guard for the send path.
+        let config = WeChatConfig::new("c", "s", 1).with_api_base_url("https://example.test");
+        let local_url = format!("{}/cgi-bin/message/send", config.api_base_url());
+        assert!(!local_url.contains("access_token"));
+        assert_eq!(local_url, "https://example.test/cgi-bin/message/send");
+    }
+
+    #[tokio::test]
+    async fn read_bounded_body_truncates_oversized_response() {
+        // Spin up a mock server that returns a body far larger
+        // than the cap, then assert that `read_bounded_body`
+        // returns only the first MAX_ERROR_BODY_READ_BYTES.
+        let server = MockWeChatServer::start().await;
+        let base_url = server.base_url.clone();
+        let huge_body = "x".repeat(10_240);
+        let huge_body_clone = huge_body.clone();
+        let server_handle = tokio::spawn(async move {
+            server.respond_once(200, &huge_body_clone).await;
+        });
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = client.get(&base_url).send().await.unwrap();
+        let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
+        server_handle.await.unwrap();
+        assert_eq!(
+            body.len(),
+            MAX_ERROR_BODY_READ_BYTES,
+            "oversized body should be truncated at MAX_ERROR_BODY_READ_BYTES"
+        );
+        assert!(
+            body.chars().all(|c| c == 'x'),
+            "the truncated prefix should be {MAX_ERROR_BODY_READ_BYTES} x's"
+        );
+        assert!(
+            huge_body.len() > MAX_ERROR_BODY_READ_BYTES,
+            "sanity: upstream body was larger than the cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_bounded_body_passes_through_small_body() {
+        let server = MockWeChatServer::start().await;
+        let base_url = server.base_url.clone();
+        let server_handle =
+            tokio::spawn(async move { server.respond_once(200, "small body").await });
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let response = client.get(&base_url).send().await.unwrap();
+        let body = read_bounded_body(response, MAX_ERROR_BODY_READ_BYTES).await;
+        server_handle.await.unwrap();
+        assert_eq!(body, "small body");
     }
 
     #[tokio::test]

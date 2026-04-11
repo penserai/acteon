@@ -919,6 +919,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             provider_cfg.name
                         )
                     })?;
+                    if interval > acteon_wechat::MAX_DUPLICATE_CHECK_INTERVAL_SECONDS {
+                        return Err(format!(
+                            "provider '{}': wechat.duplicate_check_interval={interval} exceeds the WeChat API maximum of {} seconds",
+                            provider_cfg.name,
+                            acteon_wechat::MAX_DUPLICATE_CHECK_INTERVAL_SECONDS
+                        )
+                        .into());
+                    }
                     wechat_config = wechat_config.with_duplicate_check(interval);
                 }
                 if let Some(buffer) = wc.token_refresh_buffer_seconds {

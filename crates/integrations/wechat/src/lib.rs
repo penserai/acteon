@@ -71,7 +71,10 @@ pub mod error;
 pub mod provider;
 pub mod types;
 
-pub use config::{DEFAULT_TOKEN_REFRESH_BUFFER_SECONDS, WeChatConfig, WeChatRecipients};
+pub use config::{
+    DEFAULT_TOKEN_REFRESH_BUFFER_SECONDS, MAX_DUPLICATE_CHECK_INTERVAL_SECONDS, WeChatConfig,
+    WeChatRecipients,
+};
 pub use error::WeChatError;
 pub use provider::WeChatProvider;
 pub use types::{WeChatApiResponse, WeChatMsgType, WeChatSendRequest, WeChatTokenResponse};
