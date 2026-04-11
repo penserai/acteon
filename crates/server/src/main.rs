@@ -713,20 +713,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ))
             }
             "opsgenie" => {
-                let api_key_raw = provider_cfg.opsgenie_api_key.as_deref().ok_or_else(|| {
+                let og = &provider_cfg.opsgenie;
+                let api_key_raw = og.api_key.as_deref().ok_or_else(|| {
                     format!(
-                        "provider '{}': opsgenie type requires an 'opsgenie_api_key' field",
+                        "provider '{}': opsgenie type requires an 'opsgenie.api_key' field",
                         provider_cfg.name
                     )
                 })?;
                 let api_key = require_decrypt(api_key_raw, master_key.as_ref())?;
                 let mut opsgenie_config = acteon_opsgenie::OpsGenieConfig::new(api_key);
-                match provider_cfg
-                    .opsgenie_region
-                    .as_deref()
-                    .map(str::to_ascii_lowercase)
-                    .as_deref()
-                {
+                match og.region.as_deref().map(str::to_ascii_lowercase).as_deref() {
                     Some("eu") => {
                         opsgenie_config =
                             opsgenie_config.with_region(acteon_opsgenie::OpsGenieRegion::Eu);
@@ -737,24 +733,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Some(other) => {
                         return Err(format!(
-                            "provider '{}': unknown opsgenie_region '{other}' (expected 'us' or 'eu')",
+                            "provider '{}': unknown opsgenie.region '{other}' (expected 'us' or 'eu')",
                             provider_cfg.name
                         )
                         .into());
                     }
                 }
-                if let Some(ref team) = provider_cfg.opsgenie_default_team {
+                if let Some(ref team) = og.default_team {
                     opsgenie_config = opsgenie_config.with_default_team(team);
                 }
-                if let Some(ref priority) = provider_cfg.opsgenie_default_priority {
+                if let Some(ref priority) = og.default_priority {
                     opsgenie_config = opsgenie_config.with_default_priority(priority);
                 }
-                if let Some(ref source) = provider_cfg.opsgenie_default_source {
+                if let Some(ref source) = og.default_source {
                     opsgenie_config = opsgenie_config.with_default_source(source);
                 }
-                if let Some(ref url) = provider_cfg.opsgenie_api_base_url {
+                if let Some(ref url) = og.api_base_url {
                     validate_provider_url(&provider_cfg.name, url)?;
                     opsgenie_config = opsgenie_config.with_api_base_url(url);
+                }
+                if let Some(scope_aliases) = og.scope_aliases {
+                    opsgenie_config = opsgenie_config.with_scope_aliases(scope_aliases);
+                }
+                if let Some(max_len) = og.message_max_length {
+                    opsgenie_config = opsgenie_config.with_message_max_length(max_len);
                 }
                 std::sync::Arc::new(acteon_opsgenie::OpsGenieProvider::with_client(
                     opsgenie_config,

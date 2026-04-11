@@ -12,27 +12,44 @@ Like Acteon's other native providers, `acteon-opsgenie`:
 
 ## TOML configuration
 
+OpsGenie is the first provider to use Acteon's **nested provider config** pattern: every OpsGenie-specific setting lives under an `opsgenie.*` key rather than a flat `opsgenie_*` prefix at the top level. This keeps the top-level `[[providers]]` schema tractable as more providers land.
+
 ```toml
 [[providers]]
 name = "opsgenie-prod"
 type = "opsgenie"
-opsgenie_api_key = "ENC[AES256_GCM,data:abc123...]"
-opsgenie_region = "us"                 # or "eu"
-opsgenie_default_team = "platform-oncall"
-opsgenie_default_priority = "P3"
-opsgenie_default_source = "acteon"
+opsgenie.api_key = "ENC[AES256_GCM,data:abc123...]"
+opsgenie.region = "us"                   # or "eu"
+opsgenie.default_team = "platform-oncall"
+opsgenie.default_priority = "P3"
+opsgenie.default_source = "acteon"
+# opsgenie.scope_aliases = true          # default — see "Multi-tenant isolation" below
+# opsgenie.message_max_length = 130      # default — raise if OpsGenie lifts the cap
 ```
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | Yes | Unique provider name used when dispatching actions |
 | `type` | Yes | Must be `"opsgenie"` |
-| `opsgenie_api_key` | Yes | Integration API key (the value that becomes `Authorization: GenieKey {key}`). Supports `ENC[...]` for encrypted storage. |
-| `opsgenie_region` | No | `"us"` (default) or `"eu"`. Accounts are pinned to one region at provisioning; picking the wrong one produces 401/403. |
-| `opsgenie_default_team` | No | Team responder used when a payload omits `responders`. |
-| `opsgenie_default_priority` | No | Default alert priority (`P1`..=`P5`). Falls back to `P3`. |
-| `opsgenie_default_source` | No | Default `source` label shown on the alert UI. |
-| `opsgenie_api_base_url` | No | Override the API base URL. Tests only — do not set in production. |
+| `opsgenie.api_key` | Yes | Integration API key (the value that becomes `Authorization: GenieKey {key}`). Supports `ENC[...]` for encrypted storage. The plaintext is wrapped in a `SecretString` so it is zeroized on drop. |
+| `opsgenie.region` | No | `"us"` (default) or `"eu"`. Accounts are pinned to one region at provisioning; picking the wrong one produces 401/403. |
+| `opsgenie.default_team` | No | Team responder used when a payload omits `responders`. |
+| `opsgenie.default_priority` | No | Default alert priority (`P1`..=`P5`). Falls back to `P3`. |
+| `opsgenie.default_source` | No | Default `source` label shown on the alert UI. |
+| `opsgenie.scope_aliases` | No | Whether to auto-prefix user-supplied aliases with `{namespace}:{tenant}:` for multi-tenant isolation. Defaults to `true`. See below. |
+| `opsgenie.message_max_length` | No | Client-side `message` truncation cap. Defaults to 130 (the current OpsGenie API limit). |
+| `opsgenie.api_base_url` | No | Override the API base URL. Tests only — do not set in production. |
+
+## Multi-tenant isolation
+
+Alerts dispatched by Acteon come from `(namespace, tenant)` scopes, but OpsGenie has no native tenant concept. On a shared `OpsGenie` integration key (common in large orgs), that means two tenants that both pick the raw alias `web-01-high-cpu` would otherwise collide — and Tenant A could close Tenant B's alert simply by guessing the alias.
+
+**By default** (`opsgenie.scope_aliases = true`, which is the default), the provider rewrites every alias to `{namespace}:{tenant}:{raw_alias}` before sending it to OpsGenie. The prefix is applied identically on `create`, `acknowledge`, and `close` so all three resolve to the same incident, but two tenants can never refer to each other's alerts.
+
+Set `opsgenie.scope_aliases = false` only if:
+
+1. Every Acteon namespace/tenant has its own dedicated OpsGenie integration key, **or**
+2. You genuinely need cross-tenant alias coordination (e.g., a platform team closing a customer alert from a shared runbook).
 
 ## Payload shape
 

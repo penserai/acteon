@@ -1,5 +1,6 @@
 use acteon_core::{Action, ProviderResponse};
 use acteon_provider::{Provider, ProviderError, truncate_error_body};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use reqwest::Client;
 use serde::Deserialize;
 use tracing::{debug, instrument, warn};
@@ -10,10 +11,40 @@ use crate::types::{
     OpsGenieAlertRequest, OpsGenieApiResponse, OpsGenieLifecycleRequest, OpsGenieResponder,
 };
 
-/// Maximum length accepted by the `OpsGenie` Alert API for the `message`
-/// field. Longer values are truncated client-side so the API call does
-/// not fail on what is typically a cosmetic concern.
-const MAX_MESSAGE_LEN: usize = 130;
+/// Characters that must be percent-encoded inside an URL path
+/// segment. We start from the IETF `CONTROLS` set and add every
+/// sub-delim, query-start, and path-separator byte that would be
+/// misinterpreted by the `OpsGenie` router if left raw.
+///
+/// Letters, digits, `-`, `.`, `_`, and `~` are unreserved and pass
+/// through unchanged per [RFC 3986 §2.3].
+///
+/// [RFC 3986 §2.3]: https://www.rfc-editor.org/rfc/rfc3986#section-2.3
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'/')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}')
+    .add(b':')
+    .add(b';')
+    .add(b'&')
+    .add(b'=')
+    .add(b'+')
+    .add(b'$')
+    .add(b',');
 
 /// `OpsGenie` provider that creates, acknowledges, and closes alerts
 /// via the Alert API v2.
@@ -95,29 +126,13 @@ impl OpsGenieProvider {
         )
     }
 
-    /// Percent-encode the characters that cannot appear unescaped in a
-    /// URL path segment. Keeps the hot path allocation-free in the
-    /// common case (ASCII alphanumerics, dashes, underscores, dots) and
-    /// only falls back to a `String` when encoding is actually needed.
+    /// Percent-encode a value for safe inclusion in an URL path
+    /// segment, using the battle-tested [`percent_encoding`] crate
+    /// so multi-byte UTF-8, sub-delims, and reserved characters
+    /// all get handled per RFC 3986 without the provider having
+    /// to maintain its own encoding table.
     fn percent_encode_path_segment(raw: &str) -> String {
-        use std::fmt::Write as _;
-        fn is_unreserved(b: u8) -> bool {
-            b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~')
-        }
-        let needs_encoding = raw.bytes().any(|b| !is_unreserved(b));
-        if !needs_encoding {
-            return raw.to_owned();
-        }
-        let mut out = String::with_capacity(raw.len() * 3);
-        for b in raw.bytes() {
-            if is_unreserved(b) {
-                out.push(b as char);
-            } else {
-                // write! into a String is infallible.
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-        out
+        utf8_percent_encode(raw, PATH_SEGMENT_ENCODE_SET).to_string()
     }
 
     /// POST a JSON body to the given URL, interpret the response, and
@@ -151,6 +166,19 @@ impl OpsGenieProvider {
                 truncate_error_body(&body)
             )));
         }
+        // 5xx (server error) and 408 (Request Timeout) are
+        // transient: the request body was fine, the server was
+        // temporarily unable to handle it. These must be retried
+        // rather than dropped, otherwise a 10-second OpsGenie blip
+        // would permanently lose alerts.
+        if status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT {
+            let body = response.text().await.unwrap_or_default();
+            warn!(%status, "OpsGenie transient error — will be retried by gateway");
+            return Err(OpsGenieError::Transient(format!(
+                "HTTP {status}: {}",
+                truncate_error_body(&body)
+            )));
+        }
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
             return Err(OpsGenieError::Api(format!(
@@ -169,17 +197,39 @@ impl OpsGenieProvider {
         Ok(api_response)
     }
 
+    /// Scope a user-supplied alias with the action's
+    /// `(namespace, tenant)` pair so two different tenants sharing
+    /// a single `OpsGenie` integration key cannot collide on (or
+    /// maliciously close) each other's alerts by guessing an
+    /// alias. The prefix is applied consistently to `create`,
+    /// `acknowledge`, and `close` so all three resolve to the same
+    /// underlying `OpsGenie` incident.
+    ///
+    /// Operators who genuinely want an unscoped alias (e.g.,
+    /// single-tenant deployments, or cross-tenant coordination)
+    /// can set `scope_aliases = false` in the provider config.
+    fn scoped_alias(&self, namespace: &str, tenant: &str, raw: &str) -> String {
+        if self.config.scope_aliases {
+            format!("{namespace}:{tenant}:{raw}")
+        } else {
+            raw.to_owned()
+        }
+    }
+
     /// Handle the `event_action = "create"` branch.
     async fn execute_create(
         &self,
+        namespace: &str,
+        tenant: &str,
         payload: EventPayload,
     ) -> Result<OpsGenieApiResponse, OpsGenieError> {
         let message = payload.message.ok_or_else(|| {
             OpsGenieError::InvalidPayload("create events require a 'message' field".into())
         })?;
         let mut message = message;
-        if message.len() > MAX_MESSAGE_LEN {
-            message.truncate(MAX_MESSAGE_LEN);
+        let max_len = self.config.message_max_length;
+        if message.len() > max_len {
+            message.truncate(max_len);
         }
 
         // Default the responder to the configured team when no
@@ -203,9 +253,15 @@ impl OpsGenieProvider {
             .source
             .or_else(|| self.config.default_source.clone());
 
+        // Scope the alias to prevent cross-tenant collisions on a
+        // shared OpsGenie account.
+        let alias = payload
+            .alias
+            .map(|raw| self.scoped_alias(namespace, tenant, &raw));
+
         let request = OpsGenieAlertRequest {
             message,
-            alias: payload.alias,
+            alias,
             description: payload.description,
             responders,
             visible_to: payload.visible_to,
@@ -225,14 +281,19 @@ impl OpsGenieProvider {
     /// Handle the `event_action = "acknowledge"` / `"close"` branches.
     async fn execute_lifecycle(
         &self,
+        namespace: &str,
+        tenant: &str,
         action: &str,
         payload: EventPayload,
     ) -> Result<OpsGenieApiResponse, OpsGenieError> {
-        let alias = payload.alias.ok_or_else(|| {
+        let raw_alias = payload.alias.ok_or_else(|| {
             OpsGenieError::InvalidPayload(format!(
                 "{action} events require an 'alias' field that matches the alias used at create time"
             ))
         })?;
+        // Apply the same tenant-scope prefix used at create time so
+        // the ack/close request targets the correct incident.
+        let alias = self.scoped_alias(namespace, tenant, &raw_alias);
         let request = OpsGenieLifecycleRequest {
             source: payload
                 .source
@@ -256,10 +317,18 @@ impl Provider for OpsGenieProvider {
         let payload: EventPayload = serde_json::from_value(action.payload.clone())
             .map_err(|e| OpsGenieError::InvalidPayload(format!("failed to parse payload: {e}")))?;
 
+        let namespace = action.namespace.as_str();
+        let tenant = action.tenant.as_str();
         let api_response = match payload.event_action.as_str() {
-            "create" => self.execute_create(payload).await?,
-            "acknowledge" => self.execute_lifecycle("acknowledge", payload).await?,
-            "close" => self.execute_lifecycle("close", payload).await?,
+            "create" => self.execute_create(namespace, tenant, payload).await?,
+            "acknowledge" => {
+                self.execute_lifecycle(namespace, tenant, "acknowledge", payload)
+                    .await?
+            }
+            "close" => {
+                self.execute_lifecycle(namespace, tenant, "close", payload)
+                    .await?
+            }
             other => {
                 return Err(OpsGenieError::InvalidPayload(format!(
                     "invalid event_action '{other}': must be 'create', 'acknowledge', or 'close'"
@@ -320,7 +389,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
-    use crate::config::{OpsGenieConfig, OpsGenieRegion};
+    use crate::config::{DEFAULT_MESSAGE_MAX_LENGTH, OpsGenieConfig, OpsGenieRegion};
 
     /// Tiny mock HTTP server for integration-style tests. Same
     /// pattern the `PagerDuty` provider uses — a single-accept TCP
@@ -398,6 +467,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn percent_encode_path_segment_handles_utf8_multibyte() {
+        // A multi-byte UTF-8 character (`é` = 0xC3 0xA9) must be
+        // encoded as two `%XX` escapes, not mis-decoded. The old
+        // hand-rolled encoder worked byte-by-byte, so this is a
+        // regression guard against re-introducing a bug there.
+        assert_eq!(
+            OpsGenieProvider::percent_encode_path_segment("café"),
+            "caf%C3%A9"
+        );
+    }
+
+    #[test]
+    fn percent_encode_path_segment_preserves_unreserved() {
+        // RFC 3986 unreserved set must pass through verbatim.
+        assert_eq!(
+            OpsGenieProvider::percent_encode_path_segment("abc-DEF_123.tilde~"),
+            "abc-DEF_123.tilde~"
+        );
+    }
+
     #[tokio::test]
     async fn execute_create_success() {
         let server = MockOpsGenieServer::start().await;
@@ -426,11 +516,13 @@ mod tests {
 
         // The dispatched request should hit POST /v2/alerts with the
         // `Authorization: GenieKey ...` header and a JSON body that
-        // contains the payload fields.
+        // contains the payload fields. Alias is scoped by default
+        // with `{namespace}:{tenant}:` so tenant isolation holds on
+        // a shared OpsGenie integration.
         assert!(request.contains("POST /v2/alerts"));
         assert!(request.contains("authorization: GenieKey test-key"));
         assert!(request.contains("\"message\":\"High CPU on web-01\""));
-        assert!(request.contains("\"alias\":\"web-01-high-cpu\""));
+        assert!(request.contains("\"alias\":\"incidents:tenant-1:web-01-high-cpu\""));
         assert!(request.contains("\"priority\":\"P2\""));
     }
 
@@ -482,11 +574,39 @@ mod tests {
         });
         let _ = provider.execute(&action).await.unwrap();
         let request = server_handle.await.unwrap();
-        // Body should contain exactly MAX_MESSAGE_LEN x's.
-        let marker = format!("\"message\":\"{}\"", "x".repeat(MAX_MESSAGE_LEN));
+        // Body should contain exactly DEFAULT_MESSAGE_MAX_LENGTH x's.
+        let marker = format!("\"message\":\"{}\"", "x".repeat(DEFAULT_MESSAGE_MAX_LENGTH));
         assert!(
             request.contains(&marker),
-            "message should be truncated to {MAX_MESSAGE_LEN}"
+            "message should be truncated to {DEFAULT_MESSAGE_MAX_LENGTH}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_create_respects_configured_message_max_length() {
+        let server = MockOpsGenieServer::start().await;
+        // Pretend OpsGenie raised the cap to 200 and we want to
+        // use the full width.
+        let config = OpsGenieConfig::new("test-key")
+            .with_api_base_url(&server.base_url)
+            .with_message_max_length(200);
+        let provider = OpsGenieProvider::new(config);
+        let long = "y".repeat(250);
+        let action = make_action(serde_json::json!({
+            "event_action": "create",
+            "message": long,
+        }));
+        let server_handle = tokio::spawn(async move {
+            server
+                .respond_once_capturing(202, r#"{"result":"ok","took":0.0,"requestId":""}"#)
+                .await
+        });
+        let _ = provider.execute(&action).await.unwrap();
+        let request = server_handle.await.unwrap();
+        let marker = format!("\"message\":\"{}\"", "y".repeat(200));
+        assert!(
+            request.contains(&marker),
+            "configured max length (200) must override the default"
         );
     }
 
@@ -521,9 +641,15 @@ mod tests {
         let result = provider.execute(&action).await;
         let request = server_handle.await.unwrap();
         assert!(result.is_ok());
+        // The alias is scoped with {namespace}:{tenant}: and
+        // percent-encoded in the path segment (colons → %3A) so
+        // the URL points at the same incident that `create`
+        // registered.
         assert!(
-            request.contains("POST /v2/alerts/web-01-high-cpu/acknowledge?identifierType=alias"),
-            "expected alias-based ack URL: {request}"
+            request.contains(
+                "POST /v2/alerts/incidents%3Atenant-1%3Aweb-01-high-cpu/acknowledge?identifierType=alias"
+            ),
+            "expected alias-based ack URL with scope prefix: {request}"
         );
         assert!(request.contains("\"note\":\"picked up by oncall\""));
     }
@@ -549,8 +675,59 @@ mod tests {
         let request = server_handle.await.unwrap();
         assert!(result.is_ok());
         assert!(
-            request.contains("POST /v2/alerts/db-backup-failed/close?identifierType=alias"),
-            "expected alias-based close URL: {request}"
+            request.contains(
+                "POST /v2/alerts/incidents%3Atenant-1%3Adb-backup-failed/close?identifierType=alias"
+            ),
+            "expected alias-based close URL with scope prefix: {request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn scoped_alias_isolates_tenants_cross_tenant_ack_does_not_land() {
+        // Two different tenants on the same OpsGenie integration
+        // key ask to acknowledge the same raw alias. Their scoped
+        // aliases must differ so one cannot close the other's
+        // incident by guessing the alias.
+        let provider = OpsGenieProvider::new(OpsGenieConfig::new("k"));
+        let a = provider.scoped_alias("incidents", "tenant-a", "web-01-high-cpu");
+        let b = provider.scoped_alias("incidents", "tenant-b", "web-01-high-cpu");
+        assert_ne!(a, b, "two tenants must not collide on the same raw alias");
+        assert_eq!(a, "incidents:tenant-a:web-01-high-cpu");
+        assert_eq!(b, "incidents:tenant-b:web-01-high-cpu");
+    }
+
+    #[tokio::test]
+    async fn scope_aliases_disabled_returns_raw_alias() {
+        let provider = OpsGenieProvider::new(OpsGenieConfig::new("k").with_scope_aliases(false));
+        let alias = provider.scoped_alias("incidents", "tenant-1", "web-01-high-cpu");
+        assert_eq!(alias, "web-01-high-cpu");
+    }
+
+    #[tokio::test]
+    async fn execute_create_with_scope_aliases_disabled() {
+        // Opt-out path: the alias passes through unchanged so
+        // single-tenant deployments (or cross-tenant coordination
+        // scenarios) can use raw OpsGenie aliases.
+        let server = MockOpsGenieServer::start().await;
+        let config = OpsGenieConfig::new("test-key")
+            .with_api_base_url(&server.base_url)
+            .with_scope_aliases(false);
+        let provider = OpsGenieProvider::new(config);
+        let action = make_action(serde_json::json!({
+            "event_action": "create",
+            "message": "Raw alias test",
+            "alias": "web-01-high-cpu",
+        }));
+        let server_handle = tokio::spawn(async move {
+            server
+                .respond_once_capturing(202, r#"{"result":"ok","took":0.0,"requestId":""}"#)
+                .await
+        });
+        let _ = provider.execute(&action).await.unwrap();
+        let request = server_handle.await.unwrap();
+        assert!(
+            request.contains("\"alias\":\"web-01-high-cpu\""),
+            "opt-out should pass the alias through unchanged: {request}"
         );
     }
 
@@ -614,6 +791,55 @@ mod tests {
             "401 should surface as Configuration, got {err:?}"
         );
         assert!(!err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn execute_5xx_maps_to_retryable_connection() {
+        // A brief OpsGenie outage (503 Service Unavailable) must
+        // surface as a retryable error so the gateway re-queues the
+        // alert rather than permanently dropping it.
+        let server = MockOpsGenieServer::start().await;
+        let config = OpsGenieConfig::new("test-key").with_api_base_url(&server.base_url);
+        let provider = OpsGenieProvider::new(config);
+        let action = make_action(serde_json::json!({
+            "event_action": "create",
+            "message": "test",
+        }));
+        let server_handle = tokio::spawn(async move {
+            server
+                .respond_once(503, r#"{"message":"Service Unavailable"}"#)
+                .await;
+        });
+        let err = provider.execute(&action).await.unwrap_err();
+        server_handle.await.unwrap();
+        assert!(
+            matches!(err, ProviderError::Connection(_)),
+            "503 should surface as Connection, got {err:?}"
+        );
+        assert!(
+            err.is_retryable(),
+            "503 errors must be retryable (gateway re-queues)"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_502_maps_to_retryable_connection() {
+        let server = MockOpsGenieServer::start().await;
+        let config = OpsGenieConfig::new("test-key").with_api_base_url(&server.base_url);
+        let provider = OpsGenieProvider::new(config);
+        let action = make_action(serde_json::json!({
+            "event_action": "create",
+            "message": "test",
+        }));
+        let server_handle = tokio::spawn(async move {
+            server
+                .respond_once(502, r#"{"message":"Bad Gateway"}"#)
+                .await;
+        });
+        let err = provider.execute(&action).await.unwrap_err();
+        server_handle.await.unwrap();
+        assert!(matches!(err, ProviderError::Connection(_)));
+        assert!(err.is_retryable());
     }
 
     #[tokio::test]

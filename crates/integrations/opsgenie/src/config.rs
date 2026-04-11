@@ -1,6 +1,13 @@
-use acteon_crypto::ExposeSecret;
+use acteon_crypto::{ExposeSecret, SecretString};
 
 use crate::error::OpsGenieError;
+
+/// Default maximum length for the `message` field that will be sent
+/// to the `OpsGenie` Alert API. Matches the API's documented cap at
+/// the time this crate was written; override via
+/// [`OpsGenieConfig::with_message_max_length`] if the upstream limit
+/// changes before a new version of this crate ships.
+pub const DEFAULT_MESSAGE_MAX_LENGTH: usize = 130;
 
 /// `OpsGenie` data residency region.
 ///
@@ -29,11 +36,17 @@ impl OpsGenieRegion {
 }
 
 /// Configuration for the `OpsGenie` provider.
+///
+/// The API key is held as a [`SecretString`] so its plaintext is
+/// [`zeroize::Zeroize`]-scrubbed from the heap when the provider is
+/// dropped, and so any accidental `Debug` formatting yields
+/// `[REDACTED]` instead of the raw key.
 #[derive(Clone)]
 pub struct OpsGenieConfig {
     /// API integration key (the `GenieKey` that authenticates writes
-    /// against the Alert API).
-    api_key: String,
+    /// against the Alert API). Stored as a [`SecretString`] so the
+    /// plaintext is zeroized from memory on drop.
+    api_key: SecretString,
 
     /// `OpsGenie` region the account lives in.
     region: OpsGenieRegion,
@@ -50,6 +63,29 @@ pub struct OpsGenieConfig {
 
     /// Default `source` field used when the payload omits one.
     pub default_source: Option<String>,
+
+    /// Whether to prefix user-supplied aliases with
+    /// `{namespace}:{tenant}:` before sending them to `OpsGenie`.
+    ///
+    /// **Defaults to `true`.** Leaving this on is the right choice
+    /// for any deployment where multiple Acteon tenants share a
+    /// single `OpsGenie` integration key — without it, Tenant A
+    /// could close Tenant B's alerts by guessing (or observing)
+    /// the alias string.
+    ///
+    /// Set this to `false` only if every Acteon namespace/tenant
+    /// has its own dedicated `OpsGenie` account OR you need
+    /// cross-tenant alias coordination (e.g., a platform team
+    /// closing a customer alert).
+    pub scope_aliases: bool,
+
+    /// Maximum length, in bytes, that the `message` field may be
+    /// before the provider truncates it client-side. Defaults to
+    /// [`DEFAULT_MESSAGE_MAX_LENGTH`] (130) to match the current
+    /// `OpsGenie` API limit. If `OpsGenie` lifts the cap (or you
+    /// want to be more restrictive), override this via
+    /// [`Self::with_message_max_length`].
+    pub message_max_length: usize,
 }
 
 impl std::fmt::Debug for OpsGenieConfig {
@@ -61,6 +97,8 @@ impl std::fmt::Debug for OpsGenieConfig {
             .field("default_team", &self.default_team)
             .field("default_priority", &self.default_priority)
             .field("default_source", &self.default_source)
+            .field("scope_aliases", &self.scope_aliases)
+            .field("message_max_length", &self.message_max_length)
             .finish()
     }
 }
@@ -69,18 +107,41 @@ impl OpsGenieConfig {
     /// Create a new configuration with the given API key.
     ///
     /// Defaults to the US region, priority `P3`, and no default
-    /// responder / source. Callers typically chain `with_*` builders
-    /// to customize the rest.
+    /// responder / source. Alias scoping is enabled by default.
+    /// Callers typically chain `with_*` builders to customize the
+    /// rest.
+    ///
+    /// The API key may be passed as any `Into<String>` — the value
+    /// is immediately wrapped in a [`SecretString`] so it is
+    /// zeroized on drop.
     #[must_use]
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             region: OpsGenieRegion::Us,
             api_base_url_override: None,
             default_team: None,
             default_priority: "P3".to_owned(),
             default_source: None,
+            scope_aliases: true,
+            message_max_length: DEFAULT_MESSAGE_MAX_LENGTH,
         }
+    }
+
+    /// Enable or disable automatic alias scoping. See the field
+    /// docs on [`OpsGenieConfig::scope_aliases`] for the security
+    /// implications.
+    #[must_use]
+    pub fn with_scope_aliases(mut self, scope_aliases: bool) -> Self {
+        self.scope_aliases = scope_aliases;
+        self
+    }
+
+    /// Override the default maximum message length.
+    #[must_use]
+    pub fn with_message_max_length(mut self, max_len: usize) -> Self {
+        self.message_max_length = max_len;
+        self
     }
 
     /// Set the `OpsGenie` region for this configuration.
@@ -122,15 +183,22 @@ impl OpsGenieConfig {
 
     /// Decrypt an `ENC[...]` API key in place.
     ///
-    /// Plain-text keys pass through unchanged.
+    /// Plain-text keys pass through unchanged. The decrypted
+    /// plaintext is wrapped in a fresh [`SecretString`] so the
+    /// original encrypted input and the intermediate buffer are
+    /// both dropped and zeroized.
     #[must_use = "returns the config with the decrypted API key"]
     pub fn decrypt_secrets(
         mut self,
         master_key: &acteon_crypto::MasterKey,
     ) -> Result<Self, OpsGenieError> {
-        let decrypted = acteon_crypto::decrypt_value(&self.api_key, master_key)
-            .map_err(|e| OpsGenieError::InvalidPayload(format!("failed to decrypt api_key: {e}")))?;
-        decrypted.expose_secret().clone_into(&mut self.api_key);
+        let decrypted = acteon_crypto::decrypt_value(self.api_key.expose_secret(), master_key)
+            .map_err(|e| {
+                OpsGenieError::InvalidPayload(format!("failed to decrypt api_key: {e}"))
+            })?;
+        // `SecretString` is already the right type — move it in so
+        // we never copy the plaintext out onto the stack.
+        self.api_key = decrypted;
         Ok(self)
     }
 
@@ -144,9 +212,11 @@ impl OpsGenieConfig {
 
     /// Return the API key for constructing the `Authorization` header.
     /// Kept `pub(crate)` so callers outside the crate cannot lift the
-    /// secret out of the config struct.
+    /// secret out of the config struct — the provider calls this at
+    /// the last possible moment before handing the bytes to reqwest,
+    /// which is the narrowest window we can enforce at the type level.
     pub(crate) fn api_key(&self) -> &str {
-        &self.api_key
+        self.api_key.expose_secret()
     }
 
     /// Return the configured region.
@@ -168,6 +238,25 @@ mod tests {
         assert_eq!(config.default_priority, "P3");
         assert!(config.default_team.is_none());
         assert!(config.default_source.is_none());
+        assert!(
+            config.scope_aliases,
+            "alias scoping must be ON by default for multi-tenant safety"
+        );
+        assert_eq!(config.message_max_length, DEFAULT_MESSAGE_MAX_LENGTH);
+    }
+
+    #[test]
+    fn with_scope_aliases_toggle() {
+        let config = OpsGenieConfig::new("k").with_scope_aliases(false);
+        assert!(!config.scope_aliases);
+        let config = config.with_scope_aliases(true);
+        assert!(config.scope_aliases);
+    }
+
+    #[test]
+    fn with_message_max_length_override() {
+        let config = OpsGenieConfig::new("k").with_message_max_length(256);
+        assert_eq!(config.message_max_length, 256);
     }
 
     #[test]
