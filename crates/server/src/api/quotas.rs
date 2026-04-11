@@ -375,10 +375,10 @@ pub async fn create_quota(
     if let Err(e) = validate_quota_scope_identifier(&req.tenant) {
         return error_response(StatusCode::BAD_REQUEST, &format!("invalid tenant: {e}"));
     }
-    if let Some(ref p) = req.provider {
-        if let Err(e) = validate_quota_scope_identifier(p) {
-            return error_response(StatusCode::BAD_REQUEST, &format!("invalid provider: {e}"));
-        }
+    if let Some(ref p) = req.provider
+        && let Err(e) = validate_quota_scope_identifier(p)
+    {
+        return error_response(StatusCode::BAD_REQUEST, &format!("invalid provider: {e}"));
     }
     // Validate window.
     let window = match parse_window(&req.window) {
@@ -428,8 +428,7 @@ pub async fn create_quota(
             let scope = req
                 .provider
                 .as_deref()
-                .map(|p| format!("provider={p}"))
-                .unwrap_or_else(|| "generic scope".to_string());
+                .map_or_else(|| "generic scope".to_string(), |p| format!("provider={p}"));
             return error_response(
                 StatusCode::CONFLICT,
                 &format!(

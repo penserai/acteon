@@ -1101,7 +1101,11 @@ mod tests {
         let store = MemoryAuditStore::new();
         let now = Utc::now();
 
-        // Create two records.
+        // Create two records. UUID v7 embeds a millisecond
+        // timestamp and sorts by it, so two IDs generated in the
+        // same tick can end up mis-ordered relative to our
+        // expectation. A brief pause guarantees strictly
+        // increasing IDs regardless of how fast CI runs.
         let id1 = uuid::Uuid::now_v7().to_string();
         let record1 = mk_audit_record(
             &id1,
@@ -1112,6 +1116,7 @@ mod tests {
             serde_json::json!({"status": "Success"}),
             now - chrono::Duration::seconds(1),
         );
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
 
         let id2 = uuid::Uuid::now_v7().to_string();
         let record2 = mk_audit_record(
