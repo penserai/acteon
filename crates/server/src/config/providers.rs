@@ -208,7 +208,7 @@ pub struct ProviderConfig {
     pub telegram: TelegramProviderConfig,
 
     /// Nested configuration block for the `"wechat"` provider type
-    /// (WeChat Work / Enterprise WeChat / 企业微信).
+    /// (`WeChat` Work / Enterprise `WeChat` / 企业微信).
     ///
     /// Example TOML:
     /// ```toml
