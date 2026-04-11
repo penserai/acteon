@@ -296,8 +296,11 @@ pub struct TelegramProviderConfig {
     /// Default `parse_mode` applied to outgoing messages when the
     /// payload omits it. `"HTML"`, `"Markdown"`, or `"MarkdownV2"`.
     pub default_parse_mode: Option<String>,
-    /// Client-side `text` truncation cap, in bytes.
-    pub text_max_bytes: Option<usize>,
+    /// Client-side `text` truncation cap, in **UTF-16 code units**
+    /// — matches the units Telegram's API uses for its 4096 cap.
+    /// One BMP character costs 1 unit; one non-BMP character
+    /// (most emoji, some CJK supplementary ideographs) costs 2.
+    pub text_max_utf16_units: Option<usize>,
     /// Override base URL for the Telegram Bot API (testing only).
     pub api_base_url: Option<String>,
 }

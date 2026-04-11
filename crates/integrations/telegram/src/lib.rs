@@ -49,7 +49,7 @@ pub mod error;
 pub mod provider;
 pub mod types;
 
-pub use config::{DEFAULT_TEXT_MAX_BYTES, TelegramConfig};
+pub use config::{DEFAULT_TEXT_MAX_UTF16_UNITS, TelegramConfig};
 pub use error::TelegramError;
 pub use provider::TelegramProvider;
 pub use types::{TelegramApiResponse, TelegramSendMessageRequest};

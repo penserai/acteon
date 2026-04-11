@@ -5,14 +5,14 @@ use acteon_crypto::{ExposeSecret, SecretString};
 use crate::error::TelegramError;
 
 /// Default maximum length for the `text` field sent to Telegram,
-/// in UTF-8 bytes. The actual API cap is 4096 **UTF-16 code units**,
-/// which for mostly-ASCII text works out to ~4096 bytes; for
-/// non-BMP characters (emoji above U+FFFF, CJK surrogate pairs)
-/// the per-byte cap is stricter than necessary but never
-/// over-estimates. Override via
-/// [`TelegramConfig::with_text_max_bytes`] if you know your
-/// traffic is all-ASCII and want the full 4096-byte runway.
-pub const DEFAULT_TEXT_MAX_BYTES: usize = 4096;
+/// expressed in **UTF-16 code units** — the same unit Telegram's
+/// API uses for its 4096-unit cap. One BMP character costs 1
+/// code unit; one non-BMP character (most emoji, some CJK
+/// supplementary ideographs) costs 2. This gives CJK and
+/// emoji-heavy traffic the full runway the API actually permits,
+/// rather than the ~1365 characters a byte-based 4096 cap would
+/// allow.
+pub const DEFAULT_TEXT_MAX_UTF16_UNITS: usize = 4096;
 
 /// Configuration for the Telegram Bot provider.
 ///
@@ -52,8 +52,9 @@ pub struct TelegramConfig {
     /// text) is used.
     pub default_parse_mode: Option<String>,
 
-    /// Client-side text truncation cap, in bytes.
-    pub text_max_bytes: usize,
+    /// Client-side `text` truncation cap, in **UTF-16 code units**
+    /// — matches the units Telegram's API uses for its 4096 cap.
+    pub text_max_utf16_units: usize,
 }
 
 impl std::fmt::Debug for TelegramConfig {
@@ -64,7 +65,7 @@ impl std::fmt::Debug for TelegramConfig {
             .field("default_chat_name", &self.default_chat_name)
             .field("api_base_url", &self.api_base_url)
             .field("default_parse_mode", &self.default_parse_mode)
-            .field("text_max_bytes", &self.text_max_bytes)
+            .field("text_max_utf16_units", &self.text_max_utf16_units)
             .finish()
     }
 }
@@ -81,7 +82,7 @@ impl TelegramConfig {
             default_chat_name: None,
             api_base_url: "https://api.telegram.org".to_owned(),
             default_parse_mode: None,
-            text_max_bytes: DEFAULT_TEXT_MAX_BYTES,
+            text_max_utf16_units: DEFAULT_TEXT_MAX_UTF16_UNITS,
         }
     }
 
@@ -130,15 +131,38 @@ impl TelegramConfig {
         self
     }
 
-    /// Override the client-side `text` truncation cap.
+    /// Override the client-side `text` truncation cap. The value
+    /// is in **UTF-16 code units**, matching the units Telegram's
+    /// API uses for its 4096 cap. See
+    /// [`DEFAULT_TEXT_MAX_UTF16_UNITS`] for the default.
     #[must_use]
-    pub fn with_text_max_bytes(mut self, bytes: usize) -> Self {
-        self.text_max_bytes = bytes;
+    pub fn with_text_max_utf16_units(mut self, units: usize) -> Self {
+        self.text_max_utf16_units = units;
         self
     }
 
     /// Decrypt any `ENC[...]` bot token in place. Plaintext tokens
     /// pass through unchanged.
+    ///
+    /// # When to use which decrypt path
+    ///
+    /// The Acteon server has two code paths that can decrypt a
+    /// config field, and they intentionally do not overlap:
+    ///
+    /// 1. **Server TOML config** → `main.rs` calls
+    ///    `require_decrypt(raw, master_key)` per-field *before*
+    ///    constructing the provider. This is the path every
+    ///    operator exercises via `acteon-server`'s TOML config,
+    ///    and [`Self::decrypt_secrets`] is **not** called on that
+    ///    path.
+    /// 2. **Rust API users** → downstream crates that build a
+    ///    [`TelegramConfig`] programmatically from encrypted
+    ///    values (for example a test harness or a CLI) call
+    ///    [`Self::decrypt_secrets`] on the fully-constructed
+    ///    config to decrypt in place.
+    ///
+    /// Both approaches are valid; they serve different call
+    /// sites, not two ways to do the same thing.
     #[must_use = "returns the config with the decrypted bot token"]
     pub fn decrypt_secrets(
         mut self,
@@ -200,7 +224,7 @@ mod tests {
         assert!(config.chats.is_empty());
         assert!(config.default_chat_name.is_none());
         assert!(config.default_parse_mode.is_none());
-        assert_eq!(config.text_max_bytes, DEFAULT_TEXT_MAX_BYTES);
+        assert_eq!(config.text_max_utf16_units, DEFAULT_TEXT_MAX_UTF16_UNITS);
     }
 
     #[test]
@@ -218,9 +242,9 @@ mod tests {
             .with_default_chat("ops")
             .with_api_base_url("http://mock")
             .with_default_parse_mode("HTML")
-            .with_text_max_bytes(1024);
+            .with_text_max_utf16_units(1024);
         assert_eq!(config.default_parse_mode.as_deref(), Some("HTML"));
-        assert_eq!(config.text_max_bytes, 1024);
+        assert_eq!(config.text_max_utf16_units, 1024);
         assert_eq!(config.resolve_chat_id(None).unwrap(), "-1001234");
         assert_eq!(config.resolve_chat_id(Some("dev")).unwrap(), "@devchannel");
     }

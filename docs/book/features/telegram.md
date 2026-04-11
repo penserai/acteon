@@ -11,6 +11,7 @@ Like the other native providers, `acteon-telegram`:
 - Maps 5xx / 408 → retryable `Connection` (via a `Transient` variant); 429 → retryable `RateLimited`; 401/403/404 → non-retryable `Configuration` (404 on `/bot{token}/...` means an unrecognized token — operator error, not transient); other 4xx → non-retryable `ExecutionFailed`.
 - Handles Telegram's **200 OK + `ok: false`** edge case by classifying it as a permanent `ExecutionFailed`.
 - Reuses the server's shared HTTP client, so it participates in circuit breaking, provider health checks, and per-provider metrics automatically.
+- **Verifies credentials** in the health check: unlike most provider APIs, Telegram ships a free, idempotent `getMe` endpoint explicitly designed as a credential-validity probe. The Telegram provider parses the response and surfaces bad tokens as non-retryable `Configuration` errors — operators see token problems on the health dashboard instead of only at dispatch time.
 - Propagates W3C Trace Context headers.
 
 ## TOML configuration
@@ -21,8 +22,8 @@ name = "telegram-ops"
 type = "telegram"
 telegram.bot_token = "ENC[AES256_GCM,data:abc123...]"
 telegram.default_chat = "ops-channel"
-telegram.default_parse_mode = "HTML"   # optional
-# telegram.text_max_bytes = 4096       # default; override if you know your text is all-ASCII
+telegram.default_parse_mode = "HTML"         # optional
+# telegram.text_max_utf16_units = 4096        # default — matches the Bot API's UTF-16 unit cap
 
 [providers.telegram.chats]
 ops-channel  = "-1001234567890"
@@ -38,8 +39,14 @@ alice-direct = "123456789"
 | `telegram.chats` | Yes (≥1) | Map of logical chat name → Telegram `chat_id`. Values can be numeric (`-1001234567890`) or string handles (`@channelusername`). Chat IDs are **not** secrets. |
 | `telegram.default_chat` | No | Name of the default chat used when the dispatch payload omits `chat`. If there is only one chat, it is used implicitly. |
 | `telegram.default_parse_mode` | No | Default `parse_mode` applied when the payload omits it: `"HTML"`, `"Markdown"`, or `"MarkdownV2"`. |
-| `telegram.text_max_bytes` | No | Client-side `text` truncation cap (default `4096`, matching the API limit for ASCII-heavy text). |
+| `telegram.text_max_utf16_units` | No | Client-side `text` truncation cap, in **UTF-16 code units** — the same unit Telegram's API uses for its 4096-unit cap. Default `4096`. |
 | `telegram.api_base_url` | No | Override the Bot API base URL. Tests only. |
+
+### Why UTF-16 code units (not bytes)
+
+The Telegram Bot API expresses the 4096-character `text` limit in UTF-16 code units, not UTF-8 bytes. One BMP character (Latin, Cyrillic, Hebrew, Arabic, most CJK) costs 1 code unit; one non-BMP character (most emoji at U+1F000 and above, supplementary CJK ideographs) costs 2 code units (a surrogate pair).
+
+Counting in UTF-16 units matches the API exactly. The earlier revision of this provider counted bytes instead, which meant CJK traffic truncated at ~1365 characters (because CJK is 3 bytes per character in UTF-8) even though the API would have accepted the full 4096-character message. The current implementation gives CJK and emoji-heavy deployments the full runway the API actually permits.
 
 ## Payload shape
 
@@ -67,7 +74,7 @@ Telegram has no lifecycle concept — the provider accepts one `event_action`, `
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `text` | string | **Required.** Message body. Truncated client-side to `text_max_bytes` (default 4096) on UTF-8 boundaries, so multi-byte characters are never split. |
+| `text` | string | **Required.** Message body. Truncated client-side to `text_max_utf16_units` UTF-16 code units (default 4096, matching the API limit). Multi-byte characters are never split. |
 | `chat` | string | Logical chat name (matching a key in `telegram.chats`). Falls back to `telegram.default_chat` or the single-entry implicit default. |
 | `parse_mode` | string | `"HTML"`, `"Markdown"`, or `"MarkdownV2"`. Overrides `telegram.default_parse_mode`. |
 | `disable_notification` | bool | Silent delivery — recipients get no sound or vibration. |

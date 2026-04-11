@@ -861,8 +861,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(ref parse_mode) = tg.default_parse_mode {
                     telegram_config = telegram_config.with_default_parse_mode(parse_mode);
                 }
-                if let Some(bytes) = tg.text_max_bytes {
-                    telegram_config = telegram_config.with_text_max_bytes(bytes);
+                if let Some(units) = tg.text_max_utf16_units {
+                    telegram_config = telegram_config.with_text_max_utf16_units(units);
                 }
                 if let Some(ref url) = tg.api_base_url {
                     validate_provider_url(&provider_cfg.name, url)?;
