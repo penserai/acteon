@@ -38,9 +38,10 @@ impl OpsGenieRegion {
 /// Configuration for the `OpsGenie` provider.
 ///
 /// The API key is held as a [`SecretString`] so its plaintext is
-/// [`zeroize::Zeroize`]-scrubbed from the heap when the provider is
-/// dropped, and so any accidental `Debug` formatting yields
-/// `[REDACTED]` instead of the raw key.
+/// zeroized from the heap (via the `zeroize` crate, transitively
+/// through `secrecy`) when the provider is dropped, and so any
+/// accidental `Debug` formatting yields `[REDACTED]` instead of
+/// the raw key.
 #[derive(Clone)]
 pub struct OpsGenieConfig {
     /// API integration key (the `GenieKey` that authenticates writes
