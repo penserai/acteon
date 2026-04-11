@@ -38,7 +38,7 @@ A fresh audit against Alertmanager v0.27 features found the following gaps.
 | 4 | OpsGenie receiver | **Shipped in Phase 4a.** New `acteon-opsgenie` crate implements the Alert API v2 (create / acknowledge / close) against both US and EU regions, wired into the server's TOML provider config as `type = "opsgenie"`. | ~~Medium~~ Done |
 | 5 | VictorOps receiver | **Shipped in Phase 4b.** New `acteon-victorops` crate implements the REST endpoint integration (trigger / warn / info / acknowledge / resolve) with routing-key fan-out, auto-scoped `entity_id` for multi-tenant safety, and retryable 5xx/408. | ~~Medium~~ Done |
 | 6 | Pushover receiver | **Shipped in Phase 4c.** New `acteon-pushover` crate implements the Pushover Messages API with form-encoded POST, fan-out across multiple user/group keys, priority 0–2 (including emergency retry/expire), client-side validation, and the same transient retry semantics as the other on-call receivers. | ~~Low~~ Done |
-| 7 | WeChat receiver | Missing | Low |
+| 7 | WeChat receiver | **Shipped in Phase 4d.** New `acteon-wechat` crate implements the WeChat Work Message Send API with an access-token refresh loop (7200s TTL + configurable buffer + double-checked cache), in-band retry on errcode 42001/40014, three msgtype variants (text/markdown/textcard), multi-dimensional recipient routing (touser/toparty/totag + agentid), errcode-based classification (40001/40013 → Configuration, 45009 → RateLimited, -1 → Transient, others → ExecutionFailed). | ~~Low~~ Done |
 | 8 | Telegram receiver | **Shipped in Phase 4d.** New `acteon-telegram` crate implements the Bot API `sendMessage` endpoint with HTML / Markdown / MarkdownV2 parse modes, forum-group topic support, multi-chat fan-out, 4096-byte text truncation, and the same transient retry semantics as the other receivers. | ~~Low~~ Done |
 | 9 | Alert-centric admin UI (active alerts grouped by labels) | Missing — UI is action-centric and event-centric | Low |
 | 10 | First-class `Alert` primitive | Missing | **Skip** — handle via generic `Action` + convention |
@@ -319,9 +319,98 @@ HTML-formatted alert targeting a forum-group topic, and a
 rule-based severity reroute. Docs:
 `docs/book/features/telegram.md`.
 
-#### Phase 4d-WeChat — WeChat
+#### Phase 4d-WeChat — WeChat ✅ Shipped
 **Gap**: #7
-**Status**: Pending. Ships as its own PR.
+**Status**: Shipped in PR (feat/wechat-provider).
+**Scope as built**: new `acteon-wechat` crate (~2300 LOC with
+tests) plus server wiring, simulation example, and docs. The
+most architecturally involved receiver in Phase 4.
+
+The `acteon-wechat` crate implements the WeChat Work
+(企业微信 / Enterprise WeChat) Message Send API. Key design
+decisions:
+
+- **Access token refresh loop**: WeChat Work tokens expire
+  every 7200 seconds. The provider caches the current token
+  behind a `tokio::sync::Mutex<Option<CachedToken>>` and
+  refreshes proactively when the cached token is within a
+  configurable buffer window (default 300 seconds) of its
+  expiry. The mutex serializes refreshes so a burst of
+  concurrent dispatches on an expired token triggers exactly
+  one `gettoken` call, not N.
+- **In-band token revocation recovery**: if the send endpoint
+  returns `errcode: 42001` (access_token expired) or `40014`
+  (invalid access_token), the provider invalidates its cache,
+  fetches a fresh token, and retries the send **exactly once**.
+  A second consecutive 42001/40014 after refresh surfaces as
+  a non-retryable `Configuration` error rather than looping
+  indefinitely. Tests cover both the happy retry path and the
+  second-failure termination path.
+- **Multi-msgtype support**: `text`, `markdown`, and
+  `textcard` — the three message types that cover all
+  alerting use cases. Image/voice/video/file/news/taskcard/
+  template_card/mpnews/miniprogram_notice are deferred; they
+  are for content delivery, not alerting, and have complex
+  nested payload shapes.
+- **Multi-dimensional recipient routing**: each send targets
+  any combination of `touser`, `toparty`, and `totag` (each a
+  `|`-separated string of IDs, or `@all` for touser). The
+  provider fills in payload-missing fields from config
+  defaults and rejects payloads with no recipients after
+  fallback, before they reach the API.
+- **Errcode-based error classification**: `40001` (invalid
+  credential) / `40013` (invalid corpid) → `Unauthorized` →
+  `Configuration`. `45009` (API freq out of limit) →
+  `RateLimited`. `-1` (system busy) → `Transient` →
+  `Connection`. Other non-zero errcodes → `Api` →
+  `ExecutionFailed`.
+- **Secret hygiene**: both `corp_id` and `corp_secret` are
+  `SecretString`, zeroized on drop, redacted in `Debug`. The
+  `gettoken` URL (which embeds both as query parameters) is
+  deliberately excluded from log/error output.
+- **Health check verifies credentials**: `health_check`
+  simply calls `get_access_token`, which is both a
+  connectivity check AND a credential check. A bad
+  `corp_secret` surfaces on the provider-health dashboard as
+  non-retryable Configuration. This gives WeChat the same
+  credential-check guarantee the Telegram provider ships.
+- **Confidential delivery**: `safe = 1` flag for
+  confidential-mode messages (recipients cannot forward,
+  copy, or screenshot).
+- **Server-side dedup**: optional `enable_duplicate_check` +
+  `duplicate_check_interval` for defense in depth on top of
+  Acteon's own dedup pipeline.
+- **Testing**: 54 unit tests with a multi-request mock HTTP
+  server (`respond_n_capturing`) that scripts sequences of
+  interactions — e.g. `gettoken → send-with-42001 → gettoken
+  → send-success` — and verifies both the request
+  sequencing AND the request body format for every branch.
+  Specific coverage:
+  - Token refresh on first send
+  - Cached token reuse across consecutive sends
+  - 42001 triggers refresh + retry (happy path)
+  - 42001 twice fails as Configuration (no infinite loop)
+  - 45009 → RateLimited
+  - -1 → Transient
+  - 40001 → Configuration
+  - Other errcodes → ExecutionFailed
+  - HTTP 5xx on send and gettoken → Transient
+  - Empty access_token response → Api
+  - Bad credentials on gettoken → Configuration
+  - Health check happy path + bad credentials + connection failure
+  - Token cache invalidation
+
+Simulation:
+`crates/simulation/examples/wechat_simulation.rs` walks
+through a text broadcast to `@all`, a markdown alert to a
+specific department (`toparty`), a textcard with a runbook
+link, and a rule-based severity reroute. Docs:
+`docs/book/features/wechat.md`.
+
+**With this merged, Phase 4 is complete.** All five
+Alertmanager-parity receivers (OpsGenie, VictorOps, Pushover,
+Telegram, WeChat) ship. Moving on to Phase 5 (alert-centric
+admin UI) next.
 
 ### Phase 5 — Alert-centric admin UI
 **Gap**: #9

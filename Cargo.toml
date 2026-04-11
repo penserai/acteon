@@ -57,6 +57,7 @@ members = [
     "crates/integrations/victorops",
     "crates/integrations/pushover",
     "crates/integrations/telegram",
+    "crates/integrations/wechat",
     "crates/integrations/webhook",
     "crates/integrations/twilio",
     "crates/integrations/teams",
@@ -135,6 +136,7 @@ acteon-opsgenie = { path = "crates/integrations/opsgenie" }
 acteon-victorops = { path = "crates/integrations/victorops" }
 acteon-pushover = { path = "crates/integrations/pushover" }
 acteon-telegram = { path = "crates/integrations/telegram" }
+acteon-wechat = { path = "crates/integrations/wechat" }
 acteon-webhook = { path = "crates/integrations/webhook" }
 acteon-twilio = { path = "crates/integrations/twilio" }
 acteon-teams = { path = "crates/integrations/teams" }

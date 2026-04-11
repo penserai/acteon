@@ -873,6 +873,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            "wechat" => {
+                let wc = &provider_cfg.wechat;
+                let corp_id_raw = wc.corp_id.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': wechat type requires a 'wechat.corp_id' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let corp_secret_raw = wc.corp_secret.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': wechat type requires a 'wechat.corp_secret' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let agent_id = wc.agent_id.ok_or_else(|| {
+                    format!(
+                        "provider '{}': wechat type requires a numeric 'wechat.agent_id' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let corp_id = require_decrypt(corp_id_raw, master_key.as_ref())?;
+                let corp_secret = require_decrypt(corp_secret_raw, master_key.as_ref())?;
+                let mut wechat_config =
+                    acteon_wechat::WeChatConfig::new(corp_id, corp_secret, agent_id);
+                if let Some(ref touser) = wc.default_touser {
+                    wechat_config = wechat_config.with_default_touser(touser);
+                }
+                if let Some(ref toparty) = wc.default_toparty {
+                    wechat_config = wechat_config.with_default_toparty(toparty);
+                }
+                if let Some(ref totag) = wc.default_totag {
+                    wechat_config = wechat_config.with_default_totag(totag);
+                }
+                if let Some(ref msgtype) = wc.default_msgtype {
+                    wechat_config = wechat_config.with_default_msgtype(msgtype);
+                }
+                if let Some(safe) = wc.safe {
+                    wechat_config = wechat_config.with_safe(safe);
+                }
+                if wc.enable_duplicate_check == Some(true) {
+                    let interval = wc.duplicate_check_interval.ok_or_else(|| {
+                        format!(
+                            "provider '{}': wechat.enable_duplicate_check=true requires 'wechat.duplicate_check_interval'",
+                            provider_cfg.name
+                        )
+                    })?;
+                    wechat_config = wechat_config.with_duplicate_check(interval);
+                }
+                if let Some(buffer) = wc.token_refresh_buffer_seconds {
+                    wechat_config = wechat_config.with_token_refresh_buffer_seconds(buffer);
+                }
+                if let Some(ref url) = wc.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    wechat_config = wechat_config.with_api_base_url(url);
+                }
+                std::sync::Arc::new(acteon_wechat::WeChatProvider::with_client(
+                    wechat_config,
+                    shared_http_client.clone(),
+                ))
+            }
             "email" => {
                 let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
                     format!(

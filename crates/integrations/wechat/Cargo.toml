@@ -1,0 +1,27 @@
+[package]
+name = "acteon-wechat"
+description = "WeChat Work (Enterprise WeChat) provider for Acteon — sends messages via the cgi-bin/message/send endpoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-crypto = { workspace = true }
+acteon-provider = { workspace = true, features = ["trace-context"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

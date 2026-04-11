@@ -22,9 +22,9 @@ pub struct ProviderConfig {
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
     /// `"email"`, `"opsgenie"`, `"victorops"`, `"pushover"`, `"telegram"`,
-    /// `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
-    /// `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
-    /// `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
+    /// `"wechat"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`,
+    /// `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`,
+    /// `"azure-blob"`, `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -206,6 +206,23 @@ pub struct ProviderConfig {
     /// ```
     #[serde(default)]
     pub telegram: TelegramProviderConfig,
+
+    /// Nested configuration block for the `"wechat"` provider type
+    /// (WeChat Work / Enterprise WeChat / 企业微信).
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [[providers]]
+    /// name = "wechat-ops"
+    /// type = "wechat"
+    /// wechat.corp_id = "ENC[...]"
+    /// wechat.corp_secret = "ENC[...]"
+    /// wechat.agent_id = 1000002
+    /// wechat.default_touser = "@all"
+    /// wechat.default_msgtype = "text"      # or "markdown", "textcard"
+    /// ```
+    #[serde(default)]
+    pub wechat: WeChatProviderConfig,
 }
 
 /// Nested configuration block for the `OpsGenie` provider.
@@ -302,5 +319,39 @@ pub struct TelegramProviderConfig {
     /// (most emoji, some CJK supplementary ideographs) costs 2.
     pub text_max_utf16_units: Option<usize>,
     /// Override base URL for the Telegram Bot API (testing only).
+    pub api_base_url: Option<String>,
+}
+
+/// Nested configuration block for the `WeChat` Work
+/// (Enterprise `WeChat`) provider.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct WeChatProviderConfig {
+    /// `WeChat` Work corp ID (from the admin console). Supports `ENC[...]`.
+    pub corp_id: Option<String>,
+    /// `WeChat` Work corp secret (per-app). Supports `ENC[...]`.
+    pub corp_secret: Option<String>,
+    /// Numeric agent ID — identifies which `WeChat` Work app is
+    /// sending. **Required.**
+    pub agent_id: Option<i64>,
+    /// Default `touser` (`|`-separated user IDs or `@all`).
+    pub default_touser: Option<String>,
+    /// Default `toparty` (`|`-separated department IDs).
+    pub default_toparty: Option<String>,
+    /// Default `totag` (`|`-separated tag IDs).
+    pub default_totag: Option<String>,
+    /// Default `msgtype`: `"text"` (default), `"markdown"`, or `"textcard"`.
+    pub default_msgtype: Option<String>,
+    /// Mark messages as confidential (`safe = 1`). Defaults to `false`.
+    pub safe: Option<bool>,
+    /// Enable server-side duplicate-check. When `true`, the
+    /// `duplicate_check_interval` window is also required.
+    pub enable_duplicate_check: Option<bool>,
+    /// Duplicate-check window in seconds (max 1800).
+    pub duplicate_check_interval: Option<u32>,
+    /// Buffer window, in seconds, between the proactive token
+    /// refresh and the server-reported token expiry. Default 300.
+    pub token_refresh_buffer_seconds: Option<u64>,
+    /// Override base URL for the `WeChat` Work API (testing only).
     pub api_base_url: Option<String>,
 }
