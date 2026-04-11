@@ -1,0 +1,27 @@
+[package]
+name = "acteon-pushover"
+description = "Pushover provider for Acteon — sends push notifications via the Pushover Messages API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+acteon-core = { workspace = true }
+acteon-crypto = { workspace = true }
+acteon-provider = { workspace = true, features = ["trace-context"] }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_urlencoded = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

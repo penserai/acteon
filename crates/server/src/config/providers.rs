@@ -21,8 +21,8 @@ pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
-    /// `"email"`, `"opsgenie"`, `"victorops"`, `"aws-sns"`, `"aws-lambda"`,
-    /// `"aws-eventbridge"`, `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`,
+    /// `"email"`, `"opsgenie"`, `"victorops"`, `"pushover"`, `"aws-sns"`,
+    /// `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`,
     /// `"aws-autoscaling"`, `"azure-blob"`, `"azure-eventhubs"`, `"gcp-pubsub"`,
     /// or `"gcp-storage"`.
     #[serde(rename = "type")]
@@ -177,6 +177,20 @@ pub struct ProviderConfig {
     /// ```
     #[serde(default)]
     pub victorops: VictorOpsProviderConfig,
+
+    /// Nested configuration block for the `"pushover"` provider type.
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [[providers]]
+    /// name = "pushover-ops"
+    /// type = "pushover"
+    /// pushover.app_token = "ENC[...]"
+    /// pushover.default_recipient = "ops-oncall"
+    /// pushover.recipients = { ops-oncall = "ENC[...]", dev = "ENC[...]" }
+    /// ```
+    #[serde(default)]
+    pub pushover: PushoverProviderConfig,
 }
 
 /// Nested configuration block for the `OpsGenie` provider.
@@ -233,4 +247,20 @@ pub struct VictorOpsProviderConfig {
     /// `{namespace}:{tenant}:` for multi-tenant isolation. Defaults
     /// to `true`.
     pub scope_entity_ids: Option<bool>,
+}
+
+/// Nested configuration block for the `Pushover` provider.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct PushoverProviderConfig {
+    /// Pushover application token (the `T...` key). Supports `ENC[...]`.
+    pub app_token: Option<String>,
+    /// Map of logical recipient name → Pushover user or group key
+    /// (`U...` / `G...`). Values support `ENC[...]`.
+    pub recipients: HashMap<String, String>,
+    /// Name of the default recipient used when the dispatch payload
+    /// omits `user_key`.
+    pub default_recipient: Option<String>,
+    /// Override base URL for the Pushover Messages API (testing only).
+    pub api_base_url: Option<String>,
 }

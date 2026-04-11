@@ -802,6 +802,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            "pushover" => {
+                let po = &provider_cfg.pushover;
+                let app_token_raw = po.app_token.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': pushover type requires a 'pushover.app_token' field",
+                        provider_cfg.name
+                    )
+                })?;
+                if po.recipients.is_empty() {
+                    return Err(format!(
+                        "provider '{}': pushover type requires at least one entry in 'pushover.recipients'",
+                        provider_cfg.name
+                    )
+                    .into());
+                }
+                let app_token = require_decrypt(app_token_raw, master_key.as_ref())?;
+                let mut pushover_config = acteon_pushover::PushoverConfig::new(app_token);
+                for (name, user_key_raw) in &po.recipients {
+                    let user_key = require_decrypt(user_key_raw, master_key.as_ref())?;
+                    pushover_config = pushover_config.with_recipient(name, user_key);
+                }
+                if let Some(ref default_recipient) = po.default_recipient {
+                    pushover_config = pushover_config.with_default_recipient(default_recipient);
+                }
+                if let Some(ref url) = po.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    pushover_config = pushover_config.with_api_base_url(url);
+                }
+                std::sync::Arc::new(acteon_pushover::PushoverProvider::with_client(
+                    pushover_config,
+                    shared_http_client.clone(),
+                ))
+            }
             "email" => {
                 let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
                     format!(

@@ -414,6 +414,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-pushover"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-crypto",
+ "acteon-provider",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "acteon-rules"
 version = "0.1.0"
 dependencies = [
@@ -488,6 +504,7 @@ dependencies = [
  "acteon-llm",
  "acteon-opsgenie",
  "acteon-provider",
+ "acteon-pushover",
  "acteon-rules",
  "acteon-rules-yaml",
  "acteon-state",

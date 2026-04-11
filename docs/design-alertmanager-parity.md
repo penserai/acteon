@@ -37,7 +37,7 @@ A fresh audit against Alertmanager v0.27 features found the following gaps.
 | 3 | Per-receiver rate limits | **Shipped in Phase 3.** Generic tenant/namespace quotas now stack with optional per-provider scoped policies; strictest outcome wins; each scope has its own counter bucket. | ~~Medium~~ Done |
 | 4 | OpsGenie receiver | **Shipped in Phase 4a.** New `acteon-opsgenie` crate implements the Alert API v2 (create / acknowledge / close) against both US and EU regions, wired into the server's TOML provider config as `type = "opsgenie"`. | ~~Medium~~ Done |
 | 5 | VictorOps receiver | **Shipped in Phase 4b.** New `acteon-victorops` crate implements the REST endpoint integration (trigger / warn / info / acknowledge / resolve) with routing-key fan-out, auto-scoped `entity_id` for multi-tenant safety, and retryable 5xx/408. | ~~Medium~~ Done |
-| 6 | Pushover receiver | Missing | Low |
+| 6 | Pushover receiver | **Shipped in Phase 4c.** New `acteon-pushover` crate implements the Pushover Messages API with form-encoded POST, fan-out across multiple user/group keys, priority 0–2 (including emergency retry/expire), client-side validation, and the same transient retry semantics as the other on-call receivers. | ~~Low~~ Done |
 | 7 | WeChat receiver | Missing | Low |
 | 8 | Telegram receiver | Missing | Low |
 | 9 | Alert-centric admin UI (active alerts grouped by labels) | Missing — UI is action-centric and event-centric | Low |
@@ -209,8 +209,58 @@ Simulation: `crates/simulation/examples/victorops_simulation.rs`
 walks the full lifecycle plus a severity-based reroute. Docs:
 `docs/book/features/victorops.md`.
 
-#### Phase 4c–4d — Pushover, WeChat, Telegram
-**Gaps**: #6–#8
+#### Phase 4c — Pushover ✅ Shipped
+**Gap**: #6
+**Status**: Shipped in PR (feat/pushover-provider).
+**Scope as built**: new `acteon-pushover` crate (~1200 LOC with tests) plus server wiring, simulation example, and docs.
+
+The `acteon-pushover` crate is the lowest-ceremony receiver in
+the parity set — Pushover has no lifecycle (just fire-and-forget
+sends) and no server-side deduplication, so the provider is
+deliberately thin:
+- **Wire format**: Pushover's API is `application/x-www-form-urlencoded`
+  (not JSON), so the request type serializes through
+  `serde_urlencoded` and reqwest's `.form()` helper. No nested
+  fields.
+- **Priority support**: full 0–2 range including emergency
+  (priority=2) with `retry`/`expire` fields. Client-side
+  validation rejects emergency priority without both fields,
+  `retry < 30`, `expire > 10800`, and `html` + `monospace` set
+  simultaneously.
+- **Recipient fan-out**: map of logical name → user/group key,
+  with a configurable default and single-entry implicit fallback.
+  Pattern matches the `VictorOps` provider.
+- **Secret hygiene**: both `app_token` and every recipient key
+  are `SecretString`, zeroized on drop. Debug impl redacts both.
+- **Client-side truncation**: `message`, `title`, `url`, and
+  `url_title` are truncated to their documented API limits with
+  UTF-8 boundary-aware cutting so multi-byte characters are
+  never split.
+- **HTTP 200 + `status: 0` handling**: Pushover sometimes returns
+  a successful HTTP round-trip with a body that says
+  `status: 0` (permanent API failure). The provider classifies
+  this as non-retryable `ExecutionFailed` rather than silently
+  succeeding.
+- **Retry map**: identical to opsgenie/victorops — 401/403 →
+  non-retryable `Configuration`; 429 → retryable `RateLimited`;
+  5xx/408 → retryable `Connection` (via `Transient`); other 4xx
+  → non-retryable `ExecutionFailed`.
+- **Testing**: 52 unit tests including a mock HTTP server that
+  captures the form-encoded request body so tests assert on the
+  wire format (field ordering, URL encoding of reserved chars,
+  `priority=2` plus `retry`/`expire`, etc.).
+
+Config uses the same nested provider sub-struct pattern as the
+other receivers: `pushover.app_token`, `pushover.recipients`,
+`pushover.default_recipient`. Both secrets support `ENC[...]`.
+
+Simulation: `crates/simulation/examples/pushover_simulation.rs`
+walks through a normal-priority deploy notification, an
+emergency-priority alert, and a rule-based priority reroute.
+Docs: `docs/book/features/pushover.md`.
+
+#### Phase 4d — WeChat, Telegram
+**Gaps**: #7–#8
 **Status**: Pending. Each provider ships as its own PR so a
 review problem in one cannot block the others.
 

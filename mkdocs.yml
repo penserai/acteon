@@ -142,6 +142,7 @@ nav:
     - Native Providers: features/native-providers.md
     - OpsGenie: features/opsgenie.md
     - VictorOps: features/victorops.md
+    - Pushover: features/pushover.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md
