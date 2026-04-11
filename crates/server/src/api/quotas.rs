@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use acteon_core::{
-    OverageBehavior, QuotaPolicy, QuotaUsage, QuotaWindow, compute_window_boundaries,
-    quota_counter_key,
+    MAX_POLICIES_PER_BUCKET, OverageBehavior, QuotaPolicy, QuotaUsage, QuotaWindow,
+    compute_window_boundaries, quota_counter_key, validate_quota_scope_identifier,
 };
 use acteon_state::{KeyKind, StateKey};
 
@@ -292,13 +292,25 @@ async fn read_usage(
     policy: &QuotaPolicy,
 ) -> Result<QuotaUsageResponse, String> {
     let now = Utc::now();
-    let counter_id = quota_counter_key(
+    // Fail-closed for corrupt/rejected policies: surface zero used
+    // and the configured limit rather than panicking. The
+    // validation layers (API + builder + cold-path loader) should
+    // keep us from reaching this branch in normal operation.
+    let Some(counter_id) = quota_counter_key(
         &policy.namespace,
         &policy.tenant,
         policy.provider.as_deref(),
         &policy.window,
         &now,
-    );
+    ) else {
+        let resets_at = now;
+        return Ok(QuotaUsageResponse {
+            used: 0,
+            limit: policy.max_actions,
+            remaining: policy.max_actions,
+            resets_at,
+        });
+    };
     let counter_key = StateKey::new(
         policy.namespace.as_str(),
         policy.tenant.as_str(),
@@ -355,11 +367,30 @@ pub async fn create_quota(
     State(state): State<AppState>,
     Json(req): Json<CreateQuotaRequest>,
 ) -> impl IntoResponse {
+    // Validate identifiers first — reject colon injection and
+    // oversized names before we touch the state store.
+    if let Err(e) = validate_quota_scope_identifier(&req.namespace) {
+        return error_response(StatusCode::BAD_REQUEST, &format!("invalid namespace: {e}"));
+    }
+    if let Err(e) = validate_quota_scope_identifier(&req.tenant) {
+        return error_response(StatusCode::BAD_REQUEST, &format!("invalid tenant: {e}"));
+    }
+    if let Some(ref p) = req.provider {
+        if let Err(e) = validate_quota_scope_identifier(p) {
+            return error_response(StatusCode::BAD_REQUEST, &format!("invalid provider: {e}"));
+        }
+    }
     // Validate window.
     let window = match parse_window(&req.window) {
         Ok(w) => w,
         Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
     };
+    if req.max_actions == 0 {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "max_actions must be greater than 0",
+        );
+    }
 
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
@@ -371,6 +402,21 @@ pub async fn create_quota(
         Ok(ids) => ids,
         Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
     };
+
+    // Enforce the per-bucket cap before doing any writes. This
+    // prevents a malicious or buggy caller from exploding a single
+    // tenant's policy count and DoSing the dispatch path.
+    if existing_ids.len() >= MAX_POLICIES_PER_BUCKET {
+        return error_response(
+            StatusCode::CONFLICT,
+            &format!(
+                "quota bucket (namespace={}, tenant={}) already holds {} policies — cap is {MAX_POLICIES_PER_BUCKET}",
+                req.namespace,
+                req.tenant,
+                existing_ids.len()
+            ),
+        );
+    }
 
     // Reject duplicates with the same (ns, tenant, provider) tuple:
     // operators should pick exactly one policy per scope. Different
@@ -427,9 +473,14 @@ pub async fn create_quota(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
 
-    // Append the new ID to the index bucket and rewrite.
+    // Append the new ID to the index bucket and rewrite. If the
+    // index write fails after the policy record was persisted,
+    // compensate by deleting the orphaned policy record so the
+    // store is not left with a dangling entry that is unreachable
+    // via the bucket index.
     existing_ids.push(id.clone());
     if let Err(e) = write_quota_index(state_store.as_ref(), &idx_key, &existing_ids).await {
+        let _ = state_store.delete(&key).await;
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
     drop(gw);
@@ -733,13 +784,28 @@ pub async fn get_quota_usage(
     };
 
     let now = Utc::now();
-    let counter_id = quota_counter_key(
+    let Some(counter_id) = quota_counter_key(
         &policy.namespace,
         &policy.tenant,
         policy.provider.as_deref(),
         &policy.window,
         &now,
-    );
+    ) else {
+        // Corrupt or rejected policy — surface zero usage rather
+        // than return an error, so operators can still see the
+        // record while they repair it.
+        let usage = QuotaUsage {
+            tenant: policy.tenant.clone(),
+            namespace: policy.namespace.clone(),
+            used: 0,
+            limit: policy.max_actions,
+            remaining: policy.max_actions,
+            window: policy.window.clone(),
+            resets_at: now,
+            overage_behavior: policy.overage_behavior.clone(),
+        };
+        return (StatusCode::OK, Json(serde_json::json!(usage))).into_response();
+    };
     let counter_key = StateKey::new(
         policy.namespace.as_str(),
         policy.tenant.as_str(),

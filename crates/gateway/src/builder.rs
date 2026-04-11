@@ -528,8 +528,15 @@ impl GatewayBuilder {
     /// Validate quota policies and bucket them by `"namespace:tenant"`.
     ///
     /// Each bucket may hold a generic policy plus any number of
-    /// per-provider policies, all of which are evaluated together
+    /// per-provider policies (capped at
+    /// [`acteon_core::MAX_POLICIES_PER_BUCKET`] to prevent
+    /// policy-explosion `DoS`), all of which are evaluated together
     /// per dispatch at runtime.
+    ///
+    /// Every policy must pass [`acteon_core::QuotaPolicy::validate_scope`]
+    /// — this catches colon injection in identifiers, zero-duration
+    /// windows, and zero `max_actions` up front so the dispatch
+    /// path can rely on the invariants.
     fn validate_and_wrap_quota_policies(
         policies: Vec<acteon_core::QuotaPolicy>,
     ) -> Result<HashMap<String, crate::gateway::CachedPolicy>, GatewayError> {
@@ -544,16 +551,9 @@ impl GatewayBuilder {
                     .map(|p| format!(":{p}"))
                     .unwrap_or_default()
             );
-            if policy.max_actions == 0 {
-                return Err(GatewayError::Configuration(format!(
-                    "quota policy '{label}' has max_actions = 0"
-                )));
-            }
-            if policy.window.duration_seconds() == 0 {
-                return Err(GatewayError::Configuration(format!(
-                    "quota policy '{label}' has a zero-duration window"
-                )));
-            }
+            policy.validate_scope().map_err(|e| {
+                GatewayError::Configuration(format!("quota policy '{label}' invalid: {e}"))
+            })?;
         }
         // Reject duplicate (ns, tenant, provider) tuples — operators
         // should pick exactly one policy per scope; silent override
@@ -578,14 +578,20 @@ impl GatewayBuilder {
         let mut buckets: HashMap<String, crate::gateway::CachedPolicy> = HashMap::new();
         for policy in policies {
             let key = format!("{}:{}", policy.namespace, policy.tenant);
-            buckets
-                .entry(key)
-                .or_insert_with(|| crate::gateway::CachedPolicy {
-                    policies: Vec::new(),
-                    cached_at: now,
-                })
-                .policies
-                .push(policy);
+            let bucket =
+                buckets
+                    .entry(key.clone())
+                    .or_insert_with(|| crate::gateway::CachedPolicy {
+                        policies: Vec::new(),
+                        cached_at: now,
+                    });
+            if bucket.policies.len() >= acteon_core::MAX_POLICIES_PER_BUCKET {
+                return Err(GatewayError::Configuration(format!(
+                    "quota bucket '{key}' exceeds the per-tenant policy cap of {}",
+                    acteon_core::MAX_POLICIES_PER_BUCKET
+                )));
+            }
+            bucket.policies.push(policy);
         }
         Ok(buckets)
     }
@@ -1057,7 +1063,10 @@ mod tests {
             .build();
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("max_actions = 0"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_actions must be greater than 0"),
             "should reject quota with zero max_actions"
         );
     }
@@ -1090,7 +1099,7 @@ mod tests {
             result
                 .unwrap_err()
                 .to_string()
-                .contains("zero-duration window"),
+                .contains("quota window duration must be greater than 0"),
             "should reject quota with zero-duration window"
         );
     }

@@ -44,6 +44,34 @@ impl Gateway {
         &self,
         action: &Action,
     ) -> Result<Option<ActionOutcome>, GatewayError> {
+        self.check_quota_inner(action, false).await
+    }
+
+    /// Re-check quota after a degrade-driven provider swap.
+    ///
+    /// Semantics: the generic (catch-all) policy was already
+    /// charged and produced the degrade verdict on the previous
+    /// pass, so re-enforcing it here would double-charge every
+    /// degraded dispatch against the tenant-wide budget. Instead,
+    /// only provider-scoped policies targeting the new provider
+    /// are evaluated — closing the "degrade-to-bypass" hole where
+    /// a fallback provider's own rate limit would otherwise be
+    /// silently ignored.
+    #[instrument(name = "gateway.check_quota_fallback", skip_all)]
+    pub(crate) async fn check_quota_fallback(
+        &self,
+        action: &Action,
+    ) -> Result<Option<ActionOutcome>, GatewayError> {
+        self.check_quota_inner(action, true).await
+    }
+
+    async fn check_quota_inner(
+        &self,
+        action: &Action,
+        only_provider_scoped: bool,
+    ) -> Result<Option<ActionOutcome>, GatewayError> {
+        const CACHE_TTL_SECS: i64 = 60;
+
         // Skip quota for internal re-dispatches (scheduled, recurring, groups)
         // to avoid double-counting. The action was already counted when it
         // first entered the gateway.
@@ -75,8 +103,6 @@ impl Gateway {
             let map = self.quota_policies.read();
             map.get(&bucket_key).cloned()
         };
-
-        const CACHE_TTL_SECS: i64 = 60;
 
         let bucket_policies: Vec<acteon_core::QuotaPolicy> = if let Some(c) = cached
             && (now - c.cached_at).num_seconds() < CACHE_TTL_SECS
@@ -120,9 +146,17 @@ impl Gateway {
         };
 
         // Filter to policies that actually apply to this dispatch.
+        // In fallback mode (called after a degrade swap), the
+        // generic catch-all is skipped because it was already
+        // enforced on the original-provider pass — re-counting it
+        // would double-charge the tenant-wide budget.
         let applicable: Vec<acteon_core::QuotaPolicy> = bucket_policies
             .into_iter()
-            .filter(|p| p.enabled && p.applies_to_provider(&action.provider))
+            .filter(|p| {
+                p.enabled
+                    && p.applies_to_provider(&action.provider)
+                    && (!only_provider_scoped || p.provider.is_some())
+            })
             .collect();
 
         if applicable.is_empty() {
@@ -163,13 +197,27 @@ impl Gateway {
         };
 
         if is_block {
-            // Roll back every counter this call incremented so the
-            // blocked action does not consume any tenant budget.
-            for other in &incremented {
-                let _ = self
-                    .state
-                    .increment(&other.counter_key, -1, other.window_ttl)
-                    .await;
+            // Roll back every counter this call incremented, in
+            // parallel, so the blocked action does not consume any
+            // tenant budget. Rollback is best-effort:
+            // compensating decrements that fail leave the counter
+            // slightly inflated ("ghost consumption"), which can
+            // cause a tenant to be blocked earlier than strictly
+            // warranted. We log the errors but do not surface them
+            // — a transient state-store blip should not turn into
+            // a request-level failure on top of the legitimate
+            // block.
+            let rollbacks = incremented.iter().map(|other| {
+                let state = self.state.clone();
+                let key = other.counter_key.clone();
+                let ttl = other.window_ttl;
+                async move { state.increment(&key, -1, ttl).await }
+            });
+            let results = futures::future::join_all(rollbacks).await;
+            for r in results {
+                if let Err(e) = r {
+                    warn!(error = %e, "quota rollback decrement failed (ghost consumption possible)");
+                }
             }
         }
 
@@ -178,24 +226,51 @@ impl Gateway {
     }
 
     /// Increment the counter for every applicable policy, returning
-    /// the per-policy state. On any state-store failure this rolls
-    /// back everything it has already incremented and returns `Err`
-    /// so the caller can fail-open.
+    /// the per-policy state. Increments are issued concurrently via
+    /// `join_all` so latency is O(1) round-trips rather than
+    /// O(policies). On any state-store failure the helper rolls
+    /// back every counter that did succeed (also in parallel) and
+    /// returns `Err` so the caller can fail-open.
+    ///
+    /// Policies whose identifiers fail
+    /// [`acteon_core::quota_counter_key`] validation (e.g., colon
+    /// injection, zero window) are silently skipped with a warning
+    /// log — the validation layers at the API, builder, and
+    /// cold-path loader should prevent this from ever happening in
+    /// steady state, but skipping is safer than panicking on a
+    /// corrupt record.
     async fn increment_all_quota_counters(
         &self,
         action: &Action,
         policies: Vec<acteon_core::QuotaPolicy>,
         now: &chrono::DateTime<Utc>,
     ) -> Result<Vec<Incremented>, ()> {
-        let mut incremented: Vec<Incremented> = Vec::with_capacity(policies.len());
+        // Build per-policy (policy, counter_key, ttl) triples up
+        // front, skipping any whose key cannot be constructed
+        // safely. We need the triples both to issue the increments
+        // concurrently AND to know what to roll back on failure.
+        struct Prepared {
+            policy: acteon_core::QuotaPolicy,
+            counter_key: acteon_state::StateKey,
+            window_ttl: Option<std::time::Duration>,
+        }
+        let mut prepared: Vec<Prepared> = Vec::with_capacity(policies.len());
         for policy in policies {
-            let counter_id = acteon_core::quota_counter_key(
+            let Some(counter_id) = acteon_core::quota_counter_key(
                 &action.namespace,
                 &action.tenant,
                 policy.provider.as_deref(),
                 &policy.window,
                 now,
-            );
+            ) else {
+                warn!(
+                    namespace = %action.namespace,
+                    tenant = %action.tenant,
+                    policy_id = %policy.id,
+                    "skipping quota policy with invalid scope or zero window (fail-closed for this policy)"
+                );
+                continue;
+            };
             let counter_key = acteon_state::StateKey::new(
                 action.namespace.as_str(),
                 action.tenant.as_str(),
@@ -205,28 +280,58 @@ impl Gateway {
             let window_ttl = Some(std::time::Duration::from_secs(
                 policy.window.duration_seconds(),
             ));
-
-            let new_count = match self.state.increment(&counter_key, 1, window_ttl).await {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(error = %e, "quota increment failed (fail-open)");
-                    for inc in &incremented {
-                        let _ = self
-                            .state
-                            .increment(&inc.counter_key, -1, inc.window_ttl)
-                            .await;
-                    }
-                    return Err(());
-                }
-            };
-            #[allow(clippy::cast_sign_loss)]
-            let used = new_count as u64;
-            incremented.push(Incremented {
+            prepared.push(Prepared {
                 policy,
                 counter_key,
                 window_ttl,
-                used,
             });
+        }
+
+        // Issue all increments concurrently. `join_all` yields
+        // results in the same order as the input so we can zip
+        // them back against `prepared` and preserve per-policy
+        // attribution.
+        let increments = prepared.iter().map(|p| {
+            let state = self.state.clone();
+            let key = p.counter_key.clone();
+            let ttl = p.window_ttl;
+            async move { state.increment(&key, 1, ttl).await }
+        });
+        let results = futures::future::join_all(increments).await;
+
+        let mut incremented: Vec<Incremented> = Vec::with_capacity(prepared.len());
+        let mut failure: Option<String> = None;
+        for (prep, res) in prepared.into_iter().zip(results.into_iter()) {
+            match res {
+                Ok(new_count) => {
+                    #[allow(clippy::cast_sign_loss)]
+                    let used = new_count as u64;
+                    incremented.push(Incremented {
+                        policy: prep.policy,
+                        counter_key: prep.counter_key,
+                        window_ttl: prep.window_ttl,
+                        used,
+                    });
+                }
+                Err(e) => {
+                    if failure.is_none() {
+                        failure = Some(e.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Some(err) = failure {
+            warn!(error = %err, "quota increment failed (fail-open)");
+            // Roll back every counter that did succeed, concurrently.
+            let rollbacks = incremented.iter().map(|inc| {
+                let state = self.state.clone();
+                let key = inc.counter_key.clone();
+                let ttl = inc.window_ttl;
+                async move { state.increment(&key, -1, ttl).await }
+            });
+            let _ = futures::future::join_all(rollbacks).await;
+            return Err(());
         }
         Ok(incremented)
     }
@@ -379,7 +484,31 @@ impl Gateway {
             if let Some(data) = self.state.get(&policy_key).await? {
                 let policy = serde_json::from_str::<acteon_core::QuotaPolicy>(&data)
                     .map_err(|e| GatewayError::Configuration(e.to_string()))?;
+                // Reject obviously-bad records (colon injection,
+                // zero window, zero max_actions) at the cold-path
+                // boundary so the enforcement path can assume
+                // well-formed policies. The defense-in-depth means
+                // a manually-inserted or pre-validation record
+                // can't crash the gateway — worst case that policy
+                // silently skips enforcement until it's repaired.
+                if let Err(e) = policy.validate_scope() {
+                    warn!(
+                        policy_id = %id,
+                        error = %e,
+                        "skipping invalid quota policy loaded from state store"
+                    );
+                    continue;
+                }
                 policies.push(policy);
+                if policies.len() >= acteon_core::MAX_POLICIES_PER_BUCKET {
+                    warn!(
+                        namespace = %namespace,
+                        tenant = %tenant,
+                        cap = acteon_core::MAX_POLICIES_PER_BUCKET,
+                        "quota bucket hit per-tenant policy cap; ignoring remaining policy IDs from the index"
+                    );
+                    break;
+                }
             }
         }
         Ok(policies)

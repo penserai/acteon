@@ -142,6 +142,81 @@ fn default_enabled() -> bool {
     true
 }
 
+/// Maximum length allowed for `namespace`, `tenant`, and `provider`
+/// identifiers used in quota scopes. Prevents unbounded state-key
+/// growth and bounds validation work.
+pub const MAX_QUOTA_IDENTIFIER_LEN: usize = 128;
+
+/// Maximum number of quota policies permitted per `(namespace,
+/// tenant)` bucket. One generic plus up to 31 per-provider caps is
+/// ample for real deployments and bounds cold-path load work plus
+/// per-dispatch iteration cost (mitigating policy-explosion `DoS`).
+pub const MAX_POLICIES_PER_BUCKET: usize = 32;
+
+/// Errors reported by [`validate_quota_scope_identifier`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuotaIdentifierError {
+    /// The identifier was empty.
+    Empty,
+    /// The identifier exceeded [`MAX_QUOTA_IDENTIFIER_LEN`].
+    TooLong(usize),
+    /// The identifier contained a reserved separator character (`:`)
+    /// that would enable state-key injection / cross-tenant counter
+    /// collisions.
+    ReservedChar(char),
+    /// The identifier contained an ASCII control character.
+    ControlChar(char),
+}
+
+impl std::fmt::Display for QuotaIdentifierError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("identifier must not be empty"),
+            Self::TooLong(n) => write!(
+                f,
+                "identifier length {n} exceeds maximum {MAX_QUOTA_IDENTIFIER_LEN}"
+            ),
+            Self::ReservedChar(c) => {
+                write!(f, "identifier must not contain reserved character {c:?}")
+            }
+            Self::ControlChar(c) => write!(
+                f,
+                "identifier must not contain control character U+{:04X}",
+                *c as u32
+            ),
+        }
+    }
+}
+
+impl std::error::Error for QuotaIdentifierError {}
+
+/// Validate a namespace/tenant/provider identifier used in a quota
+/// scope, rejecting values that could collide with the counter-key
+/// separator or inflate state-store keys without bound.
+///
+/// # Errors
+///
+/// Returns [`QuotaIdentifierError`] if the identifier is empty,
+/// exceeds [`MAX_QUOTA_IDENTIFIER_LEN`], contains the reserved
+/// separator `:`, or contains any ASCII control character.
+pub fn validate_quota_scope_identifier(s: &str) -> Result<(), QuotaIdentifierError> {
+    if s.is_empty() {
+        return Err(QuotaIdentifierError::Empty);
+    }
+    if s.len() > MAX_QUOTA_IDENTIFIER_LEN {
+        return Err(QuotaIdentifierError::TooLong(s.len()));
+    }
+    for c in s.chars() {
+        if c == ':' {
+            return Err(QuotaIdentifierError::ReservedChar(c));
+        }
+        if c.is_control() {
+            return Err(QuotaIdentifierError::ControlChar(c));
+        }
+    }
+    Ok(())
+}
+
 impl QuotaPolicy {
     /// Whether this policy applies to an action dispatched to the
     /// given provider. A generic policy (`provider: None`) applies
@@ -153,6 +228,35 @@ impl QuotaPolicy {
             None => true,
             Some(p) => p.as_str() == provider,
         }
+    }
+
+    /// Validate that this policy's scope identifiers are safe to
+    /// use as state-store key components and that the time window
+    /// and `max_actions` are non-zero. Callers use this both at
+    /// creation time and when loading records from the state
+    /// store, so a corrupt or legacy record is rejected before it
+    /// can produce unsafe keys or trigger a zero-window
+    /// arithmetic panic downstream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string describing the first validation
+    /// failure encountered.
+    pub fn validate_scope(&self) -> Result<(), String> {
+        validate_quota_scope_identifier(&self.namespace)
+            .map_err(|e| format!("invalid namespace: {e}"))?;
+        validate_quota_scope_identifier(&self.tenant)
+            .map_err(|e| format!("invalid tenant: {e}"))?;
+        if let Some(ref p) = self.provider {
+            validate_quota_scope_identifier(p).map_err(|e| format!("invalid provider: {e}"))?;
+        }
+        if self.window.duration_seconds() == 0 {
+            return Err("quota window duration must be greater than 0".to_string());
+        }
+        if self.max_actions == 0 {
+            return Err("max_actions must be greater than 0".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -216,9 +320,18 @@ pub fn compute_window_boundaries(
 /// policy's window, and neither provider-specific counter
 /// interferes with the tenant-wide counter.
 ///
-/// # Panics
+/// Returns `None` instead of panicking when any of these would
+/// produce an unsafe or nonsensical key:
 ///
-/// Panics if the window duration is zero.
+/// * The window duration is zero (would divide by zero).
+/// * `namespace`, `tenant`, or `provider` fails
+///   [`validate_quota_scope_identifier`] (e.g., contains the
+///   reserved `:` separator that would enable cross-tenant key
+///   collisions).
+///
+/// Callers should treat `None` as fail-closed for the affected
+/// policy — skip enforcement and log a warning so the offending
+/// record can be repaired — rather than crashing the gateway.
 #[must_use]
 pub fn quota_counter_key(
     namespace: &str,
@@ -226,18 +339,30 @@ pub fn quota_counter_key(
     provider: Option<&str>,
     window: &QuotaWindow,
     now: &DateTime<Utc>,
-) -> String {
+) -> Option<String> {
     let secs = window.duration_seconds();
-    assert!(secs > 0, "quota window duration must be greater than 0");
+    if secs == 0 {
+        return None;
+    }
+    if validate_quota_scope_identifier(namespace).is_err()
+        || validate_quota_scope_identifier(tenant).is_err()
+    {
+        return None;
+    }
+    if let Some(p) = provider
+        && validate_quota_scope_identifier(p).is_err()
+    {
+        return None;
+    }
     let epoch = DateTime::UNIX_EPOCH;
     let elapsed = now.signed_duration_since(epoch);
     let window_secs = secs.cast_signed();
     let window_index = elapsed.num_seconds() / window_secs;
     let provider_part = provider.unwrap_or("*");
-    format!(
+    Some(format!(
         "{namespace}:{tenant}:{provider_part}:{}:{window_index}",
         window.label()
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -417,20 +542,22 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-02-10T14:30:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let key = quota_counter_key("ns", "tenant-1", None, &QuotaWindow::Hourly, &now);
+        let key = quota_counter_key("ns", "tenant-1", None, &QuotaWindow::Hourly, &now).unwrap();
         // Generic (no provider) policies encode as "*" in the counter key.
         assert!(key.starts_with("ns:tenant-1:*:hourly:"));
         // Same time should produce the same key.
-        let key2 = quota_counter_key("ns", "tenant-1", None, &QuotaWindow::Hourly, &now);
+        let key2 = quota_counter_key("ns", "tenant-1", None, &QuotaWindow::Hourly, &now).unwrap();
         assert_eq!(key, key2);
     }
 
     #[test]
     fn quota_counter_key_per_provider_isolation() {
         let now = Utc::now();
-        let generic = quota_counter_key("ns", "t", None, &QuotaWindow::Hourly, &now);
-        let slack = quota_counter_key("ns", "t", Some("slack"), &QuotaWindow::Hourly, &now);
-        let email = quota_counter_key("ns", "t", Some("email"), &QuotaWindow::Hourly, &now);
+        let generic = quota_counter_key("ns", "t", None, &QuotaWindow::Hourly, &now).unwrap();
+        let slack =
+            quota_counter_key("ns", "t", Some("slack"), &QuotaWindow::Hourly, &now).unwrap();
+        let email =
+            quota_counter_key("ns", "t", Some("email"), &QuotaWindow::Hourly, &now).unwrap();
         // All three live in separate counter buckets.
         assert_ne!(generic, slack);
         assert_ne!(generic, email);
@@ -445,6 +572,109 @@ mod tests {
         let k1 = quota_counter_key("ns", "t", None, &QuotaWindow::Hourly, &now);
         let k2 = quota_counter_key("ns", "t", None, &QuotaWindow::Daily, &now);
         assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn quota_counter_key_returns_none_on_zero_window() {
+        let now = Utc::now();
+        assert!(
+            quota_counter_key("ns", "t", None, &QuotaWindow::Custom { seconds: 0 }, &now).is_none(),
+            "zero window must return None (fail-closed) instead of panicking"
+        );
+    }
+
+    #[test]
+    fn quota_counter_key_rejects_colon_in_identifiers() {
+        // Cross-tenant key injection attempt: a malicious provider
+        // name containing `:` must not produce a key that could
+        // collide with another tenant's counter bucket.
+        let now = Utc::now();
+        assert!(
+            quota_counter_key(
+                "acme",
+                "t",
+                Some("slack:acme:*"),
+                &QuotaWindow::Hourly,
+                &now
+            )
+            .is_none()
+        );
+        assert!(quota_counter_key("ns:rogue", "t", None, &QuotaWindow::Hourly, &now).is_none());
+        assert!(quota_counter_key("ns", "t:rogue", None, &QuotaWindow::Hourly, &now).is_none());
+    }
+
+    #[test]
+    fn validate_quota_scope_identifier_accepts_typical_names() {
+        for s in &[
+            "acme",
+            "acme-prod",
+            "acme.us-east",
+            "tenant_123",
+            "notifications",
+        ] {
+            assert!(
+                validate_quota_scope_identifier(s).is_ok(),
+                "should accept {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_quota_scope_identifier_rejects_dangerous_input() {
+        assert_eq!(
+            validate_quota_scope_identifier(""),
+            Err(QuotaIdentifierError::Empty)
+        );
+        let long = "a".repeat(MAX_QUOTA_IDENTIFIER_LEN + 1);
+        assert!(matches!(
+            validate_quota_scope_identifier(&long),
+            Err(QuotaIdentifierError::TooLong(_))
+        ));
+        assert!(matches!(
+            validate_quota_scope_identifier("foo:bar"),
+            Err(QuotaIdentifierError::ReservedChar(':'))
+        ));
+        assert!(matches!(
+            validate_quota_scope_identifier("foo\nbar"),
+            Err(QuotaIdentifierError::ControlChar(_))
+        ));
+        assert!(matches!(
+            validate_quota_scope_identifier("foo\0bar"),
+            Err(QuotaIdentifierError::ControlChar(_))
+        ));
+    }
+
+    #[test]
+    fn quota_policy_validate_scope_catches_corrupt_records() {
+        let mut policy = QuotaPolicy {
+            id: "q-1".into(),
+            namespace: "ns".into(),
+            tenant: "t".into(),
+            provider: None,
+            max_actions: 100,
+            window: QuotaWindow::Hourly,
+            overage_behavior: OverageBehavior::Block,
+            enabled: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            description: None,
+            labels: HashMap::new(),
+        };
+        assert!(policy.validate_scope().is_ok());
+
+        // Zero window is rejected (would panic elsewhere).
+        policy.window = QuotaWindow::Custom { seconds: 0 };
+        assert!(policy.validate_scope().is_err());
+
+        // Colon in provider is rejected (key injection).
+        policy.window = QuotaWindow::Hourly;
+        policy.provider = Some("bad:provider".into());
+        assert!(policy.validate_scope().is_err());
+
+        // Zero max_actions is rejected.
+        policy.provider = None;
+        policy.max_actions = 0;
+        assert!(policy.validate_scope().is_err());
     }
 
     #[test]
@@ -563,12 +793,5 @@ mod tests {
     fn compute_window_boundaries_panics_on_zero() {
         let now = Utc::now();
         let _ = compute_window_boundaries(&QuotaWindow::Custom { seconds: 0 }, &now);
-    }
-
-    #[test]
-    #[should_panic(expected = "quota window duration must be greater than 0")]
-    fn quota_counter_key_panics_on_zero() {
-        let now = Utc::now();
-        let _ = quota_counter_key("ns", "t", None, &QuotaWindow::Custom { seconds: 0 }, &now);
     }
 }

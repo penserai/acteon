@@ -457,40 +457,101 @@ impl Gateway {
         }
 
         // 2b. Quota check (skip in dry-run mode).
+        //
+        // Degrade outcomes swap the action's provider and
+        // re-enter the quota check so that (a) the fallback
+        // provider's own budget is actually enforced and
+        // (b) the dispatch path continues through rule
+        // evaluation and execution on the fallback instead of
+        // returning a misleading success-like "degraded" outcome
+        // without ever sending the message. The hop limit caps
+        // how many fallbacks a single dispatch can traverse so
+        // a misconfigured chain of degrade policies cannot loop.
         let mut action = action;
-        if !dry_run && let Some(outcome) = self.check_quota(&action).await? {
-            let dummy_verdict = RuleVerdict::Allow(None);
-            if let Some(ref audit) = self.audit {
-                let record = build_audit_record(
-                    event_id.clone(),
-                    &action,
-                    &dummy_verdict,
-                    &outcome,
-                    dispatched_at,
-                    start.elapsed(),
-                    self.effective_audit_ttl(&action.namespace, &action.tenant),
-                    self.audit_store_payload,
-                    caller,
-                );
-                self.emit_audit_record(audit, record).await;
+        if !dry_run {
+            const MAX_QUOTA_DEGRADE_HOPS: usize = 3;
+            let mut hops = 0usize;
+            let mut terminal: Option<ActionOutcome> = None;
+            loop {
+                let outcome = if hops == 0 {
+                    self.check_quota(&action).await?
+                } else {
+                    // After a degrade swap, only re-evaluate
+                    // provider-scoped policies so we do not
+                    // double-charge the generic (tenant-wide)
+                    // budget that already produced the initial
+                    // degrade verdict.
+                    self.check_quota_fallback(&action).await?
+                };
+                let Some(outcome) = outcome else {
+                    break;
+                };
+                match outcome {
+                    ActionOutcome::QuotaExceeded {
+                        ref overage_behavior,
+                        ..
+                    } if overage_behavior.starts_with("degrade:") => {
+                        if hops >= MAX_QUOTA_DEGRADE_HOPS {
+                            warn!(
+                                hops,
+                                "quota degrade hop limit reached — returning QuotaExceeded instead of cascading further"
+                            );
+                            terminal = Some(outcome);
+                            break;
+                        }
+                        if let Some(fallback) = overage_behavior.strip_prefix("degrade:") {
+                            info!(
+                                from = %action.provider,
+                                to = %fallback,
+                                "quota exceeded — degrading to fallback provider"
+                            );
+                            action.provider = fallback.into();
+                            hops += 1;
+                            continue;
+                        }
+                        terminal = Some(outcome);
+                        break;
+                    }
+                    _ => {
+                        terminal = Some(outcome);
+                        break;
+                    }
+                }
             }
-            let stream_event = StreamEvent {
-                id: event_id,
-                timestamp: dispatched_at,
-                event_type: StreamEventType::ActionDispatched {
-                    outcome: sanitize_outcome(&outcome),
-                    provider: action.provider.to_string(),
-                },
-                namespace: action.namespace.to_string(),
-                tenant: action.tenant.to_string(),
-                action_type: Some(action.action_type.clone()),
-                action_id: Some(action.id.to_string()),
-            };
-            let _ = self.stream_tx.send(stream_event);
-            if let Some(g) = guard {
-                let _ = g.release().await;
+            if let Some(outcome) = terminal {
+                let dummy_verdict = RuleVerdict::Allow(None);
+                if let Some(ref audit) = self.audit {
+                    let record = build_audit_record(
+                        event_id.clone(),
+                        &action,
+                        &dummy_verdict,
+                        &outcome,
+                        dispatched_at,
+                        start.elapsed(),
+                        self.effective_audit_ttl(&action.namespace, &action.tenant),
+                        self.audit_store_payload,
+                        caller,
+                    );
+                    self.emit_audit_record(audit, record).await;
+                }
+                let stream_event = StreamEvent {
+                    id: event_id,
+                    timestamp: dispatched_at,
+                    event_type: StreamEventType::ActionDispatched {
+                        outcome: sanitize_outcome(&outcome),
+                        provider: action.provider.to_string(),
+                    },
+                    namespace: action.namespace.to_string(),
+                    tenant: action.tenant.to_string(),
+                    action_type: Some(action.action_type.clone()),
+                    action_id: Some(action.id.to_string()),
+                };
+                let _ = self.stream_tx.send(stream_event);
+                if let Some(g) = guard {
+                    let _ = g.release().await;
+                }
+                return Ok(outcome);
             }
-            return Ok(outcome);
         }
 
         // 2c. Apply pre-dispatch enrichments.
@@ -2713,68 +2774,104 @@ impl Gateway {
             return Ok(());
         }
 
-        // Enforce tenant quota for each chain step so chains cannot bypass
-        // limits.
-        if let Some(quota_outcome) = self.check_quota(&step_action).await? {
-            match quota_outcome {
-                ActionOutcome::QuotaExceeded {
-                    ref overage_behavior,
-                    ..
-                } if overage_behavior == "block" => {
-                    let now = Utc::now();
-                    chain_state.step_results[step_idx] = Some(StepResult {
-                        step_name: step_config.name.clone(),
-                        success: false,
-                        response_body: None,
-                        error: Some("quota exceeded — chain step blocked".to_string()),
-                        completed_at: now,
-                        attempt: None,
-                        started_at: None,
-                    });
-                    chain_state.status = ChainStatus::Failed;
-                    chain_state.updated_at = now;
-                    self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
-                        .await?;
-                    self.cleanup_pending_chain(namespace, tenant, chain_id)
-                        .await?;
-                    self.metrics.increment_chains_failed();
-                    if let Some(ref sr) = chain_state.step_results[step_idx] {
-                        self.emit_chain_step_audit(
-                            &chain_state,
-                            step_config,
-                            step_idx,
-                            "chain_step_quota_exceeded",
-                            sr,
-                            Duration::ZERO,
-                            None,
-                        );
+        // Enforce tenant quota for each chain step so chains cannot
+        // bypass limits. Degrade outcomes swap the provider and
+        // re-check so the fallback provider's own budget is also
+        // enforced (matching the semantics in `dispatch_inner`).
+        // The hop limit prevents a misconfigured chain of degrade
+        // policies from looping indefinitely.
+        {
+            const MAX_QUOTA_DEGRADE_HOPS: usize = 3;
+            let mut hops = 0usize;
+            let mut blocked: Option<ActionOutcome> = None;
+            loop {
+                let quota_outcome = if hops == 0 {
+                    self.check_quota(&step_action).await?
+                } else {
+                    // Fallback mode: only provider-scoped policies
+                    // are re-evaluated so the generic tenant-wide
+                    // budget is not double-charged on each degrade
+                    // hop.
+                    self.check_quota_fallback(&step_action).await?
+                };
+                let Some(quota_outcome) = quota_outcome else {
+                    break;
+                };
+                match quota_outcome {
+                    ActionOutcome::QuotaExceeded {
+                        ref overage_behavior,
+                        ..
+                    } if overage_behavior.starts_with("degrade:")
+                        && hops < MAX_QUOTA_DEGRADE_HOPS =>
+                    {
+                        if let Some(fallback) = overage_behavior.strip_prefix("degrade:") {
+                            info!(
+                                chain_id = %chain_id,
+                                step = %step_config.name,
+                                from = %step_action.provider,
+                                to = %fallback,
+                                "quota exceeded — degrading chain step to fallback provider"
+                            );
+                            step_action.provider = fallback.into();
+                            hops += 1;
+                            continue;
+                        }
+                        blocked = Some(quota_outcome);
+                        break;
                     }
-                    self.emit_chain_terminal_audit(&chain_state, "chain_failed");
-                    let _ = self.state.delete(&step_dedup_key).await;
-                    guard
-                        .release()
-                        .await
-                        .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
-                    return Ok(());
-                }
-                ActionOutcome::QuotaExceeded {
-                    ref overage_behavior,
-                    ..
-                } if overage_behavior.starts_with("degrade:") => {
-                    if let Some(fallback) = overage_behavior.strip_prefix("degrade:") {
-                        info!(
-                            chain_id = %chain_id,
-                            step = %step_config.name,
-                            fallback = %fallback,
-                            "quota exceeded — degrading chain step to fallback provider"
-                        );
-                        step_action.provider = fallback.into();
+                    ActionOutcome::QuotaExceeded {
+                        ref overage_behavior,
+                        ..
+                    } if overage_behavior == "block"
+                        || overage_behavior.starts_with("degrade:") =>
+                    {
+                        // Block, or a degrade that exhausted the hop limit.
+                        blocked = Some(quota_outcome);
+                        break;
+                    }
+                    _ => {
+                        // Warn / Notify already recorded by check_quota;
+                        // proceed with execution on the current provider.
+                        break;
                     }
                 }
-                _ => {
-                    // Warn / Notify are already recorded by check_quota;
-                    // proceed with execution on original provider.
+            }
+            if let Some(_blocked) = blocked {
+                let now = Utc::now();
+                chain_state.step_results[step_idx] = Some(StepResult {
+                    step_name: step_config.name.clone(),
+                    success: false,
+                    response_body: None,
+                    error: Some("quota exceeded — chain step blocked".to_string()),
+                    completed_at: now,
+                    attempt: None,
+                    started_at: None,
+                });
+                chain_state.status = ChainStatus::Failed;
+                chain_state.updated_at = now;
+                self.persist_chain_state(&chain_key, &chain_state, self.completed_chain_ttl)
+                    .await?;
+                self.cleanup_pending_chain(namespace, tenant, chain_id)
+                    .await?;
+                self.metrics.increment_chains_failed();
+                if let Some(ref sr) = chain_state.step_results[step_idx] {
+                    self.emit_chain_step_audit(
+                        &chain_state,
+                        step_config,
+                        step_idx,
+                        "chain_step_quota_exceeded",
+                        sr,
+                        Duration::ZERO,
+                        None,
+                    );
                 }
+                self.emit_chain_terminal_audit(&chain_state, "chain_failed");
+                let _ = self.state.delete(&step_dedup_key).await;
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+                return Ok(());
             }
         }
 
@@ -9015,7 +9112,7 @@ mod tests {
             .build()
             .expect("gateway should build");
 
-        // First 2 dispatches succeed normally.
+        // First 2 dispatches succeed normally on the primary provider.
         for i in 0..2 {
             let outcome = gw.dispatch(test_action(), None).await.unwrap();
             assert!(
@@ -9024,29 +9121,27 @@ mod tests {
             );
         }
 
-        // 3rd dispatch should return QuotaExceeded with degrade behavior.
+        // 3rd dispatch: the quota is exceeded on the primary
+        // provider, but Degrade semantics re-route to the fallback
+        // and actually execute there. The caller sees a regular
+        // Executed outcome, not QuotaExceeded — the fix for the
+        // pre-Phase-3 bug where degraded dispatches were silently
+        // dropped.
         let outcome = gw.dispatch(test_action(), None).await.unwrap();
-        match outcome {
-            ActionOutcome::QuotaExceeded {
-                tenant,
-                limit,
-                used,
-                overage_behavior,
-            } => {
-                assert_eq!(tenant, "tenant-1");
-                assert_eq!(limit, 2);
-                assert_eq!(used, 3, "post-increment value after atomic increment");
-                assert_eq!(overage_behavior, "degrade:sms-fallback");
-            }
-            other => panic!("expected QuotaExceeded with degrade, got {other:?}"),
-        }
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "degrade should re-dispatch through the fallback provider, got {outcome:?}"
+        );
 
         let snap = gw.metrics().snapshot();
-        assert_eq!(snap.executed, 2);
-        assert_eq!(snap.quota_degraded, 1);
+        assert_eq!(
+            snap.executed, 3,
+            "2 on primary + 1 on fallback after degrade"
+        );
+        assert_eq!(snap.quota_degraded, 1, "one degrade event recorded");
         assert_eq!(
             snap.quota_exceeded, 0,
-            "Degrade uses its own counter, not exceeded"
+            "Degrade does not increment the exceeded counter"
         );
     }
 
@@ -9308,6 +9403,72 @@ mod tests {
         // 1 slack + 99 email = 100 executed.
         assert_eq!(snap.executed, 100);
         assert_eq!(snap.quota_exceeded, 1, "slack block");
+    }
+
+    #[tokio::test]
+    async fn degrade_fallback_still_enforces_fallback_provider_quota() {
+        // Primary has a degrade-to-fallback policy. The fallback
+        // provider ALSO has its own per-provider block policy.
+        // Without the fallback re-check, a degraded dispatch
+        // would silently bypass the fallback's rate limit; this
+        // test proves it does not.
+        let primary_degrade = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "email",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Degrade {
+                fallback_provider: "slack".into(),
+            },
+            true,
+        );
+        let fallback_block = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![primary_degrade, fallback_block]);
+
+        // 1st email dispatch: within primary cap, executes on email.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+
+        // 2nd email dispatch: exceeds primary → degrades to slack.
+        // Slack cap is 1 and has not been used, so it executes on slack.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::Executed(_)),
+            "first degrade should succeed on fallback"
+        );
+
+        // 3rd email dispatch: exceeds primary → degrades to slack,
+        // but slack cap is now also exhausted → block wins.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        match outcome {
+            ActionOutcome::QuotaExceeded {
+                overage_behavior, ..
+            } => {
+                assert_eq!(
+                    overage_behavior, "block",
+                    "fallback provider's block policy must apply"
+                );
+            }
+            other => panic!("expected the fallback's block policy to fire, got {other:?}"),
+        }
     }
 
     #[tokio::test]
