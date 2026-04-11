@@ -169,6 +169,7 @@ mod tests {
                 group_by: vec![],
                 group_wait_seconds: 30,
                 group_interval_seconds: 60,
+                repeat_interval_seconds: None,
                 max_group_size: 100,
                 template: None
             }
@@ -203,6 +204,7 @@ mod tests {
             group_by: vec!["cluster".into()],
             group_wait_seconds: 30,
             group_interval_seconds: 60,
+            repeat_interval_seconds: None,
             max_group_size: 100,
             template: Some("alert_template".into()),
         };

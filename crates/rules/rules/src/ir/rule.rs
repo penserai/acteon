@@ -50,14 +50,44 @@ pub enum RuleAction {
         fingerprint_fields: Vec<String>,
     },
     /// Group events for batched notification.
+    ///
+    /// ## Notification scheduling
+    ///
+    /// Acteon follows the Alertmanager notification-scheduling model:
+    ///
+    /// - **`group_wait_seconds`**: initial quiet period from first event
+    ///   to first flush. Lets related events collect into one batch.
+    /// - **`group_interval_seconds`**: wait between successive flushes
+    ///   when new events arrive in an already-flushed group. Only
+    ///   meaningful when `repeat_interval_seconds` is also set — without
+    ///   persistence, the group is deleted after flush and the next
+    ///   event starts a fresh `group_wait` cycle.
+    /// - **`repeat_interval_seconds`**: optional. When set, the group
+    ///   is kept alive after flush and re-flushes every
+    ///   `repeat_interval_seconds` even with no new events, sending
+    ///   the same event set as a "still firing" reminder. This matches
+    ///   Alertmanager's `repeat_interval`. When unset (the default),
+    ///   the group is ephemeral — behavior matches the pre-Phase-2
+    ///   grouping model.
+    /// - **`max_group_size`**: hard cap on the number of events held by
+    ///   the group. When a new event arrives at capacity, the oldest
+    ///   event is dropped.
     Group {
         /// Fields to group events by.
         group_by: Vec<String>,
-        /// Seconds to wait before sending first notification.
+        /// Seconds to wait between the first event and the first flush.
         group_wait_seconds: u64,
-        /// Minimum seconds between notifications for same group.
+        /// Seconds to wait between successive flushes when new events
+        /// arrive in a persistent group. Only honored when
+        /// `repeat_interval_seconds` is set.
         group_interval_seconds: u64,
-        /// Maximum events in a single group.
+        /// Optional seconds between forced re-flushes for a persistent
+        /// group with no new events. When `None`, the group is deleted
+        /// after its first flush (Phase-1 behavior).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat_interval_seconds: Option<u64>,
+        /// Maximum events held by a single group before dropping the
+        /// oldest.
         max_group_size: usize,
         /// Optional template name for group notification.
         template: Option<String>,
@@ -278,6 +308,7 @@ mod tests {
                 group_by: vec!["cluster".into(), "severity".into()],
                 group_wait_seconds: 30,
                 group_interval_seconds: 300,
+                repeat_interval_seconds: Some(3600),
                 max_group_size: 100,
                 template: Some("alert_group".into()),
             },

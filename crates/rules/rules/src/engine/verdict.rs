@@ -58,11 +58,18 @@ pub enum RuleVerdict {
         rule: String,
         /// Fields to group events by.
         group_by: Vec<String>,
-        /// Seconds to wait before sending first notification.
+        /// Seconds to wait between the first event and the first flush.
         group_wait_seconds: u64,
-        /// Minimum seconds between notifications for same group.
+        /// Seconds to wait between successive flushes when new events
+        /// arrive in a persistent group. Only honored when
+        /// `repeat_interval_seconds` is set.
         group_interval_seconds: u64,
-        /// Maximum events in a single group.
+        /// Optional seconds between forced re-flushes for a persistent
+        /// group with no new events. When `None`, the group is deleted
+        /// after its first flush (Phase-1 behavior).
+        repeat_interval_seconds: Option<u64>,
+        /// Maximum events held by a single group before dropping the
+        /// oldest.
         max_group_size: usize,
         /// Optional template name for group notification.
         template: Option<String>,
@@ -175,6 +182,7 @@ pub(crate) fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVer
             group_by,
             group_wait_seconds,
             group_interval_seconds,
+            repeat_interval_seconds,
             max_group_size,
             template,
         } => RuleVerdict::Group {
@@ -182,6 +190,7 @@ pub(crate) fn action_to_verdict(rule_name: &str, action: &RuleAction) -> RuleVer
             group_by: group_by.clone(),
             group_wait_seconds: *group_wait_seconds,
             group_interval_seconds: *group_interval_seconds,
+            repeat_interval_seconds: *repeat_interval_seconds,
             max_group_size: *max_group_size,
             template: template.clone(),
         },

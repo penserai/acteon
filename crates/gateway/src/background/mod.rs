@@ -69,6 +69,16 @@ pub struct BackgroundConfig {
     pub enable_silence_sync: bool,
     /// How often to sync silences from the state store (default: 10 seconds).
     pub silence_sync_interval: Duration,
+    /// Whether periodic event-group sync from state store is enabled
+    /// (default: true). Required for HA deployments with persistent
+    /// groups: without sync, a group flushed by instance A still
+    /// appears pending on instance B's local cache, wasting CAS
+    /// attempts and causing log noise. The per-flush CAS claim
+    /// already prevents double-fire; sync makes the local state
+    /// eventually consistent with reality.
+    pub enable_group_sync: bool,
+    /// How often to sync groups from the state store (default: 30 seconds).
+    pub group_sync_interval: Duration,
     /// Namespace to scan for timeouts (required for timeout processing).
     pub namespace: String,
     /// Tenant to scan for timeouts (required for timeout processing).
@@ -96,6 +106,8 @@ impl Default for BackgroundConfig {
             template_sync_interval: Duration::from_secs(30),
             enable_silence_sync: true,
             silence_sync_interval: Duration::from_secs(10),
+            enable_group_sync: true,
+            group_sync_interval: Duration::from_secs(30),
             namespace: String::new(),
             tenant: String::new(),
         }
@@ -347,6 +359,7 @@ impl BackgroundProcessor {
         let mut retention_interval = interval(self.config.retention_check_interval);
         let mut template_sync_interval = interval(self.config.template_sync_interval);
         let mut silence_sync_interval = interval(self.config.silence_sync_interval);
+        let mut group_sync_interval = interval(self.config.group_sync_interval);
 
         loop {
             tokio::select! {
@@ -414,6 +427,28 @@ impl BackgroundProcessor {
                             Err(e) => {
                                 error!(error = %e, "error syncing silences from store");
                             }
+                        }
+                    }
+                }
+                // Group sync: rebuild the in-memory event-group cache
+                // from the state store so that groups flushed by peer
+                // instances are reflected locally. The per-flush CAS
+                // claim prevents double-fire even without sync, but
+                // sync keeps the local state eventually consistent.
+                _ = group_sync_interval.tick(), if self.config.enable_group_sync => {
+                    match self
+                        .group_manager
+                        .sync_groups_from_store(
+                            self.state.as_ref(),
+                            self.payload_encryptor.as_deref(),
+                        )
+                        .await
+                    {
+                        Ok(count) => {
+                            debug!(count, "group sync completed");
+                        }
+                        Err(e) => {
+                            error!(error = %e, "error syncing groups from store");
                         }
                     }
                 }
@@ -653,6 +688,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_group_sync: false,
+                group_sync_interval: Duration::from_secs(30),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
@@ -775,6 +812,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_group_sync: false,
+                group_sync_interval: Duration::from_secs(30),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -888,6 +927,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_group_sync: false,
+                group_sync_interval: Duration::from_secs(30),
                 namespace: namespace.to_string(),
                 tenant: tenant.to_string(),
             })
@@ -992,6 +1033,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_group_sync: false,
+                group_sync_interval: Duration::from_secs(30),
                 namespace: "test".to_string(),
                 tenant: "test-tenant".to_string(),
             })
