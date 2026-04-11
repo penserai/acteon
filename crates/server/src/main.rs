@@ -763,6 +763,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            "victorops" => {
+                let vo = &provider_cfg.victorops;
+                let api_key_raw = vo.api_key.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': victorops type requires a 'victorops.api_key' field",
+                        provider_cfg.name
+                    )
+                })?;
+                if vo.routes.is_empty() {
+                    return Err(format!(
+                        "provider '{}': victorops type requires at least one entry in 'victorops.routes'",
+                        provider_cfg.name
+                    )
+                    .into());
+                }
+                let api_key = require_decrypt(api_key_raw, master_key.as_ref())?;
+                let mut victorops_config = acteon_victorops::VictorOpsConfig::new(api_key);
+                for (route_name, routing_key_raw) in &vo.routes {
+                    let routing_key = require_decrypt(routing_key_raw, master_key.as_ref())?;
+                    victorops_config = victorops_config.with_route(route_name, routing_key);
+                }
+                if let Some(ref default_route) = vo.default_route {
+                    victorops_config = victorops_config.with_default_route(default_route);
+                }
+                if let Some(ref url) = vo.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    victorops_config = victorops_config.with_api_base_url(url);
+                }
+                if let Some(ref tool) = vo.monitoring_tool {
+                    victorops_config = victorops_config.with_monitoring_tool(tool);
+                }
+                if let Some(scope) = vo.scope_entity_ids {
+                    victorops_config = victorops_config.with_scope_entity_ids(scope);
+                }
+                std::sync::Arc::new(acteon_victorops::VictorOpsProvider::with_client(
+                    victorops_config,
+                    shared_http_client.clone(),
+                ))
+            }
             "email" => {
                 let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
                     format!(
