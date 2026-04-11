@@ -195,5 +195,8 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
             used,
             ..
         } => format!("QuotaExceeded (tenant: {tenant}, limit: {limit}, used: {used})"),
+        ActionOutcome::Silenced { silence_id, .. } => {
+            format!("Silenced (silence_id: {silence_id})")
+        }
     }
 }
