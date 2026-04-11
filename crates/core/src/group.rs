@@ -98,8 +98,8 @@ pub struct EventGroup {
     /// no new events since the previous flush. Reset to zero whenever
     /// a new event arrives. Used by the background worker to evict
     /// idle persistent groups — a group that has quietly re-fired
-    /// [`MAX_IDLE_FLUSHES`](crate::group::MAX_IDLE_FLUSHES) times in
-    /// a row is considered resolved and removed from the cache.
+    /// [`MAX_IDLE_FLUSHES`] times in a row is considered resolved
+    /// and removed from the cache.
     #[serde(default)]
     pub idle_flushes: u32,
 
