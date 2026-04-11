@@ -513,6 +513,7 @@ dependencies = [
  "acteon-state-postgres",
  "acteon-state-redis",
  "acteon-teams",
+ "acteon-telegram",
  "acteon-twilio",
  "acteon-victorops",
  "acteon-wasm-runtime",
@@ -719,6 +720,22 @@ version = "0.1.0"
 dependencies = [
  "acteon-core",
  "acteon-provider",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "acteon-telegram"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-crypto",
+ "acteon-provider",
+ "percent-encoding",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -21,10 +21,10 @@ pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
-    /// `"email"`, `"opsgenie"`, `"victorops"`, `"pushover"`, `"aws-sns"`,
-    /// `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`,
-    /// `"aws-autoscaling"`, `"azure-blob"`, `"azure-eventhubs"`, `"gcp-pubsub"`,
-    /// or `"gcp-storage"`.
+    /// `"email"`, `"opsgenie"`, `"victorops"`, `"pushover"`, `"telegram"`,
+    /// `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
+    /// `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
+    /// `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -191,6 +191,21 @@ pub struct ProviderConfig {
     /// ```
     #[serde(default)]
     pub pushover: PushoverProviderConfig,
+
+    /// Nested configuration block for the `"telegram"` provider type.
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [[providers]]
+    /// name = "telegram-ops"
+    /// type = "telegram"
+    /// telegram.bot_token = "ENC[...]"
+    /// telegram.default_chat = "ops-channel"
+    /// telegram.default_parse_mode = "HTML"
+    /// telegram.chats = { ops-channel = "-1001234567890", devs = "@devchannel" }
+    /// ```
+    #[serde(default)]
+    pub telegram: TelegramProviderConfig,
 }
 
 /// Nested configuration block for the `OpsGenie` provider.
@@ -262,5 +277,30 @@ pub struct PushoverProviderConfig {
     /// omits `user_key`.
     pub default_recipient: Option<String>,
     /// Override base URL for the Pushover Messages API (testing only).
+    pub api_base_url: Option<String>,
+}
+
+/// Nested configuration block for the `Telegram` Bot provider.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct TelegramProviderConfig {
+    /// Telegram bot token (`{bot_id}:{auth-string}`). Supports `ENC[...]`.
+    pub bot_token: Option<String>,
+    /// Map of logical chat name → Telegram `chat_id`. Chat IDs
+    /// can be numeric (`-1001234567890`) or string
+    /// `@channelusername` handles. Chat IDs are **not** secrets.
+    pub chats: HashMap<String, String>,
+    /// Name of the default chat used when the dispatch payload
+    /// omits `chat`.
+    pub default_chat: Option<String>,
+    /// Default `parse_mode` applied to outgoing messages when the
+    /// payload omits it. `"HTML"`, `"Markdown"`, or `"MarkdownV2"`.
+    pub default_parse_mode: Option<String>,
+    /// Client-side `text` truncation cap, in **UTF-16 code units**
+    /// — matches the units Telegram's API uses for its 4096 cap.
+    /// One BMP character costs 1 unit; one non-BMP character
+    /// (most emoji, some CJK supplementary ideographs) costs 2.
+    pub text_max_utf16_units: Option<usize>,
+    /// Override base URL for the Telegram Bot API (testing only).
     pub api_base_url: Option<String>,
 }
