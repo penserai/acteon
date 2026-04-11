@@ -367,6 +367,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "acteon-opsgenie"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-crypto",
+ "acteon-provider",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "acteon-pagerduty"
 version = "0.1.0"
 dependencies = [
@@ -470,6 +486,7 @@ dependencies = [
  "acteon-gateway",
  "acteon-gcp",
  "acteon-llm",
+ "acteon-opsgenie",
  "acteon-provider",
  "acteon-rules",
  "acteon-rules-yaml",

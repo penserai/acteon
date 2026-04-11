@@ -21,8 +21,8 @@ pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
-    /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
-    /// `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
+    /// `"email"`, `"opsgenie"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`,
+    /// `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
     /// `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
     #[serde(rename = "type")]
     pub provider_type: String,
@@ -139,4 +139,59 @@ pub struct ProviderConfig {
     pub gcp_bucket: Option<String>,
     /// Cloud Storage object name prefix (used by `"gcp-storage"` type).
     pub gcp_object_prefix: Option<String>,
+
+    // ---- Nested per-provider config sub-structs ----
+    //
+    // New providers should put their settings inside a nested
+    // struct rather than adding more flat `foo_*` fields at the
+    // top level — the top-level field count is already a
+    // maintenance burden and will not scale to 30+ providers.
+    // Existing flat provider fields are left in place so this
+    // refactor does not break existing TOML configs; a follow-up
+    // PR can migrate them.
+    /// Nested configuration block for the `"opsgenie"` provider type.
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [[providers]]
+    /// name = "opsgenie-prod"
+    /// type = "opsgenie"
+    /// opsgenie.api_key = "ENC[...]"
+    /// opsgenie.region = "us"
+    /// opsgenie.default_team = "platform-oncall"
+    /// ```
+    #[serde(default)]
+    pub opsgenie: OpsGenieProviderConfig,
+}
+
+/// Nested configuration block for the `OpsGenie` provider.
+///
+/// All fields are optional at the TOML layer. The provider's own
+/// validation (in `main.rs`) rejects configurations that omit
+/// required fields like `api_key`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OpsGenieProviderConfig {
+    /// `OpsGenie` API integration key. Supports `ENC[...]`.
+    pub api_key: Option<String>,
+    /// `OpsGenie` region: `"us"` (default) or `"eu"`.
+    pub region: Option<String>,
+    /// Default team responder used when a payload omits one.
+    pub default_team: Option<String>,
+    /// Default alert priority (`P1`..=`P5`).
+    pub default_priority: Option<String>,
+    /// Default alert source label.
+    pub default_source: Option<String>,
+    /// Override base URL for the `OpsGenie` API (testing only).
+    pub api_base_url: Option<String>,
+    /// Whether to automatically prefix user-supplied aliases with
+    /// `{namespace}:{tenant}:` before sending them to `OpsGenie`.
+    /// Defaults to `true` — leave it on unless each Acteon
+    /// namespace/tenant has its own dedicated `OpsGenie` integration
+    /// key.
+    pub scope_aliases: Option<bool>,
+    /// Maximum length (in bytes) for the `message` field before
+    /// client-side truncation. Defaults to 130 (the current
+    /// `OpsGenie` API cap).
+    pub message_max_length: Option<usize>,
 }
