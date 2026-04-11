@@ -93,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: "q-tenant-a".into(),
             namespace: "notifications".into(),
             tenant: "tenant-a".into(),
+            provider: None,
             max_actions: 10,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Block,
@@ -178,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: "q-tenant-b".into(),
             namespace: "analytics".into(),
             tenant: "tenant-b".into(),
+            provider: None,
             max_actions: 100,
             window: QuotaWindow::Daily,
             overage_behavior: OverageBehavior::Warn,
@@ -262,6 +264,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             id: "q-tenant-c".into(),
             namespace: "messaging".into(),
             tenant: "tenant-c".into(),
+            provider: None,
             max_actions: 5,
             window: QuotaWindow::Hourly,
             overage_behavior: OverageBehavior::Degrade {
@@ -399,5 +402,6 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::Scheduled { .. } => "Scheduled",
         ActionOutcome::RecurringCreated { .. } => "RecurringCreated",
         ActionOutcome::QuotaExceeded { .. } => "QuotaExceeded",
+        ActionOutcome::Silenced { .. } => "Silenced",
     }
 }

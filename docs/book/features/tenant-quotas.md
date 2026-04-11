@@ -23,10 +23,33 @@ Dispatch Pipeline:
 Each quota policy defines:
 
 - A **tenant** and **namespace** scope
+- An optional **provider** scope (`None` = generic catch-all, `Some("slack")` = per-provider)
 - A **maximum number of actions** per **time window**
 - An **overage behavior** that determines what happens when the limit is exceeded
 
 Usage counters are stored in the state backend with epoch-aligned windows, so all gateway instances agree on window boundaries without coordination.
+
+### Generic vs. per-provider policies
+
+A single `(namespace, tenant)` pair can hold **one generic catch-all
+policy plus any number of per-provider policies**. This lets
+operators stack a tenant-wide daily cap with per-provider burst
+caps — e.g. "10,000 actions/day overall **and** 50 Slack
+messages/minute." Every dispatch evaluates all policies whose
+scope matches the outgoing provider, and the **strictest**
+applicable outcome wins (Block > Degrade > Warn > Notify). Each
+policy also maintains its own counter bucket, so a burst on one
+provider cannot consume another provider's budget.
+
+| Policy (`provider` field) | Matches dispatches to | Counter bucket |
+|---|---|---|
+| `None` (generic) | Any provider for the tenant | `{ns}:{tenant}:*:{window}:{idx}` |
+| `Some("slack")` | Only `slack` | `{ns}:{tenant}:slack:{window}:{idx}` |
+| `Some("email")` | Only `email` | `{ns}:{tenant}:email:{window}:{idx}` |
+
+When any applicable policy blocks a dispatch, every counter
+incremented during that call is rolled back — the blocked
+request does not consume budget on sibling policies.
 
 ## Configuration
 
@@ -39,10 +62,12 @@ use acteon_gateway::GatewayBuilder;
 let gateway = GatewayBuilder::new()
     .state(state)
     .lock(lock)
+    // Generic tenant-wide daily cap.
     .quota_policy(QuotaPolicy {
         id: "q-001".into(),
         namespace: "notifications".into(),
         tenant: "acme".into(),
+        provider: None, // generic: counts every dispatch
         max_actions: 1000,
         window: QuotaWindow::Daily,
         overage_behavior: OverageBehavior::Block,
@@ -50,6 +75,21 @@ let gateway = GatewayBuilder::new()
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         description: Some("Acme daily limit".into()),
+        labels: Default::default(),
+    })
+    // Per-provider burst cap on Slack — stacks with the daily cap.
+    .quota_policy(QuotaPolicy {
+        id: "q-002".into(),
+        namespace: "notifications".into(),
+        tenant: "acme".into(),
+        provider: Some("slack".into()),
+        max_actions: 50,
+        window: QuotaWindow::Custom { seconds: 60 },
+        overage_behavior: OverageBehavior::Block,
+        enabled: true,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        description: Some("Acme Slack burst cap".into()),
         labels: Default::default(),
     })
     .build()?;
@@ -66,11 +106,23 @@ Create, read, update, and delete quota policies through the `/v1/quotas` endpoin
 id = "q-acme-daily"
 namespace = "notifications"
 tenant = "acme"
+# provider field omitted → generic tenant-wide policy
 max_actions = 1000
 window = "daily"
 overage_behavior = "block"
 enabled = true
 description = "Acme daily limit"
+
+[[quotas]]
+id = "q-acme-slack-burst"
+namespace = "notifications"
+tenant = "acme"
+provider = "slack"            # per-provider burst cap
+max_actions = 50
+window = { custom = { seconds = 60 } }
+overage_behavior = "block"
+enabled = true
+description = "Acme Slack burst cap"
 ```
 
 ## Quota Windows
@@ -127,7 +179,7 @@ This is useful for soft limits where you want visibility into overages without d
 
 ### Degrade
 
-The action is rejected with a `QuotaExceeded` outcome that includes the fallback provider name. The caller (or a middleware) can use this to re-route the action to a cheaper or lower-priority provider.
+The action's target provider is swapped to the configured `fallback_provider` and the gateway re-enters its dispatch pipeline through that provider. The caller sees a normal `Executed` outcome if the fallback succeeds — there is no separate "degraded" success state.
 
 ```json
 {
@@ -135,7 +187,9 @@ The action is rejected with a `QuotaExceeded` outcome that includes the fallback
 }
 ```
 
-**Outcome:** `QuotaExceeded { ..., overage_behavior: "degrade:log" }`
+**Fallback re-check semantics:** after the provider swap, the gateway re-evaluates only **provider-scoped** policies targeting the new provider. The generic (tenant-wide) policy that triggered the initial degrade is *not* double-charged, but any per-provider cap on the fallback *is* enforced. This closes the "degrade-to-bypass" hole where a fallback provider's rate limit would otherwise be silently ignored.
+
+A misconfigured chain of degrade policies (A → B → C → …) is bounded at 3 hops per dispatch; past that limit the gateway returns `QuotaExceeded` instead of cascading further.
 
 ### Notify
 
@@ -362,7 +416,11 @@ curl -X DELETE "http://localhost:8080/v1/quotas/q-001?namespace=notifications&te
 
 ## Limitations
 
-- **Single policy per namespace:tenant**: Each tenant can have at most one quota policy per namespace. Multiple overlapping policies for the same scope are not supported.
+- **Per-bucket policy cap**: Each `(namespace, tenant)` bucket may hold at most 32 policies (one generic + up to 31 per-provider caps). Creation attempts past that cap return `409 Conflict`.
+- **Identifier character set**: `namespace`, `tenant`, and `provider` identifiers must not contain `:` (the state-key separator) or ASCII control characters, and must be ≤128 bytes. This prevents cross-tenant counter-key collisions.
 - **Counter precision**: Counters are stored as strings in the state backend and incremented non-atomically (read + write). In extremely high-throughput scenarios, a small number of actions may slip through just above the limit.
+- **Hot-key contention on the generic counter**: Every dispatch for a tenant hits the single `*` (generic) counter key. In very high-throughput scenarios this can become a bottleneck in the state backend. Sharded counters are a planned follow-up — open an issue if you hit this limit in practice.
+- **`list_quotas` full scan**: The list endpoint currently scans every quota record and filters in-memory. For deployments with thousands of policies, the endpoint will become slow or timeout. A secondary index for filtered lookups is planned.
+- **Ghost consumption on rollback failure**: When a Block outcome fires, the gateway rolls back every counter it just incremented using best-effort compensating decrements. If a decrement fails (state store blip), the counter stays slightly inflated — the tenant may be blocked marginally earlier than their actual usage warrants. Reconciliation is handled implicitly by window expiry.
 - **No per-action-type quotas**: Quotas apply to all action types within a namespace:tenant scope. Use rules for action-type-level control.
 - **Window granularity**: The minimum effective window is determined by the state backend's TTL precision (typically 1 second).

@@ -329,8 +329,10 @@ mod tests {
 
     #[test]
     fn sse_frame_state_collects_data_lines() {
-        let mut state = SseFrameState::default();
-        state.event = Some("action_dispatched".into());
+        let mut state = SseFrameState {
+            event: Some("action_dispatched".into()),
+            ..SseFrameState::default()
+        };
         state.push_data("line1");
         state.push_data("line2");
 

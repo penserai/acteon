@@ -1164,12 +1164,21 @@ class UpdateRecurringAction:
 
 @dataclass
 class CreateQuotaRequest:
-    """Request to create a quota policy."""
+    """Request to create a quota policy.
+
+    Pass ``provider=None`` (the default) for a generic tenant-wide
+    policy or ``provider="slack"`` to scope the policy to a single
+    provider so it only counts dispatches to that provider.
+    Generic and per-provider policies may coexist for the same
+    ``(namespace, tenant)`` and are evaluated together at dispatch
+    time (strictest outcome wins).
+    """
     namespace: str
     tenant: str
     max_actions: int
     window: str
     overage_behavior: str
+    provider: Optional[str] = None
     description: Optional[str] = None
     labels: Optional[dict[str, str]] = None
 
@@ -1182,6 +1191,8 @@ class CreateQuotaRequest:
             "window": self.window,
             "overage_behavior": self.overage_behavior,
         }
+        if self.provider is not None:
+            result["provider"] = self.provider
         if self.description is not None:
             result["description"] = self.description
         if self.labels is not None:
@@ -1221,7 +1232,12 @@ class UpdateQuotaRequest:
 
 @dataclass
 class QuotaPolicy:
-    """A quota policy."""
+    """A quota policy.
+
+    ``provider`` is ``None`` for generic catch-all policies and
+    a provider name (e.g. ``"slack"``) when the policy is scoped
+    to a single provider.
+    """
     id: str
     namespace: str
     tenant: str
@@ -1231,6 +1247,7 @@ class QuotaPolicy:
     enabled: bool
     created_at: str
     updated_at: str
+    provider: Optional[str] = None
     description: Optional[str] = None
     labels: Optional[dict[str, str]] = None
 
@@ -1240,6 +1257,7 @@ class QuotaPolicy:
             id=data["id"],
             namespace=data["namespace"],
             tenant=data["tenant"],
+            provider=data.get("provider"),
             max_actions=data["max_actions"],
             window=data["window"],
             overage_behavior=data["overage_behavior"],

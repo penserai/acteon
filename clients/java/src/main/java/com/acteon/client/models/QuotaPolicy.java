@@ -17,6 +17,10 @@ public class QuotaPolicy {
     @JsonProperty("tenant")
     private String tenant;
 
+    /** Provider scope: null for generic catch-all policies, or a provider name. */
+    @JsonProperty("provider")
+    private String provider;
+
     @JsonProperty("max_actions")
     private long maxActions;
 
@@ -44,6 +48,7 @@ public class QuotaPolicy {
     public String getId() { return id; }
     public String getNamespace() { return namespace; }
     public String getTenant() { return tenant; }
+    public String getProvider() { return provider; }
     public long getMaxActions() { return maxActions; }
     public String getWindow() { return window; }
     public String getOverageBehavior() { return overageBehavior; }

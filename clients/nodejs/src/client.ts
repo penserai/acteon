@@ -873,12 +873,20 @@ export class ActeonClient {
   }
 
   /**
-   * List quota policies.
+   * List quota policies, optionally filtered by namespace, tenant,
+   * and provider scope. Pass ``"generic"`` for ``provider`` to match
+   * only policies without a provider scope, or a provider name
+   * (e.g. ``"slack"``) to match only per-provider policies.
    */
-  async listQuotas(namespace?: string, tenant?: string): Promise<ListQuotasResponse> {
+  async listQuotas(
+    namespace?: string,
+    tenant?: string,
+    provider?: string,
+  ): Promise<ListQuotasResponse> {
     const params = new URLSearchParams();
     if (namespace !== undefined) params.set("namespace", namespace);
     if (tenant !== undefined) params.set("tenant", tenant);
+    if (provider !== undefined) params.set("provider", provider);
     const response = await this.request("GET", "/v1/quotas", { params: params.toString() ? params : undefined });
 
     if (response.ok) {
