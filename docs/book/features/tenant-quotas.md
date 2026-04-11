@@ -23,10 +23,33 @@ Dispatch Pipeline:
 Each quota policy defines:
 
 - A **tenant** and **namespace** scope
+- An optional **provider** scope (`None` = generic catch-all, `Some("slack")` = per-provider)
 - A **maximum number of actions** per **time window**
 - An **overage behavior** that determines what happens when the limit is exceeded
 
 Usage counters are stored in the state backend with epoch-aligned windows, so all gateway instances agree on window boundaries without coordination.
+
+### Generic vs. per-provider policies
+
+A single `(namespace, tenant)` pair can hold **one generic catch-all
+policy plus any number of per-provider policies**. This lets
+operators stack a tenant-wide daily cap with per-provider burst
+caps — e.g. "10,000 actions/day overall **and** 50 Slack
+messages/minute." Every dispatch evaluates all policies whose
+scope matches the outgoing provider, and the **strictest**
+applicable outcome wins (Block > Degrade > Warn > Notify). Each
+policy also maintains its own counter bucket, so a burst on one
+provider cannot consume another provider's budget.
+
+| Policy (`provider` field) | Matches dispatches to | Counter bucket |
+|---|---|---|
+| `None` (generic) | Any provider for the tenant | `{ns}:{tenant}:*:{window}:{idx}` |
+| `Some("slack")` | Only `slack` | `{ns}:{tenant}:slack:{window}:{idx}` |
+| `Some("email")` | Only `email` | `{ns}:{tenant}:email:{window}:{idx}` |
+
+When any applicable policy blocks a dispatch, every counter
+incremented during that call is rolled back — the blocked
+request does not consume budget on sibling policies.
 
 ## Configuration
 
@@ -39,10 +62,12 @@ use acteon_gateway::GatewayBuilder;
 let gateway = GatewayBuilder::new()
     .state(state)
     .lock(lock)
+    // Generic tenant-wide daily cap.
     .quota_policy(QuotaPolicy {
         id: "q-001".into(),
         namespace: "notifications".into(),
         tenant: "acme".into(),
+        provider: None, // generic: counts every dispatch
         max_actions: 1000,
         window: QuotaWindow::Daily,
         overage_behavior: OverageBehavior::Block,
@@ -50,6 +75,21 @@ let gateway = GatewayBuilder::new()
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         description: Some("Acme daily limit".into()),
+        labels: Default::default(),
+    })
+    // Per-provider burst cap on Slack — stacks with the daily cap.
+    .quota_policy(QuotaPolicy {
+        id: "q-002".into(),
+        namespace: "notifications".into(),
+        tenant: "acme".into(),
+        provider: Some("slack".into()),
+        max_actions: 50,
+        window: QuotaWindow::Custom { seconds: 60 },
+        overage_behavior: OverageBehavior::Block,
+        enabled: true,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        description: Some("Acme Slack burst cap".into()),
         labels: Default::default(),
     })
     .build()?;
@@ -66,11 +106,23 @@ Create, read, update, and delete quota policies through the `/v1/quotas` endpoin
 id = "q-acme-daily"
 namespace = "notifications"
 tenant = "acme"
+# provider field omitted → generic tenant-wide policy
 max_actions = 1000
 window = "daily"
 overage_behavior = "block"
 enabled = true
 description = "Acme daily limit"
+
+[[quotas]]
+id = "q-acme-slack-burst"
+namespace = "notifications"
+tenant = "acme"
+provider = "slack"            # per-provider burst cap
+max_actions = 50
+window = { custom = { seconds = 60 } }
+overage_behavior = "block"
+enabled = true
+description = "Acme Slack burst cap"
 ```
 
 ## Quota Windows

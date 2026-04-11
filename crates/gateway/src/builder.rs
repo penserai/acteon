@@ -56,7 +56,7 @@ pub struct GatewayBuilder {
     circuit_breaker_default: Option<CircuitBreakerConfig>,
     circuit_breaker_overrides: HashMap<String, CircuitBreakerConfig>,
     stream_buffer_size: usize,
-    quota_policies: HashMap<String, acteon_core::QuotaPolicy>,
+    quota_policies: Vec<acteon_core::QuotaPolicy>,
     retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
     wasm_runtime: Option<Arc<dyn acteon_wasm_runtime::WasmPluginRuntime>>,
@@ -101,7 +101,7 @@ impl GatewayBuilder {
             circuit_breaker_default: None,
             circuit_breaker_overrides: HashMap::new(),
             stream_buffer_size: 1024,
-            quota_policies: HashMap::new(),
+            quota_policies: Vec::new(),
             retention_policies: HashMap::new(),
             payload_encryptor: None,
             wasm_runtime: None,
@@ -371,12 +371,18 @@ impl GatewayBuilder {
 
     /// Register a quota policy for a tenant.
     ///
-    /// The policy is keyed by `"namespace:tenant"`. Multiple policies for the
-    /// same tenant replace the previous one.
+    /// Multiple policies may coexist for the same `(namespace, tenant)`
+    /// pair as long as they target different providers (one generic
+    /// policy with `provider: None` plus any number of provider-scoped
+    /// policies). Adding a policy with the same `id` as an existing
+    /// one replaces it; otherwise it is appended.
     #[must_use]
     pub fn quota_policy(mut self, policy: acteon_core::QuotaPolicy) -> Self {
-        let key = format!("{}:{}", policy.namespace, policy.tenant);
-        self.quota_policies.insert(key, policy);
+        if let Some(slot) = self.quota_policies.iter_mut().find(|p| p.id == policy.id) {
+            *slot = policy;
+        } else {
+            self.quota_policies.push(policy);
+        }
         self
     }
 
@@ -504,10 +510,7 @@ impl GatewayBuilder {
     /// Set all quota policies at once (replaces any previously added).
     #[must_use]
     pub fn quota_policies(mut self, policies: Vec<acteon_core::QuotaPolicy>) -> Self {
-        self.quota_policies = policies
-            .into_iter()
-            .map(|p| (format!("{}:{}", p.namespace, p.tenant), p))
-            .collect();
+        self.quota_policies = policies;
         self
     }
 
@@ -522,35 +525,69 @@ impl GatewayBuilder {
         self
     }
 
-    /// Validate quota policies and wrap them in [`CachedPolicy`] for TTL tracking.
+    /// Validate quota policies and bucket them by `"namespace:tenant"`.
+    ///
+    /// Each bucket may hold a generic policy plus any number of
+    /// per-provider policies, all of which are evaluated together
+    /// per dispatch at runtime.
     fn validate_and_wrap_quota_policies(
-        policies: HashMap<String, acteon_core::QuotaPolicy>,
+        policies: Vec<acteon_core::QuotaPolicy>,
     ) -> Result<HashMap<String, crate::gateway::CachedPolicy>, GatewayError> {
-        for (key, policy) in &policies {
+        for policy in &policies {
+            let label = format!(
+                "{}:{}{}",
+                policy.namespace,
+                policy.tenant,
+                policy
+                    .provider
+                    .as_ref()
+                    .map(|p| format!(":{p}"))
+                    .unwrap_or_default()
+            );
             if policy.max_actions == 0 {
                 return Err(GatewayError::Configuration(format!(
-                    "quota policy '{key}' has max_actions = 0"
+                    "quota policy '{label}' has max_actions = 0"
                 )));
             }
             if policy.window.duration_seconds() == 0 {
                 return Err(GatewayError::Configuration(format!(
-                    "quota policy '{key}' has a zero-duration window"
+                    "quota policy '{label}' has a zero-duration window"
                 )));
             }
         }
+        // Reject duplicate (ns, tenant, provider) tuples — operators
+        // should pick exactly one policy per scope; silent override
+        // would be surprising.
+        let mut seen: HashMap<(String, String, Option<String>), String> = HashMap::new();
+        for policy in &policies {
+            let key = (
+                policy.namespace.clone(),
+                policy.tenant.clone(),
+                policy.provider.clone(),
+            );
+            if let Some(existing_id) = seen.get(&key) {
+                return Err(GatewayError::Configuration(format!(
+                    "duplicate quota policy for (namespace={}, tenant={}, provider={:?}): ids {existing_id} and {}",
+                    policy.namespace, policy.tenant, policy.provider, policy.id
+                )));
+            }
+            seen.insert(key, policy.id.clone());
+        }
+
         let now = Utc::now();
-        Ok(policies
-            .into_iter()
-            .map(|(k, p)| {
-                (
-                    k,
-                    crate::gateway::CachedPolicy {
-                        policy: p,
-                        cached_at: now,
-                    },
-                )
-            })
-            .collect())
+        let mut buckets: HashMap<String, crate::gateway::CachedPolicy> = HashMap::new();
+        for policy in policies {
+            let key = format!("{}:{}", policy.namespace, policy.tenant);
+            buckets
+                .entry(key)
+                .or_insert_with(|| crate::gateway::CachedPolicy {
+                    policies: Vec::new(),
+                    cached_at: now,
+                })
+                .policies
+                .push(policy);
+        }
+        Ok(buckets)
     }
 
     /// Build and validate the circuit breaker registry if a default config is provided.
@@ -1003,6 +1040,7 @@ mod tests {
             id: "q-bad".into(),
             namespace: "ns".into(),
             tenant: "t".into(),
+            provider: None,
             max_actions: 0,
             window: acteon_core::quota::QuotaWindow::Daily,
             overage_behavior: acteon_core::quota::OverageBehavior::Block,
@@ -1032,6 +1070,7 @@ mod tests {
             id: "q-bad2".into(),
             namespace: "ns".into(),
             tenant: "t".into(),
+            provider: None,
             max_actions: 100,
             window: acteon_core::quota::QuotaWindow::Custom { seconds: 0 },
             overage_behavior: acteon_core::quota::OverageBehavior::Block,

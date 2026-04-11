@@ -126,10 +126,14 @@ pub struct ApprovalStatus {
     pub message: Option<String>,
 }
 
-/// Internal wrapper for quota policies cached in memory.
+/// Internal wrapper for all quota policies cached in memory for a
+/// single `(namespace, tenant)` pair. A bucket may hold one generic
+/// policy (`provider: None`) plus any number of provider-scoped
+/// policies — all of them are evaluated together per dispatch, and
+/// the strictest applicable verdict wins.
 #[derive(Debug, Clone)]
 pub(crate) struct CachedPolicy {
-    pub(crate) policy: acteon_core::QuotaPolicy,
+    pub(crate) policies: Vec<acteon_core::QuotaPolicy>,
     pub(crate) cached_at: chrono::DateTime<Utc>,
 }
 
@@ -999,33 +1003,59 @@ impl Gateway {
         self.dlq.is_some()
     }
 
-    /// Return a snapshot of the current in-memory quota policies.
-    pub fn quota_policies(&self) -> HashMap<String, acteon_core::QuotaPolicy> {
+    /// Return a flat snapshot of all in-memory quota policies.
+    ///
+    /// Since Phase 3, a single `(namespace, tenant)` pair may hold
+    /// multiple policies (one generic + several provider-scoped), so
+    /// this returns every policy across every bucket.
+    pub fn quota_policies(&self) -> Vec<acteon_core::QuotaPolicy> {
         self.quota_policies
             .read()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.policy.clone()))
+            .values()
+            .flat_map(|bucket| bucket.policies.clone())
             .collect()
     }
 
-    /// Add or replace a quota policy. Keyed by `"namespace:tenant"`.
+    /// Add or replace a quota policy. Policies are bucketed by
+    /// `"namespace:tenant"`; within a bucket, existing entries with
+    /// the same `id` are replaced in place while new `id`s are
+    /// appended, allowing generic and per-provider policies to
+    /// coexist for the same tenant.
     pub fn set_quota_policy(&self, policy: acteon_core::QuotaPolicy) {
         let key = format!("{}:{}", policy.namespace, policy.tenant);
-        let cached = CachedPolicy {
-            policy,
-            cached_at: Utc::now(),
-        };
-        self.quota_policies.write().insert(key, cached);
+        let now = Utc::now();
+        let mut map = self.quota_policies.write();
+        let bucket = map.entry(key).or_insert_with(|| CachedPolicy {
+            policies: Vec::new(),
+            cached_at: now,
+        });
+        bucket.cached_at = now;
+        if let Some(slot) = bucket.policies.iter_mut().find(|p| p.id == policy.id) {
+            *slot = policy;
+        } else {
+            bucket.policies.push(policy);
+        }
     }
 
-    /// Remove a quota policy by its lookup key (`"namespace:tenant"`).
-    pub fn remove_quota_policy(
+    /// Remove a single quota policy from its `(namespace, tenant)`
+    /// bucket by its `id`. Returns the removed policy if it existed.
+    /// The enclosing bucket is dropped if it becomes empty so that
+    /// the cold-path loader re-scans on the next dispatch.
+    pub fn remove_quota_policy_by_id(
         &self,
         namespace: &str,
         tenant: &str,
+        id: &str,
     ) -> Option<acteon_core::QuotaPolicy> {
         let key = format!("{namespace}:{tenant}");
-        self.quota_policies.write().remove(&key).map(|c| c.policy)
+        let mut map = self.quota_policies.write();
+        let bucket = map.get_mut(&key)?;
+        let pos = bucket.policies.iter().position(|p| p.id == id)?;
+        let removed = bucket.policies.remove(pos);
+        if bucket.policies.is_empty() {
+            map.remove(&key);
+        }
+        Some(removed)
     }
 
     /// Return a snapshot of the current in-memory retention policies.
@@ -8704,6 +8734,7 @@ mod tests {
             id: uuid::Uuid::new_v4().to_string(),
             namespace: namespace.into(),
             tenant: tenant.into(),
+            provider: None,
             max_actions,
             window,
             overage_behavior,
@@ -8713,6 +8744,27 @@ mod tests {
             description: None,
             labels: HashMap::new(),
         }
+    }
+
+    fn make_quota_policy_for_provider(
+        namespace: &str,
+        tenant: &str,
+        provider: &str,
+        max_actions: u64,
+        window: acteon_core::QuotaWindow,
+        overage_behavior: acteon_core::OverageBehavior,
+        enabled: bool,
+    ) -> acteon_core::QuotaPolicy {
+        let mut p = make_quota_policy(
+            namespace,
+            tenant,
+            max_actions,
+            window,
+            overage_behavior,
+            enabled,
+        );
+        p.provider = Some(provider.into());
+        p
     }
 
     fn build_gateway_with_quota(
@@ -9051,6 +9103,255 @@ mod tests {
             snap.quota_exceeded, 1,
             "only the real dispatch should count"
         );
+    }
+
+    // -- Per-provider quota tests (Phase 3) ----------------------------------
+
+    fn build_gateway_with_two_providers(
+        policies: Vec<acteon_core::QuotaPolicy>,
+    ) -> crate::gateway::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![])
+            .provider(Arc::new(MockProvider::new("email")))
+            .provider(Arc::new(MockProvider::new("slack")))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .quota_policies(policies)
+            .build()
+            .expect("gateway should build")
+    }
+
+    fn action_for_provider(provider: &str) -> Action {
+        Action::new(
+            "notifications",
+            "tenant-1",
+            provider,
+            "send",
+            serde_json::json!({"to": "user@example.com"}),
+        )
+    }
+
+    #[tokio::test]
+    async fn per_provider_quota_scopes_only_matching_provider() {
+        // A slack-scoped policy should not count email dispatches.
+        let slack_policy = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            2,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![slack_policy]);
+
+        // 5 email dispatches — should NOT count against the slack policy.
+        for _ in 0..5 {
+            let outcome = gw
+                .dispatch(action_for_provider("email"), None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "email dispatches must ignore a slack-scoped policy"
+            );
+        }
+
+        // 2 slack dispatches succeed (within slack cap).
+        for _ in 0..2 {
+            let outcome = gw
+                .dispatch(action_for_provider("slack"), None)
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        // 3rd slack dispatch is blocked.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 7);
+        assert_eq!(snap.quota_exceeded, 1);
+    }
+
+    #[tokio::test]
+    async fn generic_and_provider_scoped_policies_stack() {
+        // Generic tenant cap of 10, plus an 3/hour burst cap on slack.
+        // Slack dispatches are enforced by both; other providers
+        // only by the generic cap.
+        let generic = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            10,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let slack_burst = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            3,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![generic, slack_burst]);
+
+        // 3 slack dispatches ok (slack burst limit met, generic at 3/10).
+        for _ in 0..3 {
+            let outcome = gw
+                .dispatch(action_for_provider("slack"), None)
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        // 4th slack dispatch hits the slack burst cap — blocked.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        // Blocked request should NOT have consumed any budget on the
+        // generic cap (rollback semantics). Email can still dispatch
+        // 7 more times before hitting the generic cap of 10.
+        for _ in 0..7 {
+            let outcome = gw
+                .dispatch(action_for_provider("email"), None)
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome, ActionOutcome::Executed(_)),
+                "generic cap should not include the blocked slack attempt"
+            );
+        }
+
+        // 11th total dispatch across any provider — generic cap blocks.
+        let outcome = gw
+            .dispatch(action_for_provider("email"), None)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, ActionOutcome::QuotaExceeded { .. }),
+            "generic cap should kick in after 3 slack + 7 email = 10 dispatches"
+        );
+
+        let snap = gw.metrics().snapshot();
+        assert_eq!(snap.executed, 10);
+        assert_eq!(snap.quota_exceeded, 2);
+    }
+
+    #[tokio::test]
+    async fn blocked_dispatch_rolls_back_all_applicable_counters() {
+        // When one policy blocks, every counter incremented during
+        // the call must be rolled back so the blocked dispatch does
+        // not consume any budget on the sibling policies.
+        let generic = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            100,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Warn,
+            true,
+        );
+        let slack = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![generic, slack]);
+
+        // First slack dispatch succeeds.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::Executed(_)));
+
+        // Second slack dispatch hits the slack block — should roll
+        // back both the slack counter (no effect, since block fires)
+        // AND the generic counter. After this, 99 email dispatches
+        // should still fit under the generic cap of 100.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, ActionOutcome::QuotaExceeded { .. }));
+
+        for _ in 0..99 {
+            let outcome = gw
+                .dispatch(action_for_provider("email"), None)
+                .await
+                .unwrap();
+            assert!(matches!(outcome, ActionOutcome::Executed(_)));
+        }
+
+        let snap = gw.metrics().snapshot();
+        // 1 slack + 99 email = 100 executed.
+        assert_eq!(snap.executed, 100);
+        assert_eq!(snap.quota_exceeded, 1, "slack block");
+    }
+
+    #[tokio::test]
+    async fn strictest_policy_wins_block_over_warn() {
+        // Generic warn cap and slack block cap. When a slack dispatch
+        // exceeds both, the block outcome must win over warn.
+        let generic = make_quota_policy(
+            "notifications",
+            "tenant-1",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Warn,
+            true,
+        );
+        let slack_block = make_quota_policy_for_provider(
+            "notifications",
+            "tenant-1",
+            "slack",
+            1,
+            acteon_core::QuotaWindow::Hourly,
+            acteon_core::OverageBehavior::Block,
+            true,
+        );
+        let gw = build_gateway_with_two_providers(vec![generic, slack_block]);
+
+        // First slack dispatch succeeds.
+        let _ = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+
+        // Second slack dispatch exceeds both policies — block wins.
+        let outcome = gw
+            .dispatch(action_for_provider("slack"), None)
+            .await
+            .unwrap();
+        match outcome {
+            ActionOutcome::QuotaExceeded {
+                overage_behavior, ..
+            } => {
+                assert_eq!(overage_behavior, "block");
+            }
+            other => panic!("expected QuotaExceeded (block), got {other:?}"),
+        }
     }
 
     // -- Provider metrics integration test -----------------------------------

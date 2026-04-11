@@ -155,6 +155,7 @@ fn build_create_quota(v: &serde_json::Value) -> Result<CreateQuotaRequest, McpEr
     Ok(CreateQuotaRequest {
         namespace: val_str(v, "namespace")?,
         tenant: val_str(v, "tenant")?,
+        provider: val_opt_str(v, "provider"),
         max_actions: val_u64(v, "max_actions")?,
         window: val_str(v, "window")?,
         overage_behavior: val_str(v, "overage_behavior")?,
@@ -398,6 +399,12 @@ pub struct ListQuotasParams {
     /// Filter by tenant.
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Filter by provider scope: pass `"generic"` to match only
+    /// policies with no provider scope, or a provider name (e.g.
+    /// `"slack"`) to match only per-provider policies for that
+    /// provider.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -597,6 +604,11 @@ pub struct ManageQuotasParams {
     /// Tenant filter for list; required for delete.
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Provider scope filter for list: `"generic"` matches
+    /// policies without a provider scope; any other value matches
+    /// only per-provider policies for that provider.
+    #[serde(default)]
+    pub provider: Option<String>,
     /// JSON data for create or update operations.
     #[serde(default)]
     pub data: Option<serde_json::Value>,
@@ -1240,7 +1252,11 @@ impl ActeonMcpServer {
     ) -> Result<CallToolResult, McpError> {
         match self
             .ops
-            .list_quotas(p.namespace.as_deref(), p.tenant.as_deref())
+            .list_quotas(
+                p.namespace.as_deref(),
+                p.tenant.as_deref(),
+                p.provider.as_deref(),
+            )
             .await
         {
             Ok(resp) => {
@@ -1540,7 +1556,11 @@ impl ActeonMcpServer {
             "list" => {
                 match self
                     .ops
-                    .list_quotas(p.namespace.as_deref(), p.tenant.as_deref())
+                    .list_quotas(
+                        p.namespace.as_deref(),
+                        p.tenant.as_deref(),
+                        p.provider.as_deref(),
+                    )
                     .await
                 {
                     Ok(resp) => {

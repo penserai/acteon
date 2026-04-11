@@ -10,6 +10,13 @@ pub struct CreateQuotaRequest {
     pub namespace: String,
     /// Tenant.
     pub tenant: String,
+    /// Optional provider scope. When omitted, the policy is
+    /// generic and counts every dispatch for the tenant. When set,
+    /// only dispatches to the named provider count against this
+    /// policy — useful for stacking a tenant-wide daily cap with
+    /// per-provider burst caps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Maximum number of actions allowed in the window.
     pub max_actions: u64,
     /// Time window (e.g., "1h", "24h", "7d").
@@ -57,6 +64,9 @@ pub struct QuotaPolicy {
     pub namespace: String,
     /// Tenant.
     pub tenant: String,
+    /// Optional provider scope (`None` = generic catch-all).
+    #[serde(default)]
+    pub provider: Option<String>,
     /// Maximum number of actions allowed in the window.
     pub max_actions: u64,
     /// Time window (e.g., "1h", "24h", "7d").
@@ -138,11 +148,15 @@ impl ActeonClient {
         }
     }
 
-    /// List quota policies filtered by optional namespace and tenant.
+    /// List quota policies filtered by optional namespace, tenant,
+    /// and provider scope. Pass `Some("generic")` as `provider` to
+    /// match only policies without a provider scope, or a provider
+    /// name to match only per-provider policies for that provider.
     pub async fn list_quotas(
         &self,
         namespace: Option<&str>,
         tenant: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<ListQuotasResponse, Error> {
         let url = format!("{}/v1/quotas", self.base_url);
 
@@ -152,6 +166,9 @@ impl ActeonClient {
         }
         if let Some(t) = tenant {
             query.push(("tenant", t));
+        }
+        if let Some(p) = provider {
+            query.push(("provider", p));
         }
 
         let response = self

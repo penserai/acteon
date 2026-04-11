@@ -69,7 +69,7 @@ mod tests {
     #[test]
     fn empty_attachments_vec_deserializes_from_missing_field() {
         // Simulates backward compatibility: old payloads without "attachments"
-        let json = r#"[]"#;
+        let json = r"[]";
         let attachments: Vec<Attachment> = serde_json::from_str(json).unwrap();
         assert!(attachments.is_empty());
     }

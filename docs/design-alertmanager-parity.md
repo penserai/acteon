@@ -34,7 +34,7 @@ A fresh audit against Alertmanager v0.27 features found the following gaps.
 |---|---|---|---|
 | 1 | **Silences** (time-bounded label-pattern mutes) | **Missing** — no `Silence` type, no CRUD, no dispatch-path enforcement | **Critical** |
 | 2 | `group_wait` / `group_interval` / `repeat_interval` | **Shipped in Phase 2.** `group_wait` was already implemented; `group_interval` is now honored on persistent groups; `repeat_interval` is a new optional field that makes the group persistent and re-fire periodically. | ~~Medium~~ Done |
-| 3 | Per-receiver rate limits | Partial — tenant/namespace quotas exist, no provider-level enforcement | Medium |
+| 3 | Per-receiver rate limits | **Shipped in Phase 3.** Generic tenant/namespace quotas now stack with optional per-provider scoped policies; strictest outcome wins; each scope has its own counter bucket. | ~~Medium~~ Done |
 | 4 | OpsGenie receiver | Missing | Medium |
 | 5 | VictorOps receiver | Missing | Medium |
 | 6 | Pushover receiver | Missing | Low |
@@ -90,10 +90,28 @@ Implementation notes:
 - `max_group_size` is now actually enforced — `EventGroup::add_event` drops the oldest event when at capacity.
 - The background flush worker only deletes ephemeral groups; persistent groups stay alive in memory.
 
-### Phase 3 — Per-provider rate limits
+### Phase 3 — Per-provider rate limits ✅ Shipped
 **Gap**: #3
-**Scope**: ~400 LOC
-**Follow-up**: extend `QuotaPolicy` with an optional `provider: Option<String>` field; update quota matching to evaluate provider scope after tenant/namespace.
+**Status**: Shipped in PR #85.
+**Scope as built**: ~1000 LOC across core types, gateway multi-policy enforcement, server CRUD, CLI flag, polyglot SDKs, and tests.
+
+`QuotaPolicy` gained an optional `provider: Option<String>` field.
+Multiple policies may coexist for the same `(namespace, tenant)`
+pair as long as their provider scopes differ (one generic catch-all
+plus any number of per-provider policies). At dispatch time, every
+policy whose scope matches the outgoing provider is evaluated, each
+maintains its own counter bucket
+(`{ns}:{tenant}:{provider_or_*}:{window}:{idx}`), and the strictest
+applicable outcome wins (Block > Degrade > Warn > Notify). When any
+policy blocks a dispatch, every counter touched during that call is
+rolled back so the blocked request never consumes sibling budgets.
+
+Implementation notes:
+- Backward compatibility: missing `provider` field deserializes as `None` (generic) via `#[serde(default)]`; the old `idx:{ns}:{tenant}` index key value format (bare UUID) is accepted on read alongside the new JSON-array format.
+- Gateway cache changes: `quota_policies` is now `HashMap<String, CachedPolicy>` where `CachedPolicy` is a bucket of policies for a `(ns, tenant)`; cold-path loader fetches the full bucket in a single index lookup + N policy reads.
+- Server CRUD: duplicate detection now keys on `(namespace, tenant, provider)` rather than just `(namespace, tenant)`; the list endpoint accepts a `provider` query param (`generic` matches catch-alls, anything else is an exact match).
+- CLI: `acteon quotas list --provider slack` filters the listing; `acteon quotas create` accepts `provider` in the JSON payload.
+- Polyglot SDKs: Rust, Python, Node.js, Go, and Java client models all gained the `provider` field and the provider filter on `list_quotas`.
 
 ### Phase 4 — Missing receivers
 **Gaps**: #4–#8

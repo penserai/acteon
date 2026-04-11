@@ -1034,12 +1034,18 @@ class ActeonClient:
         self,
         namespace: Optional[str] = None,
         tenant: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> "ListQuotasResponse":
         """List quota policies.
 
         Args:
             namespace: Optional namespace filter.
             tenant: Optional tenant filter.
+            provider: Optional provider scope filter. Pass the
+                literal string ``"generic"`` to match only policies
+                without a provider scope, or a provider name (e.g.
+                ``"slack"``) to match only per-provider policies
+                for that provider.
 
         Returns:
             List of quota policies.
@@ -1053,6 +1059,8 @@ class ActeonClient:
             params["namespace"] = namespace
         if tenant is not None:
             params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
         response = self._request("GET", "/v1/quotas", params=params)
 
         if response.status_code == 200:
@@ -2776,13 +2784,18 @@ class AsyncActeonClient:
         self,
         namespace: Optional[str] = None,
         tenant: Optional[str] = None,
+        provider: Optional[str] = None,
     ) -> "ListQuotasResponse":
-        """List quota policies."""
+        """List quota policies, optionally filtered by namespace,
+        tenant, and provider scope (``"generic"`` matches generic
+        policies; a provider name matches per-provider policies)."""
         params: dict = {}
         if namespace is not None:
             params["namespace"] = namespace
         if tenant is not None:
             params["tenant"] = tenant
+        if provider is not None:
+            params["provider"] = provider
         response = await self._request("GET", "/v1/quotas", params=params)
         if response.status_code == 200:
             return ListQuotasResponse.from_dict(response.json())

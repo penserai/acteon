@@ -16,6 +16,16 @@ public class CreateQuotaRequest {
     @JsonProperty("tenant")
     private String tenant;
 
+    /**
+     * Optional provider scope. Null (the default) creates a generic
+     * tenant-wide policy. Setting this to a provider name (e.g.
+     * "slack") scopes the policy to dispatches targeting that
+     * provider only, so generic and per-provider policies can
+     * coexist for the same (namespace, tenant).
+     */
+    @JsonProperty("provider")
+    private String provider;
+
     @JsonProperty("max_actions")
     private long maxActions;
 
@@ -46,6 +56,9 @@ public class CreateQuotaRequest {
 
     public String getTenant() { return tenant; }
     public void setTenant(String tenant) { this.tenant = tenant; }
+
+    public String getProvider() { return provider; }
+    public void setProvider(String provider) { this.provider = provider; }
 
     public long getMaxActions() { return maxActions; }
     public void setMaxActions(long maxActions) { this.maxActions = maxActions; }

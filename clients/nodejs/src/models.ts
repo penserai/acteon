@@ -1082,10 +1082,17 @@ export function updateRecurringActionToRequest(action: UpdateRecurringAction): R
 // Quota Types
 // =============================================================================
 
-/** Request to create a quota policy. */
+/** Request to create a quota policy.
+ *
+ * Omit ``provider`` (or pass ``undefined``) for a generic tenant-wide
+ * policy, or set it to a provider name such as ``"slack"`` to scope
+ * the policy to a single provider. Generic and per-provider
+ * policies may coexist for the same ``(namespace, tenant)``.
+ */
 export interface CreateQuotaRequest {
   namespace: string;
   tenant: string;
+  provider?: string;
   maxActions: number;
   window: string;
   overageBehavior: string;
@@ -1102,6 +1109,7 @@ export function createQuotaRequestToApi(req: CreateQuotaRequest): Record<string,
     window: req.window,
     overage_behavior: req.overageBehavior,
   };
+  if (req.provider !== undefined) result.provider = req.provider;
   if (req.description !== undefined) result.description = req.description;
   if (req.labels !== undefined) result.labels = req.labels;
   return result;
@@ -1137,6 +1145,8 @@ export interface QuotaPolicy {
   id: string;
   namespace: string;
   tenant: string;
+  /** Provider scope (``undefined`` for generic catch-all policies). */
+  provider?: string;
   maxActions: number;
   window: string;
   overageBehavior: string;
@@ -1153,6 +1163,7 @@ export function parseQuotaPolicy(data: Record<string, unknown>): QuotaPolicy {
     id: data.id as string,
     namespace: data.namespace as string,
     tenant: data.tenant as string,
+    provider: data.provider as string | undefined,
     maxActions: data.max_actions as number,
     window: data.window as string,
     overageBehavior: data.overage_behavior as string,

@@ -691,9 +691,16 @@ type RecurringLifecycleRequest struct {
 // =============================================================================
 
 // CreateQuotaRequest is the request to create a quota policy.
+//
+// Provider is an optional provider scope. When empty, the policy is
+// generic and counts every dispatch for the tenant. When set, only
+// dispatches whose action.Provider equals this value count against
+// (and are enforced by) this policy. Generic and per-provider
+// policies may coexist for the same (Namespace, Tenant) pair.
 type CreateQuotaRequest struct {
 	Namespace       string            `json:"namespace"`
 	Tenant          string            `json:"tenant"`
+	Provider        string            `json:"provider,omitempty"`
 	MaxActions      int64             `json:"max_actions"`
 	Window          string            `json:"window"`
 	OverageBehavior string            `json:"overage_behavior"`
@@ -713,10 +720,15 @@ type UpdateQuotaRequest struct {
 }
 
 // QuotaPolicy represents a quota policy.
+//
+// Provider is the optional provider scope: empty ("") for generic
+// catch-all policies, or a provider name (e.g. "slack") when the
+// policy is scoped to a single provider.
 type QuotaPolicy struct {
 	ID              string            `json:"id"`
 	Namespace       string            `json:"namespace"`
 	Tenant          string            `json:"tenant"`
+	Provider        string            `json:"provider,omitempty"`
 	MaxActions      int64             `json:"max_actions"`
 	Window          string            `json:"window"`
 	OverageBehavior string            `json:"overage_behavior"`

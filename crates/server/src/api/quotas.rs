@@ -34,6 +34,13 @@ pub struct CreateQuotaRequest {
     /// Tenant this quota applies to.
     #[schema(example = "tenant-1")]
     pub tenant: String,
+    /// Optional provider scope. When omitted, the policy is
+    /// generic and counts every dispatch for the tenant. When set,
+    /// only dispatches whose `action.provider` equals this value
+    /// count against (and are enforced by) this policy.
+    #[serde(default)]
+    #[schema(example = "slack")]
+    pub provider: Option<String>,
     /// Maximum number of actions allowed per window.
     #[schema(example = 1000)]
     pub max_actions: u64,
@@ -83,6 +90,9 @@ pub struct QuotaResponse {
     pub namespace: String,
     /// Tenant.
     pub tenant: String,
+    /// Optional provider scope (`None` = generic catch-all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Maximum actions per window.
     pub max_actions: u64,
     /// Time window.
@@ -137,6 +147,12 @@ pub struct ListQuotasParams {
     /// Filter by tenant (optional).
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Filter by provider scope (optional). Pass the literal string
+    /// `generic` to match only policies without a provider scope
+    /// (`provider: None`), or a provider name to match only
+    /// per-provider policies for that provider.
+    #[serde(default)]
+    pub provider: Option<String>,
     /// Maximum number of results (default: 100).
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -179,6 +195,7 @@ fn policy_to_response(policy: &QuotaPolicy, usage: Option<QuotaUsageResponse>) -
         id: policy.id.clone(),
         namespace: policy.namespace.clone(),
         tenant: policy.tenant.clone(),
+        provider: policy.provider.clone(),
         max_actions: policy.max_actions,
         window: policy.window.clone(),
         overage_behavior: policy.overage_behavior.clone(),
@@ -201,13 +218,55 @@ fn quota_state_key(id: &str) -> StateKey {
     StateKey::new(QUOTA_STORE_NS, QUOTA_STORE_TENANT, KeyKind::Quota, id)
 }
 
-/// Build a [`StateKey`] for the `namespace:tenant` → policy-ID index.
+/// Build a [`StateKey`] for the `namespace:tenant` → policy-ID(s) index.
 ///
-/// This secondary index enables O(1) lookups by namespace+tenant in both
-/// the API (for duplicate detection) and the gateway cold path.
+/// This secondary index enables O(1) lookups by `(namespace, tenant)` in
+/// both the API (for duplicate detection) and the gateway cold path.
+/// Since Phase 3, the value is a JSON array of policy IDs so that
+/// generic + per-provider policies for the same tenant can coexist.
 fn quota_index_key(namespace: &str, tenant: &str) -> StateKey {
     let suffix = format!("idx:{namespace}:{tenant}");
     StateKey::new(QUOTA_STORE_NS, QUOTA_STORE_TENANT, KeyKind::Quota, &suffix)
+}
+
+/// Read the list of policy IDs stored at a quota index key.
+///
+/// Accepts both the current format (JSON array of IDs) and the
+/// pre-Phase-3 format (bare UUID string), returning an empty
+/// `Vec` when the index key is absent.
+async fn read_quota_index(
+    state_store: &dyn acteon_state::StateStore,
+    idx_key: &StateKey,
+) -> Result<Vec<String>, String> {
+    let raw = state_store.get(idx_key).await.map_err(|e| e.to_string())?;
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    match serde_json::from_str::<Vec<String>>(&raw) {
+        Ok(ids) => Ok(ids),
+        Err(_) => Ok(vec![raw]), // legacy: bare UUID
+    }
+}
+
+/// Overwrite the quota index at `idx_key` with the current list of
+/// policy IDs (or delete it if empty).
+async fn write_quota_index(
+    state_store: &dyn acteon_state::StateStore,
+    idx_key: &StateKey,
+    ids: &[String],
+) -> Result<(), String> {
+    if ids.is_empty() {
+        state_store
+            .delete(idx_key)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let json = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+    state_store
+        .set(idx_key, &json, None)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Load a [`QuotaPolicy`] from the state store by ID via direct key lookup.
@@ -233,7 +292,13 @@ async fn read_usage(
     policy: &QuotaPolicy,
 ) -> Result<QuotaUsageResponse, String> {
     let now = Utc::now();
-    let counter_id = quota_counter_key(&policy.namespace, &policy.tenant, &policy.window, &now);
+    let counter_id = quota_counter_key(
+        &policy.namespace,
+        &policy.tenant,
+        policy.provider.as_deref(),
+        &policy.window,
+        &now,
+    );
     let counter_key = StateKey::new(
         policy.namespace.as_str(),
         policy.tenant.as_str(),
@@ -299,22 +364,34 @@ pub async fn create_quota(
     let gw = state.gateway.read().await;
     let state_store = gw.state_store();
 
-    // Check for duplicate: only one quota policy per namespace:tenant.
+    // Read the existing index bucket for this (namespace, tenant).
     let idx_key = quota_index_key(&req.namespace, &req.tenant);
-    match state_store.get(&idx_key).await {
-        Ok(Some(_)) => {
+    let mut existing_ids: Vec<String> = match read_quota_index(state_store.as_ref(), &idx_key).await
+    {
+        Ok(ids) => ids,
+        Err(e) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    };
+
+    // Reject duplicates with the same (ns, tenant, provider) tuple:
+    // operators should pick exactly one policy per scope. Different
+    // providers (or generic vs provider-scoped) may coexist.
+    for existing_id in &existing_ids {
+        if let Ok(Some(p)) = load_quota(state_store.as_ref(), existing_id).await
+            && p.provider == req.provider
+        {
+            let scope = req
+                .provider
+                .as_deref()
+                .map(|p| format!("provider={p}"))
+                .unwrap_or_else(|| "generic scope".to_string());
             return error_response(
                 StatusCode::CONFLICT,
                 &format!(
-                    "a quota policy already exists for namespace={} tenant={}",
+                    "a quota policy already exists for namespace={} tenant={} ({scope})",
                     req.namespace, req.tenant
                 ),
             );
         }
-        Err(e) => {
-            return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
-        }
-        Ok(None) => {} // No existing policy — proceed.
     }
 
     let now = Utc::now();
@@ -324,6 +401,7 @@ pub async fn create_quota(
         id: id.clone(),
         namespace: req.namespace.clone(),
         tenant: req.tenant.clone(),
+        provider: req.provider.clone(),
         max_actions: req.max_actions,
         window,
         overage_behavior: req.overage_behavior,
@@ -349,9 +427,10 @@ pub async fn create_quota(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
 
-    // Write the namespace:tenant → policy-ID index key.
-    if let Err(e) = state_store.set(&idx_key, &id, None).await {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+    // Append the new ID to the index bucket and rewrite.
+    existing_ids.push(id.clone());
+    if let Err(e) = write_quota_index(state_store.as_ref(), &idx_key, &existing_ids).await {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e);
     }
     drop(gw);
 
@@ -410,6 +489,20 @@ pub async fn list_quotas(
             && policy.tenant != *t
         {
             continue;
+        }
+
+        // Apply provider filter: `"generic"` matches only policies
+        // without a provider scope; any other value matches only
+        // policies with an exact provider match.
+        if let Some(ref p) = params.provider {
+            let matches = if p == "generic" {
+                policy.provider.is_none()
+            } else {
+                policy.provider.as_deref() == Some(p.as_str())
+            };
+            if !matches {
+                continue;
+            }
         }
 
         // Offset-based pagination.
@@ -590,14 +683,19 @@ pub async fn delete_quota(
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
 
-    // Remove the namespace:tenant → policy-ID index key.
+    // Rewrite the index bucket without this policy ID. If the
+    // bucket becomes empty the index key itself is deleted.
     let idx_key = quota_index_key(&policy.namespace, &policy.tenant);
-    let _ = state_store.delete(&idx_key).await;
+    let mut ids = read_quota_index(state_store.as_ref(), &idx_key)
+        .await
+        .unwrap_or_default();
+    ids.retain(|candidate| candidate != &id);
+    let _ = write_quota_index(state_store.as_ref(), &idx_key, &ids).await;
     drop(gw);
 
     // Remove from gateway (uses interior mutability via RwLock).
     let gw = state.gateway.read().await;
-    gw.remove_quota_policy(&policy.namespace, &policy.tenant);
+    gw.remove_quota_policy_by_id(&policy.namespace, &policy.tenant, &id);
 
     StatusCode::NO_CONTENT.into_response()
 }
@@ -635,7 +733,13 @@ pub async fn get_quota_usage(
     };
 
     let now = Utc::now();
-    let counter_id = quota_counter_key(&policy.namespace, &policy.tenant, &policy.window, &now);
+    let counter_id = quota_counter_key(
+        &policy.namespace,
+        &policy.tenant,
+        policy.provider.as_deref(),
+        &policy.window,
+        &now,
+    );
     let counter_key = StateKey::new(
         policy.namespace.as_str(),
         policy.tenant.as_str(),

@@ -491,13 +491,17 @@ impl OpsClient {
         Ok(self.inner.create_quota(req).await?)
     }
 
-    /// List quota policies.
+    /// List quota policies filtered by optional namespace, tenant,
+    /// and provider scope (`Some("generic")` matches only policies
+    /// with `provider: None`; any other value matches policies with
+    /// that exact provider scope).
     pub async fn list_quotas(
         &self,
         namespace: Option<&str>,
         tenant: Option<&str>,
+        provider: Option<&str>,
     ) -> Result<ListQuotasResponse, OpsError> {
-        Ok(self.inner.list_quotas(namespace, tenant).await?)
+        Ok(self.inner.list_quotas(namespace, tenant, provider).await?)
     }
 
     /// Get a quota policy by ID.

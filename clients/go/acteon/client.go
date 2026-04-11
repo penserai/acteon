@@ -1055,14 +1055,20 @@ func (c *Client) CreateQuota(ctx context.Context, req *CreateQuotaRequest) (*Quo
 	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
 }
 
-// ListQuotas lists quota policies with optional namespace and tenant filters.
-func (c *Client) ListQuotas(ctx context.Context, namespace, tenant *string) (*ListQuotasResponse, error) {
+// ListQuotas lists quota policies with optional namespace, tenant,
+// and provider filters. Pass "generic" as the provider filter to
+// match only policies without a provider scope; pass a provider
+// name (e.g. "slack") to match only per-provider policies.
+func (c *Client) ListQuotas(ctx context.Context, namespace, tenant, provider *string) (*ListQuotasResponse, error) {
 	params := url.Values{}
 	if namespace != nil {
 		params.Set("namespace", *namespace)
 	}
 	if tenant != nil {
 		params.Set("tenant", *tenant)
+	}
+	if provider != nil {
+		params.Set("provider", *provider)
 	}
 
 	path := "/v1/quotas"

@@ -21,6 +21,12 @@ pub enum QuotasCommand {
         /// Filter by tenant.
         #[arg(long)]
         tenant: Option<String>,
+        /// Filter by provider scope. Pass the literal `generic`
+        /// to list only policies without a provider scope, or a
+        /// provider name (e.g. `slack`) to list only per-provider
+        /// policies for that provider.
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Get a quota policy by ID.
     Get {
@@ -70,8 +76,19 @@ fn parse_json_data(input: &str) -> anyhow::Result<serde_json::Value> {
 
 pub async fn run(ops: &OpsClient, args: &QuotasArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
-        QuotasCommand::List { namespace, tenant } => {
-            run_list(ops, namespace.as_ref(), tenant.as_ref(), format).await
+        QuotasCommand::List {
+            namespace,
+            tenant,
+            provider,
+        } => {
+            run_list(
+                ops,
+                namespace.as_ref(),
+                tenant.as_ref(),
+                provider.as_ref(),
+                format,
+            )
+            .await
         }
         QuotasCommand::Get { id } => run_get(ops, id, format).await,
         QuotasCommand::Create { data } => run_create(ops, data, format).await,
@@ -93,10 +110,15 @@ async fn run_list(
     ops: &OpsClient,
     namespace: Option<&String>,
     tenant: Option<&String>,
+    provider: Option<&String>,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
     let resp = ops
-        .list_quotas(namespace.map(String::as_str), tenant.map(String::as_str))
+        .list_quotas(
+            namespace.map(String::as_str),
+            tenant.map(String::as_str),
+            provider.map(String::as_str),
+        )
         .await?;
     match format {
         OutputFormat::Json => {
@@ -106,11 +128,13 @@ async fn run_list(
             info!(count = resp.count, "Quotas");
             for q in &resp.quotas {
                 let enabled = if q.enabled { "ON " } else { "OFF" };
+                let scope = q.provider.as_deref().unwrap_or("*");
                 info!(
                     enabled = %enabled,
                     id = %&q.id[..8.min(q.id.len())],
                     namespace = %q.namespace,
                     tenant = %q.tenant,
+                    provider = %scope,
                     max_actions = q.max_actions,
                     window = %q.window,
                     overage_behavior = %q.overage_behavior,
@@ -133,6 +157,10 @@ async fn run_get(ops: &OpsClient, id: &str, format: &OutputFormat) -> anyhow::Re
                 info!(id = %q.id, "Quota details");
                 info!(namespace = %q.namespace, "  Namespace");
                 info!(tenant = %q.tenant, "  Tenant");
+                info!(
+                    provider = %q.provider.as_deref().unwrap_or("* (generic)"),
+                    "  Provider"
+                );
                 info!(max_actions = q.max_actions, window = %q.window, "  Max");
                 info!(overage_behavior = %q.overage_behavior, "  Behavior");
                 info!(enabled = q.enabled, "  Enabled");
