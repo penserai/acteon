@@ -143,6 +143,7 @@ nav:
     - OpsGenie: features/opsgenie.md
     - VictorOps: features/victorops.md
     - Pushover: features/pushover.md
+    - Telegram: features/telegram.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md

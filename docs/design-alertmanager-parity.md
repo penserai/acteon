@@ -39,7 +39,7 @@ A fresh audit against Alertmanager v0.27 features found the following gaps.
 | 5 | VictorOps receiver | **Shipped in Phase 4b.** New `acteon-victorops` crate implements the REST endpoint integration (trigger / warn / info / acknowledge / resolve) with routing-key fan-out, auto-scoped `entity_id` for multi-tenant safety, and retryable 5xx/408. | ~~Medium~~ Done |
 | 6 | Pushover receiver | **Shipped in Phase 4c.** New `acteon-pushover` crate implements the Pushover Messages API with form-encoded POST, fan-out across multiple user/group keys, priority 0–2 (including emergency retry/expire), client-side validation, and the same transient retry semantics as the other on-call receivers. | ~~Low~~ Done |
 | 7 | WeChat receiver | Missing | Low |
-| 8 | Telegram receiver | Missing | Low |
+| 8 | Telegram receiver | **Shipped in Phase 4d.** New `acteon-telegram` crate implements the Bot API `sendMessage` endpoint with HTML / Markdown / MarkdownV2 parse modes, forum-group topic support, multi-chat fan-out, 4096-byte text truncation, and the same transient retry semantics as the other receivers. | ~~Low~~ Done |
 | 9 | Alert-centric admin UI (active alerts grouped by labels) | Missing — UI is action-centric and event-centric | Low |
 | 10 | First-class `Alert` primitive | Missing | **Skip** — handle via generic `Action` + convention |
 
@@ -259,10 +259,69 @@ walks through a normal-priority deploy notification, an
 emergency-priority alert, and a rule-based priority reroute.
 Docs: `docs/book/features/pushover.md`.
 
-#### Phase 4d — WeChat, Telegram
-**Gaps**: #7–#8
-**Status**: Pending. Each provider ships as its own PR so a
-review problem in one cannot block the others.
+#### Phase 4d-Telegram — Telegram ✅ Shipped
+**Gap**: #8
+**Status**: Shipped in PR (feat/telegram-provider).
+**Scope as built**: new `acteon-telegram` crate (~1600 LOC with
+tests) plus server wiring, simulation example, and docs.
+
+The `acteon-telegram` crate implements the Bot API `sendMessage`
+endpoint — the same one Alertmanager targets via its
+`telegram_configs`:
+- **Lifecycle**: Telegram has no multi-step lifecycle. The
+  provider accepts one `event_action` (`"send"`, also the
+  default) and requires only `text`. Everything else is
+  optional and passes through.
+- **Multi-chat fan-out**: a map of logical chat name →
+  Telegram `chat_id`, with a configurable default and
+  single-entry implicit fallback. Chat IDs can be numeric
+  (`-1001234567890`) or string `@channelusername` handles and
+  pass through verbatim.
+- **Rich text**: `parse_mode` supports `HTML`, `Markdown`,
+  and `MarkdownV2`. A config-level `default_parse_mode`
+  applies globally, the payload can override per-message.
+- **Forum-group topics**: the payload accepts `message_thread_id`
+  for bots posting into a specific topic in a topics-enabled
+  supergroup.
+- **Client-side text truncation**: `text` is truncated to
+  `text_max_bytes` (default 4096) on UTF-8 boundaries, so
+  multi-byte characters are never split.
+- **Bot token as `SecretString`**: zeroized on drop, redacted
+  in `Debug`, percent-encoded in the URL path segment so the
+  `{bot_id}:{auth}` colon separator cannot collapse the route.
+  Chat IDs are stored as plain `String` (they are not
+  secrets — they appear in every message and can be
+  recovered from `getUpdates`).
+- **Retry map**: aligned with the other receivers —
+  401/403/404 → non-retryable `Configuration` (404 on
+  `/bot{token}/...` means an unrecognized bot token, which is
+  an operator problem); 429 → retryable `RateLimited`;
+  5xx/408 → retryable `Connection` (via `Transient`); other
+  4xx → non-retryable `ExecutionFailed`.
+- **HTTP 200 + `ok: false` handling**: the Bot API's response
+  envelope carries an `ok` boolean. A successful HTTP
+  round-trip with `ok: false` is classified as permanent
+  `ExecutionFailed` rather than silently succeeding.
+- **Testing**: 48 unit tests including a mock HTTP server that
+  captures the request body so tests assert on the full wire
+  format — URL shape (percent-encoded bot token segment),
+  JSON payload (chat_id, text, parse_mode, thread id), and
+  every retry class.
+
+Config uses the same nested provider sub-struct pattern as the
+other receivers: `telegram.bot_token`, `telegram.chats`,
+`telegram.default_chat`, `telegram.default_parse_mode`,
+`telegram.text_max_bytes`. The bot token supports `ENC[...]`.
+
+Simulation: `crates/simulation/examples/telegram_simulation.rs`
+walks through a plain-text deploy notification, an
+HTML-formatted alert targeting a forum-group topic, and a
+rule-based severity reroute. Docs:
+`docs/book/features/telegram.md`.
+
+#### Phase 4d-WeChat — WeChat
+**Gap**: #7
+**Status**: Pending. Ships as its own PR.
 
 ### Phase 5 — Alert-centric admin UI
 **Gap**: #9

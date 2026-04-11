@@ -67,6 +67,7 @@ acteon-discord = { workspace = true }
 acteon-opsgenie = { workspace = true }
 acteon-victorops = { workspace = true }
 acteon-pushover = { workspace = true }
+acteon-telegram = { workspace = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }

@@ -835,6 +835,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            "telegram" => {
+                let tg = &provider_cfg.telegram;
+                let bot_token_raw = tg.bot_token.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': telegram type requires a 'telegram.bot_token' field",
+                        provider_cfg.name
+                    )
+                })?;
+                if tg.chats.is_empty() {
+                    return Err(format!(
+                        "provider '{}': telegram type requires at least one entry in 'telegram.chats'",
+                        provider_cfg.name
+                    )
+                    .into());
+                }
+                let bot_token = require_decrypt(bot_token_raw, master_key.as_ref())?;
+                let mut telegram_config = acteon_telegram::TelegramConfig::new(bot_token);
+                for (name, chat_id) in &tg.chats {
+                    telegram_config = telegram_config.with_chat(name, chat_id);
+                }
+                if let Some(ref default_chat) = tg.default_chat {
+                    telegram_config = telegram_config.with_default_chat(default_chat);
+                }
+                if let Some(ref parse_mode) = tg.default_parse_mode {
+                    telegram_config = telegram_config.with_default_parse_mode(parse_mode);
+                }
+                if let Some(bytes) = tg.text_max_bytes {
+                    telegram_config = telegram_config.with_text_max_bytes(bytes);
+                }
+                if let Some(ref url) = tg.api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    telegram_config = telegram_config.with_api_base_url(url);
+                }
+                std::sync::Arc::new(acteon_telegram::TelegramProvider::with_client(
+                    telegram_config,
+                    shared_http_client.clone(),
+                ))
+            }
             "email" => {
                 let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
                     format!(
