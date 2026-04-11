@@ -35,7 +35,7 @@ A fresh audit against Alertmanager v0.27 features found the following gaps.
 | 1 | **Silences** (time-bounded label-pattern mutes) | **Missing** — no `Silence` type, no CRUD, no dispatch-path enforcement | **Critical** |
 | 2 | `group_wait` / `group_interval` / `repeat_interval` | **Shipped in Phase 2.** `group_wait` was already implemented; `group_interval` is now honored on persistent groups; `repeat_interval` is a new optional field that makes the group persistent and re-fire periodically. | ~~Medium~~ Done |
 | 3 | Per-receiver rate limits | **Shipped in Phase 3.** Generic tenant/namespace quotas now stack with optional per-provider scoped policies; strictest outcome wins; each scope has its own counter bucket. | ~~Medium~~ Done |
-| 4 | OpsGenie receiver | Missing | Medium |
+| 4 | OpsGenie receiver | **Shipped in Phase 4a.** New `acteon-opsgenie` crate implements the Alert API v2 (create / acknowledge / close) against both US and EU regions, wired into the server's TOML provider config as `type = "opsgenie"`. | ~~Medium~~ Done |
 | 5 | VictorOps receiver | Missing | Medium |
 | 6 | Pushover receiver | Missing | Low |
 | 7 | WeChat receiver | Missing | Low |
@@ -116,7 +116,51 @@ Implementation notes:
 ### Phase 4 — Missing receivers
 **Gaps**: #4–#8
 **Scope**: ~300–500 LOC per provider
-**Follow-up**: one provider per PR, batched where sensible (e.g., OpsGenie + VictorOps in one PR; Pushover + WeChat + Telegram in another).
+**Follow-up**: one provider per PR, shipped incrementally.
+
+#### Phase 4a — OpsGenie ✅ Shipped
+**Gap**: #4
+**Scope as built**: new `acteon-opsgenie` crate (~1300 LOC) plus server wiring, simulation example, and docs.
+
+The `acteon-opsgenie` crate implements the Alert API v2 with the
+following properties:
+- **Regions**: US (`api.opsgenie.com`) and EU
+  (`api.eu.opsgenie.com`) selectable via `opsgenie_region` in the
+  TOML provider config. Accounts are pinned to one region at
+  provisioning time so picking the wrong one surfaces as a 401.
+- **Lifecycle**: a single provider handles the
+  `create` → `acknowledge` → `close` sequence by branching on the
+  payload's `event_action` field. Acknowledge/close always use
+  `identifierType=alias` so operators can use the same alias they
+  used at create time without reading back alert IDs.
+- **Defaults**: optional `opsgenie_default_team`,
+  `opsgenie_default_priority`, and `opsgenie_default_source`
+  fields in the TOML config materialize into the alert body when
+  the payload omits them, keeping rule payloads short.
+- **Client-side guards**: `message` is truncated to the API's
+  130-char limit; alias is percent-encoded in the lifecycle path
+  segment; `ENC[...]` API keys are transparently decrypted at
+  startup.
+- **Error mapping**: 401/403 → non-retryable `Configuration` (bad
+  api key surfaces as a configuration issue for operators);
+  429 → retryable `RateLimited`; other 4xx/5xx → non-retryable
+  `ExecutionFailed`.
+- **Observability**: reuses the server's shared HTTP client so
+  the provider participates in circuit breaking, health checks,
+  and per-provider metrics without any extra wiring.
+- **Testing**: 37 unit tests including a tiny in-process mock
+  HTTP server that captures the request body so the tests can
+  assert on the wire format (URLs, headers, JSON payloads) for
+  every lifecycle branch.
+
+Simulation: `crates/simulation/examples/opsgenie_simulation.rs`
+walks through create/ack/close plus a rule-based reroute for
+P1-priority alerts. Docs: `docs/book/features/opsgenie.md`.
+
+#### Phase 4b–4d — VictorOps, Pushover, WeChat, Telegram
+**Gaps**: #5–#8
+**Status**: Pending. Each provider ships as its own PR so a
+review problem in one cannot block the others.
 
 ### Phase 5 — Alert-centric admin UI
 **Gap**: #9

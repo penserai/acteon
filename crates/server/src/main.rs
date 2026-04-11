@@ -712,6 +712,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            "opsgenie" => {
+                let api_key_raw = provider_cfg.opsgenie_api_key.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': opsgenie type requires an 'opsgenie_api_key' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let api_key = require_decrypt(api_key_raw, master_key.as_ref())?;
+                let mut opsgenie_config = acteon_opsgenie::OpsGenieConfig::new(api_key);
+                match provider_cfg
+                    .opsgenie_region
+                    .as_deref()
+                    .map(str::to_ascii_lowercase)
+                    .as_deref()
+                {
+                    Some("eu") => {
+                        opsgenie_config =
+                            opsgenie_config.with_region(acteon_opsgenie::OpsGenieRegion::Eu);
+                    }
+                    Some("us") | None => {
+                        opsgenie_config =
+                            opsgenie_config.with_region(acteon_opsgenie::OpsGenieRegion::Us);
+                    }
+                    Some(other) => {
+                        return Err(format!(
+                            "provider '{}': unknown opsgenie_region '{other}' (expected 'us' or 'eu')",
+                            provider_cfg.name
+                        )
+                        .into());
+                    }
+                }
+                if let Some(ref team) = provider_cfg.opsgenie_default_team {
+                    opsgenie_config = opsgenie_config.with_default_team(team);
+                }
+                if let Some(ref priority) = provider_cfg.opsgenie_default_priority {
+                    opsgenie_config = opsgenie_config.with_default_priority(priority);
+                }
+                if let Some(ref source) = provider_cfg.opsgenie_default_source {
+                    opsgenie_config = opsgenie_config.with_default_source(source);
+                }
+                if let Some(ref url) = provider_cfg.opsgenie_api_base_url {
+                    validate_provider_url(&provider_cfg.name, url)?;
+                    opsgenie_config = opsgenie_config.with_api_base_url(url);
+                }
+                std::sync::Arc::new(acteon_opsgenie::OpsGenieProvider::with_client(
+                    opsgenie_config,
+                    shared_http_client.clone(),
+                ))
+            }
             "email" => {
                 let from_address = provider_cfg.from_address.as_deref().ok_or_else(|| {
                     format!(

@@ -53,6 +53,7 @@ members = [
     "crates/integrations/email",
     "crates/integrations/slack",
     "crates/integrations/pagerduty",
+    "crates/integrations/opsgenie",
     "crates/integrations/webhook",
     "crates/integrations/twilio",
     "crates/integrations/teams",
@@ -127,6 +128,7 @@ acteon-gcp = { path = "crates/gcp" }
 acteon-email = { path = "crates/integrations/email" }
 acteon-slack = { path = "crates/integrations/slack" }
 acteon-pagerduty = { path = "crates/integrations/pagerduty" }
+acteon-opsgenie = { path = "crates/integrations/opsgenie" }
 acteon-webhook = { path = "crates/integrations/webhook" }
 acteon-twilio = { path = "crates/integrations/twilio" }
 acteon-teams = { path = "crates/integrations/teams" }

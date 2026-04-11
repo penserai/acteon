@@ -140,6 +140,7 @@ nav:
     - WASM Plugins: features/wasm-plugins.md
     - AWS Providers: features/aws-providers.md
     - Native Providers: features/native-providers.md
+    - OpsGenie: features/opsgenie.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md

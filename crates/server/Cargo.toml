@@ -64,6 +64,7 @@ acteon-gcp = { workspace = true, optional = true }
 acteon-twilio = { workspace = true }
 acteon-teams = { workspace = true }
 acteon-discord = { workspace = true }
+acteon-opsgenie = { workspace = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }

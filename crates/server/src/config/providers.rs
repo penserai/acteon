@@ -21,8 +21,8 @@ pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
-    /// `"email"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`, `"aws-sqs"`,
-    /// `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
+    /// `"email"`, `"opsgenie"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`,
+    /// `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
     /// `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
     #[serde(rename = "type")]
     pub provider_type: String,
@@ -139,4 +139,18 @@ pub struct ProviderConfig {
     pub gcp_bucket: Option<String>,
     /// Cloud Storage object name prefix (used by `"gcp-storage"` type).
     pub gcp_object_prefix: Option<String>,
+
+    // ---- OpsGenie provider fields ----
+    /// OpsGenie API integration key (used by `"opsgenie"` type). Supports `ENC[...]`.
+    pub opsgenie_api_key: Option<String>,
+    /// OpsGenie region: `"us"` (default) or `"eu"` (used by `"opsgenie"` type).
+    pub opsgenie_region: Option<String>,
+    /// Default team responder used when a payload omits one (used by `"opsgenie"` type).
+    pub opsgenie_default_team: Option<String>,
+    /// Default alert priority (`P1`..=`P5`, used by `"opsgenie"` type).
+    pub opsgenie_default_priority: Option<String>,
+    /// Default alert source label (used by `"opsgenie"` type).
+    pub opsgenie_default_source: Option<String>,
+    /// Override base URL for the OpsGenie API (testing only).
+    pub opsgenie_api_base_url: Option<String>,
 }
