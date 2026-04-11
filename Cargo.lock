@@ -517,6 +517,7 @@ dependencies = [
  "acteon-twilio",
  "acteon-victorops",
  "acteon-wasm-runtime",
+ "acteon-wechat",
  "argon2",
  "async-trait",
  "axum 0.8.8",
@@ -804,6 +805,21 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "acteon-wechat"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-crypto",
+ "acteon-provider",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

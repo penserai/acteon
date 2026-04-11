@@ -144,6 +144,7 @@ nav:
     - VictorOps: features/victorops.md
     - Pushover: features/pushover.md
     - Telegram: features/telegram.md
+    - WeChat Work: features/wechat.md
   - Backends:
     - backends/index.md
     - State Backends: backends/state-backends.md
