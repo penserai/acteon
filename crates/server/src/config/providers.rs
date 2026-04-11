@@ -21,9 +21,10 @@ pub struct ProviderConfig {
     /// Unique name for this provider.
     pub name: String,
     /// Provider type: `"webhook"`, `"log"`, `"twilio"`, `"teams"`, `"discord"`,
-    /// `"email"`, `"opsgenie"`, `"aws-sns"`, `"aws-lambda"`, `"aws-eventbridge"`,
-    /// `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`, `"aws-autoscaling"`, `"azure-blob"`,
-    /// `"azure-eventhubs"`, `"gcp-pubsub"`, or `"gcp-storage"`.
+    /// `"email"`, `"opsgenie"`, `"victorops"`, `"aws-sns"`, `"aws-lambda"`,
+    /// `"aws-eventbridge"`, `"aws-sqs"`, `"aws-s3"`, `"aws-ec2"`,
+    /// `"aws-autoscaling"`, `"azure-blob"`, `"azure-eventhubs"`, `"gcp-pubsub"`,
+    /// or `"gcp-storage"`.
     #[serde(rename = "type")]
     pub provider_type: String,
     /// Target URL (required for `"webhook"` type).
@@ -162,6 +163,20 @@ pub struct ProviderConfig {
     /// ```
     #[serde(default)]
     pub opsgenie: OpsGenieProviderConfig,
+
+    /// Nested configuration block for the `"victorops"` provider type.
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [[providers]]
+    /// name = "victorops-prod"
+    /// type = "victorops"
+    /// victorops.api_key = "ENC[...]"
+    /// victorops.default_route = "team-ops"
+    /// victorops.routes = { team-ops = "ENC[...]", team-infra = "ENC[...]" }
+    /// ```
+    #[serde(default)]
+    pub victorops: VictorOpsProviderConfig,
 }
 
 /// Nested configuration block for the `OpsGenie` provider.
@@ -194,4 +209,28 @@ pub struct OpsGenieProviderConfig {
     /// client-side truncation. Defaults to 130 (the current
     /// `OpsGenie` API cap).
     pub message_max_length: Option<usize>,
+}
+
+/// Nested configuration block for the `VictorOps` (Splunk On-Call) provider.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct VictorOpsProviderConfig {
+    /// Organization-level REST integration key. Supports `ENC[...]`.
+    pub api_key: Option<String>,
+    /// Map of logical route name → per-route routing key. Values
+    /// support `ENC[...]`.
+    pub routes: HashMap<String, String>,
+    /// Name of the default route used when the payload omits
+    /// `routing_key`.
+    pub default_route: Option<String>,
+    /// Override base URL for the `VictorOps` REST endpoint
+    /// integration (testing only).
+    pub api_base_url: Option<String>,
+    /// Value reported in the alert body's `monitoring_tool` field.
+    /// Defaults to `"acteon"` at the provider layer.
+    pub monitoring_tool: Option<String>,
+    /// Whether to auto-prefix `entity_id` with
+    /// `{namespace}:{tenant}:` for multi-tenant isolation. Defaults
+    /// to `true`.
+    pub scope_entity_ids: Option<bool>,
 }

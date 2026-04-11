@@ -497,6 +497,7 @@ dependencies = [
  "acteon-state-redis",
  "acteon-teams",
  "acteon-twilio",
+ "acteon-victorops",
  "acteon-wasm-runtime",
  "argon2",
  "async-trait",
@@ -719,6 +720,22 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "acteon-victorops"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-crypto",
+ "acteon-provider",
+ "percent-encoding",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

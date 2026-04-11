@@ -36,7 +36,7 @@ A fresh audit against Alertmanager v0.27 features found the following gaps.
 | 2 | `group_wait` / `group_interval` / `repeat_interval` | **Shipped in Phase 2.** `group_wait` was already implemented; `group_interval` is now honored on persistent groups; `repeat_interval` is a new optional field that makes the group persistent and re-fire periodically. | ~~Medium~~ Done |
 | 3 | Per-receiver rate limits | **Shipped in Phase 3.** Generic tenant/namespace quotas now stack with optional per-provider scoped policies; strictest outcome wins; each scope has its own counter bucket. | ~~Medium~~ Done |
 | 4 | OpsGenie receiver | **Shipped in Phase 4a.** New `acteon-opsgenie` crate implements the Alert API v2 (create / acknowledge / close) against both US and EU regions, wired into the server's TOML provider config as `type = "opsgenie"`. | ~~Medium~~ Done |
-| 5 | VictorOps receiver | Missing | Medium |
+| 5 | VictorOps receiver | **Shipped in Phase 4b.** New `acteon-victorops` crate implements the REST endpoint integration (trigger / warn / info / acknowledge / resolve) with routing-key fan-out, auto-scoped `entity_id` for multi-tenant safety, and retryable 5xx/408. | ~~Medium~~ Done |
 | 6 | Pushover receiver | Missing | Low |
 | 7 | WeChat receiver | Missing | Low |
 | 8 | Telegram receiver | Missing | Low |
@@ -157,8 +157,60 @@ Simulation: `crates/simulation/examples/opsgenie_simulation.rs`
 walks through create/ack/close plus a rule-based reroute for
 P1-priority alerts. Docs: `docs/book/features/opsgenie.md`.
 
-#### Phase 4b–4d — VictorOps, Pushover, WeChat, Telegram
-**Gaps**: #5–#8
+#### Phase 4b — VictorOps ✅ Shipped
+**Gap**: #5
+**Status**: Shipped in PR (feat/victorops-provider).
+**Scope as built**: new `acteon-victorops` crate (~1600 LOC with tests) plus server wiring, simulation example, and docs.
+
+The `acteon-victorops` crate implements the
+[REST endpoint integration](https://help.victorops.com/knowledge-base/rest-endpoint-integration-guide/)
+— the same endpoint Alertmanager targets via its
+`victorops_configs` — with the following properties:
+- **Lifecycle**: a single provider handles the
+  `trigger` → `acknowledge` → `resolve` sequence plus `warn` and
+  `info` variants by branching on the payload's `event_action`
+  field. The branch is mapped to `VictorOps`'s `message_type`
+  (`CRITICAL` / `WARNING` / `INFO` / `ACKNOWLEDGEMENT` /
+  `RECOVERY`).
+- **Routing fan-out**: the `VictorOps` REST integration encodes
+  both an organization-level api key and a per-route routing key
+  in the URL. The provider supports registering multiple routing
+  keys under logical names and lets dispatch payloads pick
+  between them via a `routing_key` field, falling back to a
+  configured default or a single-entry implicit default.
+- **Multi-tenant safety**: `entity_id` (the `VictorOps` dedup
+  key) is auto-prefixed with `{namespace}:{tenant}:` by default,
+  matching the `acteon-opsgenie` alias-scoping pattern. An
+  opt-out (`scope_entity_ids = false`) is documented for
+  single-tenant deployments or cross-tenant coordination.
+- **Secret hygiene**: `api_key` and every routing key live in
+  `SecretString`, zeroized on drop. The `Debug` impl redacts
+  both. Neither appears in log messages or URL debug output.
+- **Percent-encoding**: uses the `percent-encoding` crate (added
+  to the workspace in PR #86) with an explicit RFC 3986
+  path-segment `AsciiSet` so multi-byte UTF-8 and reserved
+  characters in the api key or routing key cannot inject extra
+  path components.
+- **Error mapping**: 401/403 → non-retryable `Configuration`;
+  429 → retryable `RateLimited`; 5xx/408 → retryable `Connection`
+  (via the same `Transient` variant pattern established in PR #86
+  for `OpsGenie`); other 4xx → non-retryable `ExecutionFailed`.
+- **Testing**: 49 unit tests including a tiny in-process mock
+  HTTP server that captures the request body so tests assert on
+  the full wire format — URL shape, path segments, JSON payload
+  — for every lifecycle branch.
+
+Config uses the same nested provider sub-struct pattern as
+`OpsGenie`: `victorops.api_key`, `victorops.routes`,
+`victorops.default_route`, `victorops.monitoring_tool`,
+`victorops.scope_entity_ids`. Both secrets support `ENC[...]`.
+
+Simulation: `crates/simulation/examples/victorops_simulation.rs`
+walks the full lifecycle plus a severity-based reroute. Docs:
+`docs/book/features/victorops.md`.
+
+#### Phase 4c–4d — Pushover, WeChat, Telegram
+**Gaps**: #6–#8
 **Status**: Pending. Each provider ships as its own PR so a
 review problem in one cannot block the others.
 
