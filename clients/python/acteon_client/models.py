@@ -1310,6 +1310,141 @@ class QuotaUsage:
 
 
 # =============================================================================
+# Silence Types
+# =============================================================================
+
+
+@dataclass
+class SilenceMatcher:
+    """A single label matcher within a silence.
+
+    ``op`` is one of ``"equal"``, ``"not_equal"``, ``"regex"``, or
+    ``"not_regex"``. All matchers in a silence are AND-ed together.
+    Regex patterns are capped at 256 characters and a 64 KB compiled
+    DFA on the server side to prevent ReDoS.
+    """
+
+    name: str
+    value: str
+    op: str = "equal"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "value": self.value, "op": self.op}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SilenceMatcher":
+        return cls(
+            name=data["name"],
+            value=data["value"],
+            op=data.get("op", "equal"),
+        )
+
+
+@dataclass
+class CreateSilenceRequest:
+    """Request to create a silence.
+
+    Either ``ends_at`` or ``duration_seconds`` must be supplied.
+    ``starts_at`` defaults to the server's current time when omitted.
+    """
+
+    namespace: str
+    tenant: str
+    matchers: list[SilenceMatcher]
+    comment: str
+    starts_at: Optional[str] = None
+    ends_at: Optional[str] = None
+    duration_seconds: Optional[int] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "matchers": [m.to_dict() for m in self.matchers],
+            "comment": self.comment,
+        }
+        if self.starts_at is not None:
+            result["starts_at"] = self.starts_at
+        if self.ends_at is not None:
+            result["ends_at"] = self.ends_at
+        if self.duration_seconds is not None:
+            result["duration_seconds"] = self.duration_seconds
+        return result
+
+
+@dataclass
+class UpdateSilenceRequest:
+    """Request to extend a silence or edit its comment.
+
+    Matchers are immutable — to change them, expire the silence and
+    create a new one.
+    """
+
+    ends_at: Optional[str] = None
+    comment: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.ends_at is not None:
+            result["ends_at"] = self.ends_at
+        if self.comment is not None:
+            result["comment"] = self.comment
+        return result
+
+
+@dataclass
+class Silence:
+    """A time-bounded label-pattern mute.
+
+    ``active`` is ``True`` when the current server time falls within
+    ``[starts_at, ends_at)``.
+    """
+
+    id: str
+    namespace: str
+    tenant: str
+    matchers: list[SilenceMatcher]
+    starts_at: str
+    ends_at: str
+    created_by: str
+    comment: str
+    created_at: str
+    updated_at: str
+    active: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Silence":
+        return cls(
+            id=data["id"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            matchers=[SilenceMatcher.from_dict(m) for m in data["matchers"]],
+            starts_at=data["starts_at"],
+            ends_at=data["ends_at"],
+            created_by=data.get("created_by", ""),
+            comment=data.get("comment", ""),
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            active=data.get("active", False),
+        )
+
+
+@dataclass
+class ListSilencesResponse:
+    """Response from listing silences."""
+
+    silences: list[Silence]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListSilencesResponse":
+        return cls(
+            silences=[Silence.from_dict(s) for s in data["silences"]],
+            count=data["count"],
+        )
+
+
+# =============================================================================
 # Retention Policy Types
 # =============================================================================
 

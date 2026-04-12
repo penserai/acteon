@@ -758,6 +758,67 @@ type QuotaUsage struct {
 }
 
 // =============================================================================
+// Silence Types
+// =============================================================================
+
+// SilenceMatcher is a single label matcher inside a silence.
+// Op is one of "equal", "not_equal", "regex", "not_regex". All
+// matchers in a silence are AND-ed. Regex patterns are capped at
+// 256 characters and a 64 KB compiled DFA server-side to prevent
+// ReDoS.
+type SilenceMatcher struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+	Op    string `json:"op"`
+}
+
+// CreateSilenceRequest is the request to create a silence.
+//
+// Either EndsAt or DurationSeconds must be supplied. When StartsAt
+// is zero/empty, the server uses its current time.
+type CreateSilenceRequest struct {
+	Namespace       string           `json:"namespace"`
+	Tenant          string           `json:"tenant"`
+	Matchers        []SilenceMatcher `json:"matchers"`
+	Comment         string           `json:"comment"`
+	StartsAt        *string          `json:"starts_at,omitempty"`
+	EndsAt          *string          `json:"ends_at,omitempty"`
+	DurationSeconds *int64           `json:"duration_seconds,omitempty"`
+}
+
+// UpdateSilenceRequest is the request to extend a silence or edit
+// its comment. Matchers are immutable — to change them, expire the
+// silence and create a new one.
+type UpdateSilenceRequest struct {
+	EndsAt  *string `json:"ends_at,omitempty"`
+	Comment *string `json:"comment,omitempty"`
+}
+
+// Silence is a time-bounded label-pattern mute.
+//
+// Active is true when the current server time is within
+// [StartsAt, EndsAt).
+type Silence struct {
+	ID        string           `json:"id"`
+	Namespace string           `json:"namespace"`
+	Tenant    string           `json:"tenant"`
+	Matchers  []SilenceMatcher `json:"matchers"`
+	StartsAt  string           `json:"starts_at"`
+	EndsAt    string           `json:"ends_at"`
+	CreatedBy string           `json:"created_by"`
+	Comment   string           `json:"comment"`
+	CreatedAt string           `json:"created_at"`
+	UpdatedAt string           `json:"updated_at"`
+	Active    bool             `json:"active"`
+}
+
+// ListSilencesResponse is the response from listing silences.
+type ListSilencesResponse struct {
+	Silences []Silence `json:"silences"`
+	Count    int       `json:"count"`
+}
+
+// =============================================================================
 // Retention Policy Types
 // =============================================================================
 

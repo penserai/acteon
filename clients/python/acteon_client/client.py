@@ -42,6 +42,11 @@ from .models import (
     QuotaPolicy,
     ListQuotasResponse,
     QuotaUsage,
+    SilenceMatcher,
+    CreateSilenceRequest,
+    UpdateSilenceRequest,
+    Silence,
+    ListSilencesResponse,
     CreateRetentionRequest,
     UpdateRetentionRequest,
     RetentionPolicy,
@@ -1171,6 +1176,151 @@ class ActeonClient:
             raise HttpError(404, f"Quota not found: {quota_id}")
         else:
             raise HttpError(response.status_code, "Failed to get quota usage")
+
+    # =========================================================================
+    # Silences
+    # =========================================================================
+
+    def create_silence(self, req: "CreateSilenceRequest") -> "Silence":
+        """Create a silence.
+
+        Args:
+            req: The silence definition. Supply either ``ends_at``
+                or ``duration_seconds``.
+
+        Returns:
+            The created silence.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request("POST", "/v1/silences", json=req.to_dict())
+
+        if response.status_code == 201:
+            return Silence.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    def list_silences(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_expired: bool = False,
+    ) -> "ListSilencesResponse":
+        """List silences, optionally filtered by scope or expiry.
+
+        Args:
+            namespace: Optional namespace filter.
+            tenant: Optional tenant filter.
+            include_expired: If ``True``, include silences whose
+                ``ends_at`` is in the past. Defaults to ``False``.
+
+        Returns:
+            List of silences matching the query.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error.
+        """
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if include_expired:
+            params["include_expired"] = "true"
+        response = self._request("GET", "/v1/silences", params=params)
+
+        if response.status_code == 200:
+            return ListSilencesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list silences")
+
+    def get_silence(self, silence_id: str) -> Optional["Silence"]:
+        """Fetch a single silence by ID.
+
+        Args:
+            silence_id: The silence ID.
+
+        Returns:
+            The silence, or ``None`` if not found.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns an error (other than 404).
+        """
+        response = self._request("GET", f"/v1/silences/{silence_id}")
+
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get silence")
+
+    def update_silence(
+        self, silence_id: str, update: "UpdateSilenceRequest"
+    ) -> "Silence":
+        """Extend a silence or edit its comment.
+
+        Matchers are immutable — to change them, expire the silence
+        and create a new one.
+
+        Args:
+            silence_id: The silence ID.
+            update: The update request.
+
+        Returns:
+            The updated silence.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the silence is not found (404).
+            ApiError: If the server returns a validation error.
+        """
+        response = self._request(
+            "PUT", f"/v1/silences/{silence_id}", json=update.to_dict()
+        )
+
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    def delete_silence(self, silence_id: str) -> None:
+        """Expire a silence immediately.
+
+        Soft-expires the silence by setting ``ends_at = now``. The
+        record remains queryable for audit-trail purposes.
+
+        Args:
+            silence_id: The silence ID.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the silence is not found (404).
+        """
+        response = self._request("DELETE", f"/v1/silences/{silence_id}")
+
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete silence")
 
     # =========================================================================
     # Retention Policies
@@ -2856,6 +3006,84 @@ class AsyncActeonClient:
             raise HttpError(404, f"Quota not found: {quota_id}")
         else:
             raise HttpError(response.status_code, "Failed to get quota usage")
+
+    # =========================================================================
+    # Silences
+    # =========================================================================
+
+    async def create_silence(self, req: "CreateSilenceRequest") -> "Silence":
+        """Create a silence. Supply either ``ends_at`` or ``duration_seconds``."""
+        response = await self._request(
+            "POST", "/v1/silences", json=req.to_dict()
+        )
+        if response.status_code == 201:
+            return Silence.from_dict(response.json())
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    async def list_silences(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+        include_expired: bool = False,
+    ) -> "ListSilencesResponse":
+        """List silences, optionally filtered by scope or expiry."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        if include_expired:
+            params["include_expired"] = "true"
+        response = await self._request("GET", "/v1/silences", params=params)
+        if response.status_code == 200:
+            return ListSilencesResponse.from_dict(response.json())
+        else:
+            raise HttpError(response.status_code, "Failed to list silences")
+
+    async def get_silence(self, silence_id: str) -> Optional["Silence"]:
+        """Fetch a single silence by ID. Returns ``None`` on 404."""
+        response = await self._request("GET", f"/v1/silences/{silence_id}")
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            return None
+        else:
+            raise HttpError(response.status_code, "Failed to get silence")
+
+    async def update_silence(
+        self, silence_id: str, update: "UpdateSilenceRequest"
+    ) -> "Silence":
+        """Extend a silence or edit its comment. Matchers are immutable."""
+        response = await self._request(
+            "PUT", f"/v1/silences/{silence_id}", json=update.to_dict()
+        )
+        if response.status_code == 200:
+            return Silence.from_dict(response.json())
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            data = response.json()
+            raise ApiError(
+                code=data.get("code", "UNKNOWN"),
+                message=data.get("message", data.get("error", "Unknown error")),
+                retryable=data.get("retryable", False),
+            )
+
+    async def delete_silence(self, silence_id: str) -> None:
+        """Expire a silence immediately (soft-expire)."""
+        response = await self._request("DELETE", f"/v1/silences/{silence_id}")
+        if response.status_code == 204:
+            return
+        elif response.status_code == 404:
+            raise HttpError(404, f"Silence not found: {silence_id}")
+        else:
+            raise HttpError(response.status_code, "Failed to delete silence")
 
     # =========================================================================
     # Retention Policies

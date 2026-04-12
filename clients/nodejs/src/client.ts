@@ -85,6 +85,15 @@ import {
   parseListQuotasResponse,
   QuotaUsage,
   parseQuotaUsage,
+  SilenceMatcher,
+  CreateSilenceRequest,
+  createSilenceRequestToApi,
+  UpdateSilenceRequest,
+  updateSilenceRequestToApi,
+  Silence,
+  parseSilence,
+  ListSilencesResponse,
+  parseListSilencesResponse,
   CreateRetentionRequest,
   createRetentionRequestToApi,
   UpdateRetentionRequest,
@@ -967,6 +976,122 @@ export class ActeonClient {
       throw new HttpError(404, `Quota not found: ${quotaId}`);
     } else {
       throw new HttpError(response.status, "Failed to get quota usage");
+    }
+  }
+
+  // =========================================================================
+  // Silences
+  // =========================================================================
+
+  /**
+   * Create a silence. Supply either `endsAt` or `durationSeconds`.
+   */
+  async createSilence(req: CreateSilenceRequest): Promise<Silence> {
+    const response = await this.request("POST", "/v1/silences", {
+      body: createSilenceRequestToApi(req),
+    });
+
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSilence(data);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        ((data.message ?? data.error) as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * List silences, optionally filtered by namespace, tenant, or expiry.
+   */
+  async listSilences(
+    namespace?: string,
+    tenant?: string,
+    includeExpired = false,
+  ): Promise<ListSilencesResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    if (includeExpired) params.set("include_expired", "true");
+    const response = await this.request("GET", "/v1/silences", {
+      params: params.toString() ? params : undefined,
+    });
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListSilencesResponse(data);
+    } else {
+      throw new HttpError(response.status, "Failed to list silences");
+    }
+  }
+
+  /**
+   * Fetch a single silence by ID. Returns `null` if not found.
+   */
+  async getSilence(silenceId: string): Promise<Silence | null> {
+    const response = await this.request(
+      "GET",
+      `/v1/silences/${encodeURIComponent(silenceId)}`,
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSilence(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get silence");
+    }
+  }
+
+  /**
+   * Extend a silence or edit its comment. Matchers are immutable —
+   * to change them, expire the silence and create a new one.
+   */
+  async updateSilence(
+    silenceId: string,
+    update: UpdateSilenceRequest,
+  ): Promise<Silence> {
+    const response = await this.request(
+      "PUT",
+      `/v1/silences/${encodeURIComponent(silenceId)}`,
+      { body: updateSilenceRequestToApi(update) },
+    );
+
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSilence(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Silence not found: ${silenceId}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        ((data.message ?? data.error) as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false
+      );
+    }
+  }
+
+  /**
+   * Expire a silence immediately. Soft-expires by setting
+   * `endsAt = now`; the record stays queryable for audit purposes.
+   */
+  async deleteSilence(silenceId: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/silences/${encodeURIComponent(silenceId)}`,
+    );
+
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Silence not found: ${silenceId}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete silence");
     }
   }
 

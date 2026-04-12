@@ -1373,6 +1373,165 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Silences
+    // =========================================================================
+
+    /**
+     * Creates a silence. Supply either {@code endsAt} or
+     * {@code durationSeconds} on the request.
+     */
+    public Silence createSilence(CreateSilenceRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/silences")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 201) {
+                return parseResponse(response, Silence.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists silences, optionally filtered by namespace, tenant, or
+     * whether to include expired silences.
+     */
+    public ListSilencesResponse listSilences(String namespace, String tenant, boolean includeExpired) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+            if (includeExpired) {
+                params.add("include_expired=true");
+            }
+
+            String path = "/v1/silences";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListSilencesResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list silences");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Fetches a single silence by ID. Returns an empty Optional if
+     * the silence does not exist (404).
+     */
+    public Optional<Silence> getSilence(String silenceId) throws ActeonException {
+        try {
+            String path = "/v1/silences/" + URLEncoder.encode(silenceId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .GET()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, Silence.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get silence");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Extends a silence or edits its comment. Matchers are immutable
+     * — to change them, expire the silence and create a new one.
+     */
+    public Silence updateSilence(String silenceId, UpdateSilenceRequest update) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder("/v1/silences/" + URLEncoder.encode(silenceId, StandardCharsets.UTF_8))
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                return parseResponse(response, Silence.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Silence not found: " + silenceId);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Expires a silence immediately (soft-expire). The record stays
+     * queryable for audit-trail purposes.
+     */
+    public void deleteSilence(String silenceId) throws ActeonException {
+        try {
+            String path = "/v1/silences/" + URLEncoder.encode(silenceId, StandardCharsets.UTF_8);
+
+            HttpRequest request = requestBuilder(path)
+                .DELETE()
+                .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Silence not found: " + silenceId);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete silence");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Retention Policies
     // =========================================================================
 
