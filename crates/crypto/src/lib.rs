@@ -9,6 +9,9 @@
 //! Decrypted values are returned as [`SecretString`] to prevent accidental
 //! logging. The [`MasterKey`] wrapper zeroizes key material on drop.
 
+#[cfg(feature = "signing")]
+pub mod signing;
+
 #[cfg(feature = "tls")]
 pub mod tls;
 
@@ -81,6 +84,16 @@ pub enum CryptoError {
     /// Encryption failed.
     #[error("encryption failed: {0}")]
     EncryptionFailed(String),
+
+    /// A cryptographic signature is invalid.
+    #[cfg(feature = "signing")]
+    #[error("invalid signature")]
+    SignatureInvalid,
+
+    /// The `signer_id` does not match any key in the keyring.
+    #[cfg(feature = "signing")]
+    #[error("unknown signer: {0}")]
+    UnknownSigner(String),
 }
 
 /// Parse a 32-byte master key from hex or base64.

@@ -113,6 +113,7 @@ fn build_test_state_with_audit_and_analytics(
         ui_path: None,
         ui_enabled: false,
         cors_allowed_origins: Vec::new(),
+        signature_verifier: None,
     }
 }
 
@@ -941,6 +942,7 @@ fn build_approval_state_with_providers(
         ui_path: None,
         ui_enabled: false,
         cors_allowed_origins: Vec::new(),
+        signature_verifier: None,
     }
 }
 

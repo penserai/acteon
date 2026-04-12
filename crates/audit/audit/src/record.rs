@@ -78,6 +78,20 @@ pub struct AuditRecord {
     /// for each attachment on the action. Never contains binary data.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachment_metadata: Vec<serde_json::Value>,
+
+    // -- Action signing --
+    /// Ed25519 signature over the action's canonical bytes, base64-encoded.
+    #[serde(default)]
+    pub signature: Option<String>,
+    /// Identifier of the key that produced the signature.
+    #[serde(default)]
+    pub signer_id: Option<String>,
+    /// SHA-256 hex digest of the action's canonical bytes at dispatch
+    /// time. Stored so the verify endpoint can confirm the signature
+    /// without needing to reconstruct the full original action (which
+    /// the audit record does not carry in its entirety).
+    #[serde(default)]
+    pub canonical_hash: Option<String>,
 }
 
 /// Query parameters for searching audit records.

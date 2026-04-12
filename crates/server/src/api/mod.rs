@@ -27,6 +27,7 @@ pub mod stream;
 pub mod subscribe;
 pub mod templates;
 pub mod trace_context;
+pub mod verify;
 
 use std::sync::Arc;
 
@@ -53,6 +54,8 @@ use crate::auth::middleware::AuthLayer;
 use crate::config::ConfigSnapshot;
 use crate::ratelimit::RateLimiter;
 use crate::ratelimit::middleware::RateLimitLayer;
+
+pub use self::verify::SignatureVerifier;
 
 use self::openapi::ApiDoc;
 
@@ -85,6 +88,8 @@ pub struct AppState {
     pub ui_enabled: bool,
     /// Allowed CORS origins (empty = permissive).
     pub cors_allowed_origins: Vec<String>,
+    /// Optional signature verifier for Ed25519 action signing.
+    pub signature_verifier: Option<Arc<SignatureVerifier>>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -128,6 +133,8 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/audit/replay", post(replay::replay_audit))
         .route("/v1/audit/{action_id}", get(audit::get_audit_by_action))
         .route("/v1/audit/{action_id}/replay", post(replay::replay_action))
+        // Action signature verification
+        .route("/v1/actions/{id}/verify", get(verify::verify_action))
         // Dead-letter queue
         .route("/v1/dlq/stats", get(dlq::dlq_stats))
         .route("/v1/dlq/drain", post(dlq::dlq_drain))

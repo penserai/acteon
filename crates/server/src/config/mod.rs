@@ -9,6 +9,7 @@ mod executor;
 mod llm;
 mod providers;
 mod server;
+mod signing;
 mod snapshot;
 mod state;
 mod telemetry;
@@ -28,6 +29,7 @@ pub use executor::*;
 pub use llm::*;
 pub use providers::*;
 pub use server::*;
+pub use signing::*;
 pub use snapshot::*;
 pub use state::*;
 pub use telemetry::*;
@@ -98,6 +100,9 @@ pub struct ActeonConfig {
     /// TLS configuration for inbound HTTPS and outbound mTLS.
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Ed25519 action signing and verification.
+    #[serde(default)]
+    pub signing: SigningConfig,
     /// Attachment size and count limits.
     #[serde(default)]
     pub attachments: AttachmentConfig,

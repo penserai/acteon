@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "AfterTool": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "/Users/renzo/Projects/acteon/target/debug/acteon-swarm-hook record --tesserai-url http://localhost:8081 --agent-id 6429859b-4fde-465b-9661-0c2e7fb1ba2f",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "run_shell_command|write_file|replace"
+      }
+    ],
+    "BeforeTool": [
+      {
+        "hooks": [
+          {
+            "command": "/Users/renzo/Projects/acteon/target/debug/acteon-swarm-hook gate --acteon-url http://localhost:8080 --agent-id 6429859b-4fde-465b-9661-0c2e7fb1ba2f",
+            "timeout": 15,
+            "type": "command"
+          }
+        ],
+        "matcher": "run_shell_command|write_file|replace|web_fetch|google_web_search|generalist"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "async": true,
+            "command": "/Users/renzo/Projects/acteon/target/debug/acteon-swarm-hook complete --acteon-url http://localhost:8080 --tesserai-url http://localhost:8081 --agent-id 6429859b-4fde-465b-9661-0c2e7fb1ba2f",
+            "timeout": 15,
+            "type": "command"
+          }
+        ],
+        "matcher": ".*"
+      }
+    ]
+  }
+}

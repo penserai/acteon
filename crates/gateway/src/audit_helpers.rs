@@ -277,5 +277,17 @@ pub(crate) fn build_audit_record(
         previous_hash: None,
         sequence_number: None,
         attachment_metadata,
+        signature: action.signature.clone(),
+        signer_id: action.signer_id.clone(),
+        canonical_hash: if action.signature.is_some() {
+            // Compute SHA-256 of canonical bytes at audit time so the
+            // verify endpoint can check without reconstructing the
+            // full action (which audit records don't carry entirely).
+            use sha2::Digest;
+            let hash = sha2::Sha256::digest(action.canonical_bytes());
+            Some(hex::encode(hash))
+        } else {
+            None
+        },
     }
 }
