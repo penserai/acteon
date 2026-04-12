@@ -373,6 +373,44 @@ export interface EventGroup {
   created_at: string
 }
 
+// ---- Silences ----
+export type SilenceMatchOp = 'equal' | 'not_equal' | 'regex' | 'not_regex'
+
+export interface SilenceMatcher {
+  name: string
+  value: string
+  op: SilenceMatchOp
+}
+
+export interface Silence {
+  id: string
+  namespace: string
+  tenant: string
+  matchers: SilenceMatcher[]
+  starts_at: string
+  ends_at: string
+  created_by: string
+  comment: string
+  created_at: string
+  updated_at: string
+  active: boolean
+}
+
+export interface CreateSilenceRequest {
+  namespace: string
+  tenant: string
+  matchers: SilenceMatcher[]
+  starts_at?: string
+  ends_at?: string
+  duration_seconds?: number
+  comment: string
+}
+
+export interface UpdateSilenceRequest {
+  ends_at?: string
+  comment?: string
+}
+
 // ---- Stream ----
 export interface StreamEvent {
   id: string

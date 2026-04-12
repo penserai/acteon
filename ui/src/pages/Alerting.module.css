@@ -1,0 +1,95 @@
+@reference "../index.css";
+
+.statGrid {
+  @apply grid grid-cols-2 md:grid-cols-4 gap-4 mb-6;
+}
+
+.gridLayout {
+  @apply grid grid-cols-1 lg:grid-cols-2 gap-6;
+}
+
+.card {
+  @apply border rounded-lg p-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.cardHeader {
+  @apply flex items-center justify-between mb-3;
+}
+
+.sectionTitle {
+  @apply text-sm font-semibold;
+  color: var(--text-secondary);
+}
+
+.cardList {
+  @apply space-y-2 max-h-80 overflow-y-auto;
+}
+
+.listRow {
+  @apply flex items-center justify-between gap-3 py-1.5 px-2 rounded cursor-pointer;
+}
+
+.listRow:hover {
+  background: var(--bg-surface-secondary);
+}
+
+.rowMeta {
+  @apply text-xs tabular-nums;
+  color: var(--text-muted);
+}
+
+.rowLabel {
+  @apply text-sm font-mono truncate;
+  color: var(--text-primary);
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.rowSubtitle {
+  @apply text-xs truncate;
+  color: var(--text-muted);
+}
+
+.rowMain {
+  @apply flex-1 min-w-0;
+}
+
+.empty {
+  @apply text-sm;
+  color: var(--text-muted);
+}
+
+.providerRow {
+  @apply flex items-center justify-between py-1;
+}
+
+.providerName {
+  @apply text-sm font-mono;
+  color: var(--text-primary);
+}
+
+.providerMetrics {
+  @apply text-xs tabular-nums;
+  color: var(--text-muted);
+}
+
+.sparkRow {
+  @apply flex items-center gap-2;
+}
+
+.filterRow {
+  @apply flex flex-wrap gap-3 mb-4;
+}
+
+.quickActions {
+  @apply flex flex-wrap gap-3 mt-6;
+}
+
+.providerLink {
+  color: var(--color-primary-400);
+  text-decoration: underline;
+  cursor: pointer;
+}
+

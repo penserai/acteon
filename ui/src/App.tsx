@@ -10,6 +10,8 @@ import { Rules } from './pages/Rules'
 import { Actions } from './pages/Actions'
 import { Events } from './pages/Events'
 import { Groups } from './pages/Groups'
+import { Silences } from './pages/Silences'
+import { Alerting } from './pages/Alerting'
 import { Chains } from './pages/Chains'
 import { ChainDetail } from './pages/ChainDetail'
 import { Approvals } from './pages/Approvals'
@@ -42,12 +44,14 @@ function App() {
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Dashboard />} />
+          <Route path="alerting" element={<Alerting />} />
           <Route path="dispatch" element={<Dispatch />} />
           <Route path="rules" element={<Rules />} />
           <Route path="playground" element={<RulePlayground />} />
           <Route path="audit" element={<Actions />} />
           <Route path="events" element={<Events />} />
           <Route path="groups" element={<Groups />} />
+          <Route path="silences" element={<Silences />} />
           <Route path="chains" element={<Chains />} />
           <Route path="chains/:chainId" element={<ChainDetail />} />
           <Route path="chain-definitions" element={<ChainDefinitions />} />

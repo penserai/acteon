@@ -2,6 +2,31 @@
 
 The operations pages let you interact with the gateway: dispatching actions, inspecting rules, browsing the audit trail, managing approvals, and monitoring chains.
 
+## Alerting
+
+The **Alerting** page is a unified command center for on-call workflows. It surfaces the four alerting primitives that would otherwise live on separate pages in a single view:
+
+- **Active events** — events whose state machine has not yet reached `resolved` / `closed`.
+- **Active silences** — time-bounded mutes that are currently suppressing dispatches.
+- **Active groups** — event groups that have collected events and are waiting for their flush window.
+- **Alerting provider health** — a focused view of the providers Acteon treats as alerting surfaces (`opsgenie`, `pagerduty`, `victorops`, `pushover`, `telegram`, `wechat`, `slack`, `discord`, `teams`, `twilio`, `email`, `webhook`, `sns`), showing circuit breaker state, success rate, and p95 latency.
+
+At the top, enter a **namespace** and **tenant** to scope the events and groups cards (silences and provider health load without filters). Each card links through to the underlying page for deep inspection. Quick-action buttons at the bottom jump to silence creation, event inspection, and group inspection.
+
+!!! tip
+    Use this page as the first thing you open during an incident — it shows you which events are firing, which groups are batching them up, which silences are already in place, and whether the delivery channels are healthy.
+
+## Silences
+
+Silences are time-bounded label matchers that suppress dispatched actions during maintenance windows or incident response. The **Silences** page provides full CRUD:
+
+- **Create silence** — namespace + tenant scope, one or more matchers (`equal` / `not_equal` / `regex` / `not_regex` operators), a duration (15 minutes to 1 week presets), and a required comment for audit trail context.
+- **Active / expired filter** — by default only active silences are shown; toggle **Include expired** to see the historical list.
+- **Extend** — open a silence from the list to extend its end time by any number of minutes. Matchers are immutable; to change them, expire the silence and create a new one.
+- **Expire** — soft-expires the silence (sets `ends_at = now`). The record stays queryable for audit-trail purposes, but the dispatch pipeline stops matching against it immediately.
+
+See [Silences](../features/silences.md) for the matcher semantics, regex limits, and HA sync timing.
+
 ## Dispatch
 
 ![Dispatch](assets/dispatch.png)

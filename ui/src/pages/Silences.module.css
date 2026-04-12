@@ -1,0 +1,67 @@
+@reference "../index.css";
+
+.detailContent {
+  @apply space-y-3 text-sm;
+}
+
+.detailValueWrap {
+  @apply font-mono text-xs text-right max-w-xs break-all;
+}
+
+.sectionTitle {
+  @apply text-sm font-medium mb-2 mt-4;
+  color: var(--text-secondary);
+}
+
+.matcherList {
+  @apply space-y-2;
+}
+
+.matcherRow {
+  @apply flex items-center gap-2;
+}
+
+.matcherRowInput {
+  @apply flex-1;
+}
+
+.matcherPill {
+  @apply inline-flex items-center gap-1 px-2 py-0.5 rounded font-mono text-xs;
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+}
+
+.matcherOp {
+  color: var(--text-muted);
+}
+
+.matchersSummary {
+  @apply flex flex-wrap gap-1;
+}
+
+.expiryTime {
+  @apply font-mono text-xs tabular-nums;
+  color: var(--text-muted);
+}
+
+.activeBadge {
+  @apply inline-flex items-center gap-1;
+}
+
+.commentCell {
+  @apply text-sm truncate max-w-md;
+}
+
+.filterRow {
+  @apply flex flex-wrap gap-3 items-end mb-4;
+}
+
+.toggleLabel {
+  @apply flex items-center gap-2 text-sm;
+  color: var(--text-secondary);
+}
+
+.addMatcherSpacing {
+  @apply mt-2;
+}
