@@ -101,6 +101,16 @@ pub struct Action {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "openapi", schema(nullable = false))]
     pub attachments: Vec<Attachment>,
+
+    /// Ed25519 signature over the action's canonical bytes, base64-encoded.
+    /// Set by the client or server when action signing is enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+
+    /// Identifier of the key that produced `signature`. Used to look
+    /// up the corresponding public key in the server's keyring.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer_id: Option<String>,
 }
 
 impl Action {
@@ -131,6 +141,8 @@ impl Action {
             trace_context: HashMap::new(),
             template: None,
             attachments: Vec::new(),
+            signature: None,
+            signer_id: None,
         }
     }
 
@@ -195,6 +207,50 @@ impl Action {
     pub fn with_attachments(mut self, attachments: Vec<Attachment>) -> Self {
         self.attachments = attachments;
         self
+    }
+
+    /// Set the Ed25519 signature (base64-encoded).
+    #[must_use]
+    pub fn with_signature(mut self, signature: impl Into<String>) -> Self {
+        self.signature = Some(signature.into());
+        self
+    }
+
+    /// Set the signer identity (keyring lookup key).
+    #[must_use]
+    pub fn with_signer_id(mut self, signer_id: impl Into<String>) -> Self {
+        self.signer_id = Some(signer_id.into());
+        self
+    }
+
+    /// Compute the canonical byte representation used for signing.
+    ///
+    /// Returns a deterministic JSON serialization of every field
+    /// **except** `signature` and `signer_id` (which would create a
+    /// chicken-and-egg problem). Object keys are sorted so the same
+    /// action always produces the same bytes regardless of
+    /// serialization order.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut val = serde_json::to_value(self).unwrap_or_default();
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("signature");
+            obj.remove("signer_id");
+        }
+        // Sorted-key serialization for determinism.
+        let mut buf = Vec::new();
+        let formatter = serde_json::ser::PrettyFormatter::new();
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+        // serde_json::Value serializes map keys in insertion order;
+        // to guarantee sorted keys we collect into a BTreeMap first.
+        let sorted: std::collections::BTreeMap<String, serde_json::Value> =
+            if let serde_json::Value::Object(map) = val {
+                map.into_iter().collect()
+            } else {
+                std::collections::BTreeMap::new()
+            };
+        serde::Serialize::serialize(&sorted, &mut ser).unwrap_or_default();
+        buf
     }
 }
 
