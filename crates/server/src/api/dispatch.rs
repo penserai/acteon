@@ -96,6 +96,37 @@ pub async fn dispatch(
         ));
     }
 
+    // Replay protection: reject if this action ID has already been dispatched.
+    // Uses check_and_set (atomic set-if-not-exists) to close the race window
+    // between checking and marking. Returns false if the key already existed.
+    if let Some((true, ttl)) = state.replay_protection {
+        let gw = state.gateway.read().await;
+        let replay_key = acteon_state::StateKey::new(
+            action.namespace.clone(),
+            action.tenant.clone(),
+            acteon_state::KeyKind::Custom("action_replay".into()),
+            action.id.to_string(),
+        );
+        if let Ok(false) = gw
+            .state_store()
+            .check_and_set(&replay_key, "1", Some(std::time::Duration::from_secs(ttl)))
+            .await
+        {
+            // Already existed — replay detected.
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!(ErrorResponse {
+                    error: format!(
+                        "replay rejected: action ID '{}' has already been dispatched",
+                        action.id
+                    ),
+                })),
+            ));
+        }
+        // Ok(true) = fresh ID claimed; Err(_) = state store unavailable, fail open.
+        drop(gw);
+    }
+
     // Check per-tenant rate limit if enabled (skip for dry-run).
     if !query.dry_run
         && let Some(ref limiter) = state.rate_limiter

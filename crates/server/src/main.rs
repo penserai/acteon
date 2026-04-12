@@ -2172,15 +2172,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             keyring.insert(sk.verifying_key());
         }
+        let mut verifier =
+            acteon_server::api::SignatureVerifier::new(keyring, config.signing.reject_unsigned);
+        // Wire per-signer scope restrictions from config.
+        for entry in &config.signing.keyring {
+            verifier.add_scope(
+                &entry.signer_id,
+                acteon_server::api::verify::SignerScope {
+                    tenants: entry.tenants.clone(),
+                    namespaces: entry.namespaces.clone(),
+                },
+            );
+        }
         info!(
-            keyring_size = keyring.len(),
+            keyring_size = verifier.keyring_len(),
             reject_unsigned = config.signing.reject_unsigned,
+            reject_replay = config.signing.reject_replay,
             "action signing enabled"
         );
-        Some(Arc::new(acteon_server::api::SignatureVerifier::new(
-            keyring,
-            config.signing.reject_unsigned,
-        )))
+        Some(Arc::new(verifier))
     } else {
         None
     };
@@ -2202,6 +2212,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui_enabled: config.ui.enabled,
         cors_allowed_origins: config.server.cors_allowed_origins.clone(),
         signature_verifier,
+        replay_protection: if config.signing.enabled && config.signing.reject_replay {
+            Some((true, config.signing.replay_ttl_seconds))
+        } else {
+            None
+        },
     };
     let app = acteon_server::api::router(state);
 
