@@ -659,6 +659,7 @@ fn item_to_record(item: &HashMap<String, AttributeValue>) -> Result<AuditRecord,
             .unwrap_or_default(),
         signature: None,
         signer_id: None,
+        canonical_hash: None,
     })
 }
 
@@ -712,6 +713,7 @@ mod tests {
             attachment_metadata: Vec::new(),
             signature: None,
             signer_id: None,
+            canonical_hash: None,
         }
     }
 
@@ -811,6 +813,7 @@ mod tests {
             attachment_metadata: Vec::new(),
             signature: None,
             signer_id: None,
+            canonical_hash: None,
         };
         let item = record_to_item(&record);
 

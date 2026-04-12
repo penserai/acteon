@@ -398,6 +398,7 @@ impl From<AuditRow> for AuditRecord {
             attachment_metadata,
             signature: None,
             signer_id: None,
+            canonical_hash: None,
         }
     }
 }

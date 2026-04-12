@@ -4850,6 +4850,7 @@ impl Gateway {
                 attachment_metadata: Vec::new(),
                 signature: None,
                 signer_id: None,
+                canonical_hash: None,
             };
 
             let audit = Arc::clone(audit);
@@ -4975,6 +4976,7 @@ impl Gateway {
                 attachment_metadata: Vec::new(),
                 signature: None,
                 signer_id: None,
+                canonical_hash: None,
             };
 
             let audit = Arc::clone(audit);

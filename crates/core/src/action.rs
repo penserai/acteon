@@ -225,11 +225,16 @@ impl Action {
 
     /// Compute the canonical byte representation used for signing.
     ///
-    /// Returns a deterministic JSON serialization of every field
-    /// **except** `signature` and `signer_id` (which would create a
-    /// chicken-and-egg problem). Object keys are sorted so the same
-    /// action always produces the same bytes regardless of
-    /// serialization order.
+    /// Returns a **compact** (no whitespace), deterministic JSON
+    /// serialization of every field **except** `signature` and
+    /// `signer_id`. Object keys are sorted lexicographically (via
+    /// `BTreeMap`) so the same action always produces the same bytes
+    /// regardless of the original field insertion order.
+    ///
+    /// This format is designed for cross-language reproducibility:
+    /// any JSON library that can emit compact sorted-key JSON will
+    /// produce identical bytes, making it straightforward to sign
+    /// from Go, Python, or Java clients.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut val = serde_json::to_value(self).unwrap_or_default();
@@ -237,20 +242,15 @@ impl Action {
             obj.remove("signature");
             obj.remove("signer_id");
         }
-        // Sorted-key serialization for determinism.
-        let mut buf = Vec::new();
-        let formatter = serde_json::ser::PrettyFormatter::new();
-        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
-        // serde_json::Value serializes map keys in insertion order;
-        // to guarantee sorted keys we collect into a BTreeMap first.
+        // Collect into a BTreeMap for sorted keys, then emit compact
+        // JSON (no whitespace) via the default serializer.
         let sorted: std::collections::BTreeMap<String, serde_json::Value> =
             if let serde_json::Value::Object(map) = val {
                 map.into_iter().collect()
             } else {
                 std::collections::BTreeMap::new()
             };
-        serde::Serialize::serialize(&sorted, &mut ser).unwrap_or_default();
-        buf
+        serde_json::to_vec(&sorted).unwrap_or_default()
     }
 }
 

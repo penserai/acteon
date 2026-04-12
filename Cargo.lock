@@ -524,6 +524,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.8",
  "axum-test",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "clap",

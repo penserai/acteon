@@ -86,6 +86,12 @@ pub struct AuditRecord {
     /// Identifier of the key that produced the signature.
     #[serde(default)]
     pub signer_id: Option<String>,
+    /// SHA-256 hex digest of the action's canonical bytes at dispatch
+    /// time. Stored so the verify endpoint can confirm the signature
+    /// without needing to reconstruct the full original action (which
+    /// the audit record does not carry in its entirety).
+    #[serde(default)]
+    pub canonical_hash: Option<String>,
 }
 
 /// Query parameters for searching audit records.

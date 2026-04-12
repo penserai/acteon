@@ -447,6 +447,7 @@ fn build_audit_record(
         attachment_metadata: Vec::new(),
         signature: None,
         signer_id: None,
+        canonical_hash: None,
     }
 }
 

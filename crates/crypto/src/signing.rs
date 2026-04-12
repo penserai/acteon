@@ -142,6 +142,12 @@ impl Keyring {
         self.keys.is_empty()
     }
 
+    /// Check whether a `signer_id` is present in the keyring.
+    #[must_use]
+    pub fn contains(&self, signer_id: &str) -> bool {
+        self.keys.contains_key(signer_id)
+    }
+
     /// Verify a signature against the key matching `signer_id`.
     pub fn verify(
         &self,

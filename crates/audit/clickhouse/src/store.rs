@@ -153,6 +153,7 @@ impl From<AuditSelectRow> for AuditRecord {
             attachment_metadata: serde_json::from_str(&row.attachment_metadata).unwrap_or_default(),
             signature: None,
             signer_id: None,
+            canonical_hash: None,
         }
     }
 }

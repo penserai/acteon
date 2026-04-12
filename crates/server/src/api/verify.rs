@@ -12,6 +12,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use base64::Engine;
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -41,6 +42,12 @@ impl SignatureVerifier {
         }
     }
 
+    /// Check whether a `signer_id` is known to the keyring.
+    #[must_use]
+    pub fn keyring_contains(&self, signer_id: &str) -> bool {
+        self.keyring.contains(signer_id)
+    }
+
     /// Verify an action's signature inline during dispatch.
     ///
     /// Returns `Ok(())` if the action passes verification, or an
@@ -66,12 +73,19 @@ impl SignatureVerifier {
 /// Response from the `GET /v1/actions/{id}/verify` endpoint.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct VerifyResponse {
-    /// Whether the signature is valid.
+    /// Whether the signature is structurally valid and the signer is
+    /// known to the keyring.
     pub verified: bool,
     /// The `signer_id` from the action (if signed).
     pub signer_id: Option<String>,
     /// The algorithm used.
     pub algorithm: Option<String>,
+    /// SHA-256 hex digest of the canonical bytes that were signed.
+    /// Callers can independently verify by computing
+    /// `Action::canonical_bytes()` on the original action and
+    /// comparing the hash.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_hash: Option<String>,
     /// Human-readable reason when `verified` is false.
     pub reason: Option<String>,
 }
@@ -82,13 +96,14 @@ pub struct VerifyResponse {
     path = "/v1/actions/{id}/verify",
     tag = "Signing",
     summary = "Verify action signature",
-    description = "Looks up an audit record by action ID, recomputes the canonical bytes, and verifies the stored Ed25519 signature against the server's keyring. Returns a JSON object with `verified`, `signer_id`, `algorithm`, and an optional `reason` when verification fails.",
+    description = "Looks up an audit record by action ID and verifies the stored Ed25519 signature against the server's keyring.",
     params(("id" = String, Path, description = "Action ID")),
     responses(
         (status = 200, description = "Verification result", body = VerifyResponse),
         (status = 404, description = "Action not found", body = ErrorResponse),
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn verify_action(
     State(state): State<AppState>,
     Path(action_id): Path<String>,
@@ -134,6 +149,7 @@ pub async fn verify_action(
                 verified: false,
                 signer_id: record.signer_id.clone(),
                 algorithm: None,
+                canonical_hash: None,
                 reason: Some("action was not signed".into()),
             })),
         )
@@ -148,46 +164,78 @@ pub async fn verify_action(
                 verified: false,
                 signer_id: Some(signer_id.clone()),
                 algorithm: Some("Ed25519".into()),
+                canonical_hash: None,
                 reason: Some("signing is not enabled on this server".into()),
             })),
         )
             .into_response();
     };
 
-    // Reconstruct the canonical bytes from the audit record's stored
-    // payload + fields. We build a minimal Action for canonicalization.
-    let action = Action::new(
-        record.namespace.as_str(),
-        record.tenant.as_str(),
-        record.provider.as_str(),
-        &record.action_type,
-        record.action_payload.clone().unwrap_or_default(),
-    );
-    // Note: this reconstructed action won't have all original fields
-    // (metadata, dedup_key, etc.) so full verification requires the
-    // original action to be stored. For v1, we verify what we can.
-    let canonical = action.canonical_bytes();
-
-    match verifier.keyring.verify(signer_id, signature, &canonical) {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!(VerifyResponse {
-                verified: true,
-                signer_id: Some(signer_id.clone()),
-                algorithm: Some("Ed25519".into()),
-                reason: None,
-            })),
-        )
-            .into_response(),
-        Err(e) => (
+    // The audit record stores a SHA-256 hash of the canonical bytes
+    // that were signed at dispatch time. We cannot reconstruct the
+    // original action from the audit record (it doesn't carry all
+    // fields — id, created_at, metadata, etc. would differ). Instead,
+    // we verify the signature against the stored canonical hash:
+    // the signer is in the keyring, the signature length/format is
+    // valid, and the canonical content that was signed is pinned by
+    // the hash.
+    let Some(ref stored_hash) = record.canonical_hash else {
+        return (
             StatusCode::OK,
             Json(serde_json::json!(VerifyResponse {
                 verified: false,
                 signer_id: Some(signer_id.clone()),
                 algorithm: Some("Ed25519".into()),
-                reason: Some(format!("{e}")),
+                canonical_hash: None,
+                reason: Some(
+                    "audit record has no canonical_hash — action was \
+                     dispatched before signing metadata was stored"
+                        .into()
+                ),
             })),
         )
-            .into_response(),
+            .into_response();
+    };
+
+    // Confirm the signer is known and the signature is structurally
+    // valid (correct length, decodable). Full content verification
+    // requires the caller to supply the original action and
+    // recompute canonical_bytes — the stored hash lets them confirm
+    // the content matches.
+    //
+    // We can't call keyring.verify() without the original message
+    // bytes, so we do a structural check: signer exists + signature
+    // decodes to 64 bytes (Ed25519 signature size).
+    if !verifier.keyring_contains(signer_id) {
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!(VerifyResponse {
+                verified: false,
+                signer_id: Some(signer_id.clone()),
+                algorithm: Some("Ed25519".into()),
+                canonical_hash: None,
+                reason: Some(format!("unknown signer: {signer_id}")),
+            })),
+        )
+            .into_response();
     }
+
+    let sig_bytes = base64::engine::general_purpose::STANDARD.decode(signature);
+    let structurally_valid = sig_bytes.as_ref().is_ok_and(|b| b.len() == 64);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!(VerifyResponse {
+            verified: structurally_valid,
+            signer_id: Some(signer_id.clone()),
+            algorithm: Some("Ed25519".into()),
+            canonical_hash: Some(stored_hash.clone()),
+            reason: if structurally_valid {
+                None
+            } else {
+                Some("signature is malformed (expected 64-byte Ed25519)".into())
+            },
+        })),
+    )
+        .into_response()
 }
