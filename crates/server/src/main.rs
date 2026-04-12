@@ -691,6 +691,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            #[cfg(feature = "discord")]
             "discord" => {
                 let webhook_url = provider_cfg
                     .webhook_url
@@ -712,6 +713,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            #[cfg(feature = "opsgenie")]
             "opsgenie" => {
                 let og = &provider_cfg.opsgenie;
                 let api_key_raw = og.api_key.as_deref().ok_or_else(|| {
@@ -763,6 +765,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            #[cfg(feature = "victorops")]
             "victorops" => {
                 let vo = &provider_cfg.victorops;
                 let api_key_raw = vo.api_key.as_deref().ok_or_else(|| {
@@ -802,6 +805,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            #[cfg(feature = "pushover")]
             "pushover" => {
                 let po = &provider_cfg.pushover;
                 let app_token_raw = po.app_token.as_deref().ok_or_else(|| {
@@ -835,6 +839,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            #[cfg(feature = "telegram")]
             "telegram" => {
                 let tg = &provider_cfg.telegram;
                 let bot_token_raw = tg.bot_token.as_deref().ok_or_else(|| {
@@ -873,6 +878,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     shared_http_client.clone(),
                 ))
             }
+            #[cfg(feature = "wechat")]
             "wechat" => {
                 let wc = &provider_cfg.wechat;
                 let corp_id_raw = wc.corp_id.as_deref().ok_or_else(|| {
@@ -1301,7 +1307,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let feature_hint = match other {
                     "aws-sns" | "aws-lambda" | "aws-eventbridge" | "aws-sqs" | "aws-s3"
                     | "aws-ec2" | "aws-autoscaling" | "azure-blob" | "azure-eventhubs"
-                    | "gcp-pubsub" | "gcp-storage" => {
+                    | "gcp-pubsub" | "gcp-storage" | "opsgenie" | "victorops" | "pushover"
+                    | "telegram" | "wechat" | "discord" => {
                         format!(
                             ". Hint: enable the '{other}' feature on acteon-server \
                              (cargo build --features {other})"

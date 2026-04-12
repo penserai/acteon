@@ -65,6 +65,8 @@ jobs:
         run: cargo nextest run -p acteon-aws --features full --lib --tests
       - name: Test Azure providers
         run: cargo nextest run -p acteon-azure --features full --lib --tests
+      - name: Build server with opt-in messaging providers
+        run: cargo check -p acteon-server --features extras-alerting
       - name: Run doctests
         run: cargo test --workspace --doc
 

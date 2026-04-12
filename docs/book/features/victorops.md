@@ -1,5 +1,8 @@
 # VictorOps / Splunk On-Call Provider
 
+!!! note "Opt-in feature flag"
+    VictorOps is not compiled into the default `acteon-server` build. Enable it with `cargo build -p acteon-server --features victorops`, or use `--features extras-alerting` to enable all opt-in messaging providers at once.
+
 Acteon ships with a first-class **VictorOps** (now Splunk On-Call) provider that posts events to the [REST endpoint integration][integration]. Operators use it for any workflow that maps to an Acteon `Action` — on-call paging, deployment notifications, chain callbacks, scheduled reminders, and anything else that fits VictorOps' `message_type` lifecycle.
 
 [integration]: https://help.victorops.com/knowledge-base/rest-endpoint-integration-guide/

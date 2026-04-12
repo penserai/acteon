@@ -147,21 +147,24 @@ Acteon ships with built-in providers organized into four categories. Every provi
 
 ### Messaging and on-call
 
-Providers that deliver human-facing notifications — chat messages, SMS, push notifications, and incident paging.
+Providers that deliver human-facing notifications — chat messages, SMS, push notifications, and incident paging. Widely-used providers ship in the default `acteon-server` binary. Niche or regional providers are opt-in behind a Cargo feature flag so the default build does not pull in integrations most deployments will never touch — enable individual flags or use the `extras-alerting` group flag to turn them all on.
 
-| Provider | Crate | `type` | Transport / Auth | Feature docs |
-|---|---|---|---|---|
-| Email (SMTP) | `acteon-email` | `email` | SMTP (Lettre) with STARTTLS / TLS | [Native providers](../features/native-providers.md) |
-| Slack | `acteon-slack` | `slack` | Bot token or incoming webhook | [Native providers](../features/native-providers.md) |
-| Microsoft Teams | `acteon-teams` | `teams` | Incoming webhook URL | [Native providers](../features/native-providers.md) |
-| Discord | `acteon-discord` | `discord` | Webhook URL | [Native providers](../features/native-providers.md) |
-| Twilio (SMS / MMS) | `acteon-twilio` | `twilio` | Account SID + Auth Token (HTTP Basic) | [Native providers](../features/native-providers.md) |
-| PagerDuty | `acteon-pagerduty` | `pagerduty` | Events API v2 routing key | [Native providers](../features/native-providers.md) |
-| OpsGenie | `acteon-opsgenie` | `opsgenie` | Alert API v2 integration key (US / EU regions) | [OpsGenie](../features/opsgenie.md) |
-| VictorOps / Splunk On-Call | `acteon-victorops` | `victorops` | REST endpoint routing key | [VictorOps](../features/victorops.md) |
-| Pushover | `acteon-pushover` | `pushover` | App token + user / group key | [Pushover](../features/pushover.md) |
-| Telegram Bot | `acteon-telegram` | `telegram` | Bot token + chat ID | [Telegram](../features/telegram.md) |
-| WeChat Work (企业微信) | `acteon-wechat` | `wechat` | Corp ID + corp secret + agent ID (lazy token refresh) | [WeChat Work](../features/wechat.md) |
+| Provider | Crate | `type` | Default build? | Transport / Auth | Feature docs |
+|---|---|---|---|---|---|
+| Email (SMTP) | `acteon-email` | `email` | ✅ Default | SMTP (Lettre) with STARTTLS / TLS | [Native providers](../features/native-providers.md) |
+| Slack | `acteon-slack` | `slack` | ✅ Default | Bot token or incoming webhook | [Native providers](../features/native-providers.md) |
+| Microsoft Teams | `acteon-teams` | `teams` | ✅ Default | Incoming webhook URL | [Native providers](../features/native-providers.md) |
+| Twilio (SMS / MMS) | `acteon-twilio` | `twilio` | ✅ Default | Account SID + Auth Token (HTTP Basic) | [Native providers](../features/native-providers.md) |
+| PagerDuty | `acteon-pagerduty` | `pagerduty` | ✅ Default | Events API v2 routing key | [Native providers](../features/native-providers.md) |
+| Discord | `acteon-discord` | `discord` | `--features discord` | Webhook URL | [Native providers](../features/native-providers.md) |
+| OpsGenie | `acteon-opsgenie` | `opsgenie` | `--features opsgenie` | Alert API v2 integration key (US / EU regions) | [OpsGenie](../features/opsgenie.md) |
+| VictorOps / Splunk On-Call | `acteon-victorops` | `victorops` | `--features victorops` | REST endpoint routing key | [VictorOps](../features/victorops.md) |
+| Pushover | `acteon-pushover` | `pushover` | `--features pushover` | App token + user / group key | [Pushover](../features/pushover.md) |
+| Telegram Bot | `acteon-telegram` | `telegram` | `--features telegram` | Bot token + chat ID | [Telegram](../features/telegram.md) |
+| WeChat Work (企业微信) | `acteon-wechat` | `wechat` | `--features wechat` | Corp ID + corp secret + agent ID (lazy token refresh) | [WeChat Work](../features/wechat.md) |
+
+!!! note "How opt-in flags behave"
+    If you run a binary compiled without the relevant feature and put `type = "opsgenie"` in your TOML config, the server fails fast at startup with an actionable error: `provider 'X': unknown type 'opsgenie'. Hint: enable the 'opsgenie' feature on acteon-server (cargo build --features opsgenie)`. No silent fallthrough.
 
 ### AWS cloud services
 
