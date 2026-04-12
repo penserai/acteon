@@ -63,7 +63,7 @@ impl fmt::Debug for ActionSigningKey {
         f.debug_struct("ActionSigningKey")
             .field("signer_id", &self.signer_id)
             .field("key", &"[REDACTED]")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -107,7 +107,7 @@ impl fmt::Debug for ActionVerifyingKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ActionVerifyingKey")
             .field("signer_id", &self.signer_id)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

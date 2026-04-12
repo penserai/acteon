@@ -86,6 +86,16 @@ pub async fn dispatch(
         ));
     }
 
+    // Verify action signature if signing is enabled.
+    if let Some(ref verifier) = state.signature_verifier
+        && let Err(e) = verifier.verify_action(&action)
+    {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!(ErrorResponse { error: e })),
+        ));
+    }
+
     // Check per-tenant rate limit if enabled (skip for dry-run).
     if !query.dry_run
         && let Some(ref limiter) = state.rate_limiter

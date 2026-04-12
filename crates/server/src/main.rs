@@ -2149,6 +2149,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.server.max_concurrent_dispatch,
     ));
 
+    // Build the signature verifier from the [signing] config.
+    let signature_verifier = if config.signing.enabled {
+        let mut keyring = acteon_crypto::signing::Keyring::new();
+        for entry in &config.signing.keyring {
+            let raw_key = require_decrypt(&entry.public_key, master_key.as_ref())?;
+            let vk = acteon_crypto::signing::parse_verifying_key(&raw_key, &entry.signer_id)?;
+            keyring.insert(vk);
+        }
+        // If a server signing key is configured, add its public key to the
+        // keyring too so the server can verify its own server-originated
+        // signatures.
+        if let Some(ref server_key_raw) = config.signing.server_key {
+            let decrypted = require_decrypt(server_key_raw, master_key.as_ref())?;
+            let sk = acteon_crypto::signing::parse_signing_key(
+                &decrypted,
+                config
+                    .signing
+                    .server_signer_id
+                    .as_deref()
+                    .unwrap_or("acteon-server"),
+            )?;
+            keyring.insert(sk.verifying_key());
+        }
+        info!(
+            keyring_size = keyring.len(),
+            reject_unsigned = config.signing.reject_unsigned,
+            "action signing enabled"
+        );
+        Some(Arc::new(acteon_server::api::SignatureVerifier::new(
+            keyring,
+            config.signing.reject_unsigned,
+        )))
+    } else {
+        None
+    };
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         audit: audit_store,
@@ -2165,6 +2201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui_path: Some(config.ui.dist_path.clone()),
         ui_enabled: config.ui.enabled,
         cors_allowed_origins: config.server.cors_allowed_origins.clone(),
+        signature_verifier,
     };
     let app = acteon_server::api::router(state);
 

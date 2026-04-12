@@ -84,7 +84,7 @@ acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }
 acteon-embedding = { workspace = true }
-acteon-crypto = { workspace = true, features = ["tls"] }
+acteon-crypto = { workspace = true, features = ["tls", "signing"] }
 acteon-wasm-runtime = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

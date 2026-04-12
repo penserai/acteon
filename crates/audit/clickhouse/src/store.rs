@@ -151,6 +151,8 @@ impl From<AuditSelectRow> for AuditRecord {
             previous_hash: row.previous_hash,
             sequence_number: row.sequence_number,
             attachment_metadata: serde_json::from_str(&row.attachment_metadata).unwrap_or_default(),
+            signature: None,
+            signer_id: None,
         }
     }
 }

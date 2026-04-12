@@ -277,5 +277,7 @@ pub(crate) fn build_audit_record(
         previous_hash: None,
         sequence_number: None,
         attachment_metadata,
+        signature: action.signature.clone(),
+        signer_id: action.signer_id.clone(),
     }
 }

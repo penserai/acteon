@@ -396,6 +396,8 @@ impl From<AuditRow> for AuditRecord {
             #[allow(clippy::cast_sign_loss)]
             sequence_number: row.sequence_number.map(|n| n as u64),
             attachment_metadata,
+            signature: None,
+            signer_id: None,
         }
     }
 }

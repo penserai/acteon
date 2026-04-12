@@ -220,6 +220,8 @@ mod tests {
             previous_hash: None,
             sequence_number: None,
             attachment_metadata: Vec::new(),
+            signature: None,
+            signer_id: None,
         }
     }
 

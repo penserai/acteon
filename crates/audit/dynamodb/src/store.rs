@@ -657,6 +657,8 @@ fn item_to_record(item: &HashMap<String, AttributeValue>) -> Result<AuditRecord,
         attachment_metadata: get_s_opt("attachment_metadata")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
+        signature: None,
+        signer_id: None,
     })
 }
 
@@ -708,6 +710,8 @@ mod tests {
             previous_hash: Some("def456".to_owned()),
             sequence_number: Some(1),
             attachment_metadata: Vec::new(),
+            signature: None,
+            signer_id: None,
         }
     }
 
@@ -805,6 +809,8 @@ mod tests {
             previous_hash: None,
             sequence_number: None,
             attachment_metadata: Vec::new(),
+            signature: None,
+            signer_id: None,
         };
         let item = record_to_item(&record);
 
