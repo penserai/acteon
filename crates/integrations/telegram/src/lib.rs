@@ -2,9 +2,8 @@
 //!
 //! This crate implements the [`Provider`](acteon_provider::Provider)
 //! trait against the [Telegram Bot API's][api] `sendMessage`
-//! endpoint. It's the same endpoint Alertmanager targets via its
-//! `telegram_configs`, so a migration is just re-authoring the
-//! routing.
+//! endpoint, so any workflow that fits an Acteon `Action` can post
+//! to a Telegram chat.
 //!
 //! # Quick start
 //!

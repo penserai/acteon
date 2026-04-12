@@ -2,6 +2,152 @@
 
 The operations pages let you interact with the gateway: dispatching actions, inspecting rules, browsing the audit trail, managing approvals, and monitoring chains.
 
+## Alerting
+
+![Alerting](assets/alerting.png)
+
+The **Alerting** page is a unified command center for on-call workflows. It surfaces the four alerting primitives that would otherwise live on separate pages in a single view.
+
+At the top, enter a **namespace** and **tenant** to scope the events and groups cards (silences and provider health load without filters). Four stat cards summarize the current state, and the panels below expand each one into a live list. The screenshot above shows the `prod / acme` scope with:
+
+- **0 active events** — the empty state, because no `state_machine` rule is matching this namespace/tenant. When the lifecycle is tracked, this card fills with firing events and a state badge per row.
+- **4 active groups** — the `group-alerts-by-service` rule has batched incoming alerts into 4 pending groups (checkout-api: 5 events, payment-service: 4 events, auth-service: 2 events, events-consumer: 2 events). Each row links through to the **Groups** page.
+- **3 active silences** — CDN provider maintenance window, an `info`-level CDN chatter silence (regex), and a "postgres-primary investigating" silence. Each row shows the matcher count, who created it, and a countdown to its end time.
+- **3 healthy alerting providers** — `email`, `pagerduty`, `slack`, all reporting `closed` circuit breakers, with p95 latency and success-rate rollups from the provider metrics snapshot.
+
+### Panel contents
+
+| Card | Data source | Filter scope | Empty state |
+|------|-------------|--------------|-------------|
+| Active events | `GET /v1/events` | Requires `namespace` + `tenant` | "Enter a namespace and tenant to load active events" |
+| Active groups | `GET /v1/groups` | Requires `namespace` + `tenant` | "Enter a namespace and tenant to load active groups" |
+| Active silences | `GET /v1/silences` | Auto-injects single-tenant scope; otherwise filters post-hoc to the caller's tenant grants | "No active silences" |
+| Alerting provider health | `GET /v1/providers/health` | Filtered to known alerting provider names | Link to Settings → Providers |
+
+### What the API returns
+
+The stat cards and lists render the same JSON the REST API emits. The active groups card maps directly from:
+
+```json
+// GET /v1/groups?namespace=prod&tenant=acme
+{
+  "total": 4,
+  "groups": [
+    {
+      "group_id": "d3e78396-ccfa-41a4-a9e3-cfa8a62f2268",
+      "group_key": "e9112212a704c7cbeb82010d1917a65c0266ae72fa3037e6c6bb0629cf247ffd",
+      "event_count": 5,
+      "state": "pending",
+      "notify_at": "2026-04-12T00:48:28.860743+00:00",
+      "created_at": "2026-04-12T00:39:03.654291+00:00"
+    }
+    // …three more groups
+  ]
+}
+```
+
+The provider health card maps from:
+
+```json
+// GET /v1/providers/health
+{
+  "providers": [
+    {
+      "provider": "pagerduty",
+      "healthy": true,
+      "circuit_breaker_state": "closed",
+      "total_requests": 4,
+      "successes": 4,
+      "failures": 0,
+      "success_rate": 100.0,
+      "avg_latency_ms": 0.0515,
+      "p50_latency_ms": 0.032,
+      "p95_latency_ms": 0.128,
+      "p99_latency_ms": 0.128
+    }
+    // …slack, email, etc.
+  ]
+}
+```
+
+A provider is classified as *alerting-oriented* when its name matches any of: `opsgenie`, `pagerduty`, `victorops`, `splunk`, `pushover`, `telegram`, `wechat`, `slack`, `discord`, `teams`, `twilio`, `email`, `webhook`, `sns`. Storage, LLM, and compute providers are intentionally hidden from this card.
+
+!!! tip
+    Use this page as the first thing you open during an incident — it shows you which events are firing, which groups are batching them up, which silences are already in place, and whether the delivery channels are healthy.
+
+## Silences
+
+![Silences list](assets/silences-list.png)
+
+Silences are time-bounded label matchers that suppress dispatched actions during maintenance windows or incident response. The **Silences** page provides full CRUD against the `/v1/silences` REST API. The screenshot above shows 4 active silences across the `prod` and `staging` namespaces — three covering CDN / Postgres service labels for incident response, and one broad `severity = warning` silence in `staging` for a load test. Each row shows:
+
+| Column | Description |
+|---|---|
+| **Status** | `Active` / `Expired` badge. Expired rows only appear with the *Include expired* toggle on. |
+| **Matchers** | Each matcher rendered as a `name op "value"` pill (`=` / `!=` / `=~` / `!~`). Multiple matchers are AND-ed. |
+| **Tenant** / **Namespace** | Scope the silence applies to. Hierarchical — a silence on `acme` covers `acme.us-east`. |
+| **Comment** | Free-form text recorded at creation; shown in audit records when the silence intercepts a dispatch. |
+| **Ends** | Countdown to end time for active silences, relative timestamp for expired. |
+| **Created by** | Identity of the caller that created the silence (from the auth context). |
+
+Click the **Expire** action on any row for immediate soft-expire, or click the row itself to open the detail drawer, where you can extend the silence by any number of additional minutes — the new end time is anchored to the current `ends_at` (not to `now`), so extending a silence with 8h left by "60 minutes" gives you 9h, not 1h.
+
+### Creating a silence
+
+![Create silence modal](assets/silences-create.png)
+
+The **Create Silence** modal covers the full create flow in one pass:
+
+| Field | Required | Notes |
+|---|---|---|
+| **Namespace** | Yes | Logical grouping; must be covered by the caller's grants. |
+| **Tenant** | Yes | Tenant the silence applies to. Hierarchical — see above. |
+| **Duration** | Yes | Preset dropdown: `15 minutes`, `1 hour`, `2 hours`, `4 hours`, `8 hours`, `1 day`, `1 week`. Sent as `duration_seconds`; the backend computes `ends_at = starts_at + duration`. |
+| **Comment** | Yes | Required for audit-trail context. Shown in the list and in `audit` records referencing the silence. |
+| **Matchers** | Yes (≥1) | Each row is a `{name, op, value}` triple. Click **Add matcher** to AND another matcher onto the silence. Regex matchers are capped at 256 characters and 64 KB compiled DFA to prevent ReDoS. |
+
+The request body matches the `/v1/silences` POST shape exactly:
+
+```json
+// POST /v1/silences
+{
+  "namespace": "prod",
+  "tenant": "acme",
+  "matchers": [
+    { "name": "service", "op": "regex", "value": "cdn-.*" },
+    { "name": "severity", "op": "equal", "value": "info" }
+  ],
+  "duration_seconds": 7200,
+  "comment": "Silence info-level CDN chatter during rollout"
+}
+```
+
+And the response — which is what the row in the list view is populated from:
+
+```json
+{
+  "id": "019d7f1e-774b-7020-818f-339f243b4089",
+  "namespace": "prod",
+  "tenant": "acme",
+  "matchers": [
+    { "name": "service", "op": "regex", "value": "cdn-.*" },
+    { "name": "severity", "op": "equal", "value": "info" }
+  ],
+  "starts_at": "2026-04-12T00:36:36.297488Z",
+  "ends_at":   "2026-04-12T02:36:36.297488Z",
+  "created_by": "operator@acme.example",
+  "comment": "Silence info-level CDN chatter during rollout",
+  "created_at": "2026-04-12T00:36:36.297488Z",
+  "updated_at": "2026-04-12T00:36:36.297488Z",
+  "active": true
+}
+```
+
+!!! warning "Matchers are immutable"
+    The extend / edit flow only changes `ends_at` and `comment`. To change matchers you must expire the silence and create a new one. This keeps audit trail references stable — an action suppressed by silence `019d7f1e-…` will always resolve back to the same matcher set.
+
+See [Silences](../features/silences.md) for the matcher semantics, regex limits, and HA sync timing.
+
 ## Dispatch
 
 ![Dispatch](assets/dispatch.png)

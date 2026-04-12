@@ -1,6 +1,6 @@
 # WeChat Work Provider
 
-Acteon ships with a first-class **WeChat Work** (企业微信 / Enterprise WeChat) provider that sends messages via the [Message Send API][api] — the same endpoint Alertmanager targets via its `wechat_configs`. It's the last receiver in the Phase 4 Alertmanager-parity set and the most architecturally involved, because of three WeChat-specific quirks the provider handles transparently.
+Acteon ships with a first-class **WeChat Work** (企业微信 / Enterprise WeChat) provider that sends messages via the [Message Send API][api]. Operators use it for any workflow that maps to an Acteon `Action` — on-call alerting, deployment notifications, approval callbacks inside chains, scheduled reminders, and anything else that fits the send-a-message shape of the WeChat Work API. It's the most architecturally involved of Acteon's native messaging providers because of three WeChat-specific quirks the provider handles transparently.
 
 [api]: https://developer.work.weixin.qq.com/document/path/90236
 

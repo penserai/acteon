@@ -4,8 +4,6 @@
 //! actions in the dispatch pipeline. They are evaluated after rule
 //! evaluation but before provider dispatch, so the audit record still
 //! captures the rule verdict that would have applied.
-//!
-//! See `docs/design-alertmanager-parity.md` for the design rationale.
 
 use std::collections::HashMap;
 

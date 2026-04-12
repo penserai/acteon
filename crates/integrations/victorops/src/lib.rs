@@ -1,10 +1,9 @@
 //! `VictorOps` / Splunk On-Call provider for the Acteon notification gateway.
 //!
 //! This crate implements the [`Provider`](acteon_provider::Provider) trait
-//! against the [`VictorOps` REST endpoint integration][integration] — the
-//! same endpoint Alertmanager targets via its `victorops_configs`, so a
-//! migration is a matter of re-authoring the routing, not re-plumbing
-//! the receiver.
+//! against the [`VictorOps` REST endpoint integration][integration], so
+//! any workflow that fits an Acteon `Action` can post to `VictorOps`
+//! without re-authoring the receiver plumbing.
 //!
 //! # Quick start
 //!
@@ -38,8 +37,8 @@
 //! | `"acknowledge"` | `ACKNOWLEDGEMENT` | Oncall picked up |
 //! | `"resolve"` | `RECOVERY` | Incident closed |
 //!
-//! All five map naturally onto Alertmanager firing → acknowledged →
-//! resolved state transitions.
+//! The five cover a typical firing → acknowledged → resolved lifecycle
+//! so existing `VictorOps` runbooks keep working unchanged.
 //!
 //! [integration]: https://help.victorops.com/knowledge-base/rest-endpoint-integration-guide/
 

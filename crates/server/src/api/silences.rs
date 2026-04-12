@@ -3,8 +3,7 @@
 //! CRUD operations for tenant-scoped silences. Silences suppress dispatched
 //! actions whose labels match all of the silence's matchers during the
 //! silence's active time window. See the feature documentation at
-//! `docs/book/features/silences.md` and the master plan in
-//! `docs/design-alertmanager-parity.md`.
+//! `docs/book/features/silences.md`.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -298,8 +297,15 @@ pub async fn list_silences(
         && let Some(allowed) = identity.allowed_tenants()
         && allowed.len() == 1
     {
+        // Auto-inject the only allowed tenant if exactly 1 is permitted.
         tenant = Some(allowed[0].to_owned());
     }
+
+    // Snapshot the caller's tenant grants once so the per-silence filter
+    // below does not re-borrow `identity` on every iteration.
+    let allowed_tenants: Option<Vec<String>> = identity
+        .allowed_tenants()
+        .map(|t| t.iter().map(|s| (*s).to_owned()).collect());
 
     let gw = state.gateway.read().await;
     let now = Utc::now();
@@ -308,6 +314,14 @@ pub async fn list_silences(
     let filtered: Vec<SilenceResponse> = all
         .into_iter()
         .filter(|s| params.include_expired || s.is_active_at(now))
+        // Re-enforce tenant visibility: when `tenant=None` and the caller
+        // has more than one allowed tenant, `list_silences` returns the
+        // full cache — drop any entries outside the caller's grants to
+        // prevent cross-tenant leakage.
+        .filter(|s| match &allowed_tenants {
+            Some(allowed) => allowed.iter().any(|t| t == &s.tenant),
+            None => true,
+        })
         .map(|s| silence_to_response(&s, now))
         .collect();
 

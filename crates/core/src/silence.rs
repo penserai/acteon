@@ -10,8 +10,6 @@
 //! so the audit trail still records the rule verdict that *would* have
 //! applied. This lets operators trace silenced actions with full forensic
 //! context.
-//!
-//! See `docs/design-alertmanager-parity.md` for the broader design rationale.
 
 use std::collections::HashMap;
 
@@ -21,8 +19,8 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum number of characters allowed in a regex matcher pattern.
 ///
-/// Matches Alertmanager's practical limits and bounds worst-case DFA
-/// compilation cost.
+/// Bounds worst-case DFA compilation cost and keeps matcher patterns
+/// human-reviewable.
 pub const MAX_REGEX_PATTERN_LEN: usize = 256;
 
 /// Maximum compiled regex DFA size in bytes.
@@ -156,8 +154,8 @@ impl std::fmt::Display for SilenceMatcher {
 }
 
 /// Compile a regex with the same size / complexity caps used for silence
-/// validation. Anchored at both ends (`^...$`) so matchers behave like
-/// Alertmanager's label matchers.
+/// validation. Anchored at both ends (`^...$`) so matchers always match
+/// the whole label value rather than any substring.
 fn compile_regex(pattern: &str) -> Result<Regex, String> {
     RegexBuilder::new(&format!("^(?:{pattern})$"))
         .size_limit(MAX_REGEX_SIZE)

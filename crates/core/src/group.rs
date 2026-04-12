@@ -13,8 +13,7 @@ use crate::types::ActionId;
 
 /// A group of related events awaiting notification.
 ///
-/// Event groups support three notification timers borrowed from
-/// Alertmanager's scheduling model:
+/// Event groups support three notification timers:
 ///
 /// - [`group_wait_seconds`](Self::group_wait_seconds): initial wait from
 ///   the first event to the first flush.

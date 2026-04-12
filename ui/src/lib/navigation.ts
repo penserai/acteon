@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
   RefreshCw, PieChart, Database, HeartPulse, Puzzle, ShieldAlert, FileText, BarChart3,
-  ExternalLink, GitBranch,
+  ExternalLink, GitBranch, BellRing, BellOff,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -17,12 +17,14 @@ export interface NavItem {
 
 export const MAIN_NAV_ITEMS: NavItem[] = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard', shortcut: '1', end: true },
+  { to: '/alerting', icon: BellRing, label: 'Alerting', shortcut: '6' },
   { to: '/dispatch', icon: Send, label: 'Dispatch' },
   { to: '/rules', icon: BookOpen, label: 'Rules', shortcut: '2' },
   { to: '/playground', icon: FlaskConical, label: 'Rule Playground' },
   { to: '/audit', icon: ScrollText, label: 'Audit Trail', shortcut: '4' },
   { to: '/events', icon: Radio, label: 'Events' },
   { to: '/groups', icon: Layers, label: 'Groups' },
+  { to: '/silences', icon: BellOff, label: 'Silences' },
   { to: '/chains', icon: Link2, label: 'Chains', shortcut: '3' },
   { to: '/chain-definitions', icon: GitBranch, label: 'Chain Definitions' },
   { to: '/approvals', icon: ShieldCheck, label: 'Approvals', shortcut: '5' },

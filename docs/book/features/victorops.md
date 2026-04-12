@@ -1,6 +1,6 @@
 # VictorOps / Splunk On-Call Provider
 
-Acteon ships with a first-class **VictorOps** (now Splunk On-Call) provider that posts alerts to the [REST endpoint integration][integration] — the same endpoint Alertmanager targets via its `victorops_configs`. It was built as part of Phase 4b of the Alertmanager feature-parity initiative so ops teams migrating off Alertmanager can reuse their existing VictorOps routing without rewriting runbooks.
+Acteon ships with a first-class **VictorOps** (now Splunk On-Call) provider that posts events to the [REST endpoint integration][integration]. Operators use it for any workflow that maps to an Acteon `Action` — on-call paging, deployment notifications, chain callbacks, scheduled reminders, and anything else that fits VictorOps' `message_type` lifecycle.
 
 [integration]: https://help.victorops.com/knowledge-base/rest-endpoint-integration-guide/
 

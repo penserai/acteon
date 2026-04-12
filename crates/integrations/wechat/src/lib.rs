@@ -2,10 +2,9 @@
 //! Acteon notification gateway.
 //!
 //! This crate implements the [`Provider`](acteon_provider::Provider)
-//! trait against the [`WeChat` Work Message Send API][api] — the same
-//! endpoint Alertmanager targets via its `wechat_configs`. It's the
-//! most architecturally complex receiver in the Alertmanager parity
-//! set because of three `WeChat`-specific quirks:
+//! trait against the [`WeChat` Work Message Send API][api]. It's the
+//! most architecturally complex of Acteon's native messaging providers
+//! because of three `WeChat`-specific quirks:
 //!
 //! 1. **Access tokens expire every 7200 seconds.** Every API call
 //!    passes an `access_token` query parameter that must be refreshed

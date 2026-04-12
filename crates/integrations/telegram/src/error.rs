@@ -6,7 +6,7 @@ use thiserror::Error;
 /// These internal errors get converted into [`ProviderError`] at
 /// the public API boundary. Variants deliberately mirror the
 /// other on-call receiver crates so operators see consistent
-/// retry semantics across the Alertmanager parity set.
+/// retry semantics across providers.
 #[derive(Debug, Error)]
 pub enum TelegramError {
     /// An HTTP-level transport error occurred.

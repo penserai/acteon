@@ -2,9 +2,8 @@
 
 Silences are **time-bounded label-pattern mutes** that suppress dispatched
 actions during a maintenance window or incident response. They are the
-Acteon equivalent of Alertmanager silences and are the primary tool for
-on-call operators who need to temporarily stop paging without modifying
-the rule set.
+primary tool for on-call operators who need to temporarily stop paging
+without modifying the rule set.
 
 Silences are evaluated **after** rule evaluation but **before** provider
 dispatch, so the audit trail captures which rule verdict *would* have
@@ -246,6 +245,3 @@ For production HA deployments, leave `enable_silence_sync` enabled.
 The 10-second sync interval is the upper bound on how long a silence
 created on instance A will take to start muting dispatches on instance
 B. Disabling sync is only appropriate for single-instance deployments.
-
-See `docs/design-alertmanager-parity.md` for the Alertmanager feature
-parity initiative this silence implementation is part of.

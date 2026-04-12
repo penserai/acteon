@@ -29,9 +29,9 @@
 //! | `"acknowledge"` | `POST /v2/alerts/{alias}/acknowledge` | `alias` |
 //! | `"close"` | `POST /v2/alerts/{alias}/close` | `alias` |
 //!
-//! All three map naturally onto Alertmanager firing → acknowledged →
-//! resolved state transitions so existing runbook tooling keeps
-//! working after a migration.
+//! All three map naturally onto a firing → acknowledged → resolved
+//! lifecycle so existing `OpsGenie` runbooks and automations work
+//! unchanged.
 
 pub mod config;
 pub mod error;
