@@ -138,8 +138,10 @@ nav:
     - Provider Health: features/provider-health.md
     - Grafana Dashboards: features/grafana-dashboards.md
     - WASM Plugins: features/wasm-plugins.md
-    - AWS Providers: features/aws-providers.md
     - Native Providers: features/native-providers.md
+    - AWS Providers: features/aws-providers.md
+    - Azure Providers: features/azure-providers.md
+    - GCP Providers: features/gcp-providers.md
     - OpsGenie: features/opsgenie.md
     - VictorOps: features/victorops.md
     - Pushover: features/pushover.md

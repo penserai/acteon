@@ -1,5 +1,8 @@
 # WeChat Work Provider
 
+!!! note "Opt-in feature flag"
+    WeChat Work is not compiled into the default `acteon-server` build. Enable it with `cargo build -p acteon-server --features wechat`, or use `--features extras-alerting` to enable all opt-in messaging providers at once.
+
 Acteon ships with a first-class **WeChat Work** (企业微信 / Enterprise WeChat) provider that sends messages via the [Message Send API][api]. Operators use it for any workflow that maps to an Acteon `Action` — on-call alerting, deployment notifications, approval callbacks inside chains, scheduled reminders, and anything else that fits the send-a-message shape of the WeChat Work API. It's the most architecturally involved of Acteon's native messaging providers because of three WeChat-specific quirks the provider handles transparently.
 
 [api]: https://developer.work.weixin.qq.com/document/path/90236

@@ -2,6 +2,9 @@
 
 Acteon ships with built-in provider integrations for **Twilio** (SMS), **Microsoft Teams**, and **Discord**, alongside the existing Webhook, Email, Slack, and PagerDuty providers. Native providers are first-class citizens -- they implement the same `Provider` trait, participate in circuit breaking, health checks, and per-provider metrics, and require no external plugins.
 
+!!! note "Discord is opt-in"
+    Twilio, Microsoft Teams, Email, Slack, PagerDuty, and Webhook are part of the default `acteon-server` build. Discord is compiled only when the `discord` feature flag is enabled (`cargo build -p acteon-server --features discord`) or as part of the `extras-alerting` feature group. See [Providers](../concepts/providers.md#messaging-and-on-call) for the full list of default vs opt-in messaging providers.
+
 ## Overview
 
 | Provider | Transport | Auth Mechanism | Payload Format |

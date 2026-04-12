@@ -1,5 +1,8 @@
 # OpsGenie Provider
 
+!!! note "Opt-in feature flag"
+    OpsGenie is not compiled into the default `acteon-server` build. Enable it with `cargo build -p acteon-server --features opsgenie`, or use `--features extras-alerting` to enable all opt-in messaging providers at once.
+
 Acteon ships with a first-class **OpsGenie** provider that creates, acknowledges, and closes incidents through the [OpsGenie Alert API v2](https://docs.opsgenie.com/docs/alert-api). Operators use it for any workflow that maps to an Acteon `Action` — on-call alerting, deployment notifications, approval callbacks inside chains, scheduled reminders, and anything else that fits the create/acknowledge/close shape the Alert API exposes.
 
 Like Acteon's other native providers, `acteon-opsgenie`:

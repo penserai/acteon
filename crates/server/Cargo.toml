@@ -40,6 +40,17 @@ azure-all = ["azure-blob", "azure-eventhubs"]
 gcp-pubsub = ["acteon-gcp/pubsub"]
 gcp-storage = ["acteon-gcp/storage"]
 gcp-all = ["gcp-pubsub", "gcp-storage"]
+# Niche / regional messaging providers — opt-in to keep the default
+# binary from shipping support for integrations most deployments do
+# not need. Widely-used providers (email, slack, pagerduty, webhook,
+# twilio, teams) remain part of the default build.
+opsgenie = ["dep:acteon-opsgenie"]
+victorops = ["dep:acteon-victorops"]
+pushover = ["dep:acteon-pushover"]
+telegram = ["dep:acteon-telegram"]
+wechat = ["dep:acteon-wechat"]
+discord = ["dep:acteon-discord"]
+extras-alerting = ["opsgenie", "victorops", "pushover", "telegram", "wechat", "discord"]
 
 [dependencies]
 acteon-audit = { workspace = true, features = ["openapi"] }
@@ -63,12 +74,12 @@ acteon-azure = { workspace = true, optional = true }
 acteon-gcp = { workspace = true, optional = true }
 acteon-twilio = { workspace = true }
 acteon-teams = { workspace = true }
-acteon-discord = { workspace = true }
-acteon-opsgenie = { workspace = true }
-acteon-victorops = { workspace = true }
-acteon-pushover = { workspace = true }
-acteon-telegram = { workspace = true }
-acteon-wechat = { workspace = true }
+acteon-discord = { workspace = true, optional = true }
+acteon-opsgenie = { workspace = true, optional = true }
+acteon-victorops = { workspace = true, optional = true }
+acteon-pushover = { workspace = true, optional = true }
+acteon-telegram = { workspace = true, optional = true }
+acteon-wechat = { workspace = true, optional = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }

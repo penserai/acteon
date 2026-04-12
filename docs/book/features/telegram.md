@@ -1,5 +1,8 @@
 # Telegram Bot Provider
 
+!!! note "Opt-in feature flag"
+    Telegram is not compiled into the default `acteon-server` build. Enable it with `cargo build -p acteon-server --features telegram`, or use `--features extras-alerting` to enable all opt-in messaging providers at once.
+
 Acteon ships with a first-class **Telegram Bot** provider that sends messages via the [Telegram Bot API's `sendMessage` endpoint][api]. Operators use it for any workflow that maps to an Acteon `Action` — on-call alerting, deployment notifications, approval callbacks inside chains, scheduled reminders, and anything else that fits the single-shot "post to a chat" shape of the Telegram Bot API.
 
 [api]: https://core.telegram.org/bots/api#sendmessage

@@ -1,5 +1,8 @@
 # Pushover Provider
 
+!!! note "Opt-in feature flag"
+    Pushover is not compiled into the default `acteon-server` build. Enable it with `cargo build -p acteon-server --features pushover`, or use `--features extras-alerting` to enable all opt-in messaging providers at once.
+
 Acteon ships with a first-class **Pushover** provider that sends push notifications to mobile devices via the [Pushover Messages API][api]. Operators use it for any workflow that needs to reach a human phone or desktop — on-call paging, deployment notifications, approval prompts, scheduled reminders, and anything else that fits the single-shot "send a notification" shape of the Pushover API.
 
 [api]: https://pushover.net/api

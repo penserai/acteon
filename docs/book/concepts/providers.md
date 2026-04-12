@@ -7,17 +7,21 @@ Providers are the execution endpoints in Acteon. They receive actions and perfor
 ```mermaid
 flowchart LR
     G[Gateway] --> R[Provider Registry]
-    R --> E[Email SMTP]
-    R --> S[Slack]
-    R --> P[PagerDuty]
-    R --> T[Twilio SMS]
-    R --> TM[Teams]
-    R --> DC[Discord]
-    R --> W[Webhook]
-    R --> C[Custom Provider]
+    R --> M[Messaging & on-call]
+    R --> C[Cloud services]
+    R --> GEN[Generic HTTP]
+    R --> CUST[Custom provider]
+    M --> M1[Slack / Teams / Discord]
+    M --> M2[PagerDuty / OpsGenie / VictorOps]
+    M --> M3[Pushover / Telegram / WeChat]
+    M --> M4[Email / Twilio SMS]
+    C --> C1[AWS: SNS, Lambda, SQS, S3, SES, EventBridge, EC2, ASG]
+    C --> C2[Azure: Blob Storage, Event Hubs]
+    C --> C3[GCP: Cloud Storage, Pub/Sub]
+    GEN --> GEN1[Webhook]
 ```
 
-The gateway looks up the provider by the action's `provider` field and dispatches accordingly.
+The gateway looks up the provider by the action's `provider` field and dispatches accordingly. All providers — whether built-in or user-written — implement the same `Provider` trait and participate uniformly in circuit breaking, health checks, per-provider metrics, and tenant quotas.
 
 ## Provider Traits
 
@@ -120,9 +124,11 @@ let gateway = GatewayBuilder::new()
     .provider(Arc::new(EmailProvider::new(smtp_config)))
     .provider(Arc::new(SlackProvider::new(slack_config)))
     .provider(Arc::new(PagerDutyProvider::new(pagerduty_config)))
+    .provider(Arc::new(OpsGenieProvider::new(opsgenie_config)))
     .provider(Arc::new(TwilioProvider::new(twilio_config)))
     .provider(Arc::new(TeamsProvider::new(teams_config)))
     .provider(Arc::new(DiscordProvider::new(discord_config)))
+    .provider(Arc::new(TelegramProvider::new(telegram_config)))
     .provider(Arc::new(MyWebhookProvider {
         client: reqwest::Client::new(),
         base_url: "https://api.example.com".into(),
@@ -130,9 +136,74 @@ let gateway = GatewayBuilder::new()
     .build()?;
 ```
 
-Actions are routed to providers by matching the action's `provider` field to the provider's `name()`.
+Actions are routed to providers by matching the action's `provider` field to the provider's `name()`. Most real deployments register providers declaratively from TOML via `[[providers]]` blocks rather than building them in Rust — see [Configuration](../getting-started/configuration.md) for the TOML schema.
+
+!!! note "Cloud providers are feature-gated"
+    AWS, Azure, and GCP providers live in the `acteon-aws`, `acteon-azure`, and `acteon-gcp` crates and are gated behind individual Cargo feature flags on `acteon-server` (e.g. `aws-sns`, `azure-blob`, `gcp-pubsub`). The default `cargo build` does not compile any of them. Pick the flags you need, or use the `aws-all` / `azure-all` / `gcp-all` group flags. See the [AWS](../features/aws-providers.md), [Azure](../features/azure-providers.md), and [GCP](../features/gcp-providers.md) feature pages for the full flag table and IAM / auth setup.
 
 ## Built-in Providers
+
+Acteon ships with built-in providers organized into four categories. Every provider below is a first-class citizen: uniform circuit breaking, health checks, per-provider metrics, tenant quotas, W3C trace context propagation, and `ENC[...]` encrypted-secret support where applicable.
+
+### Messaging and on-call
+
+Providers that deliver human-facing notifications — chat messages, SMS, push notifications, and incident paging. Widely-used providers ship in the default `acteon-server` binary. Niche or regional providers are opt-in behind a Cargo feature flag so the default build does not pull in integrations most deployments will never touch — enable individual flags or use the `extras-alerting` group flag to turn them all on.
+
+| Provider | Crate | `type` | Default build? | Transport / Auth | Feature docs |
+|---|---|---|---|---|---|
+| Email (SMTP) | `acteon-email` | `email` | ✅ Default | SMTP (Lettre) with STARTTLS / TLS | [Native providers](../features/native-providers.md) |
+| Slack | `acteon-slack` | `slack` | ✅ Default | Bot token or incoming webhook | [Native providers](../features/native-providers.md) |
+| Microsoft Teams | `acteon-teams` | `teams` | ✅ Default | Incoming webhook URL | [Native providers](../features/native-providers.md) |
+| Twilio (SMS / MMS) | `acteon-twilio` | `twilio` | ✅ Default | Account SID + Auth Token (HTTP Basic) | [Native providers](../features/native-providers.md) |
+| PagerDuty | `acteon-pagerduty` | `pagerduty` | ✅ Default | Events API v2 routing key | [Native providers](../features/native-providers.md) |
+| Discord | `acteon-discord` | `discord` | `--features discord` | Webhook URL | [Native providers](../features/native-providers.md) |
+| OpsGenie | `acteon-opsgenie` | `opsgenie` | `--features opsgenie` | Alert API v2 integration key (US / EU regions) | [OpsGenie](../features/opsgenie.md) |
+| VictorOps / Splunk On-Call | `acteon-victorops` | `victorops` | `--features victorops` | REST endpoint routing key | [VictorOps](../features/victorops.md) |
+| Pushover | `acteon-pushover` | `pushover` | `--features pushover` | App token + user / group key | [Pushover](../features/pushover.md) |
+| Telegram Bot | `acteon-telegram` | `telegram` | `--features telegram` | Bot token + chat ID | [Telegram](../features/telegram.md) |
+| WeChat Work (企业微信) | `acteon-wechat` | `wechat` | `--features wechat` | Corp ID + corp secret + agent ID (lazy token refresh) | [WeChat Work](../features/wechat.md) |
+
+!!! note "How opt-in flags behave"
+    If you run a binary compiled without the relevant feature and put `type = "opsgenie"` in your TOML config, the server fails fast at startup with an actionable error: `provider 'X': unknown type 'opsgenie'. Hint: enable the 'opsgenie' feature on acteon-server (cargo build --features opsgenie)`. No silent fallthrough.
+
+### AWS cloud services
+
+AWS providers are gated behind individual Cargo feature flags on `acteon-server` so the default build doesn't pay the cost of eight AWS SDK crates. Enable `aws-all` for the full set, or pick individual flags. See [AWS providers](../features/aws-providers.md) for config, payload shapes, and IAM requirements.
+
+| Provider `type` | AWS service | Feature flag | Use case |
+|---|---|---|---|
+| `aws-sns` | Simple Notification Service | `aws-sns` | Publish to topics (fan-out to email/SMS/Lambda/HTTP) |
+| `aws-lambda` | Lambda | `aws-lambda` | Synchronous or async function invocation |
+| `aws-eventbridge` | EventBridge | `aws-eventbridge` | Publish custom events to event buses |
+| `aws-sqs` | Simple Queue Service | `aws-sqs` | Enqueue messages for async processing |
+| `aws-s3` | S3 | `aws-s3` | Write objects, trigger event notifications |
+| `aws-ses` | Simple Email Service | `aws-ses` | Send transactional / bulk email |
+| `aws-ec2` | EC2 | `aws-ec2` | Start / stop / reboot instances (ops automation) |
+| `aws-autoscaling` | Auto Scaling | `aws-autoscaling` | Trigger scaling actions |
+
+### Azure and GCP
+
+| Provider `type` | Cloud service | Feature flag | Feature docs |
+|---|---|---|---|
+| `azure-blob` | Azure Blob Storage | `azure-blob` | [Azure providers](../features/azure-providers.md) |
+| `azure-eventhubs` | Azure Event Hubs | `azure-eventhubs` | [Azure providers](../features/azure-providers.md) |
+| `gcp-storage` | Google Cloud Storage | `gcp-storage` | [GCP providers](../features/gcp-providers.md) |
+| `gcp-pubsub` | Google Cloud Pub/Sub | `gcp-pubsub` | [GCP providers](../features/gcp-providers.md) |
+
+### Generic and testing
+
+| Provider | Crate | `type` | Purpose |
+|---|---|---|---|
+| Webhook | `acteon-webhook` | `webhook` | Generic HTTP dispatcher — Bearer / Basic / API key / HMAC-SHA256 auth, custom headers, configurable method, payload modes |
+| Log | `acteon-provider` (built-in) | `log` | Writes the dispatched action to the tracing log at INFO. Ships with every Acteon binary and is the default target in most example configs. Ideal for local dev, tests, and dry runs. |
+| Recording | `acteon-simulation` | — | Test-only in-memory provider that captures every dispatched action for assertions. Used by the simulation harness — see [Simulation & Testing](../examples/simulation.md). |
+
+!!! tip "Custom providers"
+    None of these lists are exhaustive for *your* deployment — any type implementing `Provider` / `DynProvider` can be registered alongside the built-ins. Acteon routes to providers purely by the `name()` returned from the trait implementation, so a custom Rust provider is indistinguishable from a built-in one to the gateway and rule engine.
+
+---
+
+The rest of this page drills into a representative subset of payload shapes. For the remaining providers, follow the feature-doc links in the tables above.
 
 ### Email (SMTP)
 
