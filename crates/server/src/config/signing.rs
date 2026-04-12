@@ -35,6 +35,18 @@ pub struct SigningConfig {
     /// unsigned actions pass through normally.
     pub reject_unsigned: bool,
 
+    /// When true, reject any dispatch whose action ID has already
+    /// been processed (replay protection). Uses the state store to
+    /// track seen action IDs with a configurable TTL. Defaults to
+    /// false for backward compatibility.
+    pub reject_replay: bool,
+
+    /// TTL in seconds for replay-protection entries in the state
+    /// store. After this period, a replayed action ID would be
+    /// accepted again. Defaults to 86400 (24 hours).
+    #[serde(default = "default_replay_ttl")]
+    pub replay_ttl_seconds: u64,
+
     /// Ed25519 secret key for signing server-originated actions
     /// (chains, recurring, DLQ replays). Supports `ENC[...]` for
     /// encrypted storage. When absent, server-originated actions are
@@ -51,6 +63,10 @@ pub struct SigningConfig {
     pub keyring: Vec<KeyringEntry>,
 }
 
+fn default_replay_ttl() -> u64 {
+    86_400 // 24 hours
+}
+
 /// A single entry in the signing keyring.
 #[derive(Debug, Deserialize)]
 pub struct KeyringEntry {
@@ -59,4 +75,18 @@ pub struct KeyringEntry {
     pub signer_id: String,
     /// Ed25519 public key, encoded as hex (64 chars) or base64.
     pub public_key: String,
+    /// Optional tenant scope. When set, this signer can only sign
+    /// actions for the listed tenants. A wildcard `["*"]` (the
+    /// default) allows all tenants.
+    #[serde(default = "default_wildcard")]
+    pub tenants: Vec<String>,
+    /// Optional namespace scope. When set, this signer can only sign
+    /// actions for the listed namespaces. A wildcard `["*"]` (the
+    /// default) allows all namespaces.
+    #[serde(default = "default_wildcard")]
+    pub namespaces: Vec<String>,
+}
+
+fn default_wildcard() -> Vec<String> {
+    vec!["*".into()]
 }

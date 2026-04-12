@@ -19,17 +19,41 @@ use utoipa::ToSchema;
 use super::AppState;
 use super::schemas::ErrorResponse;
 
+/// Per-signer scope restrictions.
+#[derive(Clone, Debug)]
+pub struct SignerScope {
+    /// Allowed tenants. `["*"]` means all.
+    pub tenants: Vec<String>,
+    /// Allowed namespaces. `["*"]` means all.
+    pub namespaces: Vec<String>,
+}
+
+impl SignerScope {
+    fn allows(&self, tenant: &str, namespace: &str) -> bool {
+        let tenant_ok = self.tenants.iter().any(|t| t == "*" || t == tenant);
+        let ns_ok = self.namespaces.iter().any(|n| n == "*" || n == namespace);
+        tenant_ok && ns_ok
+    }
+}
+
 /// Verifies Ed25519 signatures on dispatched actions.
 ///
-/// Used in two contexts:
-/// 1. **Inline dispatch verification** — called before dispatch to
-///    accept or reject an action based on its signature.
-/// 2. **Post-hoc audit verification** — the `GET /v1/actions/{id}/verify`
-///    endpoint recomputes canonical bytes and checks the stored signature.
+/// Performs three checks on signed actions:
+/// 1. **Signature validity** — the Ed25519 signature verifies against
+///    the keyring's public key for the given `signer_id`.
+/// 2. **Scope enforcement** — the signer is authorized for the
+///    action's `(tenant, namespace)` pair. Prevents a compromised
+///    key for one tenant from signing actions for another.
+/// 3. **Replay rejection** (when `reject_replay` is enabled) — the
+///    action ID must not have been seen before (checked externally
+///    by the dispatch handler against the state store).
 #[derive(Clone)]
 pub struct SignatureVerifier {
     keyring: Arc<Keyring>,
     reject_unsigned: bool,
+    /// Per-signer scope restrictions. Missing entries default to
+    /// allow-all (the server key is inserted without scope limits).
+    scopes: std::collections::HashMap<String, SignerScope>,
 }
 
 impl SignatureVerifier {
@@ -39,7 +63,19 @@ impl SignatureVerifier {
         Self {
             keyring: Arc::new(keyring),
             reject_unsigned,
+            scopes: std::collections::HashMap::new(),
         }
+    }
+
+    /// Register a scope restriction for a signer.
+    pub fn add_scope(&mut self, signer_id: impl Into<String>, scope: SignerScope) {
+        self.scopes.insert(signer_id.into(), scope);
+    }
+
+    /// Number of keys in the keyring.
+    #[must_use]
+    pub fn keyring_len(&self) -> usize {
+        self.keyring.len()
     }
 
     /// Check whether a `signer_id` is known to the keyring.
@@ -54,10 +90,24 @@ impl SignatureVerifier {
     /// error string suitable for an HTTP 400 response body.
     pub fn verify_action(&self, action: &Action) -> Result<(), String> {
         if let (Some(sig), Some(signer_id)) = (&action.signature, &action.signer_id) {
+            // 1. Cryptographic verification.
             let canonical = action.canonical_bytes();
             self.keyring
                 .verify(signer_id, sig, &canonical)
-                .map_err(|e| format!("signature verification failed: {e}"))
+                .map_err(|e| format!("signature verification failed: {e}"))?;
+
+            // 2. Scope enforcement.
+            if let Some(scope) = self.scopes.get(signer_id.as_str())
+                && !scope.allows(&action.tenant, &action.namespace)
+            {
+                return Err(format!(
+                    "signer '{signer_id}' is not authorized for \
+                     tenant={} namespace={}",
+                    action.tenant, action.namespace
+                ));
+            }
+
+            Ok(())
         } else if self.reject_unsigned {
             Err(
                 "unsigned action rejected: signing.reject_unsigned is enabled; \

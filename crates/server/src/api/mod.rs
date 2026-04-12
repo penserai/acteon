@@ -90,6 +90,8 @@ pub struct AppState {
     pub cors_allowed_origins: Vec<String>,
     /// Optional signature verifier for Ed25519 action signing.
     pub signature_verifier: Option<Arc<SignatureVerifier>>,
+    /// Replay protection config: (enabled, `ttl_seconds`).
+    pub replay_protection: Option<(bool, u64)>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.

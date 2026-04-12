@@ -48,6 +48,7 @@ async fn ui_serves_index_html() {
         ui_enabled: ui_config.enabled,
         cors_allowed_origins: Vec::new(),
         signature_verifier: None,
+        replay_protection: None,
     };
 
     let app = acteon_server::api::router(state);
