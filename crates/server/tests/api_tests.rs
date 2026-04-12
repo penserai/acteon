@@ -2311,7 +2311,7 @@ async fn scoped_api_key_batch_dispatch_denies_any_out_of_scope_action() {
 }
 
 // =========================================================================
-// Silences — Phase 1 of Alertmanager parity
+// Silences
 // =========================================================================
 
 async fn silence_crud_request(

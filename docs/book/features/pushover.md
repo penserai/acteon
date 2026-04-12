@@ -1,6 +1,6 @@
 # Pushover Provider
 
-Acteon ships with a first-class **Pushover** provider that sends push notifications to mobile devices via the [Pushover Messages API][api]. It was built as part of Phase 4c of the Alertmanager feature-parity initiative so teams migrating off Alertmanager can re-use their existing Pushover receivers.
+Acteon ships with a first-class **Pushover** provider that sends push notifications to mobile devices via the [Pushover Messages API][api]. Operators use it for any workflow that needs to reach a human phone or desktop — on-call paging, deployment notifications, approval prompts, scheduled reminders, and anything else that fits the single-shot "send a notification" shape of the Pushover API.
 
 [api]: https://pushover.net/api
 

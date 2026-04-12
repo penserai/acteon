@@ -53,7 +53,7 @@ pub enum RuleAction {
     ///
     /// ## Notification scheduling
     ///
-    /// Acteon follows the Alertmanager notification-scheduling model:
+    /// Grouping uses three scheduling timers:
     ///
     /// - **`group_wait_seconds`**: initial quiet period from first event
     ///   to first flush. Lets related events collect into one batch.
@@ -65,10 +65,9 @@ pub enum RuleAction {
     /// - **`repeat_interval_seconds`**: optional. When set, the group
     ///   is kept alive after flush and re-flushes every
     ///   `repeat_interval_seconds` even with no new events, sending
-    ///   the same event set as a "still firing" reminder. This matches
-    ///   Alertmanager's `repeat_interval`. When unset (the default),
-    ///   the group is ephemeral — behavior matches the pre-Phase-2
-    ///   grouping model.
+    ///   the same event set as a "still active" reminder. When unset
+    ///   (the default), the group is ephemeral and is deleted after
+    ///   its first flush.
     /// - **`max_group_size`**: hard cap on the number of events held by
     ///   the group. When a new event arrives at capacity, the oldest
     ///   event is dropped.

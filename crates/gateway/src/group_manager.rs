@@ -165,12 +165,12 @@ impl GroupManager {
                     // be in Notified state at this point; ephemeral
                     // groups are deleted after flush by the worker.
                     //
-                    // Alertmanager semantics: `group_interval_seconds`
-                    // is the quiet period that begins when a NEW event
-                    // arrives on an already-flushed group, not the
-                    // minimum time between successive flushes. So the
-                    // next flush fires at `now + group_interval`
-                    // regardless of how long ago the last flush was.
+                    // `group_interval_seconds` is the quiet period
+                    // that begins when a NEW event arrives on an
+                    // already-flushed group, not the minimum time
+                    // between successive flushes. So the next flush
+                    // fires at `now + group_interval` regardless of
+                    // how long ago the last flush was.
                     group.state = GroupState::Pending;
                     #[allow(clippy::cast_possible_wrap)]
                     let interval = chrono::Duration::seconds(group.group_interval_seconds as i64);
@@ -796,8 +796,7 @@ mod tests {
         // After a flush, a new event on the same group key transitions
         // the group back to Pending. notify_at is set to
         // `now + group_interval_seconds` — the quiet window begins
-        // when the new event arrives, matching Alertmanager's
-        // `group_interval` semantic.
+        // when the new event arrives.
         let manager = GroupManager::new();
         let state = MemoryStateStore::new();
         let action = test_action();
@@ -958,9 +957,9 @@ mod tests {
     #[tokio::test]
     async fn max_group_size_drops_oldest_event() {
         // Filling a group beyond its max_group_size drops the oldest
-        // event, not the newest. This matches Alertmanager's cap
-        // semantics and is important for long-running persistent
-        // groups whose event list would otherwise grow unbounded.
+        // event, not the newest. This bounds memory on long-running
+        // persistent groups whose event list would otherwise grow
+        // unbounded.
         let manager = GroupManager::new();
         let state = MemoryStateStore::new();
 

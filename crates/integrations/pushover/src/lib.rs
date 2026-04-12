@@ -3,10 +3,9 @@
 //! This crate implements the [`Provider`](acteon_provider::Provider)
 //! trait against the [Pushover Messages API][api], a lightweight
 //! push-notification service for mobile devices and desktops.
-//! `Pushover` is the lowest-ceremony receiver in the Alertmanager
-//! parity set — it has no lifecycle (just fire-and-forget sends)
-//! and no client-side deduplication, so the provider is thin on
-//! purpose.
+//! `Pushover` is one of Acteon's lowest-ceremony providers — it has
+//! no lifecycle (just fire-and-forget sends) and no client-side
+//! deduplication, so the provider is thin on purpose.
 //!
 //! # Quick start
 //!

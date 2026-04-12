@@ -3,8 +3,7 @@
 //! CRUD operations for tenant-scoped silences. Silences suppress dispatched
 //! actions whose labels match all of the silence's matchers during the
 //! silence's active time window. See the feature documentation at
-//! `docs/book/features/silences.md` and the master plan in
-//! `docs/design-alertmanager-parity.md`.
+//! `docs/book/features/silences.md`.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};

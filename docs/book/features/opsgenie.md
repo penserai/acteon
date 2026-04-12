@@ -1,6 +1,6 @@
 # OpsGenie Provider
 
-Acteon ships with a first-class **OpsGenie** provider that creates, acknowledges, and closes alerts through the [OpsGenie Alert API v2](https://docs.opsgenie.com/docs/alert-api). It was built as part of the Alertmanager feature-parity initiative so ops teams migrating off Alertmanager can keep their existing OpsGenie runbooks — incident aliases, responder routing, priorities, and tags — without rewriting them.
+Acteon ships with a first-class **OpsGenie** provider that creates, acknowledges, and closes incidents through the [OpsGenie Alert API v2](https://docs.opsgenie.com/docs/alert-api). Operators use it for any workflow that maps to an Acteon `Action` — on-call alerting, deployment notifications, approval callbacks inside chains, scheduled reminders, and anything else that fits the create/acknowledge/close shape the Alert API exposes.
 
 Like Acteon's other native providers, `acteon-opsgenie`:
 

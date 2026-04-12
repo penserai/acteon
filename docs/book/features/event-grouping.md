@@ -59,10 +59,9 @@ rules:
 ### Persistent groups with repeat intervals
 
 Setting `repeat_interval_seconds` turns the group into a **persistent** group
-that behaves like an Alertmanager alert: it stays alive after the first
-flush, re-batches new events using `group_interval_seconds`, and re-fires
-on the repeat interval even with no new events as a "still firing"
-reminder.
+that stays alive after the first flush, re-batches new events using
+`group_interval_seconds`, and re-fires on the repeat interval even with
+no new events as a "still active" reminder.
 
 ```yaml title="rules/persistent-grouping.yaml"
 rules:
@@ -111,8 +110,7 @@ rules:
        of whether it survived the group cap.
 
     A future revision may expose a configurable drop policy
-    (`drop_oldest` / `drop_newest` / `drop_middle`) per-rule. Track
-    progress in the [Alertmanager parity master plan](https://github.com/penserai/acteon/blob/main/docs/design-alertmanager-parity.md).
+    (`drop_oldest` / `drop_newest` / `drop_middle`) per-rule.
 
 ### Ephemeral vs. persistent groups
 

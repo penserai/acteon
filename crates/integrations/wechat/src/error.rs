@@ -4,7 +4,7 @@ use thiserror::Error;
 /// Errors specific to the `WeChat` Work provider.
 ///
 /// Variants mirror the other receiver crates so operators see
-/// consistent retry semantics across the Alertmanager parity set.
+/// consistent retry semantics across providers.
 /// The [`Self::TokenExpired`] variant is `WeChat`-specific: it
 /// drives the in-band refresh-and-retry logic inside the provider
 /// and is **not** surfaced to the gateway — operators will see a

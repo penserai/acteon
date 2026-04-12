@@ -5,8 +5,8 @@ use thiserror::Error;
 ///
 /// These are internal errors that get converted into [`ProviderError`]
 /// at the public API boundary. The variants deliberately mirror the
-/// other on-call receiver crates so operators see the same retry
-/// semantics across the Alertmanager parity set.
+/// other on-call receiver crates so operators see consistent retry
+/// semantics across providers.
 #[derive(Debug, Error)]
 pub enum PushoverError {
     /// An HTTP-level transport error occurred.

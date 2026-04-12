@@ -1,6 +1,6 @@
 # Telegram Bot Provider
 
-Acteon ships with a first-class **Telegram Bot** provider that sends messages via the [Telegram Bot API's `sendMessage` endpoint][api] — the same endpoint Alertmanager targets via its `telegram_configs`. It was built as part of Phase 4d of the Alertmanager feature-parity initiative so teams migrating off Alertmanager can re-use their existing Telegram receivers.
+Acteon ships with a first-class **Telegram Bot** provider that sends messages via the [Telegram Bot API's `sendMessage` endpoint][api]. Operators use it for any workflow that maps to an Acteon `Action` — on-call alerting, deployment notifications, approval callbacks inside chains, scheduled reminders, and anything else that fits the single-shot "post to a chat" shape of the Telegram Bot API.
 
 [api]: https://core.telegram.org/bots/api#sendmessage
 
