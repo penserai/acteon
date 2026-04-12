@@ -245,3 +245,13 @@ For production HA deployments, leave `enable_silence_sync` enabled.
 The 10-second sync interval is the upper bound on how long a silence
 created on instance A will take to start muting dispatches on instance
 B. Disabling sync is only appropriate for single-instance deployments.
+
+## Simulation example
+
+A full end-to-end demo that walks through five silence scenarios — basic matching, multi-matcher AND semantics, regex matchers, hierarchical tenant coverage, and the expire-and-resume lifecycle — is in `crates/simulation/examples/silence_simulation.rs`:
+
+```bash
+cargo run -p acteon-simulation --example silence_simulation
+```
+
+The simulation uses the harness' recording provider, so it runs offline with no real credentials.
