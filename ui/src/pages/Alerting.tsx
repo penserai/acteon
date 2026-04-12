@@ -51,7 +51,9 @@ function providerHealthVariant(
   if (p.circuit_breaker_state && p.circuit_breaker_state !== 'closed') {
     return 'warning'
   }
-  if (p.total_requests > 0 && p.success_rate < 0.95) return 'warning'
+  // success_rate is a percentage (0–100), matching
+  // `ProviderHealthStatus.success_rate` from the gateway metrics.
+  if (p.total_requests > 0 && p.success_rate < 95) return 'warning'
   return 'success'
 }
 
@@ -332,7 +334,9 @@ export function Alerting() {
                   <div className={styles.sparkRow}>
                     <span className={styles.providerMetrics}>
                       p95 {p.p95_latency_ms.toFixed(0)}ms ·{' '}
-                      {(p.success_rate * 100).toFixed(1)}%
+                      {p.total_requests > 0
+                        ? `${p.success_rate.toFixed(1)}%`
+                        : 'no traffic'}
                     </span>
                     <Badge variant={providerHealthVariant(p)} size="sm">
                       {p.healthy ? 'healthy' : 'down'}
