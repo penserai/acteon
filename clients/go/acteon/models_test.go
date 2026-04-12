@@ -1,8 +1,96 @@
 package acteon
 
 import (
+	"encoding/json"
 	"testing"
 )
+
+func TestSilenceRoundTrip(t *testing.T) {
+	// Mimic a real server response to verify the JSON tags line up.
+	body := []byte(`{
+		"id": "019d7f1e-7742-7eb2-9796-442773aa93da",
+		"namespace": "prod",
+		"tenant": "acme",
+		"matchers": [
+			{"name": "service", "value": "cdn-edge", "op": "equal"},
+			{"name": "severity", "value": "info", "op": "regex"}
+		],
+		"starts_at": "2026-04-12T00:36:36.290516Z",
+		"ends_at": "2026-04-12T03:36:36.290516Z",
+		"created_by": "operator@acme.example",
+		"comment": "CDN maintenance window",
+		"created_at": "2026-04-12T00:36:36.290516Z",
+		"updated_at": "2026-04-12T00:36:36.290516Z",
+		"active": true
+	}`)
+
+	var s Silence
+	if err := json.Unmarshal(body, &s); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if s.ID != "019d7f1e-7742-7eb2-9796-442773aa93da" {
+		t.Errorf("id: got %q", s.ID)
+	}
+	if s.Namespace != "prod" || s.Tenant != "acme" {
+		t.Errorf("scope: got %s/%s", s.Namespace, s.Tenant)
+	}
+	if len(s.Matchers) != 2 {
+		t.Fatalf("matchers: want 2, got %d", len(s.Matchers))
+	}
+	if s.Matchers[0].Op != "equal" || s.Matchers[1].Op != "regex" {
+		t.Errorf("matcher ops: got %+v", s.Matchers)
+	}
+	if !s.Active {
+		t.Errorf("expected active")
+	}
+
+	// Round-trip back to JSON and ensure the required fields survive.
+	out, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	if parsed["ends_at"] != "2026-04-12T03:36:36.290516Z" {
+		t.Errorf("ends_at round-trip: got %v", parsed["ends_at"])
+	}
+}
+
+func TestCreateSilenceRequestOmitsEmpty(t *testing.T) {
+	// duration-seconds-only case — ends_at and starts_at should be absent from the JSON.
+	dur := int64(3600)
+	req := &CreateSilenceRequest{
+		Namespace:       "prod",
+		Tenant:          "acme",
+		Matchers:        []SilenceMatcher{{Name: "severity", Value: "warning", Op: "equal"}},
+		Comment:         "deploy window",
+		DurationSeconds: &dur,
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s := string(out)
+	if !jsonContains(s, `"duration_seconds":3600`) {
+		t.Errorf("duration_seconds missing: %s", s)
+	}
+	if jsonContains(s, `"ends_at"`) || jsonContains(s, `"starts_at"`) {
+		t.Errorf("ends_at/starts_at should be omitted: %s", s)
+	}
+}
+
+func jsonContains(haystack, needle string) bool {
+	return len(haystack) > 0 && len(needle) > 0 && (func() bool {
+		for i := 0; i+len(needle) <= len(haystack); i++ {
+			if haystack[i:i+len(needle)] == needle {
+				return true
+			}
+		}
+		return false
+	})()
+}
 
 func TestWebhookPayloadToPayload(t *testing.T) {
 	payload := &WebhookPayload{

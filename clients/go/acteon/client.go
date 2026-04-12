@@ -1198,6 +1198,156 @@ func (c *Client) GetQuotaUsage(ctx context.Context, quotaID string) (*QuotaUsage
 }
 
 // =============================================================================
+// Silences
+// =============================================================================
+
+// CreateSilence creates a silence. Supply either EndsAt or
+// DurationSeconds on the request.
+func (c *Client) CreateSilence(ctx context.Context, req *CreateSilenceRequest) (*Silence, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/silences", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result Silence
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create silence"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListSilences lists silences, optionally filtered by namespace and
+// tenant. Pass includeExpired=true to include silences whose end
+// time is in the past.
+func (c *Client) ListSilences(ctx context.Context, namespace, tenant *string, includeExpired bool) (*ListSilencesResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+	if includeExpired {
+		params.Set("include_expired", "true")
+	}
+
+	path := "/v1/silences"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list silences"}
+	}
+
+	var result ListSilencesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetSilence fetches a single silence by ID. Returns (nil, nil) if
+// the silence does not exist (404).
+func (c *Client) GetSilence(ctx context.Context, silenceID string) (*Silence, error) {
+	path := fmt.Sprintf("/v1/silences/%s", silenceID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get silence"}
+	}
+
+	var result Silence
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateSilence extends a silence or edits its comment. Matchers
+// are immutable — to change them, expire the silence and create a
+// new one.
+func (c *Client) UpdateSilence(ctx context.Context, silenceID string, update *UpdateSilenceRequest) (*Silence, error) {
+	resp, err := c.doRequest(ctx, http.MethodPut, fmt.Sprintf("/v1/silences/%s", silenceID), update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result Silence
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Silence not found: %s", silenceID)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update silence"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteSilence expires a silence immediately (soft-expire). The
+// record remains queryable for audit-trail purposes.
+func (c *Client) DeleteSilence(ctx context.Context, silenceID string) error {
+	path := fmt.Sprintf("/v1/silences/%s", silenceID)
+
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Silence not found: %s", silenceID)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete silence"}
+}
+
+// =============================================================================
 // Retention Policies
 // =============================================================================
 
@@ -1827,7 +1977,7 @@ func (c *Client) EvaluateRules(ctx context.Context, req EvaluateRulesRequest) (*
 
 // GetComplianceStatus returns the current compliance configuration status.
 func (c *Client) GetComplianceStatus(ctx context.Context) (*ComplianceStatus, error) {
-	resp, err := c.doRequest(ctx, "GET", "/v1/compliance/status", nil, nil)
+	resp, err := c.doRequest(ctx, "GET", "/v1/compliance/status", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1850,12 +2000,7 @@ func (c *Client) GetComplianceStatus(ctx context.Context) (*ComplianceStatus, er
 
 // VerifyAuditChain verifies the integrity of the audit hash chain for a namespace/tenant pair.
 func (c *Client) VerifyAuditChain(ctx context.Context, req *VerifyHashChainRequest) (*HashChainVerification, error) {
-	reqBody, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("encoding request: %w", err)
-	}
-
-	resp, err := c.doRequest(ctx, "POST", "/v1/audit/verify", nil, reqBody)
+	resp, err := c.doRequest(ctx, "POST", "/v1/audit/verify", req)
 	if err != nil {
 		return nil, err
 	}

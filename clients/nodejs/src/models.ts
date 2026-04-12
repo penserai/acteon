@@ -1217,6 +1217,130 @@ export function parseQuotaUsage(data: Record<string, unknown>): QuotaUsage {
 }
 
 // =============================================================================
+// Silence Types
+// =============================================================================
+
+/** A single label matcher inside a silence. Matchers are AND-ed. */
+export interface SilenceMatcher {
+  name: string;
+  value: string;
+  /** One of: `"equal"`, `"not_equal"`, `"regex"`, `"not_regex"`. */
+  op: string;
+}
+
+/** Request to create a silence.
+ *
+ * Either ``endsAt`` or ``durationSeconds`` must be supplied. When
+ * ``startsAt`` is omitted, the server uses its current time.
+ */
+export interface CreateSilenceRequest {
+  namespace: string;
+  tenant: string;
+  matchers: SilenceMatcher[];
+  comment: string;
+  startsAt?: string;
+  endsAt?: string;
+  durationSeconds?: number;
+}
+
+/** Convert a CreateSilenceRequest to the API request format. */
+export function createSilenceRequestToApi(
+  req: CreateSilenceRequest
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    namespace: req.namespace,
+    tenant: req.tenant,
+    matchers: req.matchers.map((m) => ({
+      name: m.name,
+      value: m.value,
+      op: m.op,
+    })),
+    comment: req.comment,
+  };
+  if (req.startsAt !== undefined) result.starts_at = req.startsAt;
+  if (req.endsAt !== undefined) result.ends_at = req.endsAt;
+  if (req.durationSeconds !== undefined)
+    result.duration_seconds = req.durationSeconds;
+  return result;
+}
+
+/** Request to extend a silence or edit its comment.
+ *
+ * Matchers are immutable — to change them, expire the silence and
+ * create a new one.
+ */
+export interface UpdateSilenceRequest {
+  endsAt?: string;
+  comment?: string;
+}
+
+/** Convert an UpdateSilenceRequest to the API request format. */
+export function updateSilenceRequestToApi(
+  req: UpdateSilenceRequest
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (req.endsAt !== undefined) result.ends_at = req.endsAt;
+  if (req.comment !== undefined) result.comment = req.comment;
+  return result;
+}
+
+/** A time-bounded label-pattern mute. */
+export interface Silence {
+  id: string;
+  namespace: string;
+  tenant: string;
+  matchers: SilenceMatcher[];
+  startsAt: string;
+  endsAt: string;
+  createdBy: string;
+  comment: string;
+  createdAt: string;
+  updatedAt: string;
+  /** ``true`` when the current server time is within
+   * ``[startsAt, endsAt)``. */
+  active: boolean;
+}
+
+/** Parse a Silence from API response. */
+export function parseSilence(data: Record<string, unknown>): Silence {
+  const matchers = (data.matchers as Record<string, unknown>[]).map((m) => ({
+    name: m.name as string,
+    value: m.value as string,
+    op: (m.op as string) ?? "equal",
+  }));
+  return {
+    id: data.id as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    matchers,
+    startsAt: data.starts_at as string,
+    endsAt: data.ends_at as string,
+    createdBy: (data.created_by as string) ?? "",
+    comment: (data.comment as string) ?? "",
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    active: (data.active as boolean) ?? false,
+  };
+}
+
+/** Response from listing silences. */
+export interface ListSilencesResponse {
+  silences: Silence[];
+  count: number;
+}
+
+/** Parse a ListSilencesResponse from API response. */
+export function parseListSilencesResponse(
+  data: Record<string, unknown>
+): ListSilencesResponse {
+  const items = (data.silences as Record<string, unknown>[]) ?? [];
+  return {
+    silences: items.map(parseSilence),
+    count: data.count as number,
+  };
+}
+
+// =============================================================================
 // Retention Policy Types
 // =============================================================================
 
