@@ -5,9 +5,10 @@
 
 use acteon_ops::acteon_client::{
     AuditQuery, CreateProfileRequest, CreateQuotaRequest, CreateRecurringAction,
-    CreateRetentionRequest, CreateTemplateRequest, EventQuery, RecurringFilter,
-    RenderPreviewRequest, ReplayQuery, UpdateProfileRequest, UpdateQuotaRequest,
-    UpdateRecurringAction, UpdateRetentionRequest, UpdateTemplateRequest, VerifyHashChainRequest,
+    CreateRetentionRequest, CreateSilenceRequest, CreateTemplateRequest, EventQuery,
+    ListSilencesQuery, RecurringFilter, RenderPreviewRequest, ReplayQuery, UpdateProfileRequest,
+    UpdateQuotaRequest, UpdateRecurringAction, UpdateRetentionRequest, UpdateSilenceRequest,
+    UpdateTemplateRequest, VerifyHashChainRequest,
 };
 use acteon_ops::acteon_core::Action;
 use acteon_ops::test_rules;
@@ -199,6 +200,62 @@ fn build_update_retention(v: &serde_json::Value) -> UpdateRetentionRequest {
         description: val_opt_str(v, "description"),
         labels: val_opt_hashmap_str(v, "labels"),
     }
+}
+
+fn build_create_silence(v: &serde_json::Value) -> Result<CreateSilenceRequest, McpError> {
+    // Parse matchers array: [{"name": "severity", "value": "warning", "op": "equal"}, ...]
+    let matchers_val = v
+        .get("matchers")
+        .and_then(|m| m.as_array())
+        .ok_or_else(|| mcp_err("'matchers' array is required"))?;
+    let mut matchers = Vec::with_capacity(matchers_val.len());
+    for m in matchers_val {
+        let name = m
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| mcp_err("matcher 'name' is required"))?;
+        let value = m.get("value").and_then(|n| n.as_str()).unwrap_or("");
+        let op = match m.get("op").and_then(|o| o.as_str()).unwrap_or("equal") {
+            "equal" => acteon_core::MatchOp::Equal,
+            "not_equal" => acteon_core::MatchOp::NotEqual,
+            "regex" => acteon_core::MatchOp::Regex,
+            "not_regex" => acteon_core::MatchOp::NotRegex,
+            other => return Err(mcp_err(format!("unknown match op: {other}"))),
+        };
+        let matcher = acteon_core::SilenceMatcher::new(name, value, op).map_err(mcp_err)?;
+        matchers.push(matcher);
+    }
+
+    // Parse optional datetime fields.
+    let starts_at = val_opt_str(v, "starts_at")
+        .map(|s| s.parse::<chrono::DateTime<chrono::Utc>>())
+        .transpose()
+        .map_err(|e| mcp_err(format!("invalid starts_at: {e}")))?;
+    let ends_at = val_opt_str(v, "ends_at")
+        .map(|s| s.parse::<chrono::DateTime<chrono::Utc>>())
+        .transpose()
+        .map_err(|e| mcp_err(format!("invalid ends_at: {e}")))?;
+
+    Ok(CreateSilenceRequest {
+        namespace: val_str(v, "namespace")?,
+        tenant: val_str(v, "tenant")?,
+        matchers,
+        comment: val_str(v, "comment")?,
+        starts_at,
+        ends_at,
+        duration_seconds: val_opt_u64(v, "duration_seconds"),
+    })
+}
+
+fn build_update_silence(v: &serde_json::Value) -> Result<UpdateSilenceRequest, McpError> {
+    let ends_at = val_opt_str(v, "ends_at")
+        .map(|s| s.parse::<chrono::DateTime<chrono::Utc>>())
+        .transpose()
+        .map_err(|e| mcp_err(format!("invalid ends_at: {e}")))?;
+    Ok(UpdateSilenceRequest {
+        ends_at,
+        comment: val_opt_str(v, "comment"),
+    })
 }
 
 fn build_create_template(v: &serde_json::Value) -> Result<CreateTemplateRequest, McpError> {
@@ -684,6 +741,27 @@ pub struct ManageGroupsParams {
     /// Group key (required for get, flush).
     #[serde(default)]
     pub key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageSilencesParams {
+    /// Action to perform: "list", "get", "create", "update", "delete".
+    pub action: String,
+    /// Silence ID (required for get, update, delete).
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Namespace filter for list.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Tenant filter for list.
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Include expired silences in list (defaults to false).
+    #[serde(default)]
+    pub include_expired: Option<bool>,
+    /// JSON data for create or update operations.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1971,6 +2049,90 @@ impl ActeonMcpServer {
             }
             other => Ok(CallToolResult::error(vec![Content::text(format!(
                 "Unknown action: {other}. Valid: list, get, flush"
+            ))])),
+        }
+    }
+
+    /// Manage silences (CRUD).
+    #[tool(
+        description = "Manage silences — time-bounded label-pattern mutes that suppress dispatched actions. Actions: list, get, create, update, delete. Provide namespace/tenant/include_expired for list; id for get/update/delete; data JSON for create/update. Create data must include: namespace, tenant, matchers (array of {name, value, op}), comment, and either ends_at or duration_seconds. Update data may include ends_at and comment."
+    )]
+    async fn manage_silences(
+        &self,
+        Parameters(p): Parameters<ManageSilencesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match p.action.as_str() {
+            "list" => {
+                let query = ListSilencesQuery {
+                    namespace: p.namespace.clone(),
+                    tenant: p.tenant.clone(),
+                    include_expired: p.include_expired.unwrap_or(false),
+                };
+                match self.ops.list_silences(&query).await {
+                    Ok(resp) => {
+                        let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                        Ok(CallToolResult::success(vec![Content::text(json)]))
+                    }
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "get" => {
+                let id =
+                    p.id.as_deref()
+                        .ok_or_else(|| mcp_err("'id' is required for get"))?;
+                match self.ops.get_silence(id).await {
+                    Ok(Some(resp)) => {
+                        let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                        Ok(CallToolResult::success(vec![Content::text(json)]))
+                    }
+                    Ok(None) => Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Silence not found: {id}"
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "create" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for create"))?;
+                let req = build_create_silence(&data)?;
+                match self.ops.create_silence(&req).await {
+                    Ok(resp) => {
+                        let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                        Ok(CallToolResult::success(vec![Content::text(json)]))
+                    }
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "update" => {
+                let id =
+                    p.id.as_deref()
+                        .ok_or_else(|| mcp_err("'id' is required for update"))?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for update"))?;
+                let update = build_update_silence(&data)?;
+                match self.ops.update_silence(id, &update).await {
+                    Ok(resp) => {
+                        let json = serde_json::to_string_pretty(&resp).map_err(mcp_err)?;
+                        Ok(CallToolResult::success(vec![Content::text(json)]))
+                    }
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "delete" => {
+                let id =
+                    p.id.as_deref()
+                        .ok_or_else(|| mcp_err("'id' is required for delete"))?;
+                match self.ops.delete_silence(id).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Silence '{id}' expired."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: list, get, create, update, delete"
             ))])),
         }
     }
