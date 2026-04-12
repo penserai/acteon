@@ -253,7 +253,9 @@ export function Silences() {
           <SilenceDetail
             silence={selected}
             onExtend={(minutes) => {
-              const newEnd = new Date(Date.now() + minutes * 60 * 1000).toISOString()
+              const currentEnd = new Date(selected.ends_at).getTime();
+              const baseTime = selected.active && currentEnd > Date.now() ? currentEnd : Date.now();
+              const newEnd = new Date(baseTime + minutes * 60 * 1000).toISOString()
               updateMutation.mutate(
                 { id: selected.id, body: { ends_at: newEnd } },
                 {
@@ -378,7 +380,7 @@ function SilenceDetail({
                 min="1"
                 value={extendMinutes}
                 onChange={(e) => setExtendMinutes(e.target.value)}
-                placeholder="Minutes from now"
+                placeholder="Additional minutes"
               />
             </div>
             <Button
@@ -444,7 +446,7 @@ function SilenceCreateModal({
     onClose()
   }
 
-  const validMatchers = matchers.filter((m) => m.name.trim() && m.value.trim())
+  const validMatchers = matchers.filter((m) => m.name.trim() !== '')
   const isValid =
     namespace.trim() !== '' &&
     tenant.trim() !== '' &&

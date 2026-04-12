@@ -2524,6 +2524,158 @@ async fn silence_get_rejects_wrong_tenant() {
     assert_ne!(id, mine_id); // sanity: two distinct silences
 }
 
+/// Regression test for the multi-tenant list-silences IDOR.
+///
+/// A caller whose grants cover two tenants (say `tenant-a` and
+/// `tenant-b`) must only see silences belonging to those two tenants
+/// when calling `GET /v1/silences` without a `tenant` query param.
+/// Before the fix the backend would call `list_silences(None, None)`
+/// and return the entire silence cache, leaking silences from every
+/// tenant on the box.
+#[tokio::test]
+async fn silence_list_hides_silences_outside_caller_tenant_grants() {
+    // Register two API keys against the same state so we share one
+    // silence cache: an admin key (wildcard) that seeds silences across
+    // three tenants, and a limited key whose grants cover only two of
+    // them. Both keys map to the `admin` role so they each have the
+    // `SilencesManage` permission required by the mutating endpoints.
+    let mut state = build_test_state(vec![]);
+
+    let admin_key = ApiKeyConfig {
+        name: "admin-key".to_string(),
+        key_hash: SecretString::new(hash_api_key("admin-raw-key")),
+        role: "admin".to_string(),
+        grants: vec![Grant {
+            tenants: vec!["*".into()],
+            namespaces: vec!["*".into()],
+            providers: vec!["*".into()],
+            actions: vec!["*".into()],
+        }],
+    };
+    let limited_key = ApiKeyConfig {
+        name: "limited-key".to_string(),
+        key_hash: SecretString::new(hash_api_key("limited-raw-key")),
+        role: "admin".to_string(),
+        grants: vec![Grant {
+            tenants: vec!["tenant-a".into(), "tenant-b".into()],
+            namespaces: vec!["*".into()],
+            providers: vec!["*".into()],
+            actions: vec!["*".into()],
+        }],
+    };
+    let auth_config = AuthFileConfig {
+        settings: AuthSettings {
+            jwt_secret: SecretString::new("test-jwt-secret-32-bytes-long!!!!".to_string()),
+            jwt_expiry_seconds: 3600,
+        },
+        users: vec![],
+        api_keys: vec![admin_key, limited_key],
+    };
+    let state_store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let provider = AuthProvider::new(&auth_config, state_store).expect("auth provider");
+    state.auth = Some(Arc::new(provider));
+
+    let app = build_app(state);
+
+    // Helper: issue a request with an explicit bearer token so we can
+    // switch auth principals against the same app (and therefore the
+    // same gateway + silence cache).
+    async fn request_as(
+        app: axum::Router,
+        bearer: &str,
+        method: http::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .header(http::header::AUTHORIZATION, format!("Bearer {bearer}"));
+        let body = match body {
+            Some(v) => Body::from(serde_json::to_string(&v).unwrap()),
+            None => Body::empty(),
+        };
+        let response = app.oneshot(builder.body(body).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        };
+        (status, json)
+    }
+
+    // Seed one silence per tenant as admin.
+    for tenant in ["tenant-a", "tenant-b", "tenant-c"] {
+        let body = serde_json::json!({
+            "namespace": "notifications",
+            "tenant": tenant,
+            "matchers": [{ "name": "severity", "value": "warning", "op": "equal" }],
+            "duration_seconds": 3600,
+            "comment": format!("seed for {tenant}"),
+        });
+        let (status, _) = request_as(
+            app.clone(),
+            "admin-raw-key",
+            http::Method::POST,
+            "/v1/silences",
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // As the limited caller, list silences WITHOUT a tenant query
+    // parameter. The response must include tenant-a and tenant-b but
+    // NOT tenant-c. Before the fix this returned all three.
+    let (status, json) = request_as(
+        app.clone(),
+        "limited-raw-key",
+        http::Method::GET,
+        "/v1/silences",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let returned_tenants: std::collections::BTreeSet<String> = json["silences"]
+        .as_array()
+        .expect("silences array in response")
+        .iter()
+        .map(|s| {
+            s["tenant"]
+                .as_str()
+                .expect("tenant string on silence")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        returned_tenants,
+        ["tenant-a", "tenant-b"]
+            .into_iter()
+            .map(String::from)
+            .collect::<std::collections::BTreeSet<_>>(),
+        "limited caller saw silences from {returned_tenants:?}, expected only tenant-a and tenant-b"
+    );
+    assert_eq!(json["count"].as_u64().unwrap(), 2);
+
+    // Sanity: the admin caller still sees all three.
+    let (status, admin_json) = request_as(
+        app,
+        "admin-raw-key",
+        http::Method::GET,
+        "/v1/silences",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(admin_json["count"].as_u64().unwrap(), 3);
+}
+
 #[tokio::test]
 async fn silence_update_extends_end_time() {
     let state = build_test_state_with_auth(vec![default_test_grant()]);
