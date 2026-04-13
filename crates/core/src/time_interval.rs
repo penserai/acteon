@@ -75,30 +75,24 @@ impl DayOfMonthRange {
     }
 
     fn contains(self, dom: u32, days_in_month: u32) -> bool {
-        let resolve = |d: i32| -> Option<u32> {
-            if d > 0 {
-                u32::try_from(d).ok().filter(|&x| x <= days_in_month)
-            } else {
-                let from_end = u32::try_from(-d).ok()?;
-                if from_end > days_in_month {
-                    None
-                } else {
-                    Some(days_in_month - from_end + 1)
-                }
-            }
-        };
-        let Some(start) = resolve(self.start) else {
-            return false;
-        };
-        let Some(end) = resolve(self.end) else {
-            return false;
-        };
-        let (lo, hi) = if start <= end {
-            (start, end)
+        // `days_in_month` is 28..=31 and `dom` is 1..=31, so all of
+        // these `cast_signed()` calls are lossless.
+        let dim = days_in_month.cast_signed();
+        let (mut start, mut end) = if self.start > 0 {
+            (self.start, self.end)
         } else {
-            (end, start)
+            (dim + self.start + 1, dim + self.end + 1)
         };
-        dom >= lo && dom <= hi
+
+        if start > dim {
+            return false;
+        }
+
+        start = start.max(1);
+        end = end.min(dim);
+
+        let dom = dom.cast_signed();
+        dom >= start && dom <= end
     }
 }
 

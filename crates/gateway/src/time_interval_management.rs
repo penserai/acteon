@@ -120,32 +120,57 @@ impl Gateway {
 
         let cache = self.time_intervals.read();
 
-        // Mute intervals — first match wins.
+        // Mute intervals — first match wins. A missing name is
+        // fail-open (proceed) but warned so typos show up in logs.
         for name in &rule.mute_time_intervals {
-            if let Some(interval) = lookup_interval(&cache, action_namespace, action_tenant, name)
-                && interval.matches_at(now)
-            {
-                debug!(
-                    interval = %name,
-                    rule = %rule_name,
-                    "action muted by mute_time_interval"
-                );
-                return TimeIntervalDecision::MutedByMute(name.clone());
+            match lookup_interval(&cache, action_namespace, action_tenant, name) {
+                Some(interval) if interval.matches_at(now) => {
+                    debug!(
+                        interval = %name,
+                        rule = %rule_name,
+                        "action muted by mute_time_interval"
+                    );
+                    return TimeIntervalDecision::MutedByMute(name.clone());
+                }
+                Some(_) => {}
+                None => {
+                    warn!(
+                        interval = %name,
+                        rule = %rule_name,
+                        namespace = %action_namespace,
+                        tenant = %action_tenant,
+                        "rule references unknown mute_time_interval (typo?) — treating as non-matching"
+                    );
+                }
             }
         }
 
-        // Active intervals — if any are configured, at least one must match.
+        // Active intervals — if any are configured, at least one must
+        // match for the dispatch to proceed. Missing names here are
+        // fail-closed (contributing to the mute), which would silently
+        // break all matching dispatches on a typo; emit a warn so the
+        // operator can spot it in logs. See the feature page
+        // `docs/book/features/time-intervals.md` for the full model.
         if !rule.active_time_intervals.is_empty() {
             let mut any_matched = false;
             let mut last_seen: Option<String> = None;
             for name in &rule.active_time_intervals {
-                if let Some(interval) =
-                    lookup_interval(&cache, action_namespace, action_tenant, name)
-                {
-                    last_seen = Some(name.clone());
-                    if interval.matches_at(now) {
-                        any_matched = true;
-                        break;
+                match lookup_interval(&cache, action_namespace, action_tenant, name) {
+                    Some(interval) => {
+                        last_seen = Some(name.clone());
+                        if interval.matches_at(now) {
+                            any_matched = true;
+                            break;
+                        }
+                    }
+                    None => {
+                        warn!(
+                            interval = %name,
+                            rule = %rule_name,
+                            namespace = %action_namespace,
+                            tenant = %action_tenant,
+                            "rule references unknown active_time_interval (typo?) — treating as not-currently-active (fail-closed)"
+                        );
                     }
                 }
             }
@@ -382,5 +407,73 @@ mod tests {
         assert!(lookup_interval(&cache, "prod", "acme.us-east", "biz").is_some());
         // Action on a sibling tenant does not.
         assert!(lookup_interval(&cache, "prod", "other", "biz").is_none());
+    }
+
+    // =========================================================================
+    // Missing-name fail-open (mute) vs fail-closed (active) contract
+    // =========================================================================
+
+    use crate::GatewayBuilder;
+    use acteon_rules::Rule;
+    use acteon_rules::ir::expr::Expr;
+    use acteon_rules::ir::rule::RuleAction;
+    use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+    use std::sync::Arc;
+
+    fn rule_with_intervals(mute: Vec<&str>, active: Vec<&str>) -> Rule {
+        Rule::new("test-rule", Expr::Bool(true), RuleAction::Allow)
+            .with_mute_time_intervals(mute.into_iter().map(String::from).collect())
+            .with_active_time_intervals(active.into_iter().map(String::from).collect())
+    }
+
+    async fn build_gateway_with_rule(rule: Rule) -> crate::Gateway {
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .rules(vec![rule])
+            .build()
+            .expect("build gateway")
+    }
+
+    #[tokio::test]
+    async fn unknown_mute_interval_name_fails_open() {
+        // A rule references a nonexistent mute interval (typo). The
+        // contract is fail-open: the action proceeds, but a warn! log
+        // records the missing name so operators can spot the typo.
+        let gw = build_gateway_with_rule(rule_with_intervals(vec!["does-not-exist"], vec![])).await;
+        let decision = gw.check_time_intervals("prod", "acme", Some("test-rule"), Utc::now());
+        assert_eq!(decision, TimeIntervalDecision::Proceed);
+    }
+
+    #[tokio::test]
+    async fn unknown_active_interval_name_fails_closed() {
+        // A rule references a nonexistent active interval (typo). The
+        // contract is fail-closed: the dispatch is muted, because an
+        // "active window" requirement that can't be satisfied should
+        // never silently fire. A warn! log records the missing name.
+        let gw = build_gateway_with_rule(rule_with_intervals(vec![], vec!["does-not-exist"])).await;
+        let decision = gw.check_time_intervals("prod", "acme", Some("test-rule"), Utc::now());
+        assert!(
+            matches!(decision, TimeIntervalDecision::MutedByInactive(_)),
+            "expected MutedByInactive, got {decision:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rule_without_intervals_is_unaffected() {
+        let gw = build_gateway_with_rule(rule_with_intervals(vec![], vec![])).await;
+        let decision = gw.check_time_intervals("prod", "acme", Some("test-rule"), Utc::now());
+        assert_eq!(decision, TimeIntervalDecision::Proceed);
+    }
+
+    #[tokio::test]
+    async fn unknown_rule_name_proceeds() {
+        // A verdict referencing a rule name that's no longer in the
+        // engine (hot-reload race) must not silently mute.
+        let gw = build_gateway_with_rule(rule_with_intervals(vec!["x"], vec!["y"])).await;
+        let decision = gw.check_time_intervals("prod", "acme", Some("vanished-rule"), Utc::now());
+        assert_eq!(decision, TimeIntervalDecision::Proceed);
     }
 }

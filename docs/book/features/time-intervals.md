@@ -102,6 +102,30 @@ it under `mute_time_intervals`, the dispatch short-circuits to
 `ActionOutcome::Muted`. The audit record captures the rule that would
 otherwise have applied so operators can trace what happened.
 
+## Missing interval names
+
+If a rule references an interval name that does not exist in the
+gateway's cache (for example, a typo), the gate behaves asymmetrically:
+
+- **`mute_time_intervals`** — **fail-open**. A missing name is treated
+  as "not currently muting" and the dispatch proceeds. The gateway
+  logs `warn!("rule references unknown mute_time_interval")` so the
+  typo surfaces in logs.
+- **`active_time_intervals`** — **fail-closed**. A missing name cannot
+  contribute to "any active interval matches right now," so a rule
+  whose only reference is a typo will be silently muted. The gateway
+  also emits a `warn!("rule references unknown active_time_interval")`
+  for each missing name, so operators can grep for the typo when
+  dispatches suddenly stop firing.
+
+Why the asymmetry? A missing mute interval is a safe-to-ignore
+configuration drift — a dispatch that should have been muted will
+simply proceed. A missing active interval is the opposite: treating
+it as "always active" would quietly disable the operator's intent to
+restrict the rule to specific windows. Fail-closed preserves the
+safety guarantee at the cost of one-typo-mutes-everything, and the
+warn log is the escape hatch.
+
 ## Hierarchical tenant matching
 
 Like silences, time intervals support hierarchical tenant inheritance.
