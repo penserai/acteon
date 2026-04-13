@@ -7,8 +7,13 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+signing = ["dep:acteon-crypto"]
+
 [dependencies]
 acteon-core.workspace = true
+acteon-crypto = { workspace = true, features = ["signing"], optional = true }
 
 chrono.workspace = true
 futures.workspace = true

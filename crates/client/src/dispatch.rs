@@ -78,6 +78,40 @@ impl ActeonClient {
         self.dispatch_inner(action, false).await
     }
 
+    /// Sign an action with an Ed25519 key, then dispatch it.
+    ///
+    /// Computes the action's canonical bytes, signs them, sets the
+    /// `signature` and `signer_id` fields on a cloned action, and
+    /// dispatches the signed copy. Requires the `signing` feature.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::ActeonClient;
+    /// use acteon_core::Action;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let action = Action::new("ns", "tenant", "email", "send", serde_json::json!({}));
+    /// let key = acteon_crypto::signing::parse_signing_key("hex-or-b64-key", "my-signer")
+    ///     .expect("valid key");
+    /// let outcome = client.dispatch_signed(&action, &key).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "signing")]
+    pub async fn dispatch_signed(
+        &self,
+        action: &Action,
+        key: &acteon_crypto::signing::ActionSigningKey,
+    ) -> Result<ActionOutcome, Error> {
+        let mut signed = action.clone();
+        let canonical = signed.canonical_bytes();
+        signed.signature = Some(key.sign(&canonical));
+        signed.signer_id = Some(key.signer_id().to_owned());
+        self.dispatch_inner(&signed, false).await
+    }
+
     /// Dispatch a single action in dry-run mode.
     ///
     /// Evaluates rules and returns the verdict without executing the action,

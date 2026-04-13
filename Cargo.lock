@@ -154,6 +154,7 @@ name = "acteon-client"
 version = "0.1.0"
 dependencies = [
  "acteon-core",
+ "acteon-crypto",
  "chrono",
  "futures",
  "reqwest 0.12.28",
@@ -292,6 +293,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

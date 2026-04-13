@@ -62,6 +62,8 @@ class Action:
     created_at: datetime = field(default_factory=datetime.utcnow)
     template: Optional[str] = None
     attachments: Optional[list[Attachment]] = None
+    signature: Optional[str] = None
+    signer_id: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -82,6 +84,10 @@ class Action:
             result["template"] = self.template
         if self.attachments:
             result["attachments"] = [a.to_dict() for a in self.attachments]
+        if self.signature:
+            result["signature"] = self.signature
+        if self.signer_id:
+            result["signer_id"] = self.signer_id
         return result
 
 
