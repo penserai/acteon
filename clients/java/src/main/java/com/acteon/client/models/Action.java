@@ -27,6 +27,11 @@ public class Action {
     private String createdAt;
     private String template;
     private List<Attachment> attachments;
+    /** Ed25519 signature over the action's canonical bytes, base64-encoded. */
+    private String signature;
+    /** Identifier of the key that produced the signature. */
+    @JsonProperty("signer_id")
+    private String signerId;
 
     public Action() {
         this.id = UUID.randomUUID().toString();
@@ -80,6 +85,12 @@ public class Action {
 
     public List<Attachment> getAttachments() { return attachments; }
     public void setAttachments(List<Attachment> attachments) { this.attachments = attachments; }
+
+    public String getSignature() { return signature; }
+    public void setSignature(String signature) { this.signature = signature; }
+
+    public String getSignerId() { return signerId; }
+    public void setSignerId(String signerId) { this.signerId = signerId; }
 
     public Action withDedupKey(String dedupKey) {
         this.dedupKey = dedupKey;

@@ -46,6 +46,10 @@ export interface Action {
   template?: string;
   /** Optional attachments. */
   attachments?: Attachment[];
+  /** Ed25519 signature over the action's canonical bytes, base64-encoded. */
+  signature?: string;
+  /** Identifier of the key that produced the signature. */
+  signerId?: string;
 }
 
 /**

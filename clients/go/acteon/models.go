@@ -40,7 +40,9 @@ type Action struct {
 	Metadata    *ActionMetadata `json:"metadata,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	Template    string          `json:"template,omitempty"`
-	Attachments []Attachment    `json:"attachments,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	Signature   string       `json:"signature,omitempty"`
+	SignerID    string       `json:"signer_id,omitempty"`
 }
 
 // ActionMetadata contains optional metadata for an action.
