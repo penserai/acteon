@@ -35,7 +35,7 @@ pub enum TimeIntervalDecision {
 }
 
 impl TimeIntervalDecision {
-    /// Convenience: short reason string for the [`ActionOutcome::Muted`] payload.
+    /// Convenience: short reason string for the `ActionOutcome::Muted` payload.
     #[must_use]
     pub fn reason(&self) -> &'static str {
         match self {

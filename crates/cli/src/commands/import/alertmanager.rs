@@ -421,7 +421,7 @@ fn convert_receivers(receivers: &[Receiver], global: &GlobalConfig) -> Vec<Provi
                         ("smtp_host".into(), parts[0].to_owned()),
                         (
                             "smtp_port".into(),
-                            parts.get(1).unwrap_or(&"25").to_string(),
+                            (*parts.get(1).unwrap_or(&"25")).to_owned(),
                         ),
                         (
                             "from_address".into(),
@@ -899,8 +899,8 @@ fn render_rules_yaml(rules: &[RuleEntry]) -> String {
         let _ = writeln!(out, "    priority: {}", r.priority);
 
         // Condition
-        if r.conditions.len() == 1 {
-            match &r.conditions[0] {
+        match r.conditions.len().cmp(&1) {
+            std::cmp::Ordering::Equal => match &r.conditions[0] {
                 ConditionEntry::Eq(field, val) => {
                     out.push_str("    condition:\n");
                     let _ = writeln!(out, "      field: {field}");
@@ -911,22 +911,24 @@ fn render_rules_yaml(rules: &[RuleEntry]) -> String {
                     let _ = writeln!(out, "      field: {field}");
                     let _ = writeln!(out, "      matches: \"{val}\"");
                 }
-            }
-        } else if r.conditions.len() > 1 {
-            out.push_str("    condition:\n");
-            out.push_str("      all:\n");
-            for c in &r.conditions {
-                match c {
-                    ConditionEntry::Eq(field, val) => {
-                        let _ = writeln!(out, "        - field: {field}");
-                        let _ = writeln!(out, "          eq: \"{val}\"");
-                    }
-                    ConditionEntry::Matches(field, val) => {
-                        let _ = writeln!(out, "        - field: {field}");
-                        let _ = writeln!(out, "          matches: \"{val}\"");
+            },
+            std::cmp::Ordering::Greater => {
+                out.push_str("    condition:\n");
+                out.push_str("      all:\n");
+                for c in &r.conditions {
+                    match c {
+                        ConditionEntry::Eq(field, val) => {
+                            let _ = writeln!(out, "        - field: {field}");
+                            let _ = writeln!(out, "          eq: \"{val}\"");
+                        }
+                        ConditionEntry::Matches(field, val) => {
+                            let _ = writeln!(out, "        - field: {field}");
+                            let _ = writeln!(out, "          matches: \"{val}\"");
+                        }
                     }
                 }
             }
+            std::cmp::Ordering::Less => {}
         }
 
         // Action
