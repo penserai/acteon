@@ -165,7 +165,7 @@ pub struct Rule {
     pub timezone: Option<String>,
     /// Names of [`TimeInterval`](acteon_core::TimeInterval)s during which
     /// this rule's verdict is *muted* — if any listed interval is currently
-    /// matched, the dispatch short-circuits to [`ActionOutcome::Muted`]
+    /// matched, the dispatch short-circuits to `ActionOutcome::Muted`
     /// instead of executing the verdict. Mirrors Alertmanager's
     /// `mute_time_intervals` on routes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

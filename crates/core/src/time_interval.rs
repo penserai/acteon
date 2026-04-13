@@ -17,7 +17,7 @@
 //!
 //! Time intervals are evaluated in the dispatch pipeline immediately after
 //! silences (and before provider execution). When a referenced interval
-//! matches, the action is short-circuited to [`ActionOutcome::Muted`] with
+//! matches, the action is short-circuited to `ActionOutcome::Muted` with
 //! the interval name attached for forensic context.
 //!
 //! See `docs/book/features/time-intervals.md` for end-to-end usage.
@@ -77,22 +77,22 @@ impl DayOfMonthRange {
     fn contains(self, dom: u32, days_in_month: u32) -> bool {
         // `days_in_month` is 28..=31 and `dom` is 1..=31, so all of
         // these `cast_signed()` calls are lossless.
-        let dim = days_in_month.cast_signed();
+        let month_length = days_in_month.cast_signed();
         let (mut start, mut end) = if self.start > 0 {
             (self.start, self.end)
         } else {
-            (dim + self.start + 1, dim + self.end + 1)
+            (month_length + self.start + 1, month_length + self.end + 1)
         };
 
-        if start > dim {
+        if start > month_length {
             return false;
         }
 
         start = start.max(1);
-        end = end.min(dim);
+        end = end.min(month_length);
 
-        let dom = dom.cast_signed();
-        dom >= start && dom <= end
+        let day = dom.cast_signed();
+        day >= start && day <= end
     }
 }
 
