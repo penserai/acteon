@@ -69,6 +69,13 @@ pub struct BackgroundConfig {
     pub enable_silence_sync: bool,
     /// How often to sync silences from the state store (default: 10 seconds).
     pub silence_sync_interval: Duration,
+    /// Whether periodic time-interval sync from the state store is enabled
+    /// (default: true). Required for HA deployments so a time interval
+    /// created on one gateway becomes visible on its peers within the
+    /// sync interval.
+    pub enable_time_interval_sync: bool,
+    /// How often to sync time intervals from the state store (default: 30 seconds).
+    pub time_interval_sync_interval: Duration,
     /// Whether periodic event-group sync from state store is enabled
     /// (default: true). Required for HA deployments with persistent
     /// groups: without sync, a group flushed by instance A still
@@ -106,6 +113,8 @@ impl Default for BackgroundConfig {
             template_sync_interval: Duration::from_secs(30),
             enable_silence_sync: true,
             silence_sync_interval: Duration::from_secs(10),
+            enable_time_interval_sync: true,
+            time_interval_sync_interval: Duration::from_secs(30),
             enable_group_sync: true,
             group_sync_interval: Duration::from_secs(30),
             namespace: String::new(),
@@ -347,6 +356,7 @@ impl BackgroundProcessor {
     }
 
     /// Run the background processor until shutdown is signaled.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(&mut self) {
         info!("background processor starting");
 
@@ -359,6 +369,7 @@ impl BackgroundProcessor {
         let mut retention_interval = interval(self.config.retention_check_interval);
         let mut template_sync_interval = interval(self.config.template_sync_interval);
         let mut silence_sync_interval = interval(self.config.silence_sync_interval);
+        let mut time_interval_sync_interval = interval(self.config.time_interval_sync_interval);
         let mut group_sync_interval = interval(self.config.group_sync_interval);
 
         loop {
@@ -426,6 +437,22 @@ impl BackgroundProcessor {
                             }
                             Err(e) => {
                                 error!(error = %e, "error syncing silences from store");
+                            }
+                        }
+                    }
+                }
+                // Time interval sync: rebuild the in-memory time interval
+                // registry from the state store so that intervals
+                // created on peer instances become visible here.
+                _ = time_interval_sync_interval.tick(), if self.config.enable_time_interval_sync => {
+                    if let Some(ref gw) = self.gateway {
+                        let gw = gw.read().await;
+                        match gw.load_time_intervals_from_state_store().await {
+                            Ok(count) => {
+                                debug!(count, "time interval sync completed");
+                            }
+                            Err(e) => {
+                                error!(error = %e, "error syncing time intervals from store");
                             }
                         }
                     }
@@ -688,6 +715,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_time_interval_sync: false,
+                time_interval_sync_interval: Duration::from_secs(30),
                 enable_group_sync: false,
                 group_sync_interval: Duration::from_secs(30),
                 namespace: "test".to_string(),
@@ -812,6 +841,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_time_interval_sync: false,
+                time_interval_sync_interval: Duration::from_secs(30),
                 enable_group_sync: false,
                 group_sync_interval: Duration::from_secs(30),
                 namespace: namespace.to_string(),
@@ -927,6 +958,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_time_interval_sync: false,
+                time_interval_sync_interval: Duration::from_secs(30),
                 enable_group_sync: false,
                 group_sync_interval: Duration::from_secs(30),
                 namespace: namespace.to_string(),
@@ -1033,6 +1066,8 @@ mod tests {
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
                 silence_sync_interval: Duration::from_secs(10),
+                enable_time_interval_sync: false,
+                time_interval_sync_interval: Duration::from_secs(30),
                 enable_group_sync: false,
                 group_sync_interval: Duration::from_secs(30),
                 namespace: "test".to_string(),

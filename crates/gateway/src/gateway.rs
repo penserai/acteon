@@ -207,6 +207,11 @@ pub struct Gateway {
     /// helper.
     pub(crate) silences:
         parking_lot::RwLock<HashMap<String, Vec<crate::silence_enforcement::CachedSilence>>>,
+    /// Named time intervals indexed by `namespace` → list. The cache is
+    /// keyed by namespace alone so that hierarchical tenant matching
+    /// works the same way silences do (a parent-tenant interval covers
+    /// child tenants).
+    pub(crate) time_intervals: parking_lot::RwLock<HashMap<String, Vec<acteon_core::TimeInterval>>>,
     /// Per-provider execution metrics (latency, success/failure counters).
     pub(crate) provider_metrics: Arc<crate::metrics::ProviderMetrics>,
     /// Optional WASM plugin runtime for rule condition evaluation.
@@ -693,6 +698,64 @@ impl Gateway {
             }
 
             info!(?outcome, "dispatch complete (silenced)");
+            return Ok(outcome);
+        }
+
+        // 3e. Time interval gating — if the matched rule references
+        //     `mute_time_intervals` or `active_time_intervals`, evaluate
+        //     them against the current wall-clock time and short-circuit
+        //     to `Muted` when the schedule says the rule should not fire
+        //     right now.
+        let ti_decision = self.check_time_intervals(
+            action.namespace.as_str(),
+            action.tenant.as_str(),
+            crate::audit_helpers::rule_name_for_lookup(&verdict).as_deref(),
+            Utc::now(),
+        );
+        if let Some(interval_name) = ti_decision.interval_name() {
+            let outcome = ActionOutcome::Muted {
+                interval: interval_name.to_owned(),
+                reason: ti_decision.reason().to_owned(),
+                matched_rule: matched_rule_name(&verdict),
+            };
+
+            if let Some(ref audit) = self.audit {
+                let record = build_audit_record(
+                    event_id.clone(),
+                    &action,
+                    &verdict,
+                    &outcome,
+                    dispatched_at,
+                    start.elapsed(),
+                    self.effective_audit_ttl(&action.namespace, &action.tenant),
+                    self.audit_store_payload,
+                    caller,
+                );
+                self.emit_audit_record(audit, record).await;
+            }
+
+            let stream_event = StreamEvent {
+                id: event_id,
+                timestamp: dispatched_at,
+                event_type: StreamEventType::ActionDispatched {
+                    outcome: sanitize_outcome(&outcome),
+                    provider: action.provider.to_string(),
+                },
+                namespace: action.namespace.to_string(),
+                tenant: action.tenant.to_string(),
+                action_type: Some(action.action_type.clone()),
+                action_id: Some(action.id.to_string()),
+            };
+            let _ = self.stream_tx.send(stream_event);
+
+            if let Some(guard) = guard {
+                guard
+                    .release()
+                    .await
+                    .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
+            }
+
+            info!(?outcome, "dispatch complete (muted by time interval)");
             return Ok(outcome);
         }
 

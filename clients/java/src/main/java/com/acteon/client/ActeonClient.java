@@ -1535,6 +1535,148 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Time Intervals
+    // =========================================================================
+
+    /**
+     * Creates a tenant-scoped time interval that rules can reference
+     * via {@code mute_time_intervals} or {@code active_time_intervals}.
+     */
+    public TimeInterval createTimeInterval(CreateTimeIntervalRequest req) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder("/v1/time-intervals")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 201) {
+                return parseResponse(response, TimeInterval.class);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Lists time intervals filtered by namespace and/or tenant.
+     */
+    public ListTimeIntervalsResponse listTimeIntervals(String namespace, String tenant) throws ActeonException {
+        try {
+            List<String> params = new ArrayList<>();
+            if (namespace != null) {
+                params.add("namespace=" + URLEncoder.encode(namespace, StandardCharsets.UTF_8));
+            }
+            if (tenant != null) {
+                params.add("tenant=" + URLEncoder.encode(tenant, StandardCharsets.UTF_8));
+            }
+            String path = "/v1/time-intervals";
+            if (!params.isEmpty()) {
+                path += "?" + String.join("&", params);
+            }
+            HttpRequest request = requestBuilder(path).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListTimeIntervalsResponse.class);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to list time intervals");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Fetches a single time interval. Returns an empty Optional on 404.
+     */
+    public Optional<TimeInterval> getTimeInterval(String namespace, String tenant, String name) throws ActeonException {
+        try {
+            String path = "/v1/time-intervals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(name, StandardCharsets.UTF_8);
+            HttpRequest request = requestBuilder(path).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, TimeInterval.class));
+            } else if (response.statusCode() == 404) {
+                return Optional.empty();
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to get time interval");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Updates a time interval's ranges, location, or description.
+     */
+    public TimeInterval updateTimeInterval(String namespace, String tenant, String name, UpdateTimeIntervalRequest update) throws ActeonException {
+        try {
+            String path = "/v1/time-intervals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(name, StandardCharsets.UTF_8);
+            String body = objectMapper.writeValueAsString(update);
+            HttpRequest request = requestBuilder(path)
+                .PUT(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return parseResponse(response, TimeInterval.class);
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Time interval not found: " + name);
+            } else {
+                ErrorResponse error = parseResponse(response, ErrorResponse.class);
+                throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Deletes a time interval.
+     */
+    public void deleteTimeInterval(String namespace, String tenant, String name) throws ActeonException {
+        try {
+            String path = "/v1/time-intervals/"
+                + URLEncoder.encode(namespace, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(tenant, StandardCharsets.UTF_8) + "/"
+                + URLEncoder.encode(name, StandardCharsets.UTF_8);
+            HttpRequest request = requestBuilder(path).DELETE().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 204) {
+                return;
+            } else if (response.statusCode() == 404) {
+                throw new HttpException(response.statusCode(), "Time interval not found: " + name);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to delete time interval");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Retention Policies
     // =========================================================================
 

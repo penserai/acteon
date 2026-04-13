@@ -94,6 +94,14 @@ import {
   parseSilence,
   ListSilencesResponse,
   parseListSilencesResponse,
+  CreateTimeIntervalRequest,
+  createTimeIntervalRequestToApi,
+  UpdateTimeIntervalRequest,
+  updateTimeIntervalRequestToApi,
+  TimeInterval,
+  parseTimeInterval,
+  ListTimeIntervalsResponse,
+  parseListTimeIntervalsResponse,
   CreateRetentionRequest,
   createRetentionRequestToApi,
   UpdateRetentionRequest,
@@ -1092,6 +1100,114 @@ export class ActeonClient {
       throw new HttpError(404, `Silence not found: ${silenceId}`);
     } else {
       throw new HttpError(response.status, "Failed to delete silence");
+    }
+  }
+
+  // =========================================================================
+  // Time Intervals
+  // =========================================================================
+
+  async createTimeInterval(
+    req: CreateTimeIntervalRequest,
+  ): Promise<TimeInterval> {
+    const response = await this.request("POST", "/v1/time-intervals", {
+      body: createTimeIntervalRequestToApi(req),
+    });
+    if (response.status === 201) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTimeInterval(data);
+    }
+    const data = (await response.json()) as Record<string, unknown>;
+    throw new ApiError(
+      (data.code as string) ?? "UNKNOWN",
+      ((data.message ?? data.error) as string) ?? "Unknown error",
+      (data.retryable as boolean) ?? false,
+    );
+  }
+
+  async listTimeIntervals(
+    namespace?: string,
+    tenant?: string,
+  ): Promise<ListTimeIntervalsResponse> {
+    const params = new URLSearchParams();
+    if (namespace !== undefined) params.set("namespace", namespace);
+    if (tenant !== undefined) params.set("tenant", tenant);
+    const response = await this.request("GET", "/v1/time-intervals", {
+      params: params.toString() ? params : undefined,
+    });
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListTimeIntervalsResponse(data);
+    }
+    throw new HttpError(response.status, "Failed to list time intervals");
+  }
+
+  async getTimeInterval(
+    namespace: string,
+    tenant: string,
+    name: string,
+  ): Promise<TimeInterval | null> {
+    const response = await this.request(
+      "GET",
+      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
+        tenant,
+      )}/${encodeURIComponent(name)}`,
+    );
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTimeInterval(data);
+    } else if (response.status === 404) {
+      return null;
+    } else {
+      throw new HttpError(response.status, "Failed to get time interval");
+    }
+  }
+
+  async updateTimeInterval(
+    namespace: string,
+    tenant: string,
+    name: string,
+    update: UpdateTimeIntervalRequest,
+  ): Promise<TimeInterval> {
+    const response = await this.request(
+      "PUT",
+      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
+        tenant,
+      )}/${encodeURIComponent(name)}`,
+      { body: updateTimeIntervalRequestToApi(update) },
+    );
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseTimeInterval(data);
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Time interval not found: ${name}`);
+    } else {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "UNKNOWN",
+        ((data.message ?? data.error) as string) ?? "Unknown error",
+        (data.retryable as boolean) ?? false,
+      );
+    }
+  }
+
+  async deleteTimeInterval(
+    namespace: string,
+    tenant: string,
+    name: string,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/time-intervals/${encodeURIComponent(namespace)}/${encodeURIComponent(
+        tenant,
+      )}/${encodeURIComponent(name)}`,
+    );
+    if (response.status === 204) {
+      return;
+    } else if (response.status === 404) {
+      throw new HttpError(404, `Time interval not found: ${name}`);
+    } else {
+      throw new HttpError(response.status, "Failed to delete time interval");
     }
   }
 

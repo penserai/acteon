@@ -134,6 +134,7 @@ nav:
     - Rule Playground: features/rule-playground.md
     - Rule Coverage: features/rule-coverage.md
     - Silences: features/silences.md
+    - Time Intervals: features/time-intervals.md
     - API Key Scoping: features/api-key-scoping.md
     - Provider Health: features/provider-health.md
     - Grafana Dashboards: features/grafana-dashboards.md

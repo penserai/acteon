@@ -85,6 +85,7 @@ mod rules;
 mod silences;
 mod streaming;
 mod templates;
+mod time_intervals;
 
 pub use error::Error;
 pub use stream::{EventStream, StreamFilter, StreamItem};
@@ -110,6 +111,7 @@ pub use retention::*;
 pub use rules::*;
 pub use silences::*;
 pub use templates::*;
+pub use time_intervals::*;
 
 use std::time::Duration;
 

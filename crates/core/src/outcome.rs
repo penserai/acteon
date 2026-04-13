@@ -129,6 +129,25 @@ pub enum ActionOutcome {
         #[serde(default)]
         matched_rule: Option<String>,
     },
+    /// Action was muted because the current wall-clock time fell inside (or,
+    /// for `active_time_intervals`, outside) a referenced time interval.
+    ///
+    /// Time intervals are evaluated after silences and before provider
+    /// dispatch. `matched_rule` carries whichever rule verdict would have
+    /// applied so operators can audit the would-be path.
+    Muted {
+        /// Name of the time interval that gated this action.
+        interval: String,
+        /// Why the interval gated the action: `"mute_time_interval"` (the
+        /// interval matched and its referencing rule has `mute_time_intervals`)
+        /// or `"active_time_interval"` (the interval did NOT match and the
+        /// rule has `active_time_intervals`).
+        reason: String,
+        /// Name of the rule that matched before time-interval evaluation,
+        /// if any.
+        #[serde(default)]
+        matched_rule: Option<String>,
+    },
 }
 
 /// Response from a provider after executing an action.

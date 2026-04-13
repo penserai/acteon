@@ -147,6 +147,11 @@ use acteon_core::{
         super::silences::get_silence,
         super::silences::update_silence,
         super::silences::delete_silence,
+        super::time_intervals::create_time_interval,
+        super::time_intervals::list_time_intervals,
+        super::time_intervals::get_time_interval,
+        super::time_intervals::update_time_interval,
+        super::time_intervals::delete_time_interval,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -192,6 +197,15 @@ use acteon_core::{
         super::silences::CreateSilenceRequest, super::silences::UpdateSilenceRequest,
         super::silences::MatcherInput, super::silences::SilenceResponse,
         super::silences::ListSilencesResponse,
+        acteon_core::time_interval::TimeInterval, acteon_core::time_interval::TimeRange,
+        acteon_core::time_interval::TimeOfDayRange, acteon_core::time_interval::WeekdayRange,
+        acteon_core::time_interval::DayOfMonthRange, acteon_core::time_interval::MonthRange,
+        acteon_core::time_interval::YearRange,
+        super::time_intervals::CreateTimeIntervalRequest,
+        super::time_intervals::UpdateTimeIntervalRequest,
+        super::time_intervals::TimeIntervalResponse,
+        super::time_intervals::ListTimeIntervalsResponse,
+        super::time_intervals::TimeRangeInput, super::time_intervals::TimeOfDayInput,
     ))
 )]
 pub struct ApiDoc;

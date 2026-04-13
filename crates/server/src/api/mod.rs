@@ -26,6 +26,7 @@ pub mod silences;
 pub mod stream;
 pub mod subscribe;
 pub mod templates;
+pub mod time_intervals;
 pub mod trace_context;
 pub mod verify;
 
@@ -210,6 +211,17 @@ pub fn router(state: AppState) -> Router {
             get(silences::get_silence)
                 .put(silences::update_silence)
                 .delete(silences::delete_silence),
+        )
+        // Time intervals
+        .route(
+            "/v1/time-intervals",
+            get(time_intervals::list_time_intervals).post(time_intervals::create_time_interval),
+        )
+        .route(
+            "/v1/time-intervals/{namespace}/{tenant}/{name}",
+            get(time_intervals::get_time_interval)
+                .put(time_intervals::update_time_interval)
+                .delete(time_intervals::delete_time_interval),
         )
         // Retention policies
         .route(

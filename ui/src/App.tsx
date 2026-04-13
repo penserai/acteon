@@ -11,6 +11,7 @@ import { Actions } from './pages/Actions'
 import { Events } from './pages/Events'
 import { Groups } from './pages/Groups'
 import { Silences } from './pages/Silences'
+import { TimeIntervals } from './pages/TimeIntervals'
 import { Alerting } from './pages/Alerting'
 import { Chains } from './pages/Chains'
 import { ChainDetail } from './pages/ChainDetail'
@@ -52,6 +53,7 @@ function App() {
           <Route path="events" element={<Events />} />
           <Route path="groups" element={<Groups />} />
           <Route path="silences" element={<Silences />} />
+          <Route path="time-intervals" element={<TimeIntervals />} />
           <Route path="chains" element={<Chains />} />
           <Route path="chains/:chainId" element={<ChainDetail />} />
           <Route path="chain-definitions" element={<ChainDefinitions />} />

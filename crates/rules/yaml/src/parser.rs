@@ -67,6 +67,14 @@ pub struct YamlRule {
     /// Optional IANA timezone for time-based conditions (e.g. `"US/Eastern"`).
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Names of time intervals during which this rule's verdict is muted.
+    /// Mirrors Alertmanager's route-level `mute_time_intervals`.
+    #[serde(default)]
+    pub mute_time_intervals: Vec<String>,
+    /// Names of time intervals during which this rule is active. If
+    /// non-empty and none match, the rule is muted at dispatch time.
+    #[serde(default)]
+    pub active_time_intervals: Vec<String>,
 }
 
 /// A condition expression that can combine multiple predicates.
