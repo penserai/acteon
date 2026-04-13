@@ -5,6 +5,7 @@ use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::types::AttributeValue;
 use chrono::{DateTime, Utc};
 
+use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
@@ -243,7 +244,6 @@ impl AuditStore for DynamoDbAuditStore {
 
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let offset = query.effective_offset();
 
         // Require at least namespace + tenant for GSI queries.
         let (namespace, tenant) = match (&query.namespace, &query.tenant) {
@@ -253,15 +253,22 @@ impl AuditStore for DynamoDbAuditStore {
                 // Return empty for now (a full table scan would be expensive).
                 return Ok(AuditPage {
                     records: Vec::new(),
-                    total: 0,
+                    total: Some(0),
                     limit,
-                    offset,
+                    offset: query.effective_offset(),
+                    next_cursor: None,
                 });
             }
         };
 
         let ns_tenant = Self::ns_tenant(&namespace, &tenant);
         let (filter_parts, filter_values, filter_names) = Self::build_filters(query);
+
+        let cursor = query
+            .cursor
+            .as_deref()
+            .map(AuditCursor::decode)
+            .transpose()?;
 
         // Choose GSI based on sort order.
         let (index_name, key_condition, mut expr_values) = if query.sort_by_sequence_asc {
@@ -316,118 +323,131 @@ impl AuditStore for DynamoDbAuditStore {
             Some(filter_parts.join(" AND "))
         };
 
-        // For total count, run a SELECT COUNT query first.
-        let total = {
-            let mut count_query = self
-                .client
-                .query()
-                .table_name(&self.table_name)
-                .index_name(index_name)
-                .key_condition_expression(&key_condition)
-                .select(aws_sdk_dynamodb::types::Select::Count);
-
-            for (k, v) in &expr_values {
-                count_query = count_query.expression_attribute_values(k, v.clone());
-            }
-            for (k, v) in &filter_names {
-                count_query = count_query.expression_attribute_names(k, v);
-            }
-            if let Some(ref fe) = filter_expression {
-                count_query = count_query.filter_expression(fe);
-            }
-
-            let scan_forward = query.sort_by_sequence_asc;
-            count_query = count_query.scan_index_forward(scan_forward);
-
-            // Paginate through all to get accurate total count.
-            let mut total = 0u64;
-            let mut exclusive_start_key = None;
-            loop {
-                let mut q = count_query.clone();
-                if let Some(key) = exclusive_start_key {
-                    q = q.set_exclusive_start_key(Some(key));
-                }
-                let resp = q
-                    .send()
-                    .await
-                    .map_err(|e| AuditError::Storage(e.to_string()))?;
-                total += u64::try_from(resp.count()).unwrap_or(0);
-                exclusive_start_key = resp.last_evaluated_key().cloned();
-                if exclusive_start_key.is_none() {
-                    break;
-                }
-            }
-            total
-        };
-
-        // Fetch actual records with client-side offset skipping.
-        let mut all_records = Vec::new();
-        let items_needed = offset as usize + limit as usize;
-        let mut exclusive_start_key = None;
-
-        let scan_forward = query.sort_by_sequence_asc;
-
-        loop {
-            let mut q = self
-                .client
-                .query()
-                .table_name(&self.table_name)
-                .index_name(index_name)
-                .key_condition_expression(&key_condition)
-                .scan_index_forward(scan_forward);
-
-            for (k, v) in &expr_values {
-                q = q.expression_attribute_values(k, v.clone());
-            }
-            for (k, v) in &filter_names {
-                q = q.expression_attribute_names(k, v);
-            }
-            if let Some(ref fe) = filter_expression {
-                q = q.filter_expression(fe);
-            }
-            if let Some(key) = exclusive_start_key {
-                q = q.set_exclusive_start_key(Some(key));
-            }
-
-            let resp = q
-                .send()
-                .await
-                .map_err(|e| AuditError::Storage(e.to_string()))?;
-
-            for item in resp.items() {
-                if all_records.len() >= items_needed {
-                    break;
-                }
-                match item_to_record(item) {
-                    Ok(record) => all_records.push(record),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "skipping malformed audit record");
+        // Build the ExclusiveStartKey from the cursor, if any. The
+        // cursor carries the sort key + record id; the ns_tenant comes
+        // from the query.
+        let exclusive_start_key: Option<HashMap<String, AttributeValue>> = match cursor.as_ref() {
+            None => None,
+            Some(cursor) => {
+                let mut start = HashMap::new();
+                start.insert("ns_tenant".to_owned(), AttributeValue::S(ns_tenant.clone()));
+                let id = cursor.id.clone().unwrap_or_default();
+                start.insert("id".to_owned(), AttributeValue::S(id));
+                match cursor.kind {
+                    CursorKind::Ts => {
+                        if query.sort_by_sequence_asc {
+                            return Err(AuditError::Serialization(
+                                "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
+                            ));
+                        }
+                        start.insert(
+                            "dispatched_at_ms".to_owned(),
+                            AttributeValue::N(cursor.dispatched_at_ms.unwrap_or(0).to_string()),
+                        );
+                    }
+                    CursorKind::Seq => {
+                        if !query.sort_by_sequence_asc {
+                            return Err(AuditError::Serialization(
+                                "cursor kind 'seq' requires sort_by_sequence_asc=true".into(),
+                            ));
+                        }
+                        start.insert(
+                            "sequence_number".to_owned(),
+                            AttributeValue::N(cursor.sequence_number.unwrap_or(0).to_string()),
+                        );
                     }
                 }
+                Some(start)
             }
+        };
 
-            if all_records.len() >= items_needed {
-                break;
-            }
+        // Skip the count entirely. The previous implementation walked
+        // every page just to compute `total` — that's an O(matching
+        // items) operation per query and was the main source of linear
+        // degradation. Cursor-based pagination treats `total` as
+        // best-effort and leaves it `None`; offset callers also pay no
+        // count here (the prior behaviour was already worse than useful
+        // on large tenants, and offset paging on DynamoDB GSIs is a
+        // bad pattern anyway).
+        let total = None;
 
-            exclusive_start_key = resp.last_evaluated_key().cloned();
-            if exclusive_start_key.is_none() {
-                break;
+        let scan_forward = query.sort_by_sequence_asc;
+        // Fetch limit + 1 so we can detect a definitive last page
+        // without returning an empty trailing cursor. DynamoDB also
+        // exposes LastEvaluatedKey, but it can lag behind filter
+        // expressions: relying on the over-fetch sidesteps those edge
+        // cases.
+        let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
+        let mut q = self
+            .client
+            .query()
+            .table_name(&self.table_name)
+            .index_name(index_name)
+            .key_condition_expression(&key_condition)
+            .scan_index_forward(scan_forward)
+            .limit(probe_limit);
+
+        for (k, v) in &expr_values {
+            q = q.expression_attribute_values(k, v.clone());
+        }
+        for (k, v) in &filter_names {
+            q = q.expression_attribute_names(k, v);
+        }
+        if let Some(ref fe) = filter_expression {
+            q = q.filter_expression(fe);
+        }
+        if let Some(key) = exclusive_start_key {
+            q = q.set_exclusive_start_key(Some(key));
+        }
+
+        let resp = q
+            .send()
+            .await
+            .map_err(|e| AuditError::Storage(e.to_string()))?;
+
+        let mut records: Vec<AuditRecord> = Vec::with_capacity(resp.items().len());
+        for item in resp.items() {
+            match item_to_record(item) {
+                Ok(record) => records.push(record),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping malformed audit record");
+                }
             }
         }
 
-        // Apply client-side offset.
-        let records: Vec<AuditRecord> = all_records
-            .into_iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .collect();
+        let has_more = records.len() > limit as usize;
+        if has_more {
+            records.truncate(limit as usize);
+        }
+
+        // Build next_cursor only if the over-fetch detected another
+        // record. We re-encode it as our opaque AuditCursor so the wire
+        // format stays consistent across backends.
+        let next_cursor = if has_more {
+            records
+                .last()
+                .map(|rec| {
+                    if query.sort_by_sequence_asc {
+                        AuditCursor::from_sequence(rec.sequence_number.unwrap_or(0), rec.id.clone())
+                    } else {
+                        AuditCursor::from_timestamp(
+                            rec.dispatched_at.timestamp_millis(),
+                            rec.id.clone(),
+                        )
+                    }
+                })
+                .map(|c| c.encode())
+                .transpose()?
+        } else {
+            None
+        };
 
         Ok(AuditPage {
             records,
             total,
             limit,
-            offset,
+            offset: 0,
+            next_cursor,
         })
     }
 
@@ -566,6 +586,18 @@ fn record_to_item(record: &AuditRecord) -> HashMap<String, AttributeValue> {
         );
     }
 
+    // Action signing fields. Persisted as plain string attributes;
+    // absent attributes round-trip to `None` via `get_s_opt` on read.
+    if let Some(ref sig) = record.signature {
+        item.insert("signature".to_owned(), AttributeValue::S(sig.clone()));
+    }
+    if let Some(ref signer) = record.signer_id {
+        item.insert("signer_id".to_owned(), AttributeValue::S(signer.clone()));
+    }
+    if let Some(ref hash) = record.canonical_hash {
+        item.insert("canonical_hash".to_owned(), AttributeValue::S(hash.clone()));
+    }
+
     item
 }
 
@@ -657,9 +689,9 @@ fn item_to_record(item: &HashMap<String, AttributeValue>) -> Result<AuditRecord,
         attachment_metadata: get_s_opt("attachment_metadata")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
-        signature: None,
-        signer_id: None,
-        canonical_hash: None,
+        signature: get_s_opt("signature"),
+        signer_id: get_s_opt("signer_id"),
+        canonical_hash: get_s_opt("canonical_hash"),
     })
 }
 

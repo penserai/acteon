@@ -110,7 +110,7 @@ impl HashChainAuditStore {
         to: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<HashChainVerification, AuditError> {
         let page_size: u32 = 500;
-        let mut offset = 0u32;
+        let mut cursor: Option<String> = None;
         let mut records_checked: u64 = 0;
         let mut previous_hash: Option<String> = None;
         let mut first_record_id: Option<String> = None;
@@ -123,7 +123,7 @@ impl HashChainAuditStore {
                 from,
                 to,
                 limit: Some(page_size),
-                offset: Some(offset),
+                cursor: cursor.clone(),
                 sort_by_sequence_asc: true,
                 ..AuditQuery::default()
             };
@@ -176,7 +176,13 @@ impl HashChainAuditStore {
             if fetched < usize::try_from(page_size).unwrap_or(usize::MAX) {
                 break;
             }
-            offset = offset.saturating_add(page_size);
+            // Resume from the cursor returned with this page. If the
+            // backend didn't supply one (older mock or a backend that
+            // can't keyset-paginate), bail out — we'd otherwise loop.
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
         }
 
         Ok(HashChainVerification {
@@ -445,15 +451,47 @@ mod tests {
             }
 
             let total = filtered.len() as u64;
-            let offset = query.effective_offset() as usize;
             let limit = query.effective_limit() as usize;
-            let records: Vec<AuditRecord> = filtered.into_iter().skip(offset).take(limit).collect();
+
+            // Honour cursor pagination so verify_chain's keyset loop
+            // makes forward progress against this mock.
+            let (records, used_cursor): (Vec<AuditRecord>, bool) =
+                if let Some(cursor_str) = query.cursor.as_deref() {
+                    let cursor = crate::cursor::AuditCursor::decode(cursor_str).unwrap();
+                    let after_seq = cursor.sequence_number.unwrap_or(0);
+                    let recs = filtered
+                        .into_iter()
+                        .filter(|r| r.sequence_number.unwrap_or(0) > after_seq)
+                        .take(limit)
+                        .collect();
+                    (recs, true)
+                } else {
+                    let offset = query.effective_offset() as usize;
+                    (
+                        filtered.into_iter().skip(offset).take(limit).collect(),
+                        false,
+                    )
+                };
+
+            let next_cursor = if records.len() == limit {
+                records.last().map(|r| {
+                    crate::cursor::AuditCursor::from_sequence(
+                        r.sequence_number.unwrap_or(0),
+                        r.id.clone(),
+                    )
+                    .encode()
+                    .unwrap()
+                })
+            } else {
+                None
+            };
 
             Ok(AuditPage {
                 records,
-                total,
+                total: if used_cursor { None } else { Some(total) },
                 limit: limit as u32,
-                offset: offset as u32,
+                offset: 0,
+                next_cursor,
             })
         }
 
@@ -1080,9 +1118,10 @@ mod tests {
             async fn query(&self, _query: &AuditQuery) -> Result<AuditPage, AuditError> {
                 Ok(AuditPage {
                     records: vec![],
-                    total: 0,
+                    total: Some(0),
                     limit: 50,
                     offset: 0,
+                    next_cursor: None,
                 })
             }
 
@@ -1128,9 +1167,10 @@ mod tests {
             async fn query(&self, _query: &AuditQuery) -> Result<AuditPage, AuditError> {
                 Ok(AuditPage {
                     records: vec![],
-                    total: 0,
+                    total: Some(0),
                     limit: 50,
                     offset: 0,
+                    next_cursor: None,
                 })
             }
 

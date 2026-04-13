@@ -348,6 +348,11 @@ type ReloadResult struct {
 }
 
 // AuditQuery contains query parameters for audit search.
+//
+// Prefer Cursor over Offset for deep pagination — large offsets degrade
+// linearly on every backend. Pass the NextCursor returned by a prior
+// AuditPage back in here to fetch the next page in O(limit) time.
+// Treat the cursor as opaque.
 type AuditQuery struct {
 	Namespace  string
 	Tenant     string
@@ -356,6 +361,7 @@ type AuditQuery struct {
 	Outcome    string
 	Limit      int
 	Offset     int
+	Cursor     string
 }
 
 // AuditRecord represents an audit record.
@@ -377,11 +383,16 @@ type AuditRecord struct {
 }
 
 // AuditPage represents paginated audit results.
+//
+// Total is nil when the backend skipped the count (always the case
+// when paginating with a cursor). NextCursor is empty when this page
+// is the last; otherwise pass it into AuditQuery.Cursor to resume.
 type AuditPage struct {
-	Records []AuditRecord `json:"records"`
-	Total   int64         `json:"total"`
-	Limit   int64         `json:"limit"`
-	Offset  int64         `json:"offset"`
+	Records    []AuditRecord `json:"records"`
+	Total      *int64        `json:"total,omitempty"`
+	Limit      int64         `json:"limit"`
+	Offset     int64         `json:"offset"`
+	NextCursor string        `json:"next_cursor,omitempty"`
 }
 
 // =============================================================================

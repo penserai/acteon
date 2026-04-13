@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 
 use acteon_audit::analytics::AnalyticsStore;
+use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
@@ -111,7 +112,8 @@ impl AuditStore for PostgresAuditStore {
                 dispatched_at, completed_at, duration_ms, expires_at,
                 caller_id, auth_method,
                 record_hash, previous_hash, sequence_number,
-                attachment_metadata
+                attachment_metadata,
+                signature, signer_id, canonical_hash
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10,
@@ -119,7 +121,8 @@ impl AuditStore for PostgresAuditStore {
                 $15, $16, $17, $18,
                 $19, $20,
                 $21, $22, $23,
-                $24
+                $24,
+                $25, $26, $27
             )
             ",
             self.table
@@ -155,6 +158,9 @@ impl AuditStore for PostgresAuditStore {
             .bind(&entry.previous_hash)
             .bind(sequence_number)
             .bind(serde_json::Value::Array(entry.attachment_metadata.clone()))
+            .bind(&entry.signature)
+            .bind(&entry.signer_id)
+            .bind(&entry.canonical_hash)
             .execute(&self.pool)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
@@ -189,37 +195,99 @@ impl AuditStore for PostgresAuditStore {
         Ok(row.map(Into::into))
     }
 
+    #[allow(clippy::too_many_lines, clippy::similar_names)]
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let offset = query.effective_offset();
-        let (where_clause, binds, from_idx, to_idx, bind_idx) = build_where_clause(query);
+        let (mut where_clause, binds, from_idx, to_idx, mut bind_idx) = build_where_clause(query);
 
-        // Count query.
-        let count_sql = format!("SELECT COUNT(*) as cnt FROM {} {where_clause}", self.table);
-        let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
-        for b in &binds {
-            count_q = count_q.bind(b);
-        }
-        if from_idx.is_some() {
-            count_q = count_q.bind(query.from.unwrap());
-        }
-        if to_idx.is_some() {
-            count_q = count_q.bind(query.to.unwrap());
+        // Decode the cursor up-front so we can fail fast on bad input.
+        let cursor = query
+            .cursor
+            .as_deref()
+            .map(AuditCursor::decode)
+            .transpose()?;
+
+        // Append the keyset condition for the cursor, if any.
+        let cursor_dispatched_idx;
+        let cursor_id_idx;
+        let cursor_seq_idx;
+        if let Some(ref cursor) = cursor {
+            let prefix = if where_clause.is_empty() {
+                "WHERE"
+            } else {
+                "AND"
+            };
+            match cursor.kind {
+                CursorKind::Ts => {
+                    if query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    let ts_idx = bind_idx;
+                    let id_idx = bind_idx + 1;
+                    where_clause = format!(
+                        "{where_clause} {prefix} (dispatched_at, id) < (${ts_idx}, ${id_idx})"
+                    );
+                    cursor_dispatched_idx = Some(ts_idx);
+                    cursor_id_idx = Some(id_idx);
+                    cursor_seq_idx = None;
+                    bind_idx += 2;
+                }
+                CursorKind::Seq => {
+                    if !query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'seq' requires sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    let seq_idx = bind_idx;
+                    where_clause = format!("{where_clause} {prefix} sequence_number > ${seq_idx}");
+                    cursor_dispatched_idx = None;
+                    cursor_id_idx = None;
+                    cursor_seq_idx = Some(seq_idx);
+                    bind_idx += 1;
+                }
+            }
+        } else {
+            cursor_dispatched_idx = None;
+            cursor_id_idx = None;
+            cursor_seq_idx = None;
         }
 
-        let total = count_q
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|e| AuditError::Storage(e.to_string()))?;
+        // Count query — only run when no cursor is present (offset path).
+        // Cursor pagination intentionally skips the count to keep page
+        // latency O(limit).
+        let total = if cursor.is_none() {
+            let count_sql = format!("SELECT COUNT(*) as cnt FROM {} {where_clause}", self.table);
+            let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+            for b in &binds {
+                count_q = count_q.bind(b);
+            }
+            if from_idx.is_some() {
+                count_q = count_q.bind(query.from.unwrap());
+            }
+            if to_idx.is_some() {
+                count_q = count_q.bind(query.to.unwrap());
+            }
+            let count = count_q
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| AuditError::Storage(e.to_string()))?;
+            #[allow(clippy::cast_sign_loss)]
+            let count = count as u64;
+            Some(count)
+        } else {
+            None
+        };
 
         // Data query.
+        let order_clause = if query.sort_by_sequence_asc {
+            "ORDER BY sequence_number ASC NULLS LAST, id ASC"
+        } else {
+            "ORDER BY dispatched_at DESC, id DESC"
+        };
         let limit_idx = bind_idx;
         let offset_idx = bind_idx + 1;
-        let order_clause = if query.sort_by_sequence_asc {
-            "ORDER BY sequence_number ASC NULLS LAST"
-        } else {
-            "ORDER BY dispatched_at DESC"
-        };
         let data_sql = format!(
             "SELECT * FROM {} {where_clause} {order_clause} LIMIT ${limit_idx} OFFSET ${offset_idx}",
             self.table
@@ -235,24 +303,72 @@ impl AuditStore for PostgresAuditStore {
         if to_idx.is_some() {
             data_q = data_q.bind(query.to.unwrap());
         }
-        data_q = data_q.bind(i64::from(limit));
-        data_q = data_q.bind(i64::from(offset));
+        if let Some(ref cursor) = cursor {
+            match cursor.kind {
+                CursorKind::Ts => {
+                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                        cursor.dispatched_at_ms.unwrap_or(0),
+                    )
+                    .unwrap_or_default();
+                    data_q = data_q.bind(ts);
+                    data_q = data_q.bind(cursor.id.clone().unwrap_or_default());
+                }
+                CursorKind::Seq => {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let seq = cursor.sequence_number.unwrap_or(0) as i64;
+                    data_q = data_q.bind(seq);
+                }
+            }
+        }
+        let _ = (cursor_dispatched_idx, cursor_id_idx, cursor_seq_idx);
+        // Fetch limit + 1 so we can detect whether another page exists
+        // without returning an empty trailing cursor to the caller.
+        data_q = data_q.bind(i64::from(limit) + 1);
+        // Cursor pagination always uses offset 0; offset is only used in
+        // the legacy non-cursor path.
+        let offset_value = if cursor.is_some() {
+            0
+        } else {
+            query.effective_offset()
+        };
+        data_q = data_q.bind(i64::from(offset_value));
 
         let rows: Vec<AuditRow> = data_q
             .fetch_all(&self.pool)
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
-        let records = rows.into_iter().map(Into::into).collect();
+        let mut records: Vec<AuditRecord> = rows.into_iter().map(Into::into).collect();
+        let has_more = records.len() > limit as usize;
+        if has_more {
+            records.truncate(limit as usize);
+        }
 
-        #[allow(clippy::cast_sign_loss)]
-        let total = total as u64;
+        let next_cursor = if has_more {
+            records
+                .last()
+                .map(|rec| {
+                    if query.sort_by_sequence_asc {
+                        AuditCursor::from_sequence(rec.sequence_number.unwrap_or(0), rec.id.clone())
+                    } else {
+                        AuditCursor::from_timestamp(
+                            rec.dispatched_at.timestamp_millis(),
+                            rec.id.clone(),
+                        )
+                    }
+                })
+                .map(|c| c.encode())
+                .transpose()?
+        } else {
+            None
+        };
 
         Ok(AuditPage {
             records,
             total,
             limit,
-            offset,
+            offset: offset_value,
+            next_cursor,
         })
     }
 
@@ -358,6 +474,12 @@ struct AuditRow {
     previous_hash: Option<String>,
     sequence_number: Option<i64>,
     attachment_metadata: serde_json::Value,
+    #[sqlx(default)]
+    signature: Option<String>,
+    #[sqlx(default)]
+    signer_id: Option<String>,
+    #[sqlx(default)]
+    canonical_hash: Option<String>,
 }
 
 impl From<AuditRow> for AuditRecord {
@@ -396,9 +518,9 @@ impl From<AuditRow> for AuditRecord {
             #[allow(clippy::cast_sign_loss)]
             sequence_number: row.sequence_number.map(|n| n as u64),
             attachment_metadata,
-            signature: None,
-            signer_id: None,
-            canonical_hash: None,
+            signature: row.signature,
+            signer_id: row.signer_id,
+            canonical_hash: row.canonical_hash,
         }
     }
 }

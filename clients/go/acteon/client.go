@@ -343,6 +343,9 @@ func (c *Client) QueryAudit(ctx context.Context, query *AuditQuery) (*AuditPage,
 		if query.Offset > 0 {
 			params.Set("offset", strconv.Itoa(query.Offset))
 		}
+		if query.Cursor != "" {
+			params.Set("cursor", query.Cursor)
+		}
 		if len(params) > 0 {
 			path += "?" + params.Encode()
 		}

@@ -24,8 +24,18 @@ pub struct AuditQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     /// Number of records to skip.
+    ///
+    /// Prefer `cursor` for deep pagination — large offsets degrade
+    /// linearly on every backend.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<u32>,
+    /// Opaque pagination cursor returned by the previous page.
+    ///
+    /// Pass a `next_cursor` from a prior `AuditPage` to fetch the next
+    /// page in O(limit) time. Treat this as opaque — never construct
+    /// or modify the value on the client side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// Paginated audit results.
@@ -33,12 +43,19 @@ pub struct AuditQuery {
 pub struct AuditPage {
     /// Audit records.
     pub records: Vec<AuditRecord>,
-    /// Total number of matching records.
-    pub total: u64,
+    /// Total number of matching records, when the backend computed it.
+    /// Cursor pagination intentionally skips the count, so this is
+    /// `None` after the first cursor-driven request.
+    #[serde(default)]
+    pub total: Option<u64>,
     /// Limit used in the query.
     pub limit: u64,
     /// Offset used in the query.
     pub offset: u64,
+    /// Opaque cursor pointing at the next page, or `None` if this is
+    /// the last page. Pass into [`AuditQuery::cursor`] to resume.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 /// An audit record.
@@ -155,7 +172,11 @@ impl ActeonClient {
     /// };
     ///
     /// let page = client.query_audit(&query).await?;
-    /// println!("Found {} records (total: {})", page.records.len(), page.total);
+    /// println!(
+    ///     "Found {} records (total: {:?})",
+    ///     page.records.len(),
+    ///     page.total
+    /// );
     /// # Ok(())
     /// # }
     /// ```

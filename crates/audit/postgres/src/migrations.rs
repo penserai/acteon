@@ -100,6 +100,20 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
     );
     sqlx::query(&attachment_stmt).execute(pool).await?;
 
+    // Action signing columns: Ed25519 signature + signer key id +
+    // canonical hash captured at dispatch time. These are nullable so
+    // existing records without signing data are unaffected; the
+    // signing audit row → AuditRecord conversion populates them when
+    // present.
+    let signing_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signature TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signer_id TEXT"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS canonical_hash TEXT"),
+    ];
+    for stmt in &signing_stmts {
+        sqlx::query(stmt).execute(pool).await?;
+    }
+
     // Covering index for rule coverage aggregation.
     //
     // `/v1/rules/coverage` issues

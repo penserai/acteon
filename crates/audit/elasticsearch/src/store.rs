@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 
+use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
@@ -142,11 +143,12 @@ struct SearchResponse {
 
 #[derive(serde::Deserialize)]
 struct SearchHits {
-    total: HitsTotal,
+    #[serde(default)]
+    total: Option<HitsTotal>,
     hits: Vec<SearchHit>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct HitsTotal {
     value: u64,
 }
@@ -155,6 +157,10 @@ struct HitsTotal {
 struct SearchHit {
     #[serde(rename = "_source")]
     source: AuditRecord,
+    /// Sort values for this hit, used to seed `search_after` for the
+    /// next page. Always present when the request specified a `sort`.
+    #[serde(default)]
+    sort: Vec<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -252,25 +258,76 @@ impl AuditStore for ElasticsearchAuditStore {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let offset = query.effective_offset();
 
         let es_query = build_es_query(query);
 
+        // Sort always carries a tiebreaker (`id`) so `search_after` can
+        // resume deterministically even when the primary sort key has
+        // duplicates.
         let sort_clause = if query.sort_by_sequence_asc {
-            serde_json::json!([{ "sequence_number": { "order": "asc", "missing": "_last" } }])
+            serde_json::json!([
+                { "sequence_number": { "order": "asc", "missing": "_last" } },
+                { "id": { "order": "asc" } }
+            ])
         } else {
-            serde_json::json!([{ "dispatched_at": "desc" }])
+            serde_json::json!([
+                { "dispatched_at": "desc" },
+                { "id": "desc" }
+            ])
         };
 
-        let body = serde_json::json!({
+        let cursor = query
+            .cursor
+            .as_deref()
+            .map(AuditCursor::decode)
+            .transpose()?;
+
+        // Fetch limit + 1 so we can tell when this page is the last one
+        // without round-tripping an empty page.
+        let probe = limit + 1;
+        let mut body = serde_json::json!({
             "query": es_query,
             "sort": sort_clause,
-            "size": limit,
-            "from": offset,
-            "track_total_hits": true
+            "size": probe,
         });
+
+        let offset = if let Some(ref cursor) = cursor {
+            let search_after = match cursor.kind {
+                CursorKind::Ts => {
+                    if query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    serde_json::json!([
+                        cursor.dispatched_at_ms.unwrap_or(0),
+                        cursor.id.clone().unwrap_or_default(),
+                    ])
+                }
+                CursorKind::Seq => {
+                    if !query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'seq' requires sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    serde_json::json!([
+                        cursor.sequence_number.unwrap_or(0),
+                        cursor.id.clone().unwrap_or_default(),
+                    ])
+                }
+            };
+            body["search_after"] = search_after;
+            // Cursor pagination skips the count for O(limit) latency.
+            0
+        } else {
+            // Legacy offset path — let ES count for backward compat.
+            body["from"] = serde_json::json!(query.effective_offset());
+            body["track_total_hits"] = serde_json::json!(true);
+            query.effective_offset()
+        };
 
         let path = format!("{}/_search", self.index);
 
@@ -291,13 +348,55 @@ impl AuditStore for ElasticsearchAuditStore {
             .await
             .map_err(|e| AuditError::Serialization(e.to_string()))?;
 
-        let records = search.hits.hits.into_iter().map(|h| h.source).collect();
+        let mut hits = search.hits.hits;
+        let has_more = hits.len() > limit as usize;
+        if has_more {
+            hits.truncate(limit as usize);
+        }
+        let last_sort = hits.last().map(|h| h.sort.clone());
+        let records: Vec<AuditRecord> = hits.into_iter().map(|h| h.source).collect();
+
+        let next_cursor = if has_more {
+            // Build the next cursor from the last hit's sort values.
+            // We round-trip via the structured cursor so the wire format
+            // stays consistent across backends.
+            last_sort.and_then(|sort_vals| {
+                let id = sort_vals
+                    .get(1)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                let cursor = if query.sort_by_sequence_asc {
+                    let seq = sort_vals
+                        .first()
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    AuditCursor::from_sequence(seq, id)
+                } else {
+                    let ts = sort_vals
+                        .first()
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0);
+                    AuditCursor::from_timestamp(ts, id)
+                };
+                cursor.encode().ok()
+            })
+        } else {
+            None
+        };
+
+        let total = if cursor.is_none() {
+            Some(search.hits.total.unwrap_or_default().value)
+        } else {
+            None
+        };
 
         Ok(AuditPage {
             records,
-            total: search.hits.total.value,
+            total,
             limit,
             offset,
+            next_cursor,
         })
     }
 

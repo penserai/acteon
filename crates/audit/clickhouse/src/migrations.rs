@@ -76,5 +76,17 @@ pub async fn run_migrations(
     );
     client.query(&attachment_stmt).execute().await?;
 
+    // Action signing columns: Ed25519 signature, signer key id, and
+    // canonical hash captured at dispatch time. Nullable so existing
+    // unsigned records remain valid.
+    let signing_stmts = [
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signature Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signer_id Nullable(String)"),
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS canonical_hash Nullable(String)"),
+    ];
+    for stmt in &signing_stmts {
+        client.query(stmt).execute().await?;
+    }
+
     Ok(())
 }

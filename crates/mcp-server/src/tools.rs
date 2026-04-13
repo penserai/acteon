@@ -358,6 +358,9 @@ pub struct QueryAuditParams {
     /// Maximum number of records (default 20).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Opaque pagination cursor returned by the previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -887,6 +890,7 @@ impl ActeonMcpServer {
             outcome: p.outcome,
             limit: Some(p.limit.unwrap_or(20)),
             offset: None,
+            cursor: p.cursor,
         };
 
         match self.ops.query_audit(query).await {

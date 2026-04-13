@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use dashmap::DashMap;
 
+use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
@@ -69,9 +70,9 @@ impl AuditStore for MemoryAuditStore {
         Ok(self.records.get(id).map(|r| r.value().clone()))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let offset = query.effective_offset();
 
         // Collect all matching records.
         let mut matching: Vec<AuditRecord> = self
@@ -121,21 +122,78 @@ impl AuditStore for MemoryAuditStore {
             })
             .collect();
 
-        // Sort by dispatched_at descending.
-        matching.sort_by(|a, b| b.dispatched_at.cmp(&a.dispatched_at));
+        // Sort by the requested order. The default is `dispatched_at DESC`
+        // with `id DESC` as a tiebreaker so the cursor key uniquely
+        // identifies a row.
+        if query.sort_by_sequence_asc {
+            matching.sort_by(|a, b| {
+                a.sequence_number
+                    .unwrap_or(u64::MAX)
+                    .cmp(&b.sequence_number.unwrap_or(u64::MAX))
+                    .then_with(|| a.id.cmp(&b.id))
+            });
+        } else {
+            matching.sort_by(|a, b| {
+                b.dispatched_at
+                    .cmp(&a.dispatched_at)
+                    .then_with(|| b.id.cmp(&a.id))
+            });
+        }
 
-        let total = matching.len() as u64;
-        let records: Vec<AuditRecord> = matching
-            .into_iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .collect();
+        let total_matches = matching.len() as u64;
+
+        // Cursor takes precedence over offset. When neither is set the
+        // request behaves like the legacy offset path.
+        //
+        // We fetch `limit + 1` rows so we can detect a definitive last
+        // page without round-tripping an empty cursor: if the over-fetch
+        // returned `> limit`, more rows exist and we trim + emit a
+        // cursor; otherwise we know we're done.
+        let probe = limit as usize + 1;
+        let (mut records, used_cursor, offset) = if let Some(cursor_str) = query.cursor.as_deref() {
+            let cursor = AuditCursor::decode(cursor_str)?;
+            let after: Vec<AuditRecord> = matching
+                .into_iter()
+                .filter(|rec| record_after_cursor(rec, &cursor, query.sort_by_sequence_asc))
+                .take(probe)
+                .collect();
+            (after, true, 0u32)
+        } else {
+            let offset = query.effective_offset();
+            let page: Vec<AuditRecord> = matching
+                .into_iter()
+                .skip(offset as usize)
+                .take(probe)
+                .collect();
+            (page, false, offset)
+        };
+
+        let has_more = records.len() > limit as usize;
+        if has_more {
+            records.truncate(limit as usize);
+        }
+
+        let next_cursor = if has_more {
+            records
+                .last()
+                .map(|rec| build_cursor(rec, query.sort_by_sequence_asc).encode())
+                .transpose()?
+        } else {
+            None
+        };
+
+        let total = if used_cursor {
+            None
+        } else {
+            Some(total_matches)
+        };
 
         Ok(AuditPage {
             records,
             total,
             limit,
             offset,
+            next_cursor,
         })
     }
 
@@ -175,6 +233,39 @@ impl AuditStore for MemoryAuditStore {
 /// Check if a filter matches a value. `None` filter matches everything.
 fn matches_filter(filter: Option<&String>, value: &str) -> bool {
     filter.is_none_or(|f| f == value)
+}
+
+/// Build the cursor that points at `rec` for the active sort order.
+fn build_cursor(rec: &AuditRecord, sort_by_sequence_asc: bool) -> AuditCursor {
+    if sort_by_sequence_asc {
+        AuditCursor::from_sequence(rec.sequence_number.unwrap_or(0), rec.id.clone())
+    } else {
+        AuditCursor::from_timestamp(rec.dispatched_at.timestamp_millis(), rec.id.clone())
+    }
+}
+
+/// Filter predicate: keep records strictly after the cursor in the active
+/// sort order.
+fn record_after_cursor(
+    rec: &AuditRecord,
+    cursor: &AuditCursor,
+    sort_by_sequence_asc: bool,
+) -> bool {
+    match (sort_by_sequence_asc, cursor.kind) {
+        (true, CursorKind::Seq) => {
+            let cursor_seq = cursor.sequence_number.unwrap_or(0);
+            rec.sequence_number.is_some_and(|seq| seq > cursor_seq)
+        }
+        (false, CursorKind::Ts) => {
+            let cursor_ms = cursor.dispatched_at_ms.unwrap_or(0);
+            let cursor_id = cursor.id.as_deref().unwrap_or("");
+            let rec_ms = rec.dispatched_at.timestamp_millis();
+            // Default sort is DESC, so "after" means strictly older.
+            rec_ms < cursor_ms || (rec_ms == cursor_ms && rec.id.as_str() < cursor_id)
+        }
+        // Cursor kind mismatch with current sort — treat as no-match.
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -264,7 +355,7 @@ mod tests {
             ..Default::default()
         };
         let page = store.query(&q).await.unwrap();
-        assert_eq!(page.total, 1);
+        assert_eq!(page.total, Some(1));
         assert_eq!(page.records[0].id, "r1");
     }
 
@@ -283,10 +374,65 @@ mod tests {
             ..Default::default()
         };
         let page = store.query(&q).await.unwrap();
-        assert_eq!(page.total, 10);
+        assert_eq!(page.total, Some(10));
         assert_eq!(page.records.len(), 3);
         assert_eq!(page.limit, 3);
         assert_eq!(page.offset, 2);
+    }
+
+    #[tokio::test]
+    async fn query_cursor_pagination_walks_all_records() {
+        let store = MemoryAuditStore::new();
+        for i in 0..10 {
+            let mut rec = make_record(&format!("r{i:02}"), &format!("a{i}"));
+            rec.dispatched_at = Utc::now() + Duration::seconds(i64::from(i));
+            store.record(rec).await.unwrap();
+        }
+
+        let mut cursor: Option<String> = None;
+        let mut seen: Vec<String> = Vec::new();
+        loop {
+            let q = AuditQuery {
+                limit: Some(3),
+                cursor: cursor.clone(),
+                ..Default::default()
+            };
+            let page = store.query(&q).await.unwrap();
+            // Only the cursor-driven follow-up pages skip the count.
+            if cursor.is_some() {
+                assert!(page.total.is_none(), "cursor pagination should skip count");
+            }
+            for rec in &page.records {
+                seen.push(rec.id.clone());
+            }
+            if page.next_cursor.is_none() {
+                break;
+            }
+            cursor = page.next_cursor;
+        }
+        assert_eq!(seen.len(), 10);
+        // Records should be in the default sort: dispatched_at DESC.
+        for w in seen.windows(2) {
+            assert!(w[0] > w[1], "expected DESC order: {:?}", w);
+        }
+    }
+
+    #[tokio::test]
+    async fn query_cursor_first_page_no_cursor() {
+        let store = MemoryAuditStore::new();
+        for i in 0..5 {
+            let mut rec = make_record(&format!("r{i}"), &format!("a{i}"));
+            rec.dispatched_at = Utc::now() + Duration::seconds(i64::from(i));
+            store.record(rec).await.unwrap();
+        }
+        let q = AuditQuery {
+            limit: Some(2),
+            ..Default::default()
+        };
+        let page = store.query(&q).await.unwrap();
+        assert_eq!(page.records.len(), 2);
+        assert!(page.next_cursor.is_some());
+        assert_eq!(page.total, Some(5));
     }
 
     #[tokio::test]
@@ -337,7 +483,7 @@ mod tests {
             ..Default::default()
         };
         let page = store.query(&q).await.unwrap();
-        assert_eq!(page.total, 1);
+        assert_eq!(page.total, Some(1));
         assert_eq!(page.records[0].id, "r2");
     }
 }

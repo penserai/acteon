@@ -399,6 +399,11 @@ export interface EvaluateRulesResponse {
 
 /**
  * Query parameters for audit search.
+ *
+ * Prefer `cursor` over `offset` for deep pagination — large offsets
+ * degrade linearly on every backend. Pass the `nextCursor` returned by
+ * a prior {@link AuditPage} back in here to fetch the next page in
+ * O(limit) time. Treat the cursor as opaque.
  */
 export interface AuditQuery {
   namespace?: string;
@@ -408,6 +413,7 @@ export interface AuditQuery {
   outcome?: string;
   limit?: number;
   offset?: number;
+  cursor?: string;
 }
 
 /**
@@ -422,6 +428,7 @@ export function auditQueryToParams(query: AuditQuery): URLSearchParams {
   if (query.outcome) params.set("outcome", query.outcome);
   if (query.limit !== undefined) params.set("limit", query.limit.toString());
   if (query.offset !== undefined) params.set("offset", query.offset.toString());
+  if (query.cursor !== undefined) params.set("cursor", query.cursor);
   return params;
 }
 
@@ -472,12 +479,18 @@ export function parseAuditRecord(data: Record<string, unknown>): AuditRecord {
 
 /**
  * Paginated audit results.
+ *
+ * `total` is omitted when the backend skipped the count (always the
+ * case when paginating with a cursor). `nextCursor` is omitted when
+ * this page is the last; otherwise pass it back into
+ * {@link AuditQuery.cursor} to resume.
  */
 export interface AuditPage {
   records: AuditRecord[];
-  total: number;
+  total?: number;
   limit: number;
   offset: number;
+  nextCursor?: string;
 }
 
 /**
@@ -487,9 +500,10 @@ export function parseAuditPage(data: Record<string, unknown>): AuditPage {
   const records = data.records as Record<string, unknown>[];
   return {
     records: records.map(parseAuditRecord),
-    total: data.total as number,
+    total: data.total as number | undefined,
     limit: data.limit as number,
     offset: data.offset as number,
+    nextCursor: data.next_cursor as string | undefined,
   };
 }
 

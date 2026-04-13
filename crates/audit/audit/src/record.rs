@@ -123,7 +123,19 @@ pub struct AuditQuery {
     /// Maximum number of records to return (default 50, max 1000).
     pub limit: Option<u32>,
     /// Number of records to skip for pagination.
+    ///
+    /// Backends fall back to offset-based pagination only when no
+    /// `cursor` is supplied. Prefer `cursor` for deep pagination — large
+    /// offsets degrade linearly on every backend.
     pub offset: Option<u32>,
+    /// Opaque pagination cursor returned by the previous page.
+    ///
+    /// When set, backends use keyset pagination from the cursor's sort
+    /// key and ignore `offset`. Cursors must be round-tripped verbatim
+    /// from a prior `AuditPage::next_cursor`; do not construct or
+    /// modify them on the client side.
+    #[serde(default)]
+    pub cursor: Option<String>,
     /// When true, sort by `sequence_number ASC` instead of the default
     /// `dispatched_at DESC`. Used by hash chain verification to iterate
     /// records in chain order with bounded memory.
@@ -144,15 +156,47 @@ impl AuditQuery {
 }
 
 /// A paginated page of audit records.
+///
+/// # Detecting the last page
+///
+/// Always rely on `next_cursor`: when `next_cursor.is_none()` you have
+/// reached the end of the result set. `records.len() < limit` is *not*
+/// a reliable end-of-stream signal because filter expressions on
+/// `DynamoDB` and Elasticsearch can produce short-but-not-final pages.
+///
+/// # `total` semantics
+///
+/// `total` is intentionally a *best-effort* field. It is populated only
+/// when the backend can compute it cheaply, and is `None` whenever the
+/// caller paginated with a `cursor` (the count would defeat the
+/// purpose of cursor pagination). Concrete behaviour by backend:
+///
+/// | Backend         | Offset path (`cursor` is `None`) | Cursor path  |
+/// |-----------------|----------------------------------|--------------|
+/// | Memory          | `Some(matches)`                  | `None`       |
+/// | Postgres        | `Some(SELECT COUNT(*))`          | `None`       |
+/// | `ClickHouse`    | `Some(count())`                  | `None`       |
+/// | Elasticsearch   | `Some(track_total_hits)`         | `None`       |
+/// | `DynamoDB`      | `None` (count was the bottleneck)| `None`       |
+///
+/// Treat `total` as a UI hint, not a state-of-the-world fact. Do not
+/// build pagination control flow on it — use `next_cursor`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct AuditPage {
     /// The records matching the query.
     pub records: Vec<AuditRecord>,
-    /// Total number of records matching the query (before pagination).
-    pub total: u64,
+    /// Best-effort total number of matching records. See the
+    /// [type-level docs](AuditPage) for when this is populated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
     /// The limit used for this page.
     pub limit: u32,
-    /// The offset used for this page.
+    /// The offset used for this page (0 when cursor pagination is used).
     pub offset: u32,
+    /// Opaque cursor pointing at the next page, or `None` when this is
+    /// the last page. **This is the authoritative end-of-stream
+    /// signal** — `records.len() < limit` is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
