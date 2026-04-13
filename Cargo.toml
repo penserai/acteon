@@ -262,6 +262,7 @@ sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["serde", "zeroize", "rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 hmac = "0.12"
+subtle = "2"
 hex = "0.4"
 aes-gcm = "0.10"
 base64 = "0.22"
