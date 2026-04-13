@@ -47,6 +47,10 @@ from .models import (
     UpdateSilenceRequest,
     Silence,
     ListSilencesResponse,
+    CreateTimeIntervalRequest,
+    UpdateTimeIntervalRequest,
+    TimeInterval,
+    ListTimeIntervalsResponse,
     CreateRetentionRequest,
     UpdateRetentionRequest,
     RetentionPolicy,
@@ -1321,6 +1325,90 @@ class ActeonClient:
             raise HttpError(404, f"Silence not found: {silence_id}")
         else:
             raise HttpError(response.status_code, "Failed to delete silence")
+
+    # =========================================================================
+    # Time Intervals
+    # =========================================================================
+
+    def create_time_interval(
+        self, req: "CreateTimeIntervalRequest"
+    ) -> "TimeInterval":
+        """Create a time interval."""
+        response = self._request("POST", "/v1/time-intervals", json=req.to_dict())
+        if response.status_code == 201:
+            return TimeInterval.from_dict(response.json())
+        data = response.json()
+        raise ApiError(
+            code=data.get("code", "UNKNOWN"),
+            message=data.get("message", data.get("error", "Unknown error")),
+            retryable=data.get("retryable", False),
+        )
+
+    def list_time_intervals(
+        self,
+        namespace: Optional[str] = None,
+        tenant: Optional[str] = None,
+    ) -> "ListTimeIntervalsResponse":
+        """List time intervals filtered by namespace/tenant."""
+        params: dict = {}
+        if namespace is not None:
+            params["namespace"] = namespace
+        if tenant is not None:
+            params["tenant"] = tenant
+        response = self._request("GET", "/v1/time-intervals", params=params)
+        if response.status_code == 200:
+            return ListTimeIntervalsResponse.from_dict(response.json())
+        raise HttpError(response.status_code, "Failed to list time intervals")
+
+    def get_time_interval(
+        self, namespace: str, tenant: str, name: str
+    ) -> Optional["TimeInterval"]:
+        """Fetch a single time interval. Returns ``None`` on 404."""
+        response = self._request(
+            "GET", f"/v1/time-intervals/{namespace}/{tenant}/{name}"
+        )
+        if response.status_code == 200:
+            return TimeInterval.from_dict(response.json())
+        if response.status_code == 404:
+            return None
+        raise HttpError(response.status_code, "Failed to get time interval")
+
+    def update_time_interval(
+        self,
+        namespace: str,
+        tenant: str,
+        name: str,
+        update: "UpdateTimeIntervalRequest",
+    ) -> "TimeInterval":
+        """Update a time interval's ranges, location, or description."""
+        response = self._request(
+            "PUT",
+            f"/v1/time-intervals/{namespace}/{tenant}/{name}",
+            json=update.to_dict(),
+        )
+        if response.status_code == 200:
+            return TimeInterval.from_dict(response.json())
+        if response.status_code == 404:
+            raise HttpError(404, f"Time interval not found: {name}")
+        data = response.json()
+        raise ApiError(
+            code=data.get("code", "UNKNOWN"),
+            message=data.get("message", data.get("error", "Unknown error")),
+            retryable=data.get("retryable", False),
+        )
+
+    def delete_time_interval(
+        self, namespace: str, tenant: str, name: str
+    ) -> None:
+        """Delete a time interval."""
+        response = self._request(
+            "DELETE", f"/v1/time-intervals/{namespace}/{tenant}/{name}"
+        )
+        if response.status_code == 204:
+            return
+        if response.status_code == 404:
+            raise HttpError(404, f"Time interval not found: {name}")
+        raise HttpError(response.status_code, "Failed to delete time interval")
 
     # =========================================================================
     # Retention Policies

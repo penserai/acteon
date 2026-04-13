@@ -54,6 +54,8 @@ pub enum KeyKind {
     Silence,
     /// Index of active silences for fast dispatch-path lookup.
     ActiveSilences,
+    /// Time interval definition (recurring schedule).
+    TimeInterval,
     Custom(String),
 }
 
@@ -89,6 +91,7 @@ impl KeyKind {
             Self::ChainDefinition => "chain_def",
             Self::Silence => "silence",
             Self::ActiveSilences => "active_silences",
+            Self::TimeInterval => "time_interval",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -184,6 +187,7 @@ mod tests {
         assert_eq!(KeyKind::Template.as_str(), "template");
         assert_eq!(KeyKind::TemplateProfile.as_str(), "template_profile");
         assert_eq!(KeyKind::ChainDefinition.as_str(), "chain_def");
+        assert_eq!(KeyKind::TimeInterval.as_str(), "time_interval");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

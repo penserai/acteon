@@ -1359,6 +1359,138 @@ export function parseListSilencesResponse(
 }
 
 // =============================================================================
+// Time Interval Types
+// =============================================================================
+
+/** Time-of-day window in `HH:MM` (24-hour clock). */
+export interface TimeOfDayInput {
+  start: string;
+  end: string;
+}
+
+/** Inclusive integer range used for weekdays/days_of_month/months/years. */
+export interface NumericRange {
+  start: number;
+  end: number;
+}
+
+/** One TimeRange entry inside a TimeInterval. Empty fields = "any". */
+export interface TimeRange {
+  times?: TimeOfDayInput[];
+  weekdays?: NumericRange[];
+  daysOfMonth?: NumericRange[];
+  months?: NumericRange[];
+  years?: NumericRange[];
+}
+
+function timeRangeToApi(r: TimeRange): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (r.times && r.times.length) out.times = r.times;
+  if (r.weekdays && r.weekdays.length) out.weekdays = r.weekdays;
+  if (r.daysOfMonth && r.daysOfMonth.length) out.days_of_month = r.daysOfMonth;
+  if (r.months && r.months.length) out.months = r.months;
+  if (r.years && r.years.length) out.years = r.years;
+  return out;
+}
+
+function timeRangeFromApi(data: Record<string, unknown>): TimeRange {
+  return {
+    times: (data.times as TimeOfDayInput[]) ?? [],
+    weekdays: (data.weekdays as NumericRange[]) ?? [],
+    daysOfMonth: (data.days_of_month as NumericRange[]) ?? [],
+    months: (data.months as NumericRange[]) ?? [],
+    years: (data.years as NumericRange[]) ?? [],
+  };
+}
+
+export interface CreateTimeIntervalRequest {
+  name: string;
+  namespace: string;
+  tenant: string;
+  timeRanges: TimeRange[];
+  location?: string;
+  description?: string;
+}
+
+export function createTimeIntervalRequestToApi(
+  req: CreateTimeIntervalRequest
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    name: req.name,
+    namespace: req.namespace,
+    tenant: req.tenant,
+    time_ranges: req.timeRanges.map(timeRangeToApi),
+  };
+  if (req.location !== undefined) out.location = req.location;
+  if (req.description !== undefined) out.description = req.description;
+  return out;
+}
+
+export interface UpdateTimeIntervalRequest {
+  timeRanges?: TimeRange[];
+  location?: string;
+  description?: string;
+}
+
+export function updateTimeIntervalRequestToApi(
+  req: UpdateTimeIntervalRequest
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (req.timeRanges !== undefined)
+    out.time_ranges = req.timeRanges.map(timeRangeToApi);
+  if (req.location !== undefined) out.location = req.location;
+  if (req.description !== undefined) out.description = req.description;
+  return out;
+}
+
+export interface TimeInterval {
+  name: string;
+  namespace: string;
+  tenant: string;
+  timeRanges: TimeRange[];
+  location?: string;
+  description?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  matchesNow: boolean;
+}
+
+export function parseTimeInterval(
+  data: Record<string, unknown>
+): TimeInterval {
+  return {
+    name: data.name as string,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+    timeRanges: ((data.time_ranges as Record<string, unknown>[]) ?? []).map(
+      timeRangeFromApi
+    ),
+    location: data.location as string | undefined,
+    description: data.description as string | undefined,
+    createdBy: (data.created_by as string) ?? "",
+    createdAt: data.created_at as string,
+    updatedAt: data.updated_at as string,
+    matchesNow: (data.matches_now as boolean) ?? false,
+  };
+}
+
+export interface ListTimeIntervalsResponse {
+  timeIntervals: TimeInterval[];
+  count: number;
+}
+
+export function parseListTimeIntervalsResponse(
+  data: Record<string, unknown>
+): ListTimeIntervalsResponse {
+  const items = (data.time_intervals as Record<string, unknown>[]) ?? [];
+  return {
+    timeIntervals: items.map(parseTimeInterval),
+    count: (data.count as number) ?? 0,
+  };
+}
+
+// =============================================================================
 // Retention Policy Types
 // =============================================================================
 

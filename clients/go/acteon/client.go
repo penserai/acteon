@@ -1351,6 +1351,144 @@ func (c *Client) DeleteSilence(ctx context.Context, silenceID string) error {
 }
 
 // =============================================================================
+// Time Intervals
+// =============================================================================
+
+// CreateTimeInterval creates a tenant-scoped time interval that rules
+// can reference via mute_time_intervals / active_time_intervals.
+func (c *Client) CreateTimeInterval(ctx context.Context, req *CreateTimeIntervalRequest) (*TimeInterval, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/time-intervals", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusCreated {
+		var result TimeInterval
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to create time interval"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// ListTimeIntervals lists time intervals filtered by namespace/tenant.
+func (c *Client) ListTimeIntervals(ctx context.Context, namespace, tenant *string) (*ListTimeIntervalsResponse, error) {
+	params := url.Values{}
+	if namespace != nil {
+		params.Set("namespace", *namespace)
+	}
+	if tenant != nil {
+		params.Set("tenant", *tenant)
+	}
+	path := "/v1/time-intervals"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to list time intervals"}
+	}
+
+	var result ListTimeIntervalsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// GetTimeInterval fetches a single time interval. Returns (nil, nil) on 404.
+func (c *Client) GetTimeInterval(ctx context.Context, namespace, tenant, name string) (*TimeInterval, error) {
+	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to get time interval"}
+	}
+
+	var result TimeInterval
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &result, nil
+}
+
+// UpdateTimeInterval updates a time interval's ranges, location, or
+// description. The name + (namespace, tenant) tuple is immutable.
+func (c *Client) UpdateTimeInterval(ctx context.Context, namespace, tenant, name string, update *UpdateTimeIntervalRequest) (*TimeInterval, error) {
+	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+	resp, err := c.doRequest(ctx, http.MethodPut, path, update)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode == http.StatusOK {
+		var result TimeInterval
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, &ConnectionError{Message: err.Error()}
+		}
+		return &result, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Time interval not found: %s", name)}
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "Failed to update time interval"}
+	}
+	return nil, &APIError{Code: errResp.Code, Message: errResp.Message, Retryable: errResp.Retryable}
+}
+
+// DeleteTimeInterval deletes a time interval.
+func (c *Client) DeleteTimeInterval(ctx context.Context, namespace, tenant, name string) error {
+	path := fmt.Sprintf("/v1/time-intervals/%s/%s/%s", namespace, tenant, name)
+	resp, err := c.doRequest(ctx, http.MethodDelete, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return &HTTPError{Status: resp.StatusCode, Message: fmt.Sprintf("Time interval not found: %s", name)}
+	}
+	return &HTTPError{Status: resp.StatusCode, Message: "Failed to delete time interval"}
+}
+
+// =============================================================================
 // Retention Policies
 // =============================================================================
 

@@ -832,6 +832,69 @@ type ListSilencesResponse struct {
 }
 
 // =============================================================================
+// Time Interval Types
+// =============================================================================
+
+// TimeOfDayInput is a time-of-day window in `HH:MM` form (24-hour clock).
+type TimeOfDayInput struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+}
+
+// NumericRange is an inclusive integer range used for weekdays,
+// days of month, months, and years.
+type NumericRange struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+// TimeRange is one element of a TimeInterval. Empty fields mean "any".
+type TimeRange struct {
+	Times       []TimeOfDayInput `json:"times,omitempty"`
+	Weekdays    []NumericRange   `json:"weekdays,omitempty"`
+	DaysOfMonth []NumericRange   `json:"days_of_month,omitempty"`
+	Months      []NumericRange   `json:"months,omitempty"`
+	Years       []NumericRange   `json:"years,omitempty"`
+}
+
+// CreateTimeIntervalRequest is the body for POST /v1/time-intervals.
+type CreateTimeIntervalRequest struct {
+	Name        string      `json:"name"`
+	Namespace   string      `json:"namespace"`
+	Tenant      string      `json:"tenant"`
+	TimeRanges  []TimeRange `json:"time_ranges"`
+	Location    *string     `json:"location,omitempty"`
+	Description *string     `json:"description,omitempty"`
+}
+
+// UpdateTimeIntervalRequest is a partial update; nil fields are unchanged.
+type UpdateTimeIntervalRequest struct {
+	TimeRanges  *[]TimeRange `json:"time_ranges,omitempty"`
+	Location    *string      `json:"location,omitempty"`
+	Description *string      `json:"description,omitempty"`
+}
+
+// TimeInterval is a tenant-scoped recurring schedule.
+type TimeInterval struct {
+	Name        string      `json:"name"`
+	Namespace   string      `json:"namespace"`
+	Tenant      string      `json:"tenant"`
+	TimeRanges  []TimeRange `json:"time_ranges"`
+	Location    *string     `json:"location,omitempty"`
+	Description *string     `json:"description,omitempty"`
+	CreatedBy   string      `json:"created_by"`
+	CreatedAt   string      `json:"created_at"`
+	UpdatedAt   string      `json:"updated_at"`
+	MatchesNow  bool        `json:"matches_now"`
+}
+
+// ListTimeIntervalsResponse is the response from listing time intervals.
+type ListTimeIntervalsResponse struct {
+	TimeIntervals []TimeInterval `json:"time_intervals"`
+	Count         int            `json:"count"`
+}
+
+// =============================================================================
 // Retention Policy Types
 // =============================================================================
 

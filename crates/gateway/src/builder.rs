@@ -66,6 +66,7 @@ pub struct GatewayBuilder {
     templates: HashMap<(String, String), HashMap<String, acteon_core::Template>>,
     template_profiles: HashMap<(String, String), HashMap<String, acteon_core::TemplateProfile>>,
     silences: Vec<acteon_core::Silence>,
+    time_intervals: Vec<acteon_core::TimeInterval>,
     max_inline_bytes: u64,
     max_attachments_per_action: usize,
 }
@@ -111,6 +112,7 @@ impl GatewayBuilder {
             templates: HashMap::new(),
             template_profiles: HashMap::new(),
             silences: Vec::new(),
+            time_intervals: Vec::new(),
             max_inline_bytes: 5_242_880,
             max_attachments_per_action: 10,
         }
@@ -525,6 +527,15 @@ impl GatewayBuilder {
         self
     }
 
+    /// Seed the gateway with a list of time intervals. In production these
+    /// are also loaded from the state store at startup via
+    /// [`Gateway::load_time_intervals_from_state_store`](crate::Gateway::load_time_intervals_from_state_store).
+    #[must_use]
+    pub fn time_intervals(mut self, intervals: Vec<acteon_core::TimeInterval>) -> Self {
+        self.time_intervals = intervals;
+        self
+    }
+
     /// Validate quota policies and bucket them by `"namespace:tenant"`.
     ///
     /// Each bucket may hold a generic policy plus any number of
@@ -834,6 +845,9 @@ impl GatewayBuilder {
             templates: parking_lot::RwLock::new(self.templates),
             template_profiles: parking_lot::RwLock::new(self.template_profiles),
             silences: parking_lot::RwLock::new(build_silence_cache(self.silences)?),
+            time_intervals: parking_lot::RwLock::new(build_time_interval_cache(
+                self.time_intervals,
+            )?),
             max_inline_bytes: self.max_inline_bytes,
             max_attachments_per_action: self.max_attachments_per_action,
         })
@@ -863,6 +877,22 @@ fn build_silence_cache(
             .map_err(GatewayError::Configuration)?;
         let namespace = cached.silence.namespace.clone();
         out.entry(namespace).or_default().push(cached);
+    }
+    Ok(out)
+}
+
+/// Compile a list of time intervals into the gateway cache, keyed by
+/// namespace. Mirrors [`build_silence_cache`] so hierarchical tenant
+/// matching works at dispatch time.
+fn build_time_interval_cache(
+    intervals: Vec<acteon_core::TimeInterval>,
+) -> Result<HashMap<String, Vec<acteon_core::TimeInterval>>, GatewayError> {
+    let mut out: HashMap<String, Vec<acteon_core::TimeInterval>> = HashMap::new();
+    for interval in intervals {
+        interval.validate().map_err(GatewayError::Configuration)?;
+        out.entry(interval.namespace.clone())
+            .or_default()
+            .push(interval);
     }
     Ok(out)
 }

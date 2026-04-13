@@ -63,6 +63,8 @@ fn compile_rule(yaml: YamlRule, file: Option<&Path>) -> Result<Rule, RuleError> 
         version: 0,
         metadata: yaml.metadata,
         timezone: None,
+        mute_time_intervals: yaml.mute_time_intervals,
+        active_time_intervals: yaml.active_time_intervals,
     };
     if let Some(tz) = yaml.timezone {
         rule = rule.with_timezone(tz);

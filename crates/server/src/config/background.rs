@@ -63,6 +63,14 @@ pub struct BackgroundProcessingConfig {
     /// How often to sync silences from the state store (seconds).
     #[serde(default = "default_silence_sync_interval")]
     pub silence_sync_interval_seconds: u64,
+    /// Whether to periodically sync time intervals from the state store.
+    /// Required for HA deployments so an interval created on one
+    /// gateway becomes visible on its peers within the sync interval.
+    #[serde(default = "default_enable_time_interval_sync")]
+    pub enable_time_interval_sync: bool,
+    /// How often to sync time intervals from the state store (seconds).
+    #[serde(default = "default_time_interval_sync_interval")]
+    pub time_interval_sync_interval_seconds: u64,
     /// Whether to periodically sync event groups from the state store.
     ///
     /// Required for HA deployments with persistent groups: without
@@ -104,6 +112,8 @@ impl Default for BackgroundProcessingConfig {
             template_sync_interval_seconds: default_template_sync_interval(),
             enable_silence_sync: default_enable_silence_sync(),
             silence_sync_interval_seconds: default_silence_sync_interval(),
+            enable_time_interval_sync: default_enable_time_interval_sync(),
+            time_interval_sync_interval_seconds: default_time_interval_sync_interval(),
             enable_group_sync: default_enable_group_sync(),
             group_sync_interval_seconds: default_group_sync_interval(),
             namespace: String::new(),
@@ -118,6 +128,14 @@ fn default_enable_silence_sync() -> bool {
 
 fn default_silence_sync_interval() -> u64 {
     10
+}
+
+fn default_enable_time_interval_sync() -> bool {
+    true
+}
+
+fn default_time_interval_sync_interval() -> u64 {
+    30
 }
 
 fn default_enable_group_sync() -> bool {

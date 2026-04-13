@@ -29,7 +29,8 @@ impl Role {
             | Permission::RulesManage
             | Permission::CircuitBreakerManage
             | Permission::PluginsManage
-            | Permission::SilencesManage => matches!(self, Self::Admin | Self::Operator),
+            | Permission::SilencesManage
+            | Permission::TimeIntervalsManage => matches!(self, Self::Admin | Self::Operator),
             Permission::AuditRead
             | Permission::RulesRead
             | Permission::RulesTest
@@ -61,4 +62,6 @@ pub enum Permission {
     StreamSubscribe,
     /// Create, update, or expire silences. Held by admin and operator.
     SilencesManage,
+    /// Create, update, or delete time intervals. Held by admin and operator.
+    TimeIntervalsManage,
 }

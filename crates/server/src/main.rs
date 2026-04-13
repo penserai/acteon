@@ -1585,6 +1585,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             silence_sync_interval: Duration::from_secs(
                 config.background.silence_sync_interval_seconds,
             ),
+            enable_time_interval_sync: config.background.enable_time_interval_sync,
+            time_interval_sync_interval: Duration::from_secs(
+                config.background.time_interval_sync_interval_seconds,
+            ),
             enable_group_sync: config.background.enable_group_sync,
             group_sync_interval: Duration::from_secs(config.background.group_sync_interval_seconds),
             namespace: config.background.namespace.clone(),

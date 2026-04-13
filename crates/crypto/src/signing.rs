@@ -1,9 +1,10 @@
 //! Ed25519 action signing and verification.
 //!
-//! Provides [`ActionSigner`] for signing canonical action bytes and
+//! Provides [`ActionSigningKey`] for signing canonical action bytes and
 //! [`Keyring`] for verifying signatures against a set of named public
 //! keys. Key material is zeroized on drop and redacted in `Debug`
-//! output, following the same hygiene pattern as [`super::MasterKey`].
+//! output, following the same hygiene pattern as
+//! [`MasterKey`](crate::MasterKey).
 
 use std::collections::HashMap;
 use std::fmt;

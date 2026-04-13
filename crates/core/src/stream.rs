@@ -197,6 +197,7 @@ pub fn outcome_category(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::RecurringCreated { .. } => "recurring_created",
         ActionOutcome::QuotaExceeded { .. } => "quota_exceeded",
         ActionOutcome::Silenced { .. } => "silenced",
+        ActionOutcome::Muted { .. } => "muted",
     }
 }
 
@@ -349,6 +350,30 @@ pub fn reconstruct_outcome(
             Some(ActionOutcome::Scheduled {
                 action_id,
                 scheduled_for,
+            })
+        }
+        "muted" => {
+            let interval = details.get("interval")?.as_str()?.to_owned();
+            let reason = details.get("reason")?.as_str()?.to_owned();
+            let matched_rule = details
+                .get("matched_rule")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Some(ActionOutcome::Muted {
+                interval,
+                reason,
+                matched_rule,
+            })
+        }
+        "silenced" => {
+            let silence_id = details.get("silence_id")?.as_str()?.to_owned();
+            let matched_rule = details
+                .get("matched_rule")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Some(ActionOutcome::Silenced {
+                silence_id,
+                matched_rule,
             })
         }
         "recurring_created" => {

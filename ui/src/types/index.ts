@@ -427,6 +427,53 @@ export interface UpdateSilenceRequest {
   comment?: string
 }
 
+// ---- Time Intervals ----
+export interface TimeOfDayInput {
+  start: string
+  end: string
+}
+
+export interface NumericRange {
+  start: number
+  end: number
+}
+
+export interface TimeRange {
+  times?: TimeOfDayInput[]
+  weekdays?: NumericRange[]
+  days_of_month?: NumericRange[]
+  months?: NumericRange[]
+  years?: NumericRange[]
+}
+
+export interface TimeInterval {
+  name: string
+  namespace: string
+  tenant: string
+  time_ranges: TimeRange[]
+  location?: string
+  description?: string
+  created_by: string
+  created_at: string
+  updated_at: string
+  matches_now: boolean
+}
+
+export interface CreateTimeIntervalRequest {
+  name: string
+  namespace: string
+  tenant: string
+  time_ranges: TimeRange[]
+  location?: string
+  description?: string
+}
+
+export interface UpdateTimeIntervalRequest {
+  time_ranges?: TimeRange[]
+  location?: string
+  description?: string
+}
+
 // ---- Stream ----
 export interface StreamEvent {
   id: string

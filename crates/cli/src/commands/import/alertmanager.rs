@@ -51,6 +51,13 @@ struct AlertmanagerConfig {
     receivers: Vec<Receiver>,
     #[serde(default)]
     inhibit_rules: Option<Vec<InhibitRule>>,
+    /// Alertmanager `time_intervals:` (preferred name).
+    #[serde(default)]
+    time_intervals: Option<Vec<AmTimeIntervalDef>>,
+    /// Alertmanager legacy `mute_time_intervals:` — same shape as
+    /// `time_intervals`, kept here so old configs still parse.
+    #[serde(default)]
+    mute_time_intervals: Option<Vec<AmTimeIntervalDef>>,
 }
 
 #[allow(dead_code)] // Fields used for deserialization completeness
@@ -81,6 +88,45 @@ struct Route {
     routes: Option<Vec<Route>>,
     #[serde(rename = "continue", default)]
     continue_routing: Option<bool>,
+    /// Names of time intervals during which this route is muted.
+    #[serde(default)]
+    mute_time_intervals: Option<Vec<String>>,
+    /// Names of time intervals during which this route is active.
+    #[serde(default)]
+    active_time_intervals: Option<Vec<String>>,
+}
+
+// =========================================================================
+// Time interval model — Alertmanager's `time_intervals:` schema
+// =========================================================================
+
+#[derive(Debug, Deserialize)]
+struct AmTimeIntervalDef {
+    name: String,
+    #[serde(default)]
+    time_intervals: Vec<AmTimeIntervalEntry>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AmTimeIntervalEntry {
+    #[serde(default)]
+    times: Vec<AmTimeRange>,
+    #[serde(default)]
+    weekdays: Vec<String>,
+    #[serde(default)]
+    days_of_month: Vec<String>,
+    #[serde(default)]
+    months: Vec<String>,
+    #[serde(default)]
+    years: Vec<String>,
+    #[serde(default)]
+    location: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AmTimeRange {
+    start_time: String,
+    end_time: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +224,19 @@ struct RuleEntry {
     conditions: Vec<ConditionEntry>,
     action_type: String,
     action_fields: Vec<(String, String)>,
+    /// Names of time intervals during which this rule is muted.
+    mute_time_intervals: Vec<String>,
+    /// Names of time intervals during which this rule is active.
+    active_time_intervals: Vec<String>,
+}
+
+/// A generated Acteon time interval entry, ready for YAML rendering.
+struct TimeIntervalEntry {
+    name: String,
+    /// One `TimeRange` per element. Each inner Vec is the raw key/value
+    /// lines for that range (already YAML-escaped).
+    ranges: Vec<Vec<(String, String)>>,
+    location: Option<String>,
 }
 
 enum ConditionEntry {
@@ -362,7 +421,7 @@ fn convert_receivers(receivers: &[Receiver], global: &GlobalConfig) -> Vec<Provi
                         ("smtp_host".into(), parts[0].to_owned()),
                         (
                             "smtp_port".into(),
-                            parts.get(1).unwrap_or(&"25").to_string(),
+                            (*parts.get(1).unwrap_or(&"25")).to_owned(),
                         ),
                         (
                             "from_address".into(),
@@ -557,12 +616,27 @@ fn convert_routes(route: &Route, priority: &mut u32, rules: &mut Vec<RuleEntry>)
                 sanitize_name(&label_hint.join("-"))
             };
 
+            // Time interval references propagate from parent down: if
+            // the child route doesn't declare any, inherit the parent's.
+            let mute_intervals = child
+                .mute_time_intervals
+                .clone()
+                .or_else(|| route.mute_time_intervals.clone())
+                .unwrap_or_default();
+            let active_intervals = child
+                .active_time_intervals
+                .clone()
+                .or_else(|| route.active_time_intervals.clone())
+                .unwrap_or_default();
+
             rules.push(RuleEntry {
                 name: format!("imported-{name_suffix}-{priority}"),
                 priority: *priority,
                 conditions,
                 action_type,
                 action_fields,
+                mute_time_intervals: mute_intervals,
+                active_time_intervals: active_intervals,
             });
             *priority += 1;
 
@@ -607,8 +681,183 @@ fn convert_inhibit_rules(
             conditions,
             action_type: "suppress".into(),
             action_fields: vec![],
+            mute_time_intervals: Vec::new(),
+            active_time_intervals: Vec::new(),
         });
         *priority += 1;
+    }
+}
+
+/// Convert Alertmanager `time_intervals` → Acteon time interval entries.
+///
+/// Alertmanager's range model uses string forms (`"monday:friday"`,
+/// `"1:31"`, `"-1"`, `"jan:dec"`). Acteon stores them as numeric
+/// `(start, end)` ranges. This function does the textual→numeric
+/// translation. Ranges that fail to parse are skipped with a warning
+/// so importing a malformed entry never crashes the CLI.
+fn convert_time_intervals(defs: &[AmTimeIntervalDef]) -> Vec<TimeIntervalEntry> {
+    let mut out = Vec::new();
+    for def in defs {
+        let mut ranges: Vec<Vec<(String, String)>> = Vec::new();
+        let mut location: Option<String> = None;
+        for entry in &def.time_intervals {
+            if location.is_none() {
+                location.clone_from(&entry.location);
+            }
+            let mut fields: Vec<(String, String)> = Vec::new();
+
+            // times
+            if !entry.times.is_empty() {
+                let mut yaml = String::from("\n");
+                for t in &entry.times {
+                    let _ = writeln!(
+                        yaml,
+                        "          - start: \"{}\"\n            end: \"{}\"",
+                        t.start_time, t.end_time
+                    );
+                }
+                fields.push(("times".into(), yaml.trim_end().to_owned()));
+            }
+
+            // weekdays — Alertmanager: "monday:friday" or "saturday"
+            if !entry.weekdays.is_empty() {
+                let mut yaml = String::from("\n");
+                for w in &entry.weekdays {
+                    if let Some((s, e)) = parse_weekday_range(w) {
+                        let _ = writeln!(yaml, "          - start: {s}\n            end: {e}");
+                    } else {
+                        eprintln!(
+                            "warning: time_intervals[{}]: unrecognized weekday {w:?}, skipping",
+                            def.name
+                        );
+                    }
+                }
+                fields.push(("weekdays".into(), yaml.trim_end().to_owned()));
+            }
+
+            // days_of_month — "1:31", "-1", "15"
+            if !entry.days_of_month.is_empty() {
+                let mut yaml = String::from("\n");
+                for d in &entry.days_of_month {
+                    if let Some((s, e)) = parse_int_range(d) {
+                        let _ = writeln!(yaml, "          - start: {s}\n            end: {e}");
+                    } else {
+                        eprintln!(
+                            "warning: time_intervals[{}]: bad days_of_month {d:?}, skipping",
+                            def.name
+                        );
+                    }
+                }
+                fields.push(("days_of_month".into(), yaml.trim_end().to_owned()));
+            }
+
+            // months — "january:december", "april"
+            if !entry.months.is_empty() {
+                let mut yaml = String::from("\n");
+                for m in &entry.months {
+                    if let Some((s, e)) = parse_month_range(m) {
+                        let _ = writeln!(yaml, "          - start: {s}\n            end: {e}");
+                    } else {
+                        eprintln!(
+                            "warning: time_intervals[{}]: bad month {m:?}, skipping",
+                            def.name
+                        );
+                    }
+                }
+                fields.push(("months".into(), yaml.trim_end().to_owned()));
+            }
+
+            // years — "2025:2030", "2026"
+            if !entry.years.is_empty() {
+                let mut yaml = String::from("\n");
+                for y in &entry.years {
+                    if let Some((s, e)) = parse_int_range(y) {
+                        let _ = writeln!(yaml, "          - start: {s}\n            end: {e}");
+                    } else {
+                        eprintln!(
+                            "warning: time_intervals[{}]: bad year {y:?}, skipping",
+                            def.name
+                        );
+                    }
+                }
+                fields.push(("years".into(), yaml.trim_end().to_owned()));
+            }
+
+            ranges.push(fields);
+        }
+
+        out.push(TimeIntervalEntry {
+            name: sanitize_name(&def.name),
+            ranges,
+            location,
+        });
+    }
+    out
+}
+
+/// Parse a colon-delimited range like `"1:31"` or a single value like `"-1"`.
+fn parse_int_range(s: &str) -> Option<(i32, i32)> {
+    let s = s.trim();
+    if let Some((a, b)) = s.split_once(':') {
+        let a = a.trim().parse().ok()?;
+        let b = b.trim().parse().ok()?;
+        Some((a, b))
+    } else {
+        let v: i32 = s.parse().ok()?;
+        Some((v, v))
+    }
+}
+
+/// Convert a weekday name to its 1..=7 (Mon..Sun) index.
+fn weekday_index(name: &str) -> Option<u32> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "monday" | "mon" => Some(1),
+        "tuesday" | "tue" => Some(2),
+        "wednesday" | "wed" => Some(3),
+        "thursday" | "thu" => Some(4),
+        "friday" | "fri" => Some(5),
+        "saturday" | "sat" => Some(6),
+        "sunday" | "sun" => Some(7),
+        _ => None,
+    }
+}
+
+fn parse_weekday_range(s: &str) -> Option<(u32, u32)> {
+    let s = s.trim();
+    if let Some((a, b)) = s.split_once(':') {
+        Some((weekday_index(a)?, weekday_index(b)?))
+    } else {
+        let v = weekday_index(s)?;
+        Some((v, v))
+    }
+}
+
+fn month_index(name: &str) -> Option<u32> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "january" | "jan" => Some(1),
+        "february" | "feb" => Some(2),
+        "march" | "mar" => Some(3),
+        "april" | "apr" => Some(4),
+        "may" => Some(5),
+        "june" | "jun" => Some(6),
+        "july" | "jul" => Some(7),
+        "august" | "aug" => Some(8),
+        "september" | "sep" => Some(9),
+        "october" | "oct" => Some(10),
+        "november" | "nov" => Some(11),
+        "december" | "dec" => Some(12),
+        // Alertmanager also accepts numeric months.
+        other => other.parse().ok().filter(|&n: &u32| (1..=12).contains(&n)),
+    }
+}
+
+fn parse_month_range(s: &str) -> Option<(u32, u32)> {
+    let s = s.trim();
+    if let Some((a, b)) = s.split_once(':') {
+        Some((month_index(a)?, month_index(b)?))
+    } else {
+        let v = month_index(s)?;
+        Some((v, v))
     }
 }
 
@@ -650,8 +899,8 @@ fn render_rules_yaml(rules: &[RuleEntry]) -> String {
         let _ = writeln!(out, "    priority: {}", r.priority);
 
         // Condition
-        if r.conditions.len() == 1 {
-            match &r.conditions[0] {
+        match r.conditions.len().cmp(&1) {
+            std::cmp::Ordering::Equal => match &r.conditions[0] {
                 ConditionEntry::Eq(field, val) => {
                     out.push_str("    condition:\n");
                     let _ = writeln!(out, "      field: {field}");
@@ -662,22 +911,24 @@ fn render_rules_yaml(rules: &[RuleEntry]) -> String {
                     let _ = writeln!(out, "      field: {field}");
                     let _ = writeln!(out, "      matches: \"{val}\"");
                 }
-            }
-        } else if r.conditions.len() > 1 {
-            out.push_str("    condition:\n");
-            out.push_str("      all:\n");
-            for c in &r.conditions {
-                match c {
-                    ConditionEntry::Eq(field, val) => {
-                        let _ = writeln!(out, "        - field: {field}");
-                        let _ = writeln!(out, "          eq: \"{val}\"");
-                    }
-                    ConditionEntry::Matches(field, val) => {
-                        let _ = writeln!(out, "        - field: {field}");
-                        let _ = writeln!(out, "          matches: \"{val}\"");
+            },
+            std::cmp::Ordering::Greater => {
+                out.push_str("    condition:\n");
+                out.push_str("      all:\n");
+                for c in &r.conditions {
+                    match c {
+                        ConditionEntry::Eq(field, val) => {
+                            let _ = writeln!(out, "        - field: {field}");
+                            let _ = writeln!(out, "          eq: \"{val}\"");
+                        }
+                        ConditionEntry::Matches(field, val) => {
+                            let _ = writeln!(out, "        - field: {field}");
+                            let _ = writeln!(out, "          matches: \"{val}\"");
+                        }
                     }
                 }
             }
+            std::cmp::Ordering::Less => {}
         }
 
         // Action
@@ -699,8 +950,62 @@ fn render_rules_yaml(rules: &[RuleEntry]) -> String {
                 let _ = writeln!(out, "      {k}: {v}");
             }
         }
+
+        // Time interval references
+        if !r.mute_time_intervals.is_empty() {
+            out.push_str("    mute_time_intervals:\n");
+            for n in &r.mute_time_intervals {
+                let _ = writeln!(out, "      - {n}");
+            }
+        }
+        if !r.active_time_intervals.is_empty() {
+            out.push_str("    active_time_intervals:\n");
+            for n in &r.active_time_intervals {
+                let _ = writeln!(out, "      - {n}");
+            }
+        }
     }
 
+    out
+}
+
+/// Render imported time intervals as a YAML document. The format mirrors
+/// the create-time-interval API request body so operators can drop the
+/// file into `acteon-cli time-intervals create -f ...` (or the future
+/// bulk-load path).
+fn render_time_intervals_yaml(intervals: &[TimeIntervalEntry], namespace: &str) -> String {
+    let mut out = String::from(
+        "# Auto-generated by: acteon import alertmanager\n\
+         # Each entry maps to a `POST /v1/time-intervals` request.\n\
+         # Review the resolved namespace and tenant before applying.\n\
+         time_intervals:\n",
+    );
+    for ti in intervals {
+        let _ = writeln!(out, "  - name: {}", ti.name);
+        let _ = writeln!(out, "    namespace: {namespace}");
+        out.push_str("    tenant: default\n");
+        if let Some(ref loc) = ti.location {
+            let _ = writeln!(out, "    location: \"{loc}\"");
+        }
+        out.push_str("    time_ranges:\n");
+        for range in &ti.ranges {
+            out.push_str("      - ");
+            let mut first = true;
+            for (k, v) in range {
+                if first {
+                    let _ = writeln!(out, "{k}:{v}");
+                    first = false;
+                } else {
+                    let _ = writeln!(out, "        {k}:{v}");
+                }
+            }
+            if first {
+                // No predicates at all (rare): emit an empty range so
+                // the YAML stays parseable as a list of objects.
+                out.push_str("{}\n");
+            }
+        }
+    }
     out
 }
 
@@ -713,11 +1018,22 @@ pub fn run(args: &AlertmanagerImportArgs) -> anyhow::Result<()> {
     let config: AlertmanagerConfig = serde_yaml_ng::from_str(&content)
         .map_err(|e| anyhow::anyhow!("failed to parse alertmanager config: {e}"))?;
 
+    // Merge `time_intervals:` and the legacy `mute_time_intervals:`
+    // top-level lists. Alertmanager treats both as the same shape.
+    let mut all_time_intervals: Vec<AmTimeIntervalDef> = Vec::new();
+    if let Some(ti) = config.time_intervals {
+        all_time_intervals.extend(ti);
+    }
+    if let Some(ti) = config.mute_time_intervals {
+        all_time_intervals.extend(ti);
+    }
+
     eprintln!(
-        "Parsed {} receivers, {} route children, {} inhibit rules",
+        "Parsed {} receivers, {} route children, {} inhibit rules, {} time intervals",
         config.receivers.len(),
         config.route.routes.as_ref().map_or(0, Vec::len),
         config.inhibit_rules.as_ref().map_or(0, Vec::len),
+        all_time_intervals.len(),
     );
 
     // Convert receivers → providers
@@ -736,15 +1052,33 @@ pub fn run(args: &AlertmanagerImportArgs) -> anyhow::Result<()> {
     }
     eprintln!("Generated {} rule(s)", rules.len());
 
+    // Convert time intervals
+    let time_intervals = convert_time_intervals(&all_time_intervals);
+    if !time_intervals.is_empty() {
+        eprintln!("Generated {} time interval(s)", time_intervals.len());
+    }
+
     // Render output
     let providers_toml = render_providers_toml(&providers);
     let rules_yaml = render_rules_yaml(&rules);
+    let time_intervals_yaml = if time_intervals.is_empty() {
+        None
+    } else {
+        Some(render_time_intervals_yaml(
+            &time_intervals,
+            &args.default_namespace,
+        ))
+    };
 
     if args.dry_run {
         println!("--- providers.toml ---");
         println!("{providers_toml}");
         println!("--- rules.yaml ---");
         println!("{rules_yaml}");
+        if let Some(ref ti) = time_intervals_yaml {
+            println!("--- time-intervals.yaml ---");
+            println!("{ti}");
+        }
     } else {
         std::fs::create_dir_all(&args.output_dir)?;
         let providers_path = args.output_dir.join("providers.toml");
@@ -753,6 +1087,11 @@ pub fn run(args: &AlertmanagerImportArgs) -> anyhow::Result<()> {
         std::fs::write(&rules_path, &rules_yaml)?;
         eprintln!("Wrote {}", providers_path.display());
         eprintln!("Wrote {}", rules_path.display());
+        if let Some(ref ti) = time_intervals_yaml {
+            let ti_path = args.output_dir.join("time-intervals.yaml");
+            std::fs::write(&ti_path, ti)?;
+            eprintln!("Wrote {}", ti_path.display());
+        }
     }
 
     Ok(())
@@ -871,6 +1210,111 @@ inhibit_rules:
         assert_eq!(parse_duration_to_seconds("5m"), 300);
         assert_eq!(parse_duration_to_seconds("1h"), 3600);
         assert_eq!(parse_duration_to_seconds("2d"), 172800);
+    }
+
+    const TIME_INTERVAL_CONFIG: &str = r##"
+route:
+  receiver: default
+  routes:
+    - match:
+        severity: warning
+      receiver: slack
+      mute_time_intervals:
+        - weekend-mute
+      active_time_intervals:
+        - business-hours
+
+receivers:
+  - name: default
+    slack_configs:
+      - channel: "#alerts"
+  - name: slack
+    slack_configs:
+      - channel: "#warnings"
+
+time_intervals:
+  - name: business-hours
+    time_intervals:
+      - times:
+          - start_time: "09:00"
+            end_time: "17:00"
+        weekdays:
+          - "monday:friday"
+        location: "America/New_York"
+  - name: weekend-mute
+    time_intervals:
+      - weekdays:
+          - saturday
+          - sunday
+"##;
+
+    #[test]
+    fn parses_time_intervals_top_level() {
+        let config: AlertmanagerConfig =
+            serde_yaml_ng::from_str(TIME_INTERVAL_CONFIG).expect("parse");
+        let ti = config.time_intervals.as_ref().expect("time_intervals");
+        assert_eq!(ti.len(), 2);
+        assert_eq!(ti[0].name, "business-hours");
+        assert_eq!(ti[0].time_intervals[0].times.len(), 1);
+        assert_eq!(ti[0].time_intervals[0].weekdays, vec!["monday:friday"]);
+        assert_eq!(
+            ti[0].time_intervals[0].location.as_deref(),
+            Some("America/New_York")
+        );
+    }
+
+    #[test]
+    fn route_inherits_time_interval_refs() {
+        let config: AlertmanagerConfig =
+            serde_yaml_ng::from_str(TIME_INTERVAL_CONFIG).expect("parse");
+        let mut rules = Vec::new();
+        let mut priority = 1;
+        convert_routes(&config.route, &mut priority, &mut rules);
+        assert!(!rules.is_empty(), "expected child route rule");
+        let warn = rules
+            .iter()
+            .find(|r| {
+                r.conditions
+                    .iter()
+                    .any(|c| matches!(c, ConditionEntry::Eq(_, v) if v == "warning"))
+            })
+            .expect("warning rule");
+        assert_eq!(warn.mute_time_intervals, vec!["weekend-mute".to_owned()]);
+        assert_eq!(
+            warn.active_time_intervals,
+            vec!["business-hours".to_owned()]
+        );
+    }
+
+    #[test]
+    fn convert_time_intervals_renders_yaml() {
+        let config: AlertmanagerConfig =
+            serde_yaml_ng::from_str(TIME_INTERVAL_CONFIG).expect("parse");
+        let intervals = convert_time_intervals(config.time_intervals.as_ref().unwrap());
+        assert_eq!(intervals.len(), 2);
+        let yaml = render_time_intervals_yaml(&intervals, "prod");
+        assert!(yaml.contains("name: business-hours"));
+        assert!(yaml.contains("namespace: prod"));
+        assert!(yaml.contains("location: \"America/New_York\""));
+        // Weekday `monday:friday` becomes 1..5; weekend single-day becomes 6,6 / 7,7.
+        assert!(yaml.contains("start: 1"));
+        assert!(yaml.contains("end: 5"));
+        assert!(yaml.contains("start: 6"));
+        assert!(yaml.contains("start: 7"));
+    }
+
+    #[test]
+    fn weekday_and_month_parsing() {
+        assert_eq!(weekday_index("monday"), Some(1));
+        assert_eq!(weekday_index("Sun"), Some(7));
+        assert_eq!(weekday_index("foo"), None);
+        assert_eq!(parse_weekday_range("monday:friday"), Some((1, 5)));
+        assert_eq!(month_index("january"), Some(1));
+        assert_eq!(month_index("Dec"), Some(12));
+        assert_eq!(month_index("4"), Some(4));
+        assert_eq!(parse_month_range("jan:apr"), Some((1, 4)));
+        assert_eq!(parse_int_range("1:31"), Some((1, 31)));
+        assert_eq!(parse_int_range("-1"), Some((-1, -1)));
     }
 
     #[test]

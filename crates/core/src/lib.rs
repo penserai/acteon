@@ -22,6 +22,7 @@ pub mod silence;
 pub mod state_machine;
 pub mod stream;
 pub mod template;
+pub mod time_interval;
 pub mod types;
 
 pub use action::{Action, ActionMetadata};
@@ -72,5 +73,10 @@ pub use stream::{
 pub use template::{
     Template, TemplateProfile, TemplateProfileField, validate_template_content,
     validate_template_name,
+};
+pub use time_interval::{
+    DayOfMonthRange, MAX_NAME_LEN as TIME_INTERVAL_MAX_NAME_LEN,
+    MAX_TIME_RANGES as TIME_INTERVAL_MAX_RANGES, MonthRange, TimeInterval, TimeOfDayRange,
+    TimeRange, WeekdayRange, YearRange,
 };
 pub use types::{ActionId, Namespace, ProviderId, TenantId};

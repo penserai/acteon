@@ -28,6 +28,28 @@ pub(crate) fn matched_rule_name(verdict: &RuleVerdict) -> Option<String> {
     }
 }
 
+/// Like [`matched_rule_name`] but also surfaces the rule name attached to
+/// `RuleVerdict::Allow(Some(name))`. The audit helper hides the name on
+/// allow verdicts to indicate "no rule changed the outcome", but the
+/// time-interval gate still needs the actual matched rule so it can read
+/// its `mute_time_intervals` / `active_time_intervals` references.
+pub(crate) fn rule_name_for_lookup(verdict: &RuleVerdict) -> Option<String> {
+    match verdict {
+        RuleVerdict::Allow(name) => name.clone(),
+        RuleVerdict::Deduplicate { .. } => None,
+        RuleVerdict::Deny(rule)
+        | RuleVerdict::Suppress(rule)
+        | RuleVerdict::Reroute { rule, .. }
+        | RuleVerdict::Throttle { rule, .. }
+        | RuleVerdict::Modify { rule, .. }
+        | RuleVerdict::StateMachine { rule, .. }
+        | RuleVerdict::Group { rule, .. }
+        | RuleVerdict::RequestApproval { rule, .. }
+        | RuleVerdict::Chain { rule, .. }
+        | RuleVerdict::Schedule { rule, .. } => Some(rule.clone()),
+    }
+}
+
 /// Extract a string tag from an `ActionOutcome`.
 pub(crate) fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
     match outcome {
@@ -47,6 +69,7 @@ pub(crate) fn outcome_tag(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::RecurringCreated { .. } => "recurring_created",
         ActionOutcome::QuotaExceeded { .. } => "quota_exceeded",
         ActionOutcome::Silenced { .. } => "silenced",
+        ActionOutcome::Muted { .. } => "muted",
     }
 }
 
@@ -216,6 +239,15 @@ pub(crate) fn build_audit_record(
             matched_rule,
         } => serde_json::json!({
             "silence_id": silence_id,
+            "matched_rule": matched_rule,
+        }),
+        ActionOutcome::Muted {
+            interval,
+            reason,
+            matched_rule,
+        } => serde_json::json!({
+            "interval": interval,
+            "reason": reason,
             "matched_rule": matched_rule,
         }),
     };

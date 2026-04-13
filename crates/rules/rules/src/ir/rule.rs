@@ -163,6 +163,19 @@ pub struct Rule {
     /// Overrides the gateway-level `default_timezone`.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Names of [`TimeInterval`](acteon_core::TimeInterval)s during which
+    /// this rule's verdict is *muted* — if any listed interval is currently
+    /// matched, the dispatch short-circuits to `ActionOutcome::Muted`
+    /// instead of executing the verdict. Mirrors Alertmanager's
+    /// `mute_time_intervals` on routes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mute_time_intervals: Vec<String>,
+    /// Names of [`TimeInterval`](acteon_core::TimeInterval)s during which
+    /// this rule is *active*. If non-empty and **none** of the listed
+    /// intervals is currently matched, the dispatch is muted. Mirrors
+    /// Alertmanager's `active_time_intervals`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_time_intervals: Vec<String>,
 }
 
 impl Rule {
@@ -181,6 +194,8 @@ impl Rule {
             version: 0,
             metadata: HashMap::new(),
             timezone: None,
+            mute_time_intervals: Vec::new(),
+            active_time_intervals: Vec::new(),
         }
     }
 
@@ -230,6 +245,21 @@ impl Rule {
     #[must_use]
     pub fn with_timezone(mut self, tz: impl Into<String>) -> Self {
         self.timezone = Some(tz.into());
+        self
+    }
+
+    /// Set the list of time intervals during which this rule is muted.
+    #[must_use]
+    pub fn with_mute_time_intervals(mut self, intervals: Vec<String>) -> Self {
+        self.mute_time_intervals = intervals;
+        self
+    }
+
+    /// Set the list of time intervals during which this rule is active.
+    /// If non-empty and none match at dispatch time, the action is muted.
+    #[must_use]
+    pub fn with_active_time_intervals(mut self, intervals: Vec<String>) -> Self {
+        self.active_time_intervals = intervals;
         self
     }
 }

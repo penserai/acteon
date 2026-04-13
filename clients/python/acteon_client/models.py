@@ -1468,6 +1468,179 @@ class ListSilencesResponse:
 
 
 # =============================================================================
+# Time Interval Types
+# =============================================================================
+
+
+@dataclass
+class TimeOfDayInput:
+    """Time-of-day window in `HH:MM` form (24-hour clock)."""
+
+    start: str
+    end: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"start": self.start, "end": self.end}
+
+
+@dataclass
+class WeekdayRange:
+    """Inclusive weekday range (1=Mon..7=Sun)."""
+
+    start: int
+    end: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"start": self.start, "end": self.end}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "WeekdayRange":
+        return cls(start=int(data["start"]), end=int(data["end"]))
+
+
+@dataclass
+class IntRange:
+    """Inclusive integer range — used for days_of_month/months/years."""
+
+    start: int
+    end: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"start": self.start, "end": self.end}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "IntRange":
+        return cls(start=int(data["start"]), end=int(data["end"]))
+
+
+@dataclass
+class TimeRange:
+    """One element in a [`TimeInterval`]'s `time_ranges`. Empty fields mean 'any'."""
+
+    times: list[TimeOfDayInput] = field(default_factory=list)
+    weekdays: list[WeekdayRange] = field(default_factory=list)
+    days_of_month: list[IntRange] = field(default_factory=list)
+    months: list[IntRange] = field(default_factory=list)
+    years: list[IntRange] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.times:
+            result["times"] = [t.to_dict() for t in self.times]
+        if self.weekdays:
+            result["weekdays"] = [w.to_dict() for w in self.weekdays]
+        if self.days_of_month:
+            result["days_of_month"] = [d.to_dict() for d in self.days_of_month]
+        if self.months:
+            result["months"] = [m.to_dict() for m in self.months]
+        if self.years:
+            result["years"] = [y.to_dict() for y in self.years]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimeRange":
+        return cls(
+            times=[TimeOfDayInput(**t) for t in data.get("times", [])],
+            weekdays=[WeekdayRange.from_dict(w) for w in data.get("weekdays", [])],
+            days_of_month=[
+                IntRange.from_dict(d) for d in data.get("days_of_month", [])
+            ],
+            months=[IntRange.from_dict(m) for m in data.get("months", [])],
+            years=[IntRange.from_dict(y) for y in data.get("years", [])],
+        )
+
+
+@dataclass
+class CreateTimeIntervalRequest:
+    """Request body for creating a time interval."""
+
+    name: str
+    namespace: str
+    tenant: str
+    time_ranges: list[TimeRange] = field(default_factory=list)
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "name": self.name,
+            "namespace": self.namespace,
+            "tenant": self.tenant,
+            "time_ranges": [r.to_dict() for r in self.time_ranges],
+        }
+        if self.location is not None:
+            result["location"] = self.location
+        if self.description is not None:
+            result["description"] = self.description
+        return result
+
+
+@dataclass
+class UpdateTimeIntervalRequest:
+    """Partial update for a time interval. ``None`` fields are unchanged."""
+
+    time_ranges: Optional[list[TimeRange]] = None
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.time_ranges is not None:
+            result["time_ranges"] = [r.to_dict() for r in self.time_ranges]
+        if self.location is not None:
+            result["location"] = self.location
+        if self.description is not None:
+            result["description"] = self.description
+        return result
+
+
+@dataclass
+class TimeInterval:
+    """A named, tenant-scoped recurring schedule."""
+
+    name: str
+    namespace: str
+    tenant: str
+    time_ranges: list[TimeRange]
+    created_by: str
+    created_at: str
+    updated_at: str
+    matches_now: bool = False
+    location: Optional[str] = None
+    description: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "TimeInterval":
+        return cls(
+            name=data["name"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            time_ranges=[TimeRange.from_dict(r) for r in data.get("time_ranges", [])],
+            location=data.get("location"),
+            description=data.get("description"),
+            created_by=data.get("created_by", ""),
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            matches_now=data.get("matches_now", False),
+        )
+
+
+@dataclass
+class ListTimeIntervalsResponse:
+    time_intervals: list[TimeInterval]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListTimeIntervalsResponse":
+        return cls(
+            time_intervals=[
+                TimeInterval.from_dict(t) for t in data.get("time_intervals", [])
+            ],
+            count=data.get("count", 0),
+        )
+
+
+# =============================================================================
 # Retention Policy Types
 # =============================================================================
 

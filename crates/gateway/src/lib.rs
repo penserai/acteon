@@ -13,6 +13,7 @@ mod quota_enforcement;
 mod silence_enforcement;
 pub mod template_engine;
 mod template_management;
+mod time_interval_management;
 pub mod watcher;
 
 pub use acteon_executor::{DeadLetterEntry, DeadLetterQueue, DeadLetterSink};
@@ -28,4 +29,5 @@ pub use gateway::{ApprovalKey, ApprovalKeySet, ApprovalRecord, ApprovalStatus, G
 pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot, ProviderMetrics, ProviderStatsSnapshot};
 pub use silence_enforcement::CachedSilence;
+pub use time_interval_management::{TimeIntervalDecision, time_interval_cache_id};
 pub use watcher::RuleWatcher;
