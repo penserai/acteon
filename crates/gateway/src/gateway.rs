@@ -1860,14 +1860,9 @@ impl Gateway {
 
         for key in keys_to_try {
             let expected = Self::compute_approval_sig_with_key(key, ns, tenant, id, expires_at);
-            // Constant-time comparison
-            let is_match = expected.len() == sig.len()
-                && expected
-                    .bytes()
-                    .zip(sig.bytes())
-                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                    == 0;
-            if is_match {
+            // Constant-time comparison — no early return on length
+            // mismatch, no branching on byte values.
+            if subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), sig.as_bytes()).into() {
                 return true;
             }
         }
@@ -5234,6 +5229,14 @@ impl Gateway {
             return Err(GatewayError::ApprovalNotFound);
         }
 
+        // 1b. Explicit expiry check — do not rely solely on state store
+        // TTL enforcement, which may be missing (Postgres) or
+        // eventually consistent (DynamoDB). This is the authoritative
+        // server-side gate.
+        if chrono::Utc::now().timestamp() > expires_at {
+            return Err(GatewayError::ApprovalNotFound);
+        }
+
         // 2. Atomically claim the approval (first writer wins)
         let claim_key = StateKey::new(namespace, tenant, KeyKind::Approval, format!("{id}:claim"));
         let is_claimed = self
@@ -5366,6 +5369,14 @@ impl Gateway {
     ) -> Result<(), GatewayError> {
         // 1. Verify HMAC signature (includes expires_at to prevent replay after expiry)
         if !self.verify_approval_sig(namespace, tenant, id, expires_at, sig, kid) {
+            return Err(GatewayError::ApprovalNotFound);
+        }
+
+        // 1b. Explicit expiry check — do not rely solely on state store
+        // TTL enforcement, which may be missing (Postgres) or
+        // eventually consistent (DynamoDB). This is the authoritative
+        // server-side gate.
+        if chrono::Utc::now().timestamp() > expires_at {
             return Err(GatewayError::ApprovalNotFound);
         }
 
