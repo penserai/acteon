@@ -228,12 +228,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match client.query_audit(&audit_query).await {
         Ok(page) => {
-            if page.total == 0 {
+            if page.total.unwrap_or(0) == 0 && page.records.is_empty() {
                 info!("  No audit records (audit may not be enabled)\n");
                 info!("  To enable audit, use a config with [audit] section:");
                 info!("    cargo run -p acteon-server -- -c examples/postgres.toml\n");
             } else {
-                info!("  Found {} audit records for tenant-http-test:", page.total);
+                info!(
+                    "  Found {} audit records for tenant-http-test:",
+                    page.total.unwrap_or(0)
+                );
                 for record in &page.records {
                     info!(
                         "    {} | {} | {} | {}",

@@ -117,9 +117,19 @@ export interface AuditRecord {
 
 export interface AuditPage {
   records: AuditRecord[]
-  total: number
+  /**
+   * Total matching records, when the backend computed it. Cursor
+   * pagination skips the count, so this is `undefined` after the first
+   * cursor-driven request.
+   */
+  total?: number
   limit: number
   offset: number
+  /**
+   * Opaque cursor pointing at the next page, or `undefined` when this
+   * page is the last. Pass into `AuditQuery.cursor` to resume.
+   */
+  next_cursor?: string
 }
 
 export interface AuditQuery {
@@ -135,7 +145,13 @@ export interface AuditQuery {
   from?: string
   to?: string
   limit?: number
+  /**
+   * Legacy offset pagination — prefer `cursor` for deep pagination.
+   * Large offsets degrade linearly on every backend.
+   */
   offset?: number
+  /** Opaque pagination cursor returned by the previous page. */
+  cursor?: string
 }
 
 export interface ReplayResult {

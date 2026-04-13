@@ -182,9 +182,10 @@ mod tests {
             let records = self.records.lock().unwrap().clone();
             Ok(AuditPage {
                 records,
-                total: 0,
+                total: Some(0),
                 limit: 100,
                 offset: 0,
+                next_cursor: None,
             })
         }
 

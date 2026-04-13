@@ -194,10 +194,13 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
         let to = query.to.unwrap_or(now);
         let top_n = query.top_n.unwrap_or(10);
 
-        // Fetch all matching records in batches.
+        // Fetch all matching records in batches using cursor pagination.
+        // Cursor avoids the O(N²) degradation that offset paging causes
+        // on large audit trails, and lets backends short-circuit the
+        // count query.
         let mut all_records = Vec::new();
         let batch_size = 1000u32;
-        let mut offset = 0u32;
+        let mut cursor: Option<String> = None;
 
         loop {
             let audit_query = AuditQuery {
@@ -209,18 +212,17 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
                 from: Some(from),
                 to: Some(to),
                 limit: Some(batch_size),
-                offset: Some(offset),
+                cursor: cursor.clone(),
                 ..Default::default()
             };
 
             let page = self.store.query(&audit_query).await?;
-            let fetched = page.records.len();
             all_records.extend(page.records);
 
-            if fetched < batch_size as usize {
-                break;
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
             }
-            offset += batch_size;
         }
 
         let total_count = all_records.len() as u64;
@@ -321,7 +323,7 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
             HashMap::new();
 
         let batch_size = 1000u32;
-        let mut offset = 0u32;
+        let mut cursor: Option<String> = None;
 
         loop {
             let audit_query = AuditQuery {
@@ -330,12 +332,11 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
                 from: Some(from),
                 to: Some(to),
                 limit: Some(batch_size),
-                offset: Some(offset),
+                cursor: cursor.clone(),
                 ..Default::default()
             };
 
             let page = self.store.query(&audit_query).await?;
-            let fetched = page.records.len();
 
             for record in page.records {
                 let key = (
@@ -348,10 +349,10 @@ impl<S: AuditStore + ?Sized + 'static> AnalyticsStore for InMemoryAnalytics<S> {
                 *matrix.entry(key).or_insert(0) += 1;
             }
 
-            if fetched < batch_size as usize {
-                break;
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
             }
-            offset = offset.saturating_add(batch_size);
         }
 
         let mut aggregates: Vec<CoverageAggregate> = matrix
@@ -449,21 +450,67 @@ mod tests {
                 .collect();
 
             let total = filtered.len() as u64;
-            let offset = query.effective_offset();
             let limit = query.effective_limit();
 
-            filtered.sort_by(|a, b| b.dispatched_at.cmp(&a.dispatched_at));
-            let records: Vec<AuditRecord> = filtered
-                .into_iter()
-                .skip(offset as usize)
-                .take(limit as usize)
-                .collect();
+            filtered.sort_by(|a, b| {
+                b.dispatched_at
+                    .cmp(&a.dispatched_at)
+                    .then_with(|| b.id.cmp(&a.id))
+            });
+
+            // Honour cursor pagination so the analytics loops in the
+            // outer module make forward progress against this mock.
+            let (mut page_records, used_cursor): (Vec<AuditRecord>, bool) =
+                if let Some(cursor_str) = query.cursor.as_deref() {
+                    let cursor = crate::cursor::AuditCursor::decode(cursor_str).unwrap();
+                    let cursor_ms = cursor.dispatched_at_ms.unwrap_or(0);
+                    let cursor_id = cursor.id.clone().unwrap_or_default();
+                    let recs = filtered
+                        .into_iter()
+                        .filter(|r| {
+                            let r_ms = r.dispatched_at.timestamp_millis();
+                            r_ms < cursor_ms
+                                || (r_ms == cursor_ms && r.id.as_str() < cursor_id.as_str())
+                        })
+                        .take(limit as usize + 1)
+                        .collect();
+                    (recs, true)
+                } else {
+                    let offset = query.effective_offset();
+                    (
+                        filtered
+                            .into_iter()
+                            .skip(offset as usize)
+                            .take(limit as usize + 1)
+                            .collect(),
+                        false,
+                    )
+                };
+
+            let has_more = page_records.len() > limit as usize;
+            if has_more {
+                page_records.truncate(limit as usize);
+            }
+
+            let next_cursor = if has_more {
+                page_records.last().map(|r| {
+                    crate::cursor::AuditCursor::from_timestamp(
+                        r.dispatched_at.timestamp_millis(),
+                        r.id.clone(),
+                    )
+                    .encode()
+                    .unwrap()
+                })
+            } else {
+                None
+            };
 
             Ok(AuditPage {
-                records,
-                total,
+                records: page_records,
+                total: if used_cursor { None } else { Some(total) },
                 limit,
-                offset,
+                offset: 0,
+                next_cursor,
             })
         }
 

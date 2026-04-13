@@ -103,14 +103,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let page = match client.query_audit(&audit_query).await {
         Ok(page) => {
-            if page.total == 0 {
+            if page.total.unwrap_or(0) == 0 && page.records.is_empty() {
                 info!("  No audit records found. Audit may not be enabled.");
                 info!("  Use a config with [audit] section:");
                 info!("    cargo run -p acteon-server -- -c examples/postgres.toml\n");
                 return Ok(());
             }
 
-            info!("  Found {} audit records:", page.total);
+            info!("  Found {} audit records:", page.total.unwrap_or(0));
             for record in &page.records {
                 info!(
                     "    {} | {} | {} | {}",
@@ -214,7 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let original_count = dispatched_ids.len();
             info!(
                 "  Total audit records now: {} (was {original_count} originals)",
-                page.total
+                page.total.unwrap_or(0)
             );
             info!("  Replayed actions have 'replayed_from' in their metadata.\n");
         }

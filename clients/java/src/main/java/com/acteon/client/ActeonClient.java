@@ -464,6 +464,9 @@ public class ActeonClient implements AutoCloseable {
                 if (query.getOffset() != null) {
                     params.add("offset=" + query.getOffset());
                 }
+                if (query.getCursor() != null) {
+                    params.add("cursor=" + URLEncoder.encode(query.getCursor(), StandardCharsets.UTF_8));
+                }
             }
 
             if (!params.isEmpty()) {

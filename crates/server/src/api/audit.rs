@@ -29,7 +29,8 @@ use super::schemas::ErrorResponse;
         ("from" = Option<String>, Query, description = "Start of time range (RFC 3339)"),
         ("to" = Option<String>, Query, description = "End of time range (RFC 3339)"),
         ("limit" = Option<u32>, Query, description = "Max records to return (default 50, max 1000)"),
-        ("offset" = Option<u32>, Query, description = "Number of records to skip"),
+        ("offset" = Option<u32>, Query, description = "Number of records to skip — prefer `cursor` for deep pagination"),
+        ("cursor" = Option<String>, Query, description = "Opaque pagination cursor returned by the previous page"),
     ),
     responses(
         (status = 200, description = "Audit records matching query", body = acteon_audit::AuditPage),

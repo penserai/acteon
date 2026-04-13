@@ -30,6 +30,20 @@ pub enum AuditCommand {
         /// Maximum records to return.
         #[arg(long, default_value = "20")]
         limit: u32,
+        /// Opaque pagination cursor returned by a previous query.
+        ///
+        /// Pass the `next_cursor` from the previous page's JSON output
+        /// (or the value printed in the text footer) to fetch the next
+        /// page in O(limit) time. Prefer this over `--offset` for deep
+        /// pagination — large offsets degrade linearly.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Walk every page automatically, printing each record exactly
+        /// once. Equivalent to repeatedly invoking `audit query` with
+        /// the previous response's `next_cursor`. Useful for exporting
+        /// the entire audit trail without burning offset scans.
+        #[arg(long, conflicts_with = "cursor")]
+        all: bool,
     },
     /// Get a single audit record by action ID.
     Get {
@@ -69,6 +83,8 @@ pub async fn run(ops: &OpsClient, args: &AuditArgs, format: &OutputFormat) -> an
             provider,
             action_type,
             limit,
+            cursor,
+            all,
         } => {
             run_query(
                 ops,
@@ -77,6 +93,8 @@ pub async fn run(ops: &OpsClient, args: &AuditArgs, format: &OutputFormat) -> an
                 provider.as_ref(),
                 action_type.as_ref(),
                 *limit,
+                cursor.clone(),
+                *all,
                 format,
             )
             .await
@@ -104,6 +122,7 @@ pub async fn run(ops: &OpsClient, args: &AuditArgs, format: &OutputFormat) -> an
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_query(
     ops: &OpsClient,
     tenant: Option<&String>,
@@ -111,42 +130,68 @@ async fn run_query(
     provider: Option<&String>,
     action_type: Option<&String>,
     limit: u32,
+    cursor: Option<String>,
+    walk_all: bool,
     format: &OutputFormat,
 ) -> anyhow::Result<()> {
-    let query = AuditQuery {
-        tenant: tenant.cloned(),
-        namespace: namespace.cloned(),
-        provider: provider.cloned(),
-        action_type: action_type.cloned(),
-        outcome: None,
-        limit: Some(limit),
-        offset: None,
-    };
+    let mut current_cursor = cursor;
+    let mut printed_records: u64 = 0;
 
-    let page = ops.query_audit(query).await?;
+    loop {
+        let query = AuditQuery {
+            tenant: tenant.cloned(),
+            namespace: namespace.cloned(),
+            provider: provider.cloned(),
+            action_type: action_type.cloned(),
+            outcome: None,
+            limit: Some(limit),
+            offset: None,
+            cursor: current_cursor.clone(),
+        };
 
-    match format {
-        OutputFormat::Json => {
-            info!("{}", serde_json::to_string_pretty(&page)?);
-        }
-        OutputFormat::Text => {
-            info!(
-                total = page.total,
-                showing = page.records.len(),
-                "Audit query results"
-            );
-            for rec in &page.records {
+        let page = ops.query_audit(query).await?;
+        let page_len = page.records.len() as u64;
+
+        match format {
+            OutputFormat::Json => {
+                // In --all mode we emit one JSON object per page so the
+                // stream is parseable line-by-line by jq -c style tools.
+                info!("{}", serde_json::to_string_pretty(&page)?);
+            }
+            OutputFormat::Text => {
                 info!(
-                    timestamp = %rec.dispatched_at,
-                    action_type = %rec.action_type,
-                    provider = %rec.provider,
-                    verdict = %rec.verdict,
-                    outcome = %rec.outcome,
-                    id = %&rec.action_id[..8.min(rec.action_id.len())],
-                    "Audit record"
+                    total = ?page.total,
+                    showing = page.records.len(),
+                    next_cursor = ?page.next_cursor,
+                    "Audit query results"
                 );
+                for rec in &page.records {
+                    info!(
+                        timestamp = %rec.dispatched_at,
+                        action_type = %rec.action_type,
+                        provider = %rec.provider,
+                        verdict = %rec.verdict,
+                        outcome = %rec.outcome,
+                        id = %&rec.action_id[..8.min(rec.action_id.len())],
+                        "Audit record"
+                    );
+                }
             }
         }
+
+        printed_records += page_len;
+
+        if !walk_all {
+            break;
+        }
+        match page.next_cursor {
+            Some(next) => current_cursor = Some(next),
+            None => break,
+        }
+    }
+
+    if walk_all {
+        info!(records = printed_records, "Audit walk complete");
     }
     Ok(())
 }

@@ -177,7 +177,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    info!("\n  Audit records for chain {chain_id}: {}", page.total);
+    info!(
+        "\n  Audit records for chain {chain_id}: {}",
+        page.total.unwrap_or(0)
+    );
     for rec in &page.records {
         info!(
             "    [{:>22}] provider={:<12} outcome={}",
@@ -336,7 +339,7 @@ rules:
             ..Default::default()
         })
         .await?;
-    info!("\n  Audit records for chain: {}", page.total);
+    info!("\n  Audit records for chain: {}", page.total.unwrap_or(0));
     for rec in &page.records {
         info!(
             "    [{:>22}] provider={:<16} action_type={}",
@@ -490,7 +493,7 @@ rules:
             ..Default::default()
         })
         .await?;
-    info!("\n  Audit records for chain: {}", page.total);
+    info!("\n  Audit records for chain: {}", page.total.unwrap_or(0));
     for rec in &page.records {
         info!(
             "    [{:>22}] provider={:<10} action_type={}",
@@ -630,7 +633,7 @@ rules:
             ..Default::default()
         })
         .await?;
-    info!("\n  Audit records for chain: {}", page.total);
+    info!("\n  Audit records for chain: {}", page.total.unwrap_or(0));
     for rec in &page.records {
         info!(
             "    [{:>22}] provider={:<10} action_type={}",
@@ -763,7 +766,10 @@ rules:
 
     // Query all audit records.
     let all_page = audit.query(&AuditQuery::default()).await?;
-    info!("  Total audit records (all chains): {}", all_page.total);
+    info!(
+        "  Total audit records (all chains): {}",
+        all_page.total.unwrap_or(0)
+    );
 
     // Query only chain-alpha records.
     let alpha_page = audit
@@ -774,7 +780,8 @@ rules:
         .await?;
     info!(
         "  Records for chain-alpha ({}): {}",
-        chain_id_a, alpha_page.total
+        chain_id_a,
+        alpha_page.total.unwrap_or(0)
     );
     for rec in &alpha_page.records {
         info!(
@@ -792,7 +799,8 @@ rules:
         .await?;
     info!(
         "  Records for chain-beta  ({}): {}",
-        chain_id_b, beta_page.total
+        chain_id_b,
+        beta_page.total.unwrap_or(0)
     );
     for rec in &beta_page.records {
         info!(
@@ -804,11 +812,13 @@ rules:
     // chain-alpha: 1 dispatch + 2 steps + 1 terminal = 4 records.
     // chain-beta:  1 dispatch + 1 step  + 1 terminal = 3 records.
     assert_eq!(
-        alpha_page.total, 4,
+        alpha_page.total.unwrap_or(0),
+        4,
         "chain-alpha: 1 dispatch + 2 step + 1 terminal"
     );
     assert_eq!(
-        beta_page.total, 3,
+        beta_page.total.unwrap_or(0),
+        3,
         "chain-beta: 1 dispatch + 1 step + 1 terminal"
     );
 

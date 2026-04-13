@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use acteon_audit::analytics::AnalyticsStore;
+use acteon_audit::cursor::{AuditCursor, CursorKind};
 use acteon_audit::error::AuditError;
 use acteon_audit::record::{AuditPage, AuditQuery, AuditRecord};
 use acteon_audit::store::AuditStore;
@@ -51,6 +52,9 @@ struct AuditInsertRow {
     sequence_number: Option<u64>,
     /// JSON-serialised `Vec<serde_json::Value>`.
     attachment_metadata: String,
+    signature: Option<String>,
+    signer_id: Option<String>,
+    canonical_hash: Option<String>,
 }
 
 /// Row layout used when reading audit records from `ClickHouse`.
@@ -80,6 +84,9 @@ struct AuditSelectRow {
     previous_hash: Option<String>,
     sequence_number: Option<u64>,
     attachment_metadata: String,
+    signature: Option<String>,
+    signer_id: Option<String>,
+    canonical_hash: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +123,9 @@ impl From<AuditRecord> for AuditInsertRow {
             sequence_number: r.sequence_number,
             attachment_metadata: serde_json::to_string(&r.attachment_metadata)
                 .unwrap_or_else(|_| "[]".to_owned()),
+            signature: r.signature,
+            signer_id: r.signer_id,
+            canonical_hash: r.canonical_hash,
         }
     }
 }
@@ -151,9 +161,9 @@ impl From<AuditSelectRow> for AuditRecord {
             previous_hash: row.previous_hash,
             sequence_number: row.sequence_number,
             attachment_metadata: serde_json::from_str(&row.attachment_metadata).unwrap_or_default(),
-            signature: None,
-            signer_id: None,
-            canonical_hash: None,
+            signature: row.signature,
+            signer_id: row.signer_id,
+            canonical_hash: row.canonical_hash,
         }
     }
 }
@@ -174,7 +184,7 @@ const SELECT_COLUMNS: &str = "\
     matched_rule, outcome, action_payload, verdict_details, outcome_details, \
     metadata, dispatched_at, completed_at, duration_ms, expires_at, \
     caller_id, auth_method, record_hash, previous_hash, sequence_number, \
-    attachment_metadata";
+    attachment_metadata, signature, signer_id, canonical_hash";
 
 /// Escape a string value for safe interpolation inside a `ClickHouse` SQL
 /// single-quoted literal.  `ClickHouse` uses backslash escaping by default.
@@ -338,27 +348,80 @@ impl AuditStore for ClickHouseAuditStore {
 
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let offset = query.effective_offset();
-        let where_clause = build_where_clause(query);
+        let mut where_clause = build_where_clause(query);
 
-        // Count query.
-        let count_sql = format!("SELECT count() FROM {} {where_clause}", self.table,);
+        let cursor = query
+            .cursor
+            .as_deref()
+            .map(AuditCursor::decode)
+            .transpose()?;
 
-        let total = self
-            .client
-            .query(&count_sql)
-            .fetch_one::<u64>()
-            .await
-            .map_err(|e| AuditError::Storage(e.to_string()))?;
+        if let Some(ref cursor) = cursor {
+            let prefix = if where_clause.is_empty() {
+                "WHERE"
+            } else {
+                "AND"
+            };
+            match cursor.kind {
+                CursorKind::Ts => {
+                    if query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    // ts is i64 (no injection surface). id originated
+                    // server-side from a UUID v7 that we round-tripped
+                    // through the opaque cursor; escape_ch matches the
+                    // rest of build_where_clause and gives us
+                    // belt-and-braces protection against any future
+                    // change in the cursor source.
+                    let ts = cursor.dispatched_at_ms.unwrap_or(0);
+                    let id = escape_ch(cursor.id.as_deref().unwrap_or(""));
+                    where_clause =
+                        format!("{where_clause} {prefix} (dispatched_at, id) < ({ts}, '{id}')");
+                }
+                CursorKind::Seq => {
+                    if !query.sort_by_sequence_asc {
+                        return Err(AuditError::Serialization(
+                            "cursor kind 'seq' requires sort_by_sequence_asc=true".into(),
+                        ));
+                    }
+                    let seq = cursor.sequence_number.unwrap_or(0);
+                    where_clause = format!("{where_clause} {prefix} sequence_number > {seq}");
+                }
+            }
+        }
+
+        // Count query — only on the offset path. Cursor pagination skips
+        // the count for O(limit) page latency.
+        let total = if cursor.is_none() {
+            let count_sql = format!("SELECT count() FROM {} {where_clause}", self.table);
+            let count = self
+                .client
+                .query(&count_sql)
+                .fetch_one::<u64>()
+                .await
+                .map_err(|e| AuditError::Storage(e.to_string()))?;
+            Some(count)
+        } else {
+            None
+        };
 
         // Data query.
         let order_clause = if query.sort_by_sequence_asc {
-            "ORDER BY sequence_number ASC"
+            "ORDER BY sequence_number ASC, id ASC"
         } else {
-            "ORDER BY dispatched_at DESC"
+            "ORDER BY dispatched_at DESC, id DESC"
         };
+        let offset = if cursor.is_some() {
+            0
+        } else {
+            query.effective_offset()
+        };
+        // Fetch limit + 1 to detect whether another page exists.
+        let probe = limit + 1;
         let data_sql = format!(
-            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} {order_clause} LIMIT {limit} OFFSET {offset}",
+            "SELECT {SELECT_COLUMNS} FROM {} {where_clause} {order_clause} LIMIT {probe} OFFSET {offset}",
             self.table,
         );
 
@@ -369,13 +432,37 @@ impl AuditStore for ClickHouseAuditStore {
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;
 
-        let records = rows.into_iter().map(Into::into).collect();
+        let mut records: Vec<AuditRecord> = rows.into_iter().map(Into::into).collect();
+        let has_more = records.len() > limit as usize;
+        if has_more {
+            records.truncate(limit as usize);
+        }
+
+        let next_cursor = if has_more {
+            records
+                .last()
+                .map(|rec| {
+                    if query.sort_by_sequence_asc {
+                        AuditCursor::from_sequence(rec.sequence_number.unwrap_or(0), rec.id.clone())
+                    } else {
+                        AuditCursor::from_timestamp(
+                            rec.dispatched_at.timestamp_millis(),
+                            rec.id.clone(),
+                        )
+                    }
+                })
+                .map(|c| c.encode())
+                .transpose()?
+        } else {
+            None
+        };
 
         Ok(AuditPage {
             records,
             total,
             limit,
             offset,
+            next_cursor,
         })
     }
 

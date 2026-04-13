@@ -470,7 +470,13 @@ class EvaluateRulesResponse:
 
 @dataclass
 class AuditQuery:
-    """Query parameters for audit search."""
+    """Query parameters for audit search.
+
+    Prefer ``cursor`` over ``offset`` for deep pagination — large offsets
+    degrade linearly on every backend. Pass the ``next_cursor`` returned
+    by a prior :class:`AuditPage` back in here to fetch the next page in
+    O(limit) time. Treat the cursor as opaque.
+    """
     namespace: Optional[str] = None
     tenant: Optional[str] = None
     provider: Optional[str] = None
@@ -478,6 +484,7 @@ class AuditQuery:
     outcome: Optional[str] = None
     limit: Optional[int] = None
     offset: Optional[int] = None
+    cursor: Optional[str] = None
 
     def to_params(self) -> dict[str, Any]:
         """Convert to query parameters."""
@@ -496,6 +503,8 @@ class AuditQuery:
             params["limit"] = self.limit
         if self.offset is not None:
             params["offset"] = self.offset
+        if self.cursor is not None:
+            params["cursor"] = self.cursor
         return params
 
 
@@ -539,19 +548,27 @@ class AuditRecord:
 
 @dataclass
 class AuditPage:
-    """Paginated audit results."""
+    """Paginated audit results.
+
+    ``total`` is ``None`` when the backend skipped the count (always the
+    case when paginating with a cursor). ``next_cursor`` is ``None``
+    when this page is the last; otherwise pass it to the next
+    :class:`AuditQuery` to resume.
+    """
     records: list[AuditRecord]
-    total: int
+    total: Optional[int]
     limit: int
     offset: int
+    next_cursor: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuditPage":
         return cls(
             records=[AuditRecord.from_dict(r) for r in data["records"]],
-            total=data["total"],
+            total=data.get("total"),
             limit=data["limit"],
             offset=data["offset"],
+            next_cursor=data.get("next_cursor"),
         )
 
 

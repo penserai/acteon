@@ -551,7 +551,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
     let tenant2_page = audit.query(&tenant2_query).await?;
     info!(
         "\n  Unified audit for tenant-2: {} records",
-        tenant2_page.total
+        tenant2_page.total.unwrap_or(0)
     );
     for record in &tenant2_page.records {
         info!(
@@ -653,7 +653,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         ..Default::default()
     };
     let bench_page = audit.query(&bench_query).await?;
-    info!("  Audit records created: {}", bench_page.total);
+    info!("  Audit records created: {}", bench_page.total.unwrap_or(0));
 
     // =========================================================================
     // SCENARIO 7: Failure Injection
@@ -1171,7 +1171,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
         .filter(|r| r.outcome == "throttled")
         .count();
 
-    info!("  Total audit records: {}", all_page.total);
+    info!("  Total audit records: {}", all_page.total.unwrap_or(0));
     info!("    - Executed: {}", executed_count);
     info!("    - Suppressed: {}", suppressed_count);
     info!("    - Deduplicated: {}", deduplicated_count);

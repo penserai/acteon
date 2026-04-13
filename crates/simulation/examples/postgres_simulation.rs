@@ -251,7 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("→ Querying all audit records for tenant-1...");
     let page = audit.query(&query).await?;
-    info!("  Total records: {}", page.total);
+    info!("  Total records: {}", page.total.unwrap_or(0));
     info!("  Records in page: {}\n", page.records.len());
 
     for record in &page.records {
@@ -272,7 +272,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let suppressed_page = audit.query(&suppressed_query).await?;
-    info!("  Suppressed actions: {}", suppressed_page.total);
+    info!(
+        "  Suppressed actions: {}",
+        suppressed_page.total.unwrap_or(0)
+    );
 
     // Query executed actions only
     info!("\n→ Querying only EXECUTED actions...");
@@ -282,7 +285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let executed_page = audit.query(&executed_query).await?;
-    info!("  Executed actions: {}", executed_page.total);
+    info!("  Executed actions: {}", executed_page.total.unwrap_or(0));
 
     // =========================================================================
     // DEMO 5: Throughput with Audit
@@ -330,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     let bulk_page = audit.query(&bulk_query).await?;
-    info!("  Audit records created: {}", bulk_page.total);
+    info!("  Audit records created: {}", bulk_page.total.unwrap_or(0));
 
     // =========================================================================
     // Summary
@@ -361,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|r| r.outcome == "deduplicated")
         .count();
 
-    info!("  Total audit records: {}", all_page.total);
+    info!("  Total audit records: {}", all_page.total.unwrap_or(0));
     info!("    - Executed: {}", executed_count);
     info!("    - Suppressed: {}", suppressed_count);
     info!("    - Deduplicated: {}", deduplicated_count);

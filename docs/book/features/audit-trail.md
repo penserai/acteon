@@ -114,7 +114,59 @@ curl "http://localhost:8080/v1/audit?from=2026-01-01T00:00:00Z&to=2026-01-31T23:
 | `from` | datetime | Start of date range |
 | `to` | datetime | End of date range |
 | `limit` | u32 | Max records (default 50, max 1000) |
-| `offset` | u32 | Pagination offset |
+| `offset` | u32 | Legacy pagination offset — prefer `cursor` for deep pagination |
+| `cursor` | string | Opaque pagination cursor returned by the previous page (see below) |
+
+### Cursor Pagination
+
+Audit pages return an opaque `next_cursor` string when more records are
+available. Pass it back as `cursor` on the next request to fetch the
+following page:
+
+```bash
+# First page
+curl "http://localhost:8080/v1/audit?tenant=tenant-1&limit=50"
+# -> { "records": [...], "limit": 50, "offset": 0, "total": ..., "next_cursor": "eyJ2..." }
+
+# Resume from the cursor — no offset scan, no count query
+curl "http://localhost:8080/v1/audit?tenant=tenant-1&limit=50&cursor=eyJ2..."
+# -> { "records": [...], "limit": 50, "offset": 0, "next_cursor": "eyJ3..." }
+```
+
+Cursor pagination is **O(limit)** on every backend — Postgres and
+ClickHouse use keyset `WHERE (dispatched_at, id) < (...)` predicates,
+Elasticsearch uses `search_after`, DynamoDB uses native
+`ExclusiveStartKey`, and the in-memory store keyset-filters after sort.
+Every backend over-fetches one row internally so the response signals
+"definitely no more" the moment the page's `next_cursor` is omitted —
+you never round-trip an empty trailing page.
+
+#### `total` is best-effort
+
+The `total` field is **not guaranteed**. It is `null` whenever you
+paginate with a cursor (computing it per page would defeat the
+purpose), and DynamoDB always returns `null` even on the first page
+because its count query previously walked every matching item. Use it
+as a UI hint, never as control flow.
+
+| Backend       | First page (no cursor) | Cursor pages |
+|---------------|------------------------|--------------|
+| Memory        | populated              | `null`       |
+| PostgreSQL    | populated              | `null`       |
+| ClickHouse    | populated              | `null`       |
+| Elasticsearch | populated              | `null`       |
+| DynamoDB      | `null`                 | `null`       |
+
+#### Detecting the last page
+
+**Always rely on `next_cursor`.** When `next_cursor` is missing or
+`null`, the stream is exhausted. Do **not** branch on
+`records.length < limit` — DynamoDB and Elasticsearch filter
+expressions can return short-but-not-final pages, and you will lose
+data.
+
+Cursors are opaque — round-trip them verbatim. The encoding is an
+implementation detail and may change between releases.
 
 ### Get Record by Action ID
 
@@ -143,9 +195,13 @@ curl "http://localhost:8080/v1/audit/{action_id}"
   ],
   "total": 150,
   "limit": 50,
-  "offset": 0
+  "offset": 0,
+  "next_cursor": "eyJ2IjoxLCJrIjoidHMiLCJ0IjoxNzAwMDAwMDAwMDAwLCJpIjoiYXVkLTEyMyJ9"
 }
 ```
+
+`total` is omitted on cursor-driven follow-up pages. `next_cursor` is
+omitted when the page is the last.
 
 ## Audit Backends
 
@@ -176,7 +232,20 @@ See [Audit Backends](../backends/audit-backends.md) for detailed backend compari
         ..Default::default()
     }).await?;
 
-    println!("Found {} records", page.total);
+    println!("Found {} records", page.records.len());
+
+    // Walk every page with a cursor — O(limit) per request.
+    let mut cursor = page.next_cursor;
+    while let Some(c) = cursor {
+        let next = client.query_audit(&AuditQuery {
+            tenant: Some("tenant-1".into()),
+            limit: Some(100),
+            cursor: Some(c),
+            ..Default::default()
+        }).await?;
+        // ... process next.records ...
+        cursor = next.next_cursor;
+    }
 
     // Get specific record
     if let Some(record) = client.get_audit_record("action-id").await? {

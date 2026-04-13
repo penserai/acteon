@@ -278,7 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ..Default::default()
         })
         .await?;
-    info!("\n  Audit records: {}", page.total);
+    info!("\n  Audit records: {}", page.total.unwrap_or(0));
     for rec in &page.records {
         info!("    [{:>22}] {}", rec.outcome, rec.action_type);
     }
