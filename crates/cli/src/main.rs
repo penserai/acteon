@@ -75,6 +75,8 @@ enum Command {
     Approvals(commands::approvals::ApprovalsArgs),
     /// Manage silences (time-bounded label-pattern mutes).
     Silences(commands::silences::SilencesArgs),
+    /// Import configuration from external systems (e.g. Alertmanager).
+    Import(commands::import::ImportArgs),
 }
 
 #[tokio::main]
@@ -111,5 +113,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Providers(args) => commands::providers::run(&ops, &args, &cli.format).await,
         Command::Approvals(args) => commands::approvals::run(&ops, &args, &cli.format).await,
         Command::Silences(args) => commands::silences::run(&ops, &args, &cli.format).await,
+        Command::Import(args) => commands::import::run(&args),
     }
 }
