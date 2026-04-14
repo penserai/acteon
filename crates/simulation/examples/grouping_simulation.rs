@@ -50,7 +50,10 @@ rules:
       max_group_size: 50
 "#;
 
-/// State machine for ticket lifecycle
+/// State machine for ticket lifecycle. Kept as reference material for
+/// readers comparing grouping against state-machine-based lifecycle
+/// tracking — the example doesn't actually wire it in.
+#[allow(dead_code)]
 const TICKET_STATE_MACHINE_RULE: &str = r#"
 rules:
   - name: ticket-lifecycle
