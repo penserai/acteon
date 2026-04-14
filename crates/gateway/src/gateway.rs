@@ -653,6 +653,7 @@ impl Gateway {
         //     verdict. This preserves the rule verdict in the audit record
         //     while preventing actual provider delivery.
         if let Some(silence_id) = self.check_silence(&action) {
+            self.metrics.increment_silenced();
             let outcome = ActionOutcome::Silenced {
                 silence_id,
                 matched_rule: matched_rule_name(&verdict),
@@ -713,6 +714,7 @@ impl Gateway {
             Utc::now(),
         );
         if let Some(interval_name) = ti_decision.interval_name() {
+            self.metrics.increment_muted();
             let outcome = ActionOutcome::Muted {
                 interval: interval_name.to_owned(),
                 reason: ti_decision.reason().to_owned(),

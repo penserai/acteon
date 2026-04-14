@@ -26,6 +26,15 @@ pub struct MetricsResponse {
     /// Actions suppressed by rules.
     #[schema(example = 3)]
     pub suppressed: u64,
+    /// Actions silenced by a matching silence (label-pattern mute).
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub silenced: u64,
+    /// Actions muted by a referenced time interval (`mute_time_intervals`
+    /// matching, or `active_time_intervals` not currently active).
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub muted: u64,
     /// Actions rerouted to another provider.
     #[schema(example = 2)]
     pub rerouted: u64,

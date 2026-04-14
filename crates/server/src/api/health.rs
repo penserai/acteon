@@ -27,6 +27,8 @@ fn build_metrics_response(
         executed: snap.executed,
         deduplicated: snap.deduplicated,
         suppressed: snap.suppressed,
+        silenced: snap.silenced,
+        muted: snap.muted,
         rerouted: snap.rerouted,
         throttled: snap.throttled,
         failed: snap.failed,

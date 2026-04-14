@@ -30,6 +30,8 @@ const INTERVAL_OPTIONS: { value: AnalyticsInterval; label: string }[] = [
 const OUTCOME_COLORS: Record<string, string> = {
   executed: '#22c55e',
   suppressed: '#f59e0b',
+  silenced: '#06b6d4',
+  muted: '#a855f7',
   deduplicated: '#3b82f6',
   rerouted: '#8b5cf6',
   throttled: '#f97316',

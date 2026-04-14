@@ -20,6 +20,11 @@ pub struct GatewayMetrics {
     pub deduplicated: AtomicU64,
     /// Actions that were suppressed by a rule.
     pub suppressed: AtomicU64,
+    /// Actions that were silenced by a matching silence (label-pattern mute).
+    pub silenced: AtomicU64,
+    /// Actions that were muted by a referenced time interval (mute or
+    /// inactive active window).
+    pub muted: AtomicU64,
     /// Actions that were rerouted to a different provider.
     pub rerouted: AtomicU64,
     /// Actions that were throttled.
@@ -95,6 +100,16 @@ impl GatewayMetrics {
     /// Increment the suppressed counter.
     pub fn increment_suppressed(&self) {
         self.suppressed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the silenced counter.
+    pub fn increment_silenced(&self) {
+        self.silenced.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the muted counter.
+    pub fn increment_muted(&self) {
+        self.muted.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Increment the rerouted counter.
@@ -250,6 +265,8 @@ impl GatewayMetrics {
             executed: self.executed.load(Ordering::Relaxed),
             deduplicated: self.deduplicated.load(Ordering::Relaxed),
             suppressed: self.suppressed.load(Ordering::Relaxed),
+            silenced: self.silenced.load(Ordering::Relaxed),
+            muted: self.muted.load(Ordering::Relaxed),
             rerouted: self.rerouted.load(Ordering::Relaxed),
             throttled: self.throttled.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
@@ -292,6 +309,10 @@ pub struct MetricsSnapshot {
     pub deduplicated: u64,
     /// Actions that were suppressed by a rule.
     pub suppressed: u64,
+    /// Actions that were silenced by a matching silence (label-pattern mute).
+    pub silenced: u64,
+    /// Actions that were muted by a referenced time interval.
+    pub muted: u64,
     /// Actions that were rerouted to a different provider.
     pub rerouted: u64,
     /// Actions that were throttled.
@@ -670,6 +691,8 @@ mod tests {
         assert_eq!(snap.executed, 0);
         assert_eq!(snap.deduplicated, 0);
         assert_eq!(snap.suppressed, 0);
+        assert_eq!(snap.silenced, 0);
+        assert_eq!(snap.muted, 0);
         assert_eq!(snap.rerouted, 0);
         assert_eq!(snap.throttled, 0);
         assert_eq!(snap.failed, 0);
@@ -707,6 +730,8 @@ mod tests {
         m.increment_executed();
         m.increment_deduplicated();
         m.increment_suppressed();
+        m.increment_silenced();
+        m.increment_muted();
         m.increment_rerouted();
         m.increment_throttled();
         m.increment_failed();
@@ -740,6 +765,8 @@ mod tests {
         assert_eq!(snap.executed, 1);
         assert_eq!(snap.deduplicated, 1);
         assert_eq!(snap.suppressed, 1);
+        assert_eq!(snap.silenced, 1);
+        assert_eq!(snap.muted, 1);
         assert_eq!(snap.rerouted, 1);
         assert_eq!(snap.throttled, 1);
         assert_eq!(snap.failed, 1);
