@@ -70,6 +70,9 @@ impl TestServer {
             config: acteon_server::config::ConfigSnapshot::default(),
             ui_path: None,
             ui_enabled: false,
+            cors_allowed_origins: Vec::new(),
+            signature_verifier: None,
+            replay_protection: None,
         };
 
         // Build router

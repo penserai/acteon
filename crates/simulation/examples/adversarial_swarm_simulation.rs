@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "swarm",
             "project-alpha",
             "primary-swarm",
-            action_type,
+            *action_type,
             payload.clone(),
         );
 
@@ -183,7 +183,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "swarm",
             "project-alpha",
             "adversarial-reviewer",
-            action_type,
+            *action_type,
             payload.clone(),
         );
 
@@ -265,7 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "swarm",
             "project-alpha",
             "primary-swarm",
-            action_type,
+            *action_type,
             payload.clone(),
         );
 

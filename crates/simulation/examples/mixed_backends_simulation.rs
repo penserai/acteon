@@ -1,3 +1,15 @@
+// This example is only meaningful when at least one backend feature
+// (`redis`, `postgres`, or `clickhouse`) is enabled. Without any, the
+// `match scenario` arms all resolve to the help-and-return fallback,
+// which makes `config`/`state`/`lock`/`audit` appear unreachable to
+// the compiler. Silence the cascade of unreachable + unused warnings
+// in that degenerate case without hiding real bugs in the feature-
+// enabled builds.
+#![cfg_attr(
+    not(any(feature = "redis", feature = "postgres", feature = "clickhouse")),
+    allow(unused_variables, unreachable_code, unreachable_patterns, dead_code)
+)]
+
 //! Demonstration of Acteon with mixed backends for state and audit.
 //!
 //! This example shows realistic production configurations where you might want:

@@ -211,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attachment_metadata: Vec::new(),
         signature: None,
         signer_id: None,
+        canonical_hash: None,
     };
 
     encrypting_audit.record(record).await?;
@@ -269,6 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attachment_metadata: Vec::new(),
         signature: None,
         signer_id: None,
+        canonical_hash: None,
     };
     encrypting_audit.record(no_payload).await?;
     let fetched_none = encrypting_audit
@@ -309,6 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attachment_metadata: Vec::new(),
         signature: None,
         signer_id: None,
+        canonical_hash: None,
     };
     // Insert directly into inner store (bypass encryption).
     inner_audit.record(plain_record).await?;
@@ -491,7 +494,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_to_group(
             &group_action1,
             &["action_type".to_string()],
-            300,
+            300,  // group_wait_seconds
+            300,  // group_interval_seconds
+            None, // repeat_interval_seconds — ephemeral
+            100,  // max_group_size
             &state_store,
             Some(&group_enc),
         )
@@ -503,6 +509,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &group_action2,
             &["action_type".to_string()],
             300,
+            300,
+            None,
+            100,
             &state_store,
             Some(&group_enc),
         )
