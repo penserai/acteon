@@ -716,5 +716,6 @@ fn outcome_label(outcome: &ActionOutcome) -> &'static str {
         ActionOutcome::RecurringCreated { .. } => "RecurringCreated",
         ActionOutcome::QuotaExceeded { .. } => "QuotaExceeded",
         ActionOutcome::Silenced { .. } => "Silenced",
+        ActionOutcome::Muted { .. } => "Muted",
     }
 }

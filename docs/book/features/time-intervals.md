@@ -167,6 +167,11 @@ form (`monday:friday`, `jan:dec`) to Acteon's numeric ranges. Numeric
 forms (`1:5`, `1:12`) and single values (`saturday`, `april`) are
 accepted as well.
 
+For an end-to-end walkthrough — including the concept-mapping table,
+the cutover patterns, and what's still different between the two
+systems — see the
+[Migrating from Alertmanager guide](../guides/migrating-from-alertmanager.md).
+
 ## Related features
 
 - [Silences](silences.md) — one-off, time-bounded label-pattern mutes.
