@@ -66,6 +66,8 @@ export function Dashboard() {
                 { key: 'executed', color: '#10B981', label: 'Executed' },
                 { key: 'failed', color: '#EF4444', label: 'Failed' },
                 { key: 'suppressed', color: '#F59E0B', label: 'Suppressed' },
+                { key: 'silenced', color: '#06B6D4', label: 'Silenced' },
+                { key: 'muted', color: '#A855F7', label: 'Muted' },
                 { key: 'deduplicated', color: '#64647A', label: 'Deduplicated' },
               ]}
             />
@@ -121,6 +123,8 @@ function buildStatCards(m: MetricsResponse) {
     { label: 'Failed', value: m.failed, link: '/audit?outcome=Failed' },
     { label: 'Deduplicated', value: m.deduplicated },
     { label: 'Suppressed', value: m.suppressed },
+    { label: 'Silenced', value: m.silenced ?? 0, link: '/silences' },
+    { label: 'Muted', value: m.muted ?? 0, link: '/time-intervals' },
     { label: 'Pending Approval', value: m.pending_approval ?? 0, link: '/approvals' },
     { label: 'Circuit Open', value: m.circuit_open ?? 0, link: '/circuit-breakers' },
     { label: 'Scheduled', value: m.scheduled ?? 0, link: '/scheduled' },

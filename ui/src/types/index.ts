@@ -4,6 +4,8 @@ export interface MetricsResponse {
   executed: number
   deduplicated: number
   suppressed: number
+  silenced?: number
+  muted?: number
   rerouted: number
   throttled: number
   failed: number

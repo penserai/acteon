@@ -89,6 +89,16 @@
           "refId": "B"
         },
         {
+          "expr": "rate(acteon_actions_silenced_total[5m])",
+          "legendFormat": "silenced",
+          "refId": "B2"
+        },
+        {
+          "expr": "rate(acteon_actions_muted_total[5m])",
+          "legendFormat": "muted (time interval)",
+          "refId": "B3"
+        },
+        {
           "expr": "rate(acteon_actions_deduplicated_total[5m])",
           "legendFormat": "deduplicated",
           "refId": "C"
@@ -133,6 +143,8 @@
         { "expr": "acteon_actions_dispatched_total", "legendFormat": "Dispatched", "refId": "A" },
         { "expr": "acteon_actions_executed_total", "legendFormat": "Executed", "refId": "B" },
         { "expr": "acteon_actions_suppressed_total", "legendFormat": "Suppressed", "refId": "C" },
+        { "expr": "acteon_actions_silenced_total", "legendFormat": "Silenced", "refId": "C2" },
+        { "expr": "acteon_actions_muted_total", "legendFormat": "Muted", "refId": "C3" },
         { "expr": "acteon_actions_deduplicated_total", "legendFormat": "Deduplicated", "refId": "D" },
         { "expr": "acteon_actions_rerouted_total", "legendFormat": "Rerouted", "refId": "E" },
         { "expr": "acteon_actions_throttled_total", "legendFormat": "Throttled", "refId": "F" },

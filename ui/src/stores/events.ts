@@ -7,6 +7,8 @@ export type MetricsPoint = Record<string, unknown> & {
   executed: number
   failed: number
   suppressed: number
+  silenced: number
+  muted: number
   deduplicated: number
 }
 
@@ -51,6 +53,8 @@ export const useEventStore = create<EventState>((set) => ({
       executed: m.executed,
       failed: m.failed,
       suppressed: m.suppressed,
+      silenced: m.silenced ?? 0,
+      muted: m.muted ?? 0,
       deduplicated: m.deduplicated,
     }
     return {
