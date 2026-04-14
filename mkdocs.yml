@@ -187,6 +187,7 @@ nav:
     - Incident Response Pipeline: guides/incident-response-pipeline.md
     - E-Commerce Order Pipeline: guides/ecommerce-order-pipeline.md
     - Healthcare Notification Pipeline: guides/healthcare-notification-pipeline.md
+    - Migrating from Alertmanager: guides/migrating-from-alertmanager.md
   - Reference:
     - reference/index.md
     - Type Reference: reference/types.md

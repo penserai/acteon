@@ -1,0 +1,140 @@
+# Worked-example Alertmanager config used in the Acteon migration guide
+# (docs/book/guides/migrating-from-alertmanager.md).
+#
+# Exercises every primitive the importer supports today:
+#   - Global SMTP + Slack defaults
+#   - A nested route tree with per-route group_by overrides
+#   - match + match_re + combined-match conditions
+#   - mute_time_intervals references on routes
+#   - active_time_intervals references on routes
+#   - inhibit_rules
+#   - Multiple receiver flavors (slack, pagerduty, opsgenie, email,
+#     webhook, victorops, pushover) so the generated providers.toml
+#     is non-trivial
+#
+# Try it:
+#
+#   cargo run -p acteon-cli -- import alertmanager \
+#     -c examples/alertmanager-with-time-intervals.yml \
+#     --default-namespace prod \
+#     --default-tenant acme \
+#     --dry-run
+
+global:
+  smtp_smarthost: "smtp.example.com:587"
+  smtp_from: "alerts@example.com"
+  slack_api_url: "https://hooks.slack.com/services/T00/B00/xxx"
+
+route:
+  receiver: default-slack
+  group_by: [alertname, cluster]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    # Page on-call for criticals — but never during planned maintenance.
+    - match:
+        severity: critical
+      receiver: pagerduty-oncall
+      mute_time_intervals:
+        - planned-maintenance
+
+    # Page the database team only during business hours; outside that
+    # window, alerts fall through to the default Slack channel.
+    - match:
+        team: database
+      receiver: opsgenie-database
+      active_time_intervals:
+        - business-hours
+
+    # Slack warnings, batched aggressively per alertname.
+    - match:
+        severity: warning
+      receiver: slack-warnings
+      group_by: [alertname]
+      group_wait: 1m
+      group_interval: 5m
+      repeat_interval: 12h
+
+    # Web service traffic → dedicated webhook.
+    - match_re:
+        service: "web-.*"
+      receiver: webhook-web
+
+    # Email infra-team for production / staging only.
+    - match:
+        team: infra
+      match_re:
+        env: "prod|staging"
+      receiver: email-infra
+
+receivers:
+  - name: default-slack
+    slack_configs:
+      - channel: "#alerts"
+
+  - name: pagerduty-oncall
+    pagerduty_configs:
+      - routing_key: "REPLACE_WITH_PD_ROUTING_KEY"
+
+  - name: opsgenie-database
+    opsgenie_configs:
+      - api_key: "REPLACE_WITH_OPSGENIE_API_KEY"
+
+  - name: slack-warnings
+    slack_configs:
+      - channel: "#warnings"
+
+  - name: webhook-web
+    webhook_configs:
+      - url: "https://hooks.example.com/web-alerts"
+
+  - name: email-infra
+    email_configs:
+      - to: "infra-oncall@example.com"
+
+  - name: victorops-fallback
+    victorops_configs:
+      - api_key: "REPLACE_WITH_VO_API_KEY"
+        routing_key: "platform"
+
+  - name: pushover-night-oncall
+    pushover_configs:
+      - user_key: "REPLACE_WITH_USER_KEY"
+        token: "REPLACE_WITH_APP_TOKEN"
+
+inhibit_rules:
+  # Suppress warnings for an alert+cluster pair when a critical of the
+  # same alert+cluster is already firing.
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: [alertname, cluster]
+
+time_intervals:
+  - name: business-hours
+    time_intervals:
+      - times:
+          - start_time: "09:00"
+            end_time: "17:00"
+        weekdays:
+          - "monday:friday"
+        location: "America/New_York"
+
+  - name: planned-maintenance
+    time_intervals:
+      # Friday 22:00 to Saturday 06:00 (split into two ranges since
+      # Alertmanager's time_intervals can't cross midnight in one entry).
+      - times:
+          - start_time: "22:00"
+            end_time: "24:00"
+        weekdays:
+          - friday
+        location: "UTC"
+      - times:
+          - start_time: "00:00"
+            end_time: "06:00"
+        weekdays:
+          - saturday
+        location: "UTC"

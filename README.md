@@ -16,6 +16,8 @@ Acteon is the force that manages this transformation. It serves as an Action Gat
 
 > **[AI Agent Swarm Coordination](https://penserai.github.io/acteon/guides/agent-swarm-coordination/)** — Use Acteon as a safety and orchestration layer for multi-agent AI systems. Covers identity isolation, permission control, prompt injection defense, rate limiting, approval workflows, failure isolation, and full observability.
 
+> **[Migrating from Prometheus Alertmanager](https://penserai.github.io/acteon/guides/migrating-from-alertmanager/)** — Lift an existing `alertmanager.yml` into Acteon with `acteon import alertmanager`, plus the concept-mapping table (routes, inhibit_rules, time_intervals, silences), cutover patterns, and what's still different between the two systems.
+
 ## Features
 
 ### Rule-Based Action Processing
