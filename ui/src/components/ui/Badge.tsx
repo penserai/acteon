@@ -20,6 +20,8 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   Executed: 'success',
   Deduplicated: 'neutral',
   Suppressed: 'error',
+  Silenced: 'info',
+  Muted: 'neutral',
   Rerouted: 'info',
   Throttled: 'warning',
   Failed: 'error',

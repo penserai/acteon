@@ -198,5 +198,10 @@ fn describe_outcome(outcome: &ActionOutcome) -> String {
         ActionOutcome::Silenced { silence_id, .. } => {
             format!("Silenced (silence_id: {silence_id})")
         }
+        ActionOutcome::Muted {
+            interval, reason, ..
+        } => {
+            format!("Muted (interval: {interval}, reason: {reason})")
+        }
     }
 }
