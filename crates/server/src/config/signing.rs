@@ -68,11 +68,39 @@ fn default_replay_ttl() -> u64 {
 }
 
 /// A single entry in the signing keyring.
+///
+/// Multiple entries can share the same `signer_id` as long as their
+/// `kid`s differ — that's how key rotation is staged. A typical
+/// rotation looks like:
+///
+/// ```toml
+/// # The currently-deployed key.
+/// [[signing.keyring]]
+/// signer_id = "ci-bot"
+/// kid = "k1"
+/// public_key = "..."
+///
+/// # The new key, added before clients flip over.
+/// [[signing.keyring]]
+/// signer_id = "ci-bot"
+/// kid = "k2"
+/// public_key = "..."
+/// ```
+///
+/// During the rotation window the verifier accepts signatures from
+/// either key (legacy clients that don't stamp a `kid`) or from the
+/// specific key matching the action's `kid`. Once all in-flight
+/// signed actions have been processed, remove the old entry.
 #[derive(Debug, Deserialize)]
 pub struct KeyringEntry {
     /// Unique identifier for this signer. Must match the `signer_id`
     /// field on incoming actions.
     pub signer_id: String,
+    /// Optional key identifier. Defaults to `"k0"` for backward
+    /// compatibility with single-key configs. Must be unique within
+    /// a `signer_id`.
+    #[serde(default = "default_kid")]
+    pub kid: String,
     /// Ed25519 public key, encoded as hex (64 chars) or base64.
     pub public_key: String,
     /// Optional tenant scope. When set, this signer can only sign
@@ -85,6 +113,10 @@ pub struct KeyringEntry {
     /// default) allows all namespaces.
     #[serde(default = "default_wildcard")]
     pub namespaces: Vec<String>,
+}
+
+fn default_kid() -> String {
+    acteon_crypto::signing::DEFAULT_KID.to_owned()
 }
 
 fn default_wildcard() -> Vec<String> {

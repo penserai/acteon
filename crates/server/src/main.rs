@@ -2158,7 +2158,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut keyring = acteon_crypto::signing::Keyring::new();
         for entry in &config.signing.keyring {
             let raw_key = require_decrypt(&entry.public_key, master_key.as_ref())?;
-            let vk = acteon_crypto::signing::parse_verifying_key(&raw_key, &entry.signer_id)?;
+            let vk = acteon_crypto::signing::parse_verifying_key_with_kid(
+                &raw_key,
+                &entry.signer_id,
+                &entry.kid,
+            )?;
             keyring.insert(vk);
         }
         // If a server signing key is configured, add its public key to the

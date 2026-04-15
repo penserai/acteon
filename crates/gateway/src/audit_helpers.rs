@@ -311,6 +311,7 @@ pub(crate) fn build_audit_record(
         attachment_metadata,
         signature: action.signature.clone(),
         signer_id: action.signer_id.clone(),
+        kid: action.kid.clone(),
         canonical_hash: if action.signature.is_some() {
             // Compute SHA-256 of canonical bytes at audit time so the
             // verify endpoint can check without reconstructing the

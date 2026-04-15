@@ -32,6 +32,13 @@ public class Action {
     /** Identifier of the key that produced the signature. */
     @JsonProperty("signer_id")
     private String signerId;
+    /**
+     * Optional key identifier for rotation. When the same `signerId`
+     * has multiple active keys on the server, `kid` selects the
+     * specific key to verify against. Discoverable via
+     * {@code GET /.well-known/acteon-signing-keys}.
+     */
+    private String kid;
 
     public Action() {
         this.id = UUID.randomUUID().toString();
@@ -91,6 +98,9 @@ public class Action {
 
     public String getSignerId() { return signerId; }
     public void setSignerId(String signerId) { this.signerId = signerId; }
+
+    public String getKid() { return kid; }
+    public void setKid(String kid) { this.kid = kid; }
 
     public Action withDedupKey(String dedupKey) {
         this.dedupKey = dedupKey;

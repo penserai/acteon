@@ -22,6 +22,7 @@ pub mod replay;
 pub mod retention;
 pub mod rules;
 pub mod schemas;
+pub mod signing_keys;
 pub mod silences;
 pub mod stream;
 pub mod subscribe;
@@ -103,6 +104,12 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health::health))
         .route("/metrics", get(health::metrics))
         .route("/metrics/prometheus", get(prometheus::prometheus_metrics))
+        // JWKS-style discovery for action signing keys (public; only
+        // exposes public key material, never private keys)
+        .route(
+            "/.well-known/acteon-signing-keys",
+            get(signing_keys::discover_signing_keys),
+        )
         // Login (must be public)
         .route("/v1/auth/login", post(auth::login))
         // Approvals (public, HMAC-authenticated via query signature)

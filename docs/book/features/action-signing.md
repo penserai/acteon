@@ -24,14 +24,24 @@ server_signer_id = "acteon-server"         # signer_id for server key
 
 [[signing.keyring]]
 signer_id = "ci-bot"
+kid = "k1"                           # optional key id, defaults to "k0"
 public_key = "base64-or-hex-encoded-ed25519-public-key"
 tenants = ["acme"]                   # optional scope restriction (default: ["*"])
 namespaces = ["prod", "staging"]     # optional scope restriction (default: ["*"])
 
+# A second key for the same signer — staged ahead of a rotation.
+# Both `k1` and `k2` are active until the operator removes `k1`.
+[[signing.keyring]]
+signer_id = "ci-bot"
+kid = "k2"
+public_key = "..."
+tenants = ["acme"]
+namespaces = ["prod", "staging"]
+
 [[signing.keyring]]
 signer_id = "deploy-service"
 public_key = "..."
-# tenants/namespaces omitted = allow all
+# tenants/namespaces/kid omitted = allow all + default kid "k0"
 ```
 
 | Field | Required | Default | Description |
@@ -43,6 +53,7 @@ public_key = "..."
 | `server_key` | No | — | Ed25519 secret key for server-originated actions. Supports `ENC[...]` |
 | `server_signer_id` | No | `"acteon-server"` | `signer_id` stamped on server-originated signatures |
 | `keyring[].signer_id` | Yes | — | Must match the `signer_id` field on incoming actions |
+| `keyring[].kid` | No | `"k0"` | Key identifier within `signer_id`. Multiple entries with the same `signer_id` and different `kid`s enable staged rotation. |
 | `keyring[].public_key` | Yes | — | Ed25519 public key (hex or base64) |
 | `keyring[].tenants` | No | `["*"]` | Allowed tenants for this signer |
 | `keyring[].namespaces` | No | `["*"]` | Allowed namespaces for this signer |
@@ -52,9 +63,14 @@ public_key = "..."
 The canonical byte representation is the input to the Ed25519 signature. It is computed as:
 
 1. Serialize the action to a JSON object.
-2. Remove the `signature` and `signer_id` keys.
+2. Remove the `signature`, `signer_id`, and `kid` keys.
 3. Collect the remaining keys into a sorted map (lexicographic order).
 4. Serialize to **compact JSON** (no whitespace).
+
+`kid` is excluded from the canonical bytes so that a signature
+produced before a rotation stays valid against the same key after
+the rotation — only the routing identifier changes, not the bytes
+that were signed.
 
 This format is designed for cross-language reproducibility: any JSON library that can emit compact, sorted-key JSON produces identical bytes.
 
@@ -78,7 +94,7 @@ canonical = json.dumps(action, sort_keys=True, separators=(",", ":")).encode()
 
 ## Dispatch payload
 
-A signed action includes the two extra fields:
+A signed action includes the signing fields:
 
 ```json
 {
@@ -90,9 +106,92 @@ A signed action includes the two extra fields:
   "payload": {"to": "user@example.com"},
   "created_at": "2026-04-12T00:00:00Z",
   "signature": "base64-encoded-64-byte-ed25519-signature",
-  "signer_id": "ci-bot"
+  "signer_id": "ci-bot",
+  "kid": "k2"
 }
 ```
+
+The `kid` field is optional. When present, the server selects the
+exact `(signer_id, kid)` pair from its keyring — fail-fast on a
+stale or never-issued kid. When absent, the server falls back to
+trying every active key registered under `signer_id` and accepts
+the first match. Legacy single-key signers can omit `kid` entirely.
+
+## Key rotation
+
+Acteon supports rotating an Ed25519 key without coordinated
+downtime by allowing **multiple active keys per signer**. The
+rotation pattern:
+
+1. **Generate a new keypair** for the same `signer_id` with a fresh
+   `kid` (e.g., `k2` if the current key is `k1`).
+2. **Add the new public key to `signing.keyring`** alongside the
+   existing entry. Both keys are now active. Restart the server
+   (or wait for the next config reload).
+3. **Verify discovery** by hitting `GET /.well-known/acteon-signing-keys`
+   — the response now contains two entries for the same `signer_id`.
+4. **Migrate signers** to use the new private key + send `kid: "k2"`
+   on the dispatch. Existing in-flight signatures stamped with
+   `k1` (or no kid at all) continue to verify against `k1`.
+5. **Wait** until the longest-lived in-flight signed action has
+   been processed.
+6. **Remove `k1`** from `signing.keyring` and restart. The
+   discovery endpoint now reports only `k2`. Any signature still
+   referencing `k1` is rejected.
+
+The audit record stores both `signer_id` and `kid` on every
+signed dispatch, so operators can trace which key produced any
+given signature even after the rotation has completed.
+
+## Discovery endpoint
+
+```
+GET /.well-known/acteon-signing-keys
+```
+
+Public (no authentication) endpoint that publishes the active
+verifier set. Response shape:
+
+```json
+{
+  "keys": [
+    {
+      "signer_id": "ci-bot",
+      "kid": "k1",
+      "algorithm": "Ed25519",
+      "public_key": "base64-encoded-32-byte-public-key",
+      "tenants": ["acme"],
+      "namespaces": ["prod", "staging"]
+    },
+    {
+      "signer_id": "ci-bot",
+      "kid": "k2",
+      "algorithm": "Ed25519",
+      "public_key": "base64-encoded-32-byte-public-key",
+      "tenants": ["acme"],
+      "namespaces": ["prod", "staging"]
+    }
+  ],
+  "count": 2
+}
+```
+
+Use cases:
+
+- **Side-loaded verification** — a downstream service can fetch
+  the keyring at runtime instead of being deployed with hardcoded
+  public keys.
+- **Detect a rotation in progress** — when a signer has more than
+  one entry in the response, the operator is staging a rotation;
+  clients should start sending the new `kid`.
+- **Audit verification without server cooperation** — clients can
+  verify stored audit records against the current public set
+  rather than calling `GET /v1/actions/{id}/verify`.
+
+The endpoint never returns private key material. Operators who
+prefer a private verifier set can disable signing globally
+(`signing.enabled = false`) — the response then becomes an empty
+list.
 
 ## Verification endpoint
 

@@ -211,6 +211,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attachment_metadata: Vec::new(),
         signature: None,
         signer_id: None,
+        kid: None,
         canonical_hash: None,
     };
 
@@ -270,6 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attachment_metadata: Vec::new(),
         signature: None,
         signer_id: None,
+        kid: None,
         canonical_hash: None,
     };
     encrypting_audit.record(no_payload).await?;
@@ -311,6 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attachment_metadata: Vec::new(),
         signature: None,
         signer_id: None,
+        kid: None,
         canonical_hash: None,
     };
     // Insert directly into inner store (bypass encryption).
