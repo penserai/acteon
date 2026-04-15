@@ -17,17 +17,12 @@ test.describe('Event Stream', () => {
   })
 
   test('connection status indicator is visible', async ({ page }) => {
-    // The status text should be visible (connected, connecting, or disconnected)
-    const statuses = ['connected', 'connecting', 'disconnected']
-    const statusVisible = await Promise.any(
-      statuses.map(async (s) => {
-        const el = page.getByText(s, { exact: true })
-        return el.isVisible().then(v => v ? s : Promise.reject())
-      }),
-    ).catch(() => null)
-
-    // At least one status should be present
-    expect(statusVisible).not.toBeNull()
+    // The status text should be visible (connected, connecting, or
+    // disconnected). Use a retrying locator so the test tolerates the
+    // EventStream route being lazy-loaded — the assertion auto-retries
+    // until the page chunk arrives and the status chip renders.
+    const statusChip = page.getByText(/^(connected|connecting|disconnected)$/).first()
+    await expect(statusChip).toBeVisible({ timeout: 10_000 })
   })
 
   test('pause/resume button is present', async ({ page }) => {
@@ -46,9 +41,16 @@ test.describe('Event Stream', () => {
   })
 
   test('event type filter dropdown has options', async ({ page }) => {
+    // Wait for the lazy route chunk to render the filter select before
+    // counting options. `expect(locator).not.toHaveCount(0)` on the
+    // options locator auto-retries until the select is attached — so
+    // this works whether the page is eager or code-split.
     const select = page.locator('select').first()
+    await expect(select).toBeVisible({ timeout: 10_000 })
     const options = select.locator('option')
-    expect(await options.count()).toBeGreaterThan(1) // At least "All Types" + some event types
+    await expect(options).not.toHaveCount(0)
+    // At least "All Types" + at least one event type = more than one option.
+    expect(await options.count()).toBeGreaterThan(1)
   })
 
   test('empty stream shows waiting message', async ({ page }) => {

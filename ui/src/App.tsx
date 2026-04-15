@@ -1,37 +1,74 @@
-import { useEffect } from 'react'
+import { lazy, useEffect } from 'react'
+import type { ComponentType } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ToastProvider } from './components/ui/Toast'
 import { CommandPalette } from './components/command-palette/CommandPalette'
 import { connectEvents, disconnectEvents } from './stores/events'
 import { Dashboard } from './pages/Dashboard'
-import { Dispatch } from './pages/Dispatch'
-import { Rules } from './pages/Rules'
-import { Actions } from './pages/Actions'
-import { Events } from './pages/Events'
-import { Groups } from './pages/Groups'
-import { Silences } from './pages/Silences'
-import { TimeIntervals } from './pages/TimeIntervals'
-import { Alerting } from './pages/Alerting'
-import { Chains } from './pages/Chains'
-import { ChainDetail } from './pages/ChainDetail'
-import { Approvals } from './pages/Approvals'
-import { Providers } from './pages/Providers'
-import { ProviderHealth } from './pages/ProviderHealth'
-import { DeadLetterQueue } from './pages/DeadLetterQueue'
-import { EventStream } from './pages/EventStream'
-import { Embeddings } from './pages/Embeddings'
-import { ScheduledActions } from './pages/ScheduledActions'
-import { RecurringActions } from './pages/RecurringActions'
-import { Quotas } from './pages/Quotas'
-import { RetentionPolicies } from './pages/RetentionPolicies'
-import { RulePlayground } from './pages/RulePlayground'
-import { WasmPlugins } from './pages/WasmPlugins'
-import { Templates } from './pages/Templates'
-import { ChainDefinitions } from './pages/ChainDefinitions'
-import { Analytics } from './pages/Analytics'
-import { ComplianceStatus } from './pages/ComplianceStatus'
-import { Settings } from './pages/Settings'
+
+// -----------------------------------------------------------------------------
+// lazyPage helper
+// -----------------------------------------------------------------------------
+// The project uses named exports for pages (e.g. `export function Dispatch`).
+// React.lazy() expects a module with a `default` export, so each lazy import
+// has to shim a `{ default: m.PageName }` object. `lazyPage` centralizes the
+// shim so App.tsx's route table reads like a flat list instead of a wall of
+// nearly-identical `.then()` callbacks.
+//
+// The generics give you a type-checked page name: if you typo
+// `lazyPage(() => import('./pages/Dispatch'), 'Dispatchh')` TypeScript flags
+// it at compile time because `'Dispatchh'` isn't a key of the module.
+
+type PageModule<Name extends string> = {
+  [K in Name]: ComponentType<unknown>
+}
+
+function lazyPage<Name extends string>(
+  loader: () => Promise<PageModule<Name>>,
+  name: Name,
+) {
+  return lazy(async () => {
+    const mod = await loader()
+    return { default: mod[name] }
+  })
+}
+
+// -----------------------------------------------------------------------------
+// Lazy route modules
+// -----------------------------------------------------------------------------
+// Every non-Dashboard route is lazy-loaded so its JS, CSS, and the libraries
+// it pulls in (recharts, @xyflow/react, etc.) only ship to the browser when
+// the user actually navigates there. Dashboard stays eager because it's the
+// index/landing page — the first paint would otherwise show a spinner.
+
+const Dispatch = lazyPage(() => import('./pages/Dispatch'), 'Dispatch')
+const Rules = lazyPage(() => import('./pages/Rules'), 'Rules')
+const Actions = lazyPage(() => import('./pages/Actions'), 'Actions')
+const Events = lazyPage(() => import('./pages/Events'), 'Events')
+const Groups = lazyPage(() => import('./pages/Groups'), 'Groups')
+const Silences = lazyPage(() => import('./pages/Silences'), 'Silences')
+const TimeIntervals = lazyPage(() => import('./pages/TimeIntervals'), 'TimeIntervals')
+const Alerting = lazyPage(() => import('./pages/Alerting'), 'Alerting')
+const Chains = lazyPage(() => import('./pages/Chains'), 'Chains')
+const ChainDetail = lazyPage(() => import('./pages/ChainDetail'), 'ChainDetail')
+const Approvals = lazyPage(() => import('./pages/Approvals'), 'Approvals')
+const Providers = lazyPage(() => import('./pages/Providers'), 'Providers')
+const ProviderHealth = lazyPage(() => import('./pages/ProviderHealth'), 'ProviderHealth')
+const DeadLetterQueue = lazyPage(() => import('./pages/DeadLetterQueue'), 'DeadLetterQueue')
+const EventStream = lazyPage(() => import('./pages/EventStream'), 'EventStream')
+const Embeddings = lazyPage(() => import('./pages/Embeddings'), 'Embeddings')
+const ScheduledActions = lazyPage(() => import('./pages/ScheduledActions'), 'ScheduledActions')
+const RecurringActions = lazyPage(() => import('./pages/RecurringActions'), 'RecurringActions')
+const Quotas = lazyPage(() => import('./pages/Quotas'), 'Quotas')
+const RetentionPolicies = lazyPage(() => import('./pages/RetentionPolicies'), 'RetentionPolicies')
+const RulePlayground = lazyPage(() => import('./pages/RulePlayground'), 'RulePlayground')
+const WasmPlugins = lazyPage(() => import('./pages/WasmPlugins'), 'WasmPlugins')
+const Templates = lazyPage(() => import('./pages/Templates'), 'Templates')
+const ChainDefinitions = lazyPage(() => import('./pages/ChainDefinitions'), 'ChainDefinitions')
+const Analytics = lazyPage(() => import('./pages/Analytics'), 'Analytics')
+const ComplianceStatus = lazyPage(() => import('./pages/ComplianceStatus'), 'ComplianceStatus')
+const Settings = lazyPage(() => import('./pages/Settings'), 'Settings')
 
 function App() {
   useEffect(() => {
@@ -42,6 +79,13 @@ function App() {
   return (
     <ToastProvider>
       <CommandPalette />
+      {/*
+        The Suspense boundary for lazy route chunks lives inside
+        AppShell (wrapping the <Outlet />), not here. That keeps the
+        Sidebar + Header mounted during navigation and lets framer-
+        motion's AnimatePresence run its exit animation before the
+        RouteFallback spinner appears. See AppShell.tsx for details.
+      */}
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Dashboard />} />
