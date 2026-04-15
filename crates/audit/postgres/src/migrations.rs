@@ -109,6 +109,9 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signature TEXT"),
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signer_id TEXT"),
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS canonical_hash TEXT"),
+        // Key identifier for rotation — nullable so legacy single-key
+        // signatures (no kid) deserialize cleanly.
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS kid TEXT"),
     ];
     for stmt in &signing_stmts {
         sqlx::query(stmt).execute(pool).await?;

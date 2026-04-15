@@ -113,7 +113,7 @@ impl AuditStore for PostgresAuditStore {
                 caller_id, auth_method,
                 record_hash, previous_hash, sequence_number,
                 attachment_metadata,
-                signature, signer_id, canonical_hash
+                signature, signer_id, kid, canonical_hash
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10,
@@ -122,7 +122,7 @@ impl AuditStore for PostgresAuditStore {
                 $19, $20,
                 $21, $22, $23,
                 $24,
-                $25, $26, $27
+                $25, $26, $27, $28
             )
             ",
             self.table
@@ -160,6 +160,7 @@ impl AuditStore for PostgresAuditStore {
             .bind(serde_json::Value::Array(entry.attachment_metadata.clone()))
             .bind(&entry.signature)
             .bind(&entry.signer_id)
+            .bind(&entry.kid)
             .bind(&entry.canonical_hash)
             .execute(&self.pool)
             .await
@@ -479,6 +480,8 @@ struct AuditRow {
     #[sqlx(default)]
     signer_id: Option<String>,
     #[sqlx(default)]
+    kid: Option<String>,
+    #[sqlx(default)]
     canonical_hash: Option<String>,
 }
 
@@ -520,6 +523,7 @@ impl From<AuditRow> for AuditRecord {
             attachment_metadata,
             signature: row.signature,
             signer_id: row.signer_id,
+            kid: row.kid,
             canonical_hash: row.canonical_hash,
         }
     }

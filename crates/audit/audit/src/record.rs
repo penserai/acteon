@@ -86,6 +86,11 @@ pub struct AuditRecord {
     /// Identifier of the key that produced the signature.
     #[serde(default)]
     pub signer_id: Option<String>,
+    /// Optional key identifier for rotation. When the same `signer_id`
+    /// has multiple active keys, `kid` records which one signed this
+    /// action. `None` for legacy single-key signatures.
+    #[serde(default)]
+    pub kid: Option<String>,
     /// SHA-256 hex digest of the action's canonical bytes at dispatch
     /// time. Stored so the verify endpoint can confirm the signature
     /// without needing to reconstruct the full original action (which

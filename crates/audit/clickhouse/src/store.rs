@@ -54,6 +54,7 @@ struct AuditInsertRow {
     attachment_metadata: String,
     signature: Option<String>,
     signer_id: Option<String>,
+    kid: Option<String>,
     canonical_hash: Option<String>,
 }
 
@@ -86,6 +87,7 @@ struct AuditSelectRow {
     attachment_metadata: String,
     signature: Option<String>,
     signer_id: Option<String>,
+    kid: Option<String>,
     canonical_hash: Option<String>,
 }
 
@@ -125,6 +127,7 @@ impl From<AuditRecord> for AuditInsertRow {
                 .unwrap_or_else(|_| "[]".to_owned()),
             signature: r.signature,
             signer_id: r.signer_id,
+            kid: r.kid,
             canonical_hash: r.canonical_hash,
         }
     }
@@ -163,6 +166,7 @@ impl From<AuditSelectRow> for AuditRecord {
             attachment_metadata: serde_json::from_str(&row.attachment_metadata).unwrap_or_default(),
             signature: row.signature,
             signer_id: row.signer_id,
+            kid: row.kid,
             canonical_hash: row.canonical_hash,
         }
     }
@@ -184,7 +188,7 @@ const SELECT_COLUMNS: &str = "\
     matched_rule, outcome, action_payload, verdict_details, outcome_details, \
     metadata, dispatched_at, completed_at, duration_ms, expires_at, \
     caller_id, auth_method, record_hash, previous_hash, sequence_number, \
-    attachment_metadata, signature, signer_id, canonical_hash";
+    attachment_metadata, signature, signer_id, kid, canonical_hash";
 
 /// Escape a string value for safe interpolation inside a `ClickHouse` SQL
 /// single-quoted literal.  `ClickHouse` uses backslash escaping by default.

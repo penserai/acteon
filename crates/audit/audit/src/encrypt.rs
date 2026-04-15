@@ -223,6 +223,7 @@ mod tests {
             attachment_metadata: Vec::new(),
             signature: None,
             signer_id: None,
+            kid: None,
             canonical_hash: None,
         }
     }

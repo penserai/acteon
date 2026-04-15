@@ -84,6 +84,11 @@ impl ActeonClient {
     /// `signature` and `signer_id` fields on a cloned action, and
     /// dispatches the signed copy. Requires the `signing` feature.
     ///
+    /// The dispatched action does NOT carry a `kid` — use
+    /// [`dispatch_signed_with_kid`](Self::dispatch_signed_with_kid)
+    /// to stamp a key identifier when participating in a key
+    /// rotation window.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -109,6 +114,35 @@ impl ActeonClient {
         let canonical = signed.canonical_bytes();
         signed.signature = Some(key.sign(&canonical));
         signed.signer_id = Some(key.signer_id().to_owned());
+        self.dispatch_inner(&signed, false).await
+    }
+
+    /// Sign an action and stamp it with a `kid` for the key rotation
+    /// window, then dispatch it.
+    ///
+    /// During a rotation, the same `signer_id` may have multiple
+    /// active keys on the server (old + new). When the client sends
+    /// `kid`, the server's [`Keyring::verify_with_kid`] looks up the
+    /// exact key and fails fast on a stale or never-issued kid.
+    /// Without `kid`, the server falls back to a try-all-keys check.
+    ///
+    /// `kid` is excluded from the canonical bytes used for signing,
+    /// so a signature produced with one kid stays valid if the
+    /// server later removes that key (until the operator retires it).
+    ///
+    /// [`Keyring::verify_with_kid`]: acteon_crypto::signing::Keyring::verify_with_kid
+    #[cfg(feature = "signing")]
+    pub async fn dispatch_signed_with_kid(
+        &self,
+        action: &Action,
+        key: &acteon_crypto::signing::ActionSigningKey,
+        kid: impl Into<String>,
+    ) -> Result<ActionOutcome, Error> {
+        let mut signed = action.clone();
+        let canonical = signed.canonical_bytes();
+        signed.signature = Some(key.sign(&canonical));
+        signed.signer_id = Some(key.signer_id().to_owned());
+        signed.kid = Some(kid.into());
         self.dispatch_inner(&signed, false).await
     }
 

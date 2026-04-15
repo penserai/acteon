@@ -43,6 +43,11 @@ type Action struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 	Signature   string       `json:"signature,omitempty"`
 	SignerID    string       `json:"signer_id,omitempty"`
+	// Kid is an optional key identifier for rotation. When the same
+	// SignerID has multiple active keys on the server, Kid selects
+	// the specific key to verify against. Discoverable via
+	// GET /.well-known/acteon-signing-keys.
+	Kid string `json:"kid,omitempty"`
 }
 
 // ActionMetadata contains optional metadata for an action.

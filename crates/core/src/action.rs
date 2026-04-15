@@ -111,6 +111,17 @@ pub struct Action {
     /// up the corresponding public key in the server's keyring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signer_id: Option<String>,
+
+    /// Optional key identifier for rotation. When the same `signer_id`
+    /// has more than one active key (e.g., during a rotation window),
+    /// `kid` selects the specific key to verify against. When `None`,
+    /// the verifier accepts any key registered under `signer_id` —
+    /// the legacy single-key behavior. Set this on signed dispatches
+    /// once the operator has provisioned multiple keys for the
+    /// signer; clients can fetch the active set via
+    /// `GET /.well-known/acteon-signing-keys`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
 }
 
 impl Action {
@@ -143,6 +154,7 @@ impl Action {
             attachments: Vec::new(),
             signature: None,
             signer_id: None,
+            kid: None,
         }
     }
 
@@ -223,13 +235,28 @@ impl Action {
         self
     }
 
+    /// Set the key identifier (`kid`) — used when the signer has more
+    /// than one active key during a rotation window.
+    #[must_use]
+    pub fn with_kid(mut self, kid: impl Into<String>) -> Self {
+        self.kid = Some(kid.into());
+        self
+    }
+
     /// Compute the canonical byte representation used for signing.
     ///
     /// Returns a **compact** (no whitespace), deterministic JSON
-    /// serialization of every field **except** `signature` and
-    /// `signer_id`. Object keys are sorted lexicographically (via
-    /// `BTreeMap`) so the same action always produces the same bytes
-    /// regardless of the original field insertion order.
+    /// serialization of every field **except** `signature`,
+    /// `signer_id`, and `kid`. Object keys are sorted lexicographically
+    /// (via `BTreeMap`) so the same action always produces the same
+    /// bytes regardless of the original field insertion order.
+    ///
+    /// `kid` is excluded so that a signer can rotate the key it uses
+    /// without invalidating signatures already produced by an earlier
+    /// key — the canonical bytes stay stable across the rotation
+    /// window. `signature` and `signer_id` are excluded because the
+    /// signature is computed over these bytes and would otherwise
+    /// reference itself.
     ///
     /// This format is designed for cross-language reproducibility:
     /// any JSON library that can emit compact sorted-key JSON will
@@ -241,6 +268,7 @@ impl Action {
         if let Some(obj) = val.as_object_mut() {
             obj.remove("signature");
             obj.remove("signer_id");
+            obj.remove("kid");
         }
         // Collect into a BTreeMap for sorted keys, then emit compact
         // JSON (no whitespace) via the default serializer.

@@ -83,6 +83,9 @@ pub async fn run_migrations(
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signature Nullable(String)"),
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS signer_id Nullable(String)"),
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS canonical_hash Nullable(String)"),
+        // Key identifier for rotation — nullable so legacy single-key
+        // signatures (no kid) deserialize cleanly.
+        format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS kid Nullable(String)"),
     ];
     for stmt in &signing_stmts {
         client.query(stmt).execute().await?;

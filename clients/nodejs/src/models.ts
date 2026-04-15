@@ -50,6 +50,13 @@ export interface Action {
   signature?: string;
   /** Identifier of the key that produced the signature. */
   signerId?: string;
+  /**
+   * Optional key identifier for rotation. When the same `signerId`
+   * has multiple active keys on the server, `kid` selects the
+   * specific key to verify against. Discoverable via
+   * `GET /.well-known/acteon-signing-keys`.
+   */
+  kid?: string;
 }
 
 /**
@@ -115,6 +122,15 @@ export function actionToRequest(action: Action): Record<string, unknown> {
       content_type: a.contentType,
       data_base64: a.dataBase64,
     }));
+  }
+  if (action.signature) {
+    result.signature = action.signature;
+  }
+  if (action.signerId) {
+    result.signer_id = action.signerId;
+  }
+  if (action.kid) {
+    result.kid = action.kid;
   }
   return result;
 }

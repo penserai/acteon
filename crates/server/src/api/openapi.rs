@@ -152,6 +152,7 @@ use acteon_core::{
         super::time_intervals::get_time_interval,
         super::time_intervals::update_time_interval,
         super::time_intervals::delete_time_interval,
+        super::signing_keys::discover_signing_keys,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -206,6 +207,7 @@ use acteon_core::{
         super::time_intervals::TimeIntervalResponse,
         super::time_intervals::ListTimeIntervalsResponse,
         super::time_intervals::TimeRangeInput, super::time_intervals::TimeOfDayInput,
+        super::signing_keys::SigningKeyEntry, super::signing_keys::SigningKeysResponse,
     ))
 )]
 pub struct ApiDoc;

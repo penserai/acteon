@@ -64,6 +64,7 @@ class Action:
     attachments: Optional[list[Attachment]] = None
     signature: Optional[str] = None
     signer_id: Optional[str] = None
+    kid: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -88,6 +89,8 @@ class Action:
             result["signature"] = self.signature
         if self.signer_id:
             result["signer_id"] = self.signer_id
+        if self.kid:
+            result["kid"] = self.kid
         return result
 
 

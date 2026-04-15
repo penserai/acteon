@@ -594,6 +594,9 @@ fn record_to_item(record: &AuditRecord) -> HashMap<String, AttributeValue> {
     if let Some(ref signer) = record.signer_id {
         item.insert("signer_id".to_owned(), AttributeValue::S(signer.clone()));
     }
+    if let Some(ref kid) = record.kid {
+        item.insert("kid".to_owned(), AttributeValue::S(kid.clone()));
+    }
     if let Some(ref hash) = record.canonical_hash {
         item.insert("canonical_hash".to_owned(), AttributeValue::S(hash.clone()));
     }
@@ -691,6 +694,7 @@ fn item_to_record(item: &HashMap<String, AttributeValue>) -> Result<AuditRecord,
             .unwrap_or_default(),
         signature: get_s_opt("signature"),
         signer_id: get_s_opt("signer_id"),
+        kid: get_s_opt("kid"),
         canonical_hash: get_s_opt("canonical_hash"),
     })
 }
@@ -745,6 +749,7 @@ mod tests {
             attachment_metadata: Vec::new(),
             signature: None,
             signer_id: None,
+            kid: None,
             canonical_hash: None,
         }
     }
@@ -845,6 +850,7 @@ mod tests {
             attachment_metadata: Vec::new(),
             signature: None,
             signer_id: None,
+            kid: None,
             canonical_hash: None,
         };
         let item = record_to_item(&record);

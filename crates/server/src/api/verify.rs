@@ -84,17 +84,43 @@ impl SignatureVerifier {
         self.keyring.contains(signer_id)
     }
 
+    /// Iterate every key in the keyring. Used by the JWKS-style
+    /// discovery endpoint to publish the active verifier set.
+    pub fn iter_keys(&self) -> impl Iterator<Item = &acteon_crypto::signing::ActionVerifyingKey> {
+        self.keyring.iter_keys()
+    }
+
+    /// Look up the scope restrictions registered for `signer_id`,
+    /// if any. Used by the JWKS-style discovery endpoint so clients
+    /// can see which `(tenant, namespace)` pairs each key is
+    /// authorized for.
+    pub fn scope_for(&self, signer_id: &str) -> Option<&SignerScope> {
+        self.scopes.get(signer_id)
+    }
+
     /// Verify an action's signature inline during dispatch.
     ///
     /// Returns `Ok(())` if the action passes verification, or an
     /// error string suitable for an HTTP 400 response body.
+    ///
+    /// When the action carries a `kid`, the verifier looks up the
+    /// exact `(signer_id, kid)` pair — fail-fast on stale or
+    /// never-issued keys. When no `kid` is present, the verifier
+    /// tries every active key registered under `signer_id` and
+    /// accepts the first match (legacy single-key behavior, plus
+    /// the rotation overlap window where neither client nor server
+    /// has fully migrated to `kid`).
     pub fn verify_action(&self, action: &Action) -> Result<(), String> {
         if let (Some(sig), Some(signer_id)) = (&action.signature, &action.signer_id) {
             // 1. Cryptographic verification.
             let canonical = action.canonical_bytes();
-            self.keyring
-                .verify(signer_id, sig, &canonical)
-                .map_err(|e| format!("signature verification failed: {e}"))?;
+            let verify_result = if let Some(ref kid) = action.kid {
+                self.keyring
+                    .verify_with_kid(signer_id, kid, sig, &canonical)
+            } else {
+                self.keyring.verify(signer_id, sig, &canonical)
+            };
+            verify_result.map_err(|e| format!("signature verification failed: {e}"))?;
 
             // 2. Scope enforcement.
             if let Some(scope) = self.scopes.get(signer_id.as_str())
