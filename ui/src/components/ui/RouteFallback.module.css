@@ -1,0 +1,45 @@
+@reference "../../index.css";
+
+.container {
+  /* Fill the main content area without forcing a layout shift. */
+  @apply flex items-center justify-center;
+  min-height: 40vh;
+  padding: 2rem;
+}
+
+.spinner {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 9999px;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--text-secondary);
+  animation: spin 0.8s linear infinite;
+}
+
+.srOnly {
+  /* Standard .sr-only pattern — visible to assistive tech only. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    /* Honor the accessibility setting — dim the border to give a
+       static "busy" state instead of a spinning animation. */
+    animation: none;
+    border-top-color: var(--text-muted);
+  }
+}

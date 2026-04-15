@@ -1,82 +1,75 @@
 import { lazy, useEffect, Suspense } from 'react'
+import type { ComponentType } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ToastProvider } from './components/ui/Toast'
 import { CommandPalette } from './components/command-palette/CommandPalette'
+import { RouteFallback } from './components/ui/RouteFallback'
 import { connectEvents, disconnectEvents } from './stores/events'
 import { Dashboard } from './pages/Dashboard'
 
-// Every non-Dashboard route is lazy-loaded so its JS, CSS, and the
-// libraries it pulls in (recharts, @xyflow/react, codemirror, etc.)
-// only ship to the browser when the user actually navigates there.
-// Dashboard stays eager because it's the index/landing page.
-const Dispatch = lazy(() => import('./pages/Dispatch').then((m) => ({ default: m.Dispatch })))
-const Rules = lazy(() => import('./pages/Rules').then((m) => ({ default: m.Rules })))
-const Actions = lazy(() => import('./pages/Actions').then((m) => ({ default: m.Actions })))
-const Events = lazy(() => import('./pages/Events').then((m) => ({ default: m.Events })))
-const Groups = lazy(() => import('./pages/Groups').then((m) => ({ default: m.Groups })))
-const Silences = lazy(() => import('./pages/Silences').then((m) => ({ default: m.Silences })))
-const TimeIntervals = lazy(() =>
-  import('./pages/TimeIntervals').then((m) => ({ default: m.TimeIntervals })),
-)
-const Alerting = lazy(() => import('./pages/Alerting').then((m) => ({ default: m.Alerting })))
-const Chains = lazy(() => import('./pages/Chains').then((m) => ({ default: m.Chains })))
-const ChainDetail = lazy(() =>
-  import('./pages/ChainDetail').then((m) => ({ default: m.ChainDetail })),
-)
-const Approvals = lazy(() => import('./pages/Approvals').then((m) => ({ default: m.Approvals })))
-const Providers = lazy(() => import('./pages/Providers').then((m) => ({ default: m.Providers })))
-const ProviderHealth = lazy(() =>
-  import('./pages/ProviderHealth').then((m) => ({ default: m.ProviderHealth })),
-)
-const DeadLetterQueue = lazy(() =>
-  import('./pages/DeadLetterQueue').then((m) => ({ default: m.DeadLetterQueue })),
-)
-const EventStream = lazy(() =>
-  import('./pages/EventStream').then((m) => ({ default: m.EventStream })),
-)
-const Embeddings = lazy(() => import('./pages/Embeddings').then((m) => ({ default: m.Embeddings })))
-const ScheduledActions = lazy(() =>
-  import('./pages/ScheduledActions').then((m) => ({ default: m.ScheduledActions })),
-)
-const RecurringActions = lazy(() =>
-  import('./pages/RecurringActions').then((m) => ({ default: m.RecurringActions })),
-)
-const Quotas = lazy(() => import('./pages/Quotas').then((m) => ({ default: m.Quotas })))
-const RetentionPolicies = lazy(() =>
-  import('./pages/RetentionPolicies').then((m) => ({ default: m.RetentionPolicies })),
-)
-const RulePlayground = lazy(() =>
-  import('./pages/RulePlayground').then((m) => ({ default: m.RulePlayground })),
-)
-const WasmPlugins = lazy(() =>
-  import('./pages/WasmPlugins').then((m) => ({ default: m.WasmPlugins })),
-)
-const Templates = lazy(() => import('./pages/Templates').then((m) => ({ default: m.Templates })))
-const ChainDefinitions = lazy(() =>
-  import('./pages/ChainDefinitions').then((m) => ({ default: m.ChainDefinitions })),
-)
-const Analytics = lazy(() => import('./pages/Analytics').then((m) => ({ default: m.Analytics })))
-const ComplianceStatus = lazy(() =>
-  import('./pages/ComplianceStatus').then((m) => ({ default: m.ComplianceStatus })),
-)
-const Settings = lazy(() => import('./pages/Settings').then((m) => ({ default: m.Settings })))
+// -----------------------------------------------------------------------------
+// lazyPage helper
+// -----------------------------------------------------------------------------
+// The project uses named exports for pages (e.g. `export function Dispatch`).
+// React.lazy() expects a module with a `default` export, so each lazy import
+// has to shim a `{ default: m.PageName }` object. `lazyPage` centralizes the
+// shim so App.tsx's route table reads like a flat list instead of a wall of
+// nearly-identical `.then()` callbacks.
+//
+// The generics give you a type-checked page name: if you typo
+// `lazyPage(() => import('./pages/Dispatch'), 'Dispatchh')` TypeScript flags
+// it at compile time because `'Dispatchh'` isn't a key of the module.
 
-function RouteFallback() {
-  return (
-    <div
-      style={{
-        padding: '2rem',
-        color: 'var(--text-muted)',
-        fontSize: '0.875rem',
-      }}
-      role="status"
-      aria-live="polite"
-    >
-      Loading…
-    </div>
-  )
+type PageModule<Name extends string> = {
+  [K in Name]: ComponentType<unknown>
 }
+
+function lazyPage<Name extends string>(
+  loader: () => Promise<PageModule<Name>>,
+  name: Name,
+) {
+  return lazy(async () => {
+    const mod = await loader()
+    return { default: mod[name] }
+  })
+}
+
+// -----------------------------------------------------------------------------
+// Lazy route modules
+// -----------------------------------------------------------------------------
+// Every non-Dashboard route is lazy-loaded so its JS, CSS, and the libraries
+// it pulls in (recharts, @xyflow/react, etc.) only ship to the browser when
+// the user actually navigates there. Dashboard stays eager because it's the
+// index/landing page — the first paint would otherwise show a spinner.
+
+const Dispatch = lazyPage(() => import('./pages/Dispatch'), 'Dispatch')
+const Rules = lazyPage(() => import('./pages/Rules'), 'Rules')
+const Actions = lazyPage(() => import('./pages/Actions'), 'Actions')
+const Events = lazyPage(() => import('./pages/Events'), 'Events')
+const Groups = lazyPage(() => import('./pages/Groups'), 'Groups')
+const Silences = lazyPage(() => import('./pages/Silences'), 'Silences')
+const TimeIntervals = lazyPage(() => import('./pages/TimeIntervals'), 'TimeIntervals')
+const Alerting = lazyPage(() => import('./pages/Alerting'), 'Alerting')
+const Chains = lazyPage(() => import('./pages/Chains'), 'Chains')
+const ChainDetail = lazyPage(() => import('./pages/ChainDetail'), 'ChainDetail')
+const Approvals = lazyPage(() => import('./pages/Approvals'), 'Approvals')
+const Providers = lazyPage(() => import('./pages/Providers'), 'Providers')
+const ProviderHealth = lazyPage(() => import('./pages/ProviderHealth'), 'ProviderHealth')
+const DeadLetterQueue = lazyPage(() => import('./pages/DeadLetterQueue'), 'DeadLetterQueue')
+const EventStream = lazyPage(() => import('./pages/EventStream'), 'EventStream')
+const Embeddings = lazyPage(() => import('./pages/Embeddings'), 'Embeddings')
+const ScheduledActions = lazyPage(() => import('./pages/ScheduledActions'), 'ScheduledActions')
+const RecurringActions = lazyPage(() => import('./pages/RecurringActions'), 'RecurringActions')
+const Quotas = lazyPage(() => import('./pages/Quotas'), 'Quotas')
+const RetentionPolicies = lazyPage(() => import('./pages/RetentionPolicies'), 'RetentionPolicies')
+const RulePlayground = lazyPage(() => import('./pages/RulePlayground'), 'RulePlayground')
+const WasmPlugins = lazyPage(() => import('./pages/WasmPlugins'), 'WasmPlugins')
+const Templates = lazyPage(() => import('./pages/Templates'), 'Templates')
+const ChainDefinitions = lazyPage(() => import('./pages/ChainDefinitions'), 'ChainDefinitions')
+const Analytics = lazyPage(() => import('./pages/Analytics'), 'Analytics')
+const ComplianceStatus = lazyPage(() => import('./pages/ComplianceStatus'), 'ComplianceStatus')
+const Settings = lazyPage(() => import('./pages/Settings'), 'Settings')
 
 function App() {
   useEffect(() => {
