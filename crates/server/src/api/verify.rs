@@ -100,8 +100,11 @@ impl SignatureVerifier {
 
     /// Verify an action's signature inline during dispatch.
     ///
-    /// Returns `Ok(())` if the action passes verification, or an
-    /// error string suitable for an HTTP 400 response body.
+    /// Returns a [`VerifyOutcome`] describing which branch was
+    /// taken. Callers bump the corresponding gateway metric via
+    /// [`VerifyOutcome::record_metric`] and translate the outcome
+    /// into an HTTP 400 response via [`VerifyOutcome::error_message`]
+    /// when appropriate.
     ///
     /// When the action carries a `kid`, the verifier looks up the
     /// exact `(signer_id, kid)` pair — fail-fast on stale or
@@ -110,38 +113,146 @@ impl SignatureVerifier {
     /// accepts the first match (legacy single-key behavior, plus
     /// the rotation overlap window where neither client nor server
     /// has fully migrated to `kid`).
-    pub fn verify_action(&self, action: &Action) -> Result<(), String> {
-        if let (Some(sig), Some(signer_id)) = (&action.signature, &action.signer_id) {
-            // 1. Cryptographic verification.
-            let canonical = action.canonical_bytes();
-            let verify_result = if let Some(ref kid) = action.kid {
-                self.keyring
-                    .verify_with_kid(signer_id, kid, sig, &canonical)
+    pub fn verify_action(&self, action: &Action) -> VerifyOutcome {
+        let (Some(sig), Some(signer_id)) = (&action.signature, &action.signer_id) else {
+            return if self.reject_unsigned {
+                VerifyOutcome::UnsignedRejected
             } else {
-                self.keyring.verify(signer_id, sig, &canonical)
+                VerifyOutcome::UnsignedAllowed
             };
-            verify_result.map_err(|e| format!("signature verification failed: {e}"))?;
+        };
 
-            // 2. Scope enforcement.
-            if let Some(scope) = self.scopes.get(signer_id.as_str())
-                && !scope.allows(&action.tenant, &action.namespace)
-            {
-                return Err(format!(
-                    "signer '{signer_id}' is not authorized for \
-                     tenant={} namespace={}",
-                    action.tenant, action.namespace
-                ));
-            }
+        // 1. Cryptographic verification.
+        let canonical = action.canonical_bytes();
+        let crypto_result = if let Some(ref kid) = action.kid {
+            self.keyring
+                .verify_with_kid(signer_id, kid, sig, &canonical)
+        } else {
+            self.keyring.verify(signer_id, sig, &canonical)
+        };
 
-            Ok(())
-        } else if self.reject_unsigned {
-            Err(
+        if let Err(e) = crypto_result {
+            return match e {
+                acteon_crypto::CryptoError::UnknownSigner(_) => VerifyOutcome::UnknownSigner {
+                    signer_id: signer_id.clone(),
+                    kid: action.kid.clone(),
+                },
+                _ => VerifyOutcome::InvalidSignature {
+                    signer_id: signer_id.clone(),
+                    kid: action.kid.clone(),
+                },
+            };
+        }
+
+        // 2. Scope enforcement.
+        if let Some(scope) = self.scopes.get(signer_id.as_str())
+            && !scope.allows(&action.tenant, &action.namespace)
+        {
+            return VerifyOutcome::ScopeDenied {
+                signer_id: signer_id.clone(),
+                tenant: action.tenant.to_string(),
+                namespace: action.namespace.to_string(),
+            };
+        }
+
+        VerifyOutcome::Verified {
+            signer_id: signer_id.clone(),
+            kid: action.kid.clone(),
+        }
+    }
+}
+
+/// Outcome of verifying an action's signature.
+///
+/// Lets the dispatch handler distinguish between the branches the
+/// verifier took so it can bump the right metric and — for rejection
+/// paths — emit a targeted HTTP 400 error message.
+#[derive(Debug, Clone)]
+pub enum VerifyOutcome {
+    /// Action carries no signature and `reject_unsigned` is off —
+    /// dispatch proceeds without signing validation.
+    UnsignedAllowed,
+    /// Action carries a signature that is cryptographically valid
+    /// and passes scope enforcement.
+    Verified {
+        signer_id: String,
+        kid: Option<String>,
+    },
+    /// Action carries no signature and `reject_unsigned` is on.
+    UnsignedRejected,
+    /// The `signer_id` (or `(signer_id, kid)` pair during a rotation
+    /// window) is not registered in the keyring.
+    UnknownSigner {
+        signer_id: String,
+        kid: Option<String>,
+    },
+    /// Cryptographic verification failed — the signature does not
+    /// match the canonical bytes under the registered public key.
+    InvalidSignature {
+        signer_id: String,
+        kid: Option<String>,
+    },
+    /// Signature is cryptographically valid but the signer is not
+    /// authorized for the action's `(tenant, namespace)` pair.
+    ScopeDenied {
+        signer_id: String,
+        tenant: String,
+        namespace: String,
+    },
+}
+
+impl VerifyOutcome {
+    /// Whether the outcome allows dispatch to proceed.
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        matches!(self, Self::UnsignedAllowed | Self::Verified { .. })
+    }
+
+    /// HTTP 400 body message for rejection outcomes, or `None` when
+    /// dispatch should proceed.
+    #[must_use]
+    pub fn error_message(&self) -> Option<String> {
+        match self {
+            Self::UnsignedAllowed | Self::Verified { .. } => None,
+            Self::UnsignedRejected => Some(
                 "unsigned action rejected: signing.reject_unsigned is enabled; \
                  provide both 'signature' and 'signer_id' fields"
                     .to_owned(),
-            )
-        } else {
-            Ok(())
+            ),
+            Self::UnknownSigner { signer_id, kid } => Some(match kid {
+                Some(k) => format!(
+                    "signature verification failed: unknown signer '{signer_id}' \
+                     with kid '{k}' — check /.well-known/acteon-signing-keys"
+                ),
+                None => format!(
+                    "signature verification failed: unknown signer '{signer_id}' — \
+                     check /.well-known/acteon-signing-keys"
+                ),
+            }),
+            Self::InvalidSignature { signer_id, kid: _ } => Some(format!(
+                "signature verification failed: signature did not validate \
+                 under the registered public key for signer '{signer_id}'"
+            )),
+            Self::ScopeDenied {
+                signer_id,
+                tenant,
+                namespace,
+            } => Some(format!(
+                "signer '{signer_id}' is not authorized for tenant={tenant} \
+                 namespace={namespace}"
+            )),
+        }
+    }
+
+    /// Bump the gateway counter that corresponds to this outcome.
+    pub fn record_metric(&self, metrics: &acteon_gateway::GatewayMetrics) {
+        match self {
+            Self::UnsignedAllowed => {}
+            Self::Verified { .. } => metrics.increment_signing_verified(),
+            Self::UnsignedRejected => metrics.increment_signing_unsigned_rejected(),
+            Self::UnknownSigner { .. } => metrics.increment_signing_unknown_signer(),
+            Self::InvalidSignature { .. } => metrics.increment_signing_invalid(),
+            Self::ScopeDenied { .. } => metrics.increment_signing_scope_denied(),
         }
     }
 }

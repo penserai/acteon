@@ -116,8 +116,14 @@ export function Dashboard() {
   )
 }
 
-function buildStatCards(m: MetricsResponse) {
-  return [
+interface StatCard {
+  label: string
+  value: number
+  link?: string
+}
+
+function buildStatCards(m: MetricsResponse): StatCard[] {
+  const cards: StatCard[] = [
     { label: 'Dispatched', value: m.dispatched, link: '/audit' },
     { label: 'Executed', value: m.executed, link: '/audit?outcome=Executed' },
     { label: 'Failed', value: m.failed, link: '/audit?outcome=Failed' },
@@ -129,4 +135,22 @@ function buildStatCards(m: MetricsResponse) {
     { label: 'Circuit Open', value: m.circuit_open ?? 0, link: '/circuit-breakers' },
     { label: 'Scheduled', value: m.scheduled ?? 0, link: '/scheduled' },
   ]
+
+  // Signing cards render only when signing is actually in use on the
+  // server. The signing.reject_* counters all start at 0 on a fresh
+  // server; if any of them (or signing_verified) is non-zero, signing
+  // is enabled and operators want visibility.
+  const sigVerified = m.signing_verified ?? 0
+  const sigRejected =
+    (m.signing_invalid ?? 0) +
+    (m.signing_unknown_signer ?? 0) +
+    (m.signing_scope_denied ?? 0) +
+    (m.signing_unsigned_rejected ?? 0) +
+    (m.signing_replay_rejected ?? 0)
+  if (sigVerified > 0 || sigRejected > 0) {
+    cards.push({ label: 'Sig Verified', value: sigVerified })
+    cards.push({ label: 'Sig Rejected', value: sigRejected })
+  }
+
+  return cards
 }

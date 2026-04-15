@@ -334,6 +334,44 @@ fn render_snapshot(snap: &MetricsSnapshot) -> String {
         snap.wasm_errors,
     );
 
+    // -- Action signing counters --
+    write_counter(
+        &mut buf,
+        "acteon_signing_verified_total",
+        "Action signatures successfully verified and scope-authorized.",
+        snap.signing_verified,
+    );
+    write_counter(
+        &mut buf,
+        "acteon_signing_invalid_total",
+        "Signed actions rejected because the Ed25519 signature did not validate.",
+        snap.signing_invalid,
+    );
+    write_counter(
+        &mut buf,
+        "acteon_signing_unknown_signer_total",
+        "Signed actions rejected because the signer_id (or signer_id/kid pair) is not in the keyring.",
+        snap.signing_unknown_signer,
+    );
+    write_counter(
+        &mut buf,
+        "acteon_signing_scope_denied_total",
+        "Signed actions rejected because the signer is not authorized for the (tenant, namespace) pair.",
+        snap.signing_scope_denied,
+    );
+    write_counter(
+        &mut buf,
+        "acteon_signing_unsigned_rejected_total",
+        "Unsigned actions rejected because signing.reject_unsigned is enabled.",
+        snap.signing_unsigned_rejected,
+    );
+    write_counter(
+        &mut buf,
+        "acteon_signing_replay_rejected_total",
+        "Actions rejected because their action ID was already seen within the replay protection window.",
+        snap.signing_replay_rejected,
+    );
+
     buf
 }
 
@@ -548,6 +586,12 @@ mod tests {
             retention_errors: 0,
             wasm_invocations: 0,
             wasm_errors: 0,
+            signing_verified: 0,
+            signing_invalid: 0,
+            signing_unknown_signer: 0,
+            signing_scope_denied: 0,
+            signing_unsigned_rejected: 0,
+            signing_replay_rejected: 0,
         }
     }
 
@@ -586,6 +630,12 @@ mod tests {
             retention_errors: 1,
             wasm_invocations: 6,
             wasm_errors: 2,
+            signing_verified: 42,
+            signing_invalid: 2,
+            signing_unknown_signer: 3,
+            signing_scope_denied: 1,
+            signing_unsigned_rejected: 5,
+            signing_replay_rejected: 4,
         }
     }
 
@@ -754,7 +804,7 @@ mod tests {
 
     // -- render_snapshot tests --
 
-    /// All 33 gateway counter metric names that must appear in the output.
+    /// All 39 gateway counter metric names that must appear in the output.
     const EXPECTED_COUNTER_METRICS: &[&str] = &[
         "acteon_actions_dispatched_total",
         "acteon_actions_executed_total",
@@ -789,10 +839,16 @@ mod tests {
         "acteon_retention_errors_total",
         "acteon_wasm_invocations_total",
         "acteon_wasm_errors_total",
+        "acteon_signing_verified_total",
+        "acteon_signing_invalid_total",
+        "acteon_signing_unknown_signer_total",
+        "acteon_signing_scope_denied_total",
+        "acteon_signing_unsigned_rejected_total",
+        "acteon_signing_replay_rejected_total",
     ];
 
     #[test]
-    fn render_snapshot_contains_all_33_counter_metrics() {
+    fn render_snapshot_contains_all_39_counter_metrics() {
         let snap = zero_snapshot();
         let output = render_snapshot(&snap);
 
@@ -872,6 +928,12 @@ mod tests {
         assert!(output.contains("acteon_retention_errors_total 1"));
         assert!(output.contains("acteon_wasm_invocations_total 6"));
         assert!(output.contains("acteon_wasm_errors_total 2"));
+        assert!(output.contains("acteon_signing_verified_total 42"));
+        assert!(output.contains("acteon_signing_invalid_total 2"));
+        assert!(output.contains("acteon_signing_unknown_signer_total 3"));
+        assert!(output.contains("acteon_signing_scope_denied_total 1"));
+        assert!(output.contains("acteon_signing_unsigned_rejected_total 5"));
+        assert!(output.contains("acteon_signing_replay_rejected_total 4"));
     }
 
     #[test]
@@ -1097,7 +1159,7 @@ mod tests {
         providers.insert("email".to_string(), sample_provider_stats());
         render_provider_metrics(&mut output, &providers);
 
-        // 33 counter metrics from the snapshot
+        // 39 counter metrics from the snapshot
         for metric in EXPECTED_COUNTER_METRICS {
             assert!(output.contains(metric), "Missing snapshot metric: {metric}");
         }
@@ -1107,16 +1169,16 @@ mod tests {
             assert!(output.contains(name), "Missing provider metric: {name}");
         }
 
-        // Total: 33 + 8 = 41 unique metric families
+        // Total: 39 + 8 = 47 unique metric families
         let type_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.starts_with("# TYPE "))
             .collect();
-        assert_eq!(type_lines.len(), 41, "Expected 41 TYPE declarations");
+        assert_eq!(type_lines.len(), 47, "Expected 47 TYPE declarations");
     }
 
     #[test]
-    fn full_render_no_providers_has_33_type_lines() {
+    fn full_render_no_providers_has_39_type_lines() {
         let snap = zero_snapshot();
         let mut output = render_snapshot(&snap);
         let empty: HashMap<String, ProviderStatsSnapshot> = HashMap::new();
@@ -1128,8 +1190,8 @@ mod tests {
             .collect();
         assert_eq!(
             type_lines.len(),
-            33,
-            "Expected 33 TYPE declarations without providers"
+            39,
+            "Expected 39 TYPE declarations without providers"
         );
     }
 }

@@ -33,6 +33,15 @@ export interface MetricsResponse {
   retention_errors?: number
   wasm_invocations?: number
   wasm_errors?: number
+  // Action signing observability. All optional for backward compat
+  // with older servers that haven't shipped the signing observability
+  // PR yet.
+  signing_verified?: number
+  signing_invalid?: number
+  signing_unknown_signer?: number
+  signing_scope_denied?: number
+  signing_unsigned_rejected?: number
+  signing_replay_rejected?: number
   embedding?: EmbeddingMetrics
 }
 

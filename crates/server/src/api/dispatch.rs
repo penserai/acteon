@@ -86,14 +86,22 @@ pub async fn dispatch(
         ));
     }
 
-    // Verify action signature if signing is enabled.
-    if let Some(ref verifier) = state.signature_verifier
-        && let Err(e) = verifier.verify_action(&action)
-    {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!(ErrorResponse { error: e })),
-        ));
+    // Verify action signature if signing is enabled. Every branch
+    // (pass, reject, allow-unsigned) bumps a gateway metric so
+    // operators can alert on a spike in invalid/unknown/scope-denied
+    // signatures post-rotation.
+    if let Some(ref verifier) = state.signature_verifier {
+        let outcome = verifier.verify_action(&action);
+        {
+            let gw = state.gateway.read().await;
+            outcome.record_metric(gw.metrics());
+        }
+        if let Some(err) = outcome.error_message() {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(ErrorResponse { error: err })),
+            ));
+        }
     }
 
     // Replay protection: reject if this action ID has already been dispatched.
@@ -113,6 +121,7 @@ pub async fn dispatch(
             .await
         {
             // Already existed — replay detected.
+            gw.metrics().increment_signing_replay_rejected();
             return Ok((
                 StatusCode::CONFLICT,
                 Json(serde_json::json!(ErrorResponse {

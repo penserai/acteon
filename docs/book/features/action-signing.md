@@ -216,11 +216,59 @@ Callers can independently verify by computing `canonical_bytes` on the original 
 
 | Scenario | HTTP status | Error message |
 |----------|-------------|---------------|
-| Invalid signature | 400 | `signature verification failed: invalid signature` |
-| Unknown `signer_id` | 400 | `signature verification failed: unknown signer: X` |
+| Invalid signature | 400 | `signature verification failed: signature did not validate under the registered public key for signer 'X'` |
+| Unknown `signer_id` or `(signer_id, kid)` | 400 | `signature verification failed: unknown signer 'X'` (or `'X' with kid 'Y'` when kid is present) — the error message points at `/.well-known/acteon-signing-keys` |
 | Signer not authorized for tenant/namespace | 400 | `signer 'X' is not authorized for tenant=Y namespace=Z` |
 | Unsigned action + `reject_unsigned=true` | 400 | `unsigned action rejected: signing.reject_unsigned is enabled` |
 | Replayed action ID + `reject_replay=true` | 409 | `replay rejected: action ID 'X' has already been dispatched` |
+
+## Metrics
+
+The gateway tracks every branch of the signature verification path
+as a Prometheus counter. They're exposed at `GET /metrics/prometheus`
+(scraped by the Docker-compose monitoring profile) and as JSON at
+`GET /metrics` / `GET /health`.
+
+| Metric | Counted on |
+|---|---|
+| `acteon_signing_verified_total` | Cryptographically valid signature + scope-authorized |
+| `acteon_signing_invalid_total` | Signature present but Ed25519 verification failed |
+| `acteon_signing_unknown_signer_total` | `signer_id` (or `(signer_id, kid)` during a rotation) not in the keyring |
+| `acteon_signing_scope_denied_total` | Crypto valid but signer not authorized for the action's tenant/namespace |
+| `acteon_signing_unsigned_rejected_total` | Unsigned action blocked by `signing.reject_unsigned` |
+| `acteon_signing_replay_rejected_total` | Action ID already seen inside the replay TTL window |
+
+**What to alert on.** Verified signatures are the happy path — a
+healthy deployment should see them trend with dispatch volume.
+Spikes in `signing_invalid` or `signing_unknown_signer` after a
+rotation usually mean a client didn't pick up the new `kid` yet;
+monitor with:
+
+```promql
+rate(acteon_signing_unknown_signer_total[5m]) > 0.1
+```
+
+Sustained non-zero `signing_scope_denied` suggests a scoping
+misconfiguration or an attempted cross-tenant attack — treat it
+as a security signal and page on it:
+
+```promql
+increase(acteon_signing_scope_denied_total[15m]) > 0
+```
+
+`signing_replay_rejected` fires when a client retries a
+previously-dispatched action id within the TTL. Low rates are
+noise (e.g. clients with misconfigured retries), sudden bursts
+can indicate a replay attack.
+
+**Grafana**: the bundled `acteon-overview` dashboard has an
+"Action Signing" row with a time-series panel of all six rates
+and a stat panel for the totals.
+
+**Dashboard UI**: the admin UI dashboard renders a compact "Sig
+Verified / Sig Rejected" stat-card pair — but only when at least
+one of the signing counters is non-zero, so operators who haven't
+enabled signing don't see empty cards.
 
 ## Rust client
 

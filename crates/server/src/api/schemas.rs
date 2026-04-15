@@ -116,6 +116,36 @@ pub struct MetricsResponse {
     /// WASM plugin invocation errors.
     #[schema(example = 0)]
     pub wasm_errors: u64,
+    /// Action signatures successfully verified and scope-authorized.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_verified: u64,
+    /// Signed actions rejected because the Ed25519 signature did not
+    /// validate against the registered public key.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_invalid: u64,
+    /// Signed actions rejected because the `signer_id` (or
+    /// `(signer_id, kid)` pair during a rotation window) is not in
+    /// the server's keyring.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_unknown_signer: u64,
+    /// Signed actions rejected because the signer is not authorized
+    /// for the action's `(tenant, namespace)` pair.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_scope_denied: u64,
+    /// Unsigned actions rejected because `signing.reject_unsigned`
+    /// is enabled.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_unsigned_rejected: u64,
+    /// Actions rejected because their action ID was already seen
+    /// within the replay protection window.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub signing_replay_rejected: u64,
     /// Embedding cache metrics (present when embedding provider is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingMetricsResponse>,

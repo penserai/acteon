@@ -79,6 +79,24 @@ pub struct GatewayMetrics {
     pub wasm_invocations: AtomicU64,
     /// WASM plugin invocation errors.
     pub wasm_errors: AtomicU64,
+    /// Action signatures successfully verified and scope-authorized.
+    pub signing_verified: AtomicU64,
+    /// Signed actions rejected because the Ed25519 signature did not
+    /// validate against the registered public key.
+    pub signing_invalid: AtomicU64,
+    /// Signed actions rejected because the `signer_id` (or
+    /// `(signer_id, kid)` pair during a rotation window) is not in
+    /// the server's keyring.
+    pub signing_unknown_signer: AtomicU64,
+    /// Signed actions rejected because the signer is not authorized
+    /// for the action's `(tenant, namespace)` pair.
+    pub signing_scope_denied: AtomicU64,
+    /// Unsigned actions rejected because `signing.reject_unsigned`
+    /// is enabled.
+    pub signing_unsigned_rejected: AtomicU64,
+    /// Actions rejected because their action ID was already seen
+    /// within the `replay_ttl_seconds` window.
+    pub signing_replay_rejected: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -258,6 +276,43 @@ impl GatewayMetrics {
         self.wasm_errors.fetch_add(n, Ordering::Relaxed);
     }
 
+    /// Increment the `signing_verified` counter (signature crypto-valid
+    /// and scope-authorized).
+    pub fn increment_signing_verified(&self) {
+        self.signing_verified.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_invalid` counter (Ed25519 verification
+    /// failed against the registered public key).
+    pub fn increment_signing_invalid(&self) {
+        self.signing_invalid.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_unknown_signer` counter (`signer_id` or
+    /// `(signer_id, kid)` pair not in the keyring).
+    pub fn increment_signing_unknown_signer(&self) {
+        self.signing_unknown_signer.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_scope_denied` counter (signature valid
+    /// but signer not authorized for the `(tenant, namespace)` pair).
+    pub fn increment_signing_scope_denied(&self) {
+        self.signing_scope_denied.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_unsigned_rejected` counter (unsigned
+    /// action rejected because `signing.reject_unsigned` is enabled).
+    pub fn increment_signing_unsigned_rejected(&self) {
+        self.signing_unsigned_rejected
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `signing_replay_rejected` counter (action ID
+    /// already seen within the replay protection window).
+    pub fn increment_signing_replay_rejected(&self) {
+        self.signing_replay_rejected.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Take a consistent point-in-time snapshot of all counters.
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -294,6 +349,12 @@ impl GatewayMetrics {
             retention_errors: self.retention_errors.load(Ordering::Relaxed),
             wasm_invocations: self.wasm_invocations.load(Ordering::Relaxed),
             wasm_errors: self.wasm_errors.load(Ordering::Relaxed),
+            signing_verified: self.signing_verified.load(Ordering::Relaxed),
+            signing_invalid: self.signing_invalid.load(Ordering::Relaxed),
+            signing_unknown_signer: self.signing_unknown_signer.load(Ordering::Relaxed),
+            signing_scope_denied: self.signing_scope_denied.load(Ordering::Relaxed),
+            signing_unsigned_rejected: self.signing_unsigned_rejected.load(Ordering::Relaxed),
+            signing_replay_rejected: self.signing_replay_rejected.load(Ordering::Relaxed),
         }
     }
 }
@@ -367,6 +428,23 @@ pub struct MetricsSnapshot {
     pub wasm_invocations: u64,
     /// WASM plugin invocation errors.
     pub wasm_errors: u64,
+    /// Action signatures successfully verified and scope-authorized.
+    pub signing_verified: u64,
+    /// Signed actions rejected because the Ed25519 signature did not
+    /// validate against the registered public key.
+    pub signing_invalid: u64,
+    /// Signed actions rejected because `signer_id` (or
+    /// `(signer_id, kid)`) is not in the server's keyring.
+    pub signing_unknown_signer: u64,
+    /// Signed actions rejected because the signer is not authorized
+    /// for the action's `(tenant, namespace)` pair.
+    pub signing_scope_denied: u64,
+    /// Unsigned actions rejected because `signing.reject_unsigned`
+    /// is enabled.
+    pub signing_unsigned_rejected: u64,
+    /// Actions rejected because their action ID was already seen
+    /// within the `replay_ttl_seconds` window.
+    pub signing_replay_rejected: u64,
 }
 
 /// Maximum number of latency samples retained per provider.
@@ -720,6 +798,12 @@ mod tests {
         assert_eq!(snap.retention_errors, 0);
         assert_eq!(snap.wasm_invocations, 0);
         assert_eq!(snap.wasm_errors, 0);
+        assert_eq!(snap.signing_verified, 0);
+        assert_eq!(snap.signing_invalid, 0);
+        assert_eq!(snap.signing_unknown_signer, 0);
+        assert_eq!(snap.signing_scope_denied, 0);
+        assert_eq!(snap.signing_unsigned_rejected, 0);
+        assert_eq!(snap.signing_replay_rejected, 0);
     }
 
     #[test]
@@ -759,6 +843,12 @@ mod tests {
         m.increment_retention_errors();
         m.increment_wasm_invocations();
         m.increment_wasm_errors();
+        m.increment_signing_verified();
+        m.increment_signing_invalid();
+        m.increment_signing_unknown_signer();
+        m.increment_signing_scope_denied();
+        m.increment_signing_unsigned_rejected();
+        m.increment_signing_replay_rejected();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -794,6 +884,12 @@ mod tests {
         assert_eq!(snap.retention_errors, 1);
         assert_eq!(snap.wasm_invocations, 1);
         assert_eq!(snap.wasm_errors, 1);
+        assert_eq!(snap.signing_verified, 1);
+        assert_eq!(snap.signing_invalid, 1);
+        assert_eq!(snap.signing_unknown_signer, 1);
+        assert_eq!(snap.signing_scope_denied, 1);
+        assert_eq!(snap.signing_unsigned_rejected, 1);
+        assert_eq!(snap.signing_replay_rejected, 1);
     }
 
     #[test]
