@@ -77,6 +77,8 @@ enum Command {
     Silences(commands::silences::SilencesArgs),
     /// Import configuration from external systems (e.g. Alertmanager).
     Import(commands::import::ImportArgs),
+    /// Manage local Ed25519 signing keys (generate/list/rotate).
+    Keys(commands::keys::KeysArgs),
 }
 
 #[tokio::main]
@@ -114,5 +116,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Approvals(args) => commands::approvals::run(&ops, &args, &cli.format).await,
         Command::Silences(args) => commands::silences::run(&ops, &args, &cli.format).await,
         Command::Import(args) => commands::import::run(&args),
+        Command::Keys(args) => commands::keys::run(&args),
     }
 }

@@ -8,6 +8,7 @@ pub mod events;
 pub mod groups;
 pub mod health;
 pub mod import;
+pub mod keys;
 pub mod plugins;
 pub mod providers;
 pub mod quotas;

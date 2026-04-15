@@ -11,6 +11,49 @@ The feature is fully opt-in. Deployments without a `[signing]` section in the TO
 3. The **server** verifies the signature against its keyring, optionally enforces tenant/namespace scope restrictions, and optionally rejects replays via action-ID deduplication.
 4. The **audit record** stores the `signature`, `signer_id`, and a `canonical_hash` (SHA-256 of the canonical bytes) for post-hoc verification.
 
+## Bootstrapping with `acteon keys`
+
+The `acteon` CLI has a `keys` subcommand that runs entirely
+client-side and produces ready-to-paste TOML keyring entries. It's
+the recommended bootstrap path — much less error-prone than piping
+`openssl genpkey` and base64 by hand.
+
+```text
+$ acteon keys generate ci-bot --kid k1
+# Acteon signing keypair
+# signer_id = ci-bot
+# kid       = k1
+
+SECRET (capture into a secret manager NOW — printed once):
+  2479b27ff6d897b985ff9fc8cf388e9067eeebabc463aa0964a82535f5ad7573
+
+PUBLIC:
+  2d991475ae2989b0febf8c9f1eb2f2c3d0e7b7b38b6ba3c6cd244639c375738a
+
+# Append to your server config:
+[[signing.keyring]]
+signer_id = "ci-bot"
+kid = "k1"
+public_key = "LZkUda4pibD+v4yfHrLyw9Dnt7OLa6PGzSRGOcN1c4o="
+# tenants = ["*"]      # uncomment to scope
+# namespaces = ["*"]   # uncomment to scope
+```
+
+The secret is printed to stdout exactly once and never persisted
+by the CLI — capture it into your secret manager immediately, then
+paste the public key block into the server config.
+
+Two more subcommands, both read-only on disk:
+
+| Command | Purpose |
+|---|---|
+| `acteon keys list <config.toml>` | Print every `[[signing.keyring]]` entry currently registered, including kid and scope. Useful before a rotation to see what's already there. |
+| `acteon keys rotate <config.toml> --signer-id ci-bot` | Read the existing config, find the highest `kid` for the signer, generate a new keypair under the next sequential `kid`, and print the new TOML block to append. |
+
+`rotate` never modifies the config file — operators paste the
+output themselves so the config edit stays an explicit, auditable
+step.
+
 ## TOML configuration
 
 ```toml
@@ -124,7 +167,10 @@ downtime by allowing **multiple active keys per signer**. The
 rotation pattern:
 
 1. **Generate a new keypair** for the same `signer_id` with a fresh
-   `kid` (e.g., `k2` if the current key is `k1`).
+   `kid` (e.g., `k2` if the current key is `k1`). The
+   `acteon keys rotate <config.toml> --signer-id <signer>` command
+   reads the existing config and picks the next sequential `kid`
+   automatically.
 2. **Add the new public key to `signing.keyring`** alongside the
    existing entry. Both keys are now active. Restart the server
    (or wait for the next config reload).
