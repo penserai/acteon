@@ -52,6 +52,7 @@ pub struct DispatchQuery {
         (status = 500, description = "Internal server error", body = ErrorResponse)
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
@@ -86,19 +87,41 @@ pub async fn dispatch(
         ));
     }
 
-    // Verify action signature if signing is enabled.
-    if let Some(ref verifier) = state.signature_verifier
-        && let Err(e) = verifier.verify_action(&action)
-    {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!(ErrorResponse { error: e })),
-        ));
+    // Verify action signature if signing is enabled. Every branch
+    // (pass, reject, allow-unsigned) bumps a gateway metric so
+    // operators can alert on a spike in invalid/unknown/scope-denied
+    // signatures post-rotation. Metric bumps hit `state.metrics`
+    // directly (atomic counters) so the signing check never has to
+    // take the gateway RwLock.
+    if let Some(ref verifier) = state.signature_verifier {
+        let outcome = verifier.verify_action(&action);
+        outcome.record_metric(&state.metrics);
+        // Rejection paths (and InternalError) emit a structured
+        // tracing::warn with the full variant + signer + kid + scope
+        // context. The HTTP body, by contrast, deliberately returns a
+        // uniform "signature verification failed for signer X"
+        // message so a probing caller can't tell UnknownSigner apart
+        // from InvalidSignature.
+        outcome.log_rejection();
+        if let Some(msg) = outcome.internal_error_message() {
+            return Ok((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!(ErrorResponse { error: msg })),
+            ));
+        }
+        if let Some(err) = outcome.error_message() {
+            return Ok((
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!(ErrorResponse { error: err })),
+            ));
+        }
     }
 
     // Replay protection: reject if this action ID has already been dispatched.
     // Uses check_and_set (atomic set-if-not-exists) to close the race window
     // between checking and marking. Returns false if the key already existed.
+    // Replay protection is independent of signing — this path increments
+    // `replay_rejected`, not any `signing_*` counter.
     if let Some((true, ttl)) = state.replay_protection {
         let gw = state.gateway.read().await;
         let replay_key = acteon_state::StateKey::new(
@@ -113,6 +136,8 @@ pub async fn dispatch(
             .await
         {
             // Already existed — replay detected.
+            drop(gw);
+            state.metrics.increment_replay_rejected();
             return Ok((
                 StatusCode::CONFLICT,
                 Json(serde_json::json!(ErrorResponse {

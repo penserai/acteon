@@ -27,6 +27,7 @@ async fn ui_serves_index_html() {
         .executor_config(ExecutorConfig::default())
         .build()
         .expect("gateway should build");
+    let metrics = gw.metrics_arc();
 
     let ui_config = UiConfig {
         enabled: true,
@@ -35,6 +36,7 @@ async fn ui_serves_index_html() {
 
     let state = AppState {
         gateway: Arc::new(RwLock::new(gw)),
+        metrics,
         audit: None,
         analytics: None,
         auth: None,

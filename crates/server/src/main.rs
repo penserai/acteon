@@ -1548,6 +1548,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let gateway = Arc::new(RwLock::new(gateway));
+    // Snapshot the Arc<GatewayMetrics> at startup so hot-path metric
+    // increments can skip the gateway RwLock entirely. The inner
+    // counters are AtomicU64 — no lock needed once we hold the Arc.
+    let gateway_metrics = gateway.read().await.metrics_arc();
 
     // Spawn background processor for group flushing and timeout processing.
     // This must be after gateway Arc is created so handlers can dispatch notifications.
@@ -2205,6 +2209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         gateway: Arc::clone(&gateway),
+        metrics: gateway_metrics,
         audit: audit_store,
         analytics: analytics_store,
         auth: auth_provider,

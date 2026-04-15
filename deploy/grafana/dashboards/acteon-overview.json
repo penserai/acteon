@@ -482,6 +482,64 @@
         { "expr": "acteon_embedding_fail_open_total", "legendFormat": "Fail-Open", "refId": "B" }
       ],
       "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 57 },
+      "id": 200,
+      "title": "Action Signing",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 58 },
+      "id": 201,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "Signature Verification Rate",
+      "targets": [
+        { "expr": "rate(acteon_signing_verified_total[5m])", "legendFormat": "verified", "refId": "A" },
+        { "expr": "rate(acteon_signing_unsigned_allowed_total[5m])", "legendFormat": "unsigned allowed", "refId": "B" },
+        { "expr": "rate(acteon_signing_invalid_total[5m])", "legendFormat": "invalid", "refId": "C" },
+        { "expr": "rate(acteon_signing_unknown_signer_total[5m])", "legendFormat": "unknown signer", "refId": "D" },
+        { "expr": "rate(acteon_signing_scope_denied_total[5m])", "legendFormat": "scope denied", "refId": "E" },
+        { "expr": "rate(acteon_signing_unsigned_rejected_total[5m])", "legendFormat": "unsigned rejected", "refId": "F" },
+        { "expr": "rate(acteon_replay_rejected_total[5m])", "legendFormat": "replay rejected", "refId": "G" }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Invalid" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] },
+          { "matcher": { "id": "byName", "options": "Unknown signer" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } }] },
+          { "matcher": { "id": "byName", "options": "Scope denied" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] },
+          { "matcher": { "id": "byName", "options": "Unsigned rejected" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } }] },
+          { "matcher": { "id": "byName", "options": "Replay rejected" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }] } }] }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 58 },
+      "id": 202,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Signing Totals",
+      "targets": [
+        { "expr": "acteon_signing_verified_total", "legendFormat": "Verified", "refId": "A" },
+        { "expr": "acteon_signing_unsigned_allowed_total", "legendFormat": "Unsigned allowed", "refId": "B" },
+        { "expr": "acteon_signing_invalid_total", "legendFormat": "Invalid", "refId": "C" },
+        { "expr": "acteon_signing_unknown_signer_total", "legendFormat": "Unknown signer", "refId": "D" },
+        { "expr": "acteon_signing_scope_denied_total", "legendFormat": "Scope denied", "refId": "E" },
+        { "expr": "acteon_signing_unsigned_rejected_total", "legendFormat": "Unsigned rejected", "refId": "F" },
+        { "expr": "acteon_replay_rejected_total", "legendFormat": "Replay rejected", "refId": "G" }
+      ],
+      "type": "stat"
     }
   ],
   "refresh": "30s",

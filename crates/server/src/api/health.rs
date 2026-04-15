@@ -56,6 +56,14 @@ fn build_metrics_response(
         retention_errors: snap.retention_errors,
         wasm_invocations: snap.wasm_invocations,
         wasm_errors: snap.wasm_errors,
+        signing_verified: snap.signing_verified,
+        signing_invalid: snap.signing_invalid,
+        signing_unknown_signer: snap.signing_unknown_signer,
+        signing_scope_denied: snap.signing_scope_denied,
+        signing_unsigned_rejected: snap.signing_unsigned_rejected,
+        signing_unsigned_allowed: snap.signing_unsigned_allowed,
+        replay_rejected: snap.replay_rejected,
+        signing_enabled: state.signature_verifier.is_some(),
         embedding,
     }
 }

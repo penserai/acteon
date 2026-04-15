@@ -90,6 +90,7 @@ fn build_test_state_with_audit_and_analytics(
     }
 
     let gw = builder.build().expect("gateway should build");
+    let metrics = gw.metrics_arc();
 
     let analytics: Option<Arc<dyn AnalyticsStore>> = if with_analytics {
         audit
@@ -101,6 +102,7 @@ fn build_test_state_with_audit_and_analytics(
 
     AppState {
         gateway: Arc::new(RwLock::new(gw)),
+        metrics,
         audit,
         analytics,
         auth: None,
@@ -928,9 +930,11 @@ fn build_approval_state_with_providers(
     }
 
     let gw = builder.build().expect("gateway should build");
+    let metrics = gw.metrics_arc();
 
     AppState {
         gateway: Arc::new(RwLock::new(gw)),
+        metrics,
         audit: None,
         analytics: None,
         auth: None,

@@ -116,8 +116,14 @@ export function Dashboard() {
   )
 }
 
-function buildStatCards(m: MetricsResponse) {
-  return [
+interface StatCard {
+  label: string
+  value: number
+  link?: string
+}
+
+function buildStatCards(m: MetricsResponse): StatCard[] {
+  const cards: StatCard[] = [
     { label: 'Dispatched', value: m.dispatched, link: '/audit' },
     { label: 'Executed', value: m.executed, link: '/audit?outcome=Executed' },
     { label: 'Failed', value: m.failed, link: '/audit?outcome=Failed' },
@@ -129,4 +135,22 @@ function buildStatCards(m: MetricsResponse) {
     { label: 'Circuit Open', value: m.circuit_open ?? 0, link: '/circuit-breakers' },
     { label: 'Scheduled', value: m.scheduled ?? 0, link: '/scheduled' },
   ]
+
+  // Signing cards render whenever the server reports signing is
+  // configured (`signing_enabled`), OR when any signing counter has
+  // ticked on older servers that predate the flag. This way an
+  // operator who just turned on signing sees the cards with zeros
+  // instead of wondering whether the config was actually picked up.
+  const sigVerified = m.signing_verified ?? 0
+  const sigRejected =
+    (m.signing_invalid ?? 0) +
+    (m.signing_unknown_signer ?? 0) +
+    (m.signing_scope_denied ?? 0) +
+    (m.signing_unsigned_rejected ?? 0)
+  if (m.signing_enabled || sigVerified > 0 || sigRejected > 0) {
+    cards.push({ label: 'Sig Verified', value: sigVerified })
+    cards.push({ label: 'Sig Rejected', value: sigRejected })
+  }
+
+  return cards
 }
