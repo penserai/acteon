@@ -212,6 +212,29 @@ Looks up the audit record by action ID and returns:
 
 Callers can independently verify by computing `canonical_bytes` on the original action, hashing with SHA-256, and comparing to `canonical_hash`.
 
+## Batch dispatch
+
+`POST /v1/dispatch/batch` verifies each action independently. A
+single failed signature rejects only its own entry — the rest of
+the batch continues through the pipeline. The response array
+preserves the input ordering so callers can match error entries
+to submitted actions by index. Per-action metrics and
+`tracing::warn` logs fire exactly as they do for single
+dispatches, so observability stays consistent whether an operator
+dispatches one action or a thousand.
+
+Two edge cases:
+
+1. **All actions rejected.** The gateway dispatch call is skipped
+   entirely — no semaphore permit is consumed, no rules run. The
+   response is still the same length as the input, with one error
+   per entry.
+2. **Unexpected crypto error on any action.** The whole batch
+   fails with HTTP 500. Internal crypto errors indicate a bug or
+   misconfiguration rather than a caller issue, so partial
+   success would mask an incident the operator should
+   investigate.
+
 ## Error behavior
 
 | Scenario | HTTP status | Error message |

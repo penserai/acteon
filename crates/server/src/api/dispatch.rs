@@ -197,6 +197,13 @@ pub async fn dispatch(
 /// Expects a JSON array of [`Action`] objects. Returns an array of results,
 /// where each element is either an `ActionOutcome` or an error object.
 ///
+/// When signing is enabled, each action is verified independently and a
+/// failed signature rejects only that one entry — the rest of the batch
+/// continues through the pipeline. The response preserves the input
+/// ordering so callers can match errors to their submitted actions by
+/// index. An internal crypto error on any action fails the whole batch
+/// with HTTP 500 since that indicates a server bug, not a caller issue.
+///
 /// Pass `?dry_run=true` to evaluate rules without executing any actions.
 #[utoipa::path(
     post,
@@ -212,6 +219,7 @@ pub async fn dispatch(
         (status = 200, description = "Array of dispatch outcomes", body = Vec<serde_json::Value>)
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn dispatch_batch(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
@@ -279,38 +287,102 @@ pub async fn dispatch_batch(
         }
     }
 
-    // Acquire permits from the global dispatch semaphore for the entire batch.
-    let _permits = state
-        .dispatch_semaphore
-        .try_acquire_many(u32::try_from(actions.len()).unwrap_or(u32::MAX))
-        .map_err(|_| ServerError::RateLimited {
-            retry_after: 1, // Suggest retry after 1 second
-        })?;
+    // Verify action signatures if signing is enabled. Verification
+    // runs per-action so a single bad signature rejects only its own
+    // entry — the rest of the batch continues through the pipeline.
+    // Record per-action metrics and emit a structured log line on
+    // every rejection (mirrors the single-dispatch path).
+    //
+    // `signing_rejections[i] == Some(msg)` means action `i` failed
+    // verification and should surface `msg` at that index in the
+    // response; `None` means it passes to the gateway.
+    let mut signing_rejections: Vec<Option<String>> = vec![None; actions.len()];
+    if let Some(ref verifier) = state.signature_verifier {
+        for (idx, action) in actions.iter().enumerate() {
+            let outcome = verifier.verify_action(action);
+            outcome.record_metric(&state.metrics);
+            outcome.log_rejection();
+            // An unexpected crypto error is a server-side bug; fail
+            // the whole batch with 500 rather than leaking a partial
+            // success for something the operator should investigate.
+            if let Some(msg) = outcome.internal_error_message() {
+                return Ok((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(vec![serde_json::json!(ErrorResponse { error: msg })]),
+                ));
+            }
+            if let Some(err) = outcome.error_message() {
+                signing_rejections[idx] = Some(err);
+            }
+        }
+    }
+
+    // Acquire permits from the global dispatch semaphore only for the
+    // actions we'll actually dispatch — rejected entries don't tie up
+    // a permit. When every action is rejected the semaphore is not
+    // touched at all.
+    let passing_count = signing_rejections.iter().filter(|r| r.is_none()).count();
+    let _permits = if passing_count > 0 {
+        Some(
+            state
+                .dispatch_semaphore
+                .try_acquire_many(u32::try_from(passing_count).unwrap_or(u32::MAX))
+                .map_err(|_| ServerError::RateLimited { retry_after: 1 })?,
+        )
+    } else {
+        None
+    };
 
     let caller = identity.to_caller();
     let trace_context = super::trace_context::capture_trace_context();
-    let actions: Vec<Action> = actions
+
+    // Split the input: passing actions go to the gateway in order,
+    // rejected ones stay behind and slot back by index afterwards.
+    let passing_actions: Vec<Action> = actions
         .into_iter()
-        .map(|mut a| {
-            a.trace_context.clone_from(&trace_context);
-            a
+        .enumerate()
+        .filter_map(|(idx, mut a)| {
+            if signing_rejections[idx].is_some() {
+                None
+            } else {
+                a.trace_context.clone_from(&trace_context);
+                Some(a)
+            }
         })
         .collect();
 
-    let gw = state.gateway.read().await;
-    let results = if query.dry_run {
-        gw.dispatch_batch_dry_run(actions, Some(&caller)).await
+    let dispatch_results = if passing_actions.is_empty() {
+        Vec::new()
     } else {
-        gw.dispatch_batch(actions, Some(&caller)).await
+        let gw = state.gateway.read().await;
+        if query.dry_run {
+            gw.dispatch_batch_dry_run(passing_actions, Some(&caller))
+                .await
+        } else {
+            gw.dispatch_batch(passing_actions, Some(&caller)).await
+        }
     };
 
-    let body: Vec<serde_json::Value> = results
+    // Merge gateway results back with signing rejections. The
+    // gateway results are in `passing_actions` order; walk the
+    // original index space and pull from either source.
+    let mut results_iter = dispatch_results.into_iter();
+    let body: Vec<serde_json::Value> = signing_rejections
         .into_iter()
-        .map(|r| match r {
-            Ok(outcome) => serde_json::json!(outcome),
-            Err(e) => serde_json::json!(ErrorResponse {
-                error: e.to_string()
-            }),
+        .map(|rejection| match rejection {
+            Some(msg) => serde_json::json!(ErrorResponse { error: msg }),
+            None => match results_iter.next() {
+                Some(Ok(outcome)) => serde_json::json!(outcome),
+                Some(Err(e)) => serde_json::json!(ErrorResponse {
+                    error: e.to_string()
+                }),
+                // Unreachable: passing_count == results_iter.len()
+                // by construction. Fall back to a neutral error
+                // rather than panicking if invariants ever drift.
+                None => serde_json::json!(ErrorResponse {
+                    error: "internal: missing gateway result for passing action".to_owned(),
+                }),
+            },
         })
         .collect();
 
