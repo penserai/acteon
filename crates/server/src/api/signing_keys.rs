@@ -80,12 +80,10 @@ pub async fn discover_signing_keys(State(state): State<AppState>) -> impl IntoRe
         Some(verifier) => verifier
             .iter_keys()
             .map(|key| {
-                let (tenants, namespaces) = verifier
-                    .scope_for(key.signer_id())
-                    .map_or_else(
-                        || (vec!["*".into()], vec!["*".into()]),
-                        |s| (s.tenants.clone(), s.namespaces.clone()),
-                    );
+                let (tenants, namespaces) = verifier.scope_for(key.signer_id()).map_or_else(
+                    || (vec!["*".into()], vec!["*".into()]),
+                    |s| (s.tenants.clone(), s.namespaces.clone()),
+                );
                 SigningKeyEntry {
                     signer_id: key.signer_id().to_owned(),
                     kid: key.kid().to_owned(),
