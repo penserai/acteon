@@ -14,6 +14,10 @@ cargo clippy --workspace --no-deps -- -D warnings
 # Run all tests (fast — skips doctests which are extremely slow to link)
 cargo test --workspace --lib --bins --tests
 
+# Build everything including examples (catches enum-variant and API
+# signature drift that the test command above silently skips)
+cargo check --all-targets
+
 # Frontend checks
 cd ui && npm run lint && npm run build && cd ..
 ```
@@ -22,11 +26,13 @@ cd ui && npm run lint && npm run build && cd ..
 
 ```bash
 # One-liner to run all checks (Rust + Frontend)
-cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && (cd ui && npm run lint && npm run build)
+cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && cargo check --all-targets && (cd ui && npm run lint && npm run build)
 ```
 
 > **Note:** The default build excludes AWS providers. To match CI parity (which tests AWS separately), run:
 > `cargo test -p acteon-aws --features full --lib --tests`
+
+> **Why `cargo check --all-targets`?** The standard `cargo test --workspace --lib --bins --tests` deliberately skips `--examples` (and doctests) for speed. That's fine for most changes but silently misses any example that exhaustively matches on an enum you just extended (`ActionOutcome`, `RuleVerdict`, etc.) or that constructs a struct whose fields have grown. PRs #103 and #105 both shipped because of this gap. The `cargo check --all-targets` line is fast (no test execution, no link) and catches both classes of drift before they hit `main`.
 
 ## Testing Notes
 
@@ -79,7 +85,7 @@ When implementing a new feature (provider, capability, etc.), follow this layere
 9. **Tests** – Add unit tests in the crate, SDK tests, and simulation framework tests
 10. **Documentation** – Update `docs/book/` pages (concepts, API reference, examples)
 11. **Simulation example** – Add a simulation example in `crates/simulation/examples/`
-12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && (cd ui && npm run lint && npm run build)`
+12. **Pre-commit checks** – Run `cargo fmt --all && cargo clippy --workspace --no-deps -- -D warnings && cargo test --workspace --lib --bins --tests && cargo check --all-targets && (cd ui && npm run lint && npm run build)`
 
 ## AWS Feature Gating Convention
 
