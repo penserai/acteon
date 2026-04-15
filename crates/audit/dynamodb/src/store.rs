@@ -170,6 +170,24 @@ impl DynamoDbAuditStore {
             filters.push("chain_id = :chain_id".to_owned());
             values.insert(":chain_id".to_owned(), AttributeValue::S(chain_id.clone()));
         }
+        if let Some(ref signer_id) = query.signer_id {
+            // Alias the attribute name defensively — `signer_id` isn't
+            // a DynamoDB reserved word today but future AWS updates
+            // could add it, and the escape hatch is zero cost.
+            filters.push("#signer_id = :signer_id".to_owned());
+            values.insert(
+                ":signer_id".to_owned(),
+                AttributeValue::S(signer_id.clone()),
+            );
+            names.insert("#signer_id".to_owned(), "signer_id".to_owned());
+        }
+        if let Some(ref kid) = query.kid {
+            // Same alias rationale as `signer_id`. `kid` is short
+            // enough that a future AWS collision is plausible.
+            filters.push("#kid = :kid".to_owned());
+            values.insert(":kid".to_owned(), AttributeValue::S(kid.clone()));
+            names.insert("#kid".to_owned(), "kid".to_owned());
+        }
         // Filter out fence items that may appear in GSI queries.
         filters.push("attribute_not_exists(#fence)".to_owned());
         names.insert("#fence".to_owned(), "_fence".to_owned());

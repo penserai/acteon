@@ -36,6 +36,8 @@ export function Actions() {
     tenant: searchParams.get('tenant') ?? undefined,
     outcome: searchParams.get('outcome') ?? undefined,
     action_type: searchParams.get('action_type') ?? undefined,
+    signer_id: searchParams.get('signer_id') ?? undefined,
+    kid: searchParams.get('kid') ?? undefined,
     limit: 50,
     offset: Number(searchParams.get('offset') ?? 0),
   }), [searchParams])
@@ -111,6 +113,16 @@ export function Actions() {
           value={query.tenant ?? ''}
           onChange={(e) => setFilter('tenant', e.target.value)}
         />
+        <Input
+          placeholder="Signer ID"
+          value={query.signer_id ?? ''}
+          onChange={(e) => setFilter('signer_id', e.target.value)}
+        />
+        <Input
+          placeholder="Kid"
+          value={query.kid ?? ''}
+          onChange={(e) => setFilter('kid', e.target.value)}
+        />
       </div>
 
       <DataTable
@@ -159,6 +171,9 @@ export function Actions() {
                   ...(selected.record_hash ? { 'Record Hash': selected.record_hash } : {}),
                   ...(selected.previous_hash ? { 'Previous Hash': selected.previous_hash } : {}),
                   ...(selected.sequence_number != null ? { 'Sequence Number': String(selected.sequence_number) } : {}),
+                  ...(selected.signer_id ? { 'Signer': selected.signer_id } : {}),
+                  ...(selected.kid ? { 'Key ID (kid)': selected.kid } : {}),
+                  ...(selected.canonical_hash ? { 'Canonical Hash': selected.canonical_hash } : {}),
                 }).map(([k, v]) => (
                   <div key={k} className={shared.detailRow}>
                     <span className={shared.detailLabel}>{k}</span>

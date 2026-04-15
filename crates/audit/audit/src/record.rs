@@ -121,6 +121,18 @@ pub struct AuditQuery {
     pub caller_id: Option<String>,
     /// Filter by chain execution ID.
     pub chain_id: Option<String>,
+    /// Filter by the `signer_id` recorded on the audit entry. Useful
+    /// during incident response to list every action a particular
+    /// signer dispatched (e.g. a compromised key before its rotation).
+    /// Unsigned actions never match.
+    #[serde(default)]
+    pub signer_id: Option<String>,
+    /// Filter by the `kid` (key identifier) recorded on the audit
+    /// entry. Combined with `signer_id`, narrows a query to a specific
+    /// (signer, key) pair across a rotation window. Unsigned actions
+    /// and pre-rotation entries with no `kid` never match.
+    #[serde(default)]
+    pub kid: Option<String>,
     /// Only records dispatched at or after this time.
     pub from: Option<DateTime<Utc>>,
     /// Only records dispatched at or before this time.

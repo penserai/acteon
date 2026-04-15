@@ -212,6 +212,8 @@ fn build_where_clause(query: &AuditQuery) -> String {
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
         (&query.chain_id, "chain_id"),
+        (&query.signer_id, "signer_id"),
+        (&query.kid, "kid"),
     ];
 
     for (value, col) in string_filters {

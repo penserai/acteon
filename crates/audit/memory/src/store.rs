@@ -108,6 +108,16 @@ impl AuditStore for MemoryAuditStore {
                 {
                     return None;
                 }
+                if let Some(ref sid) = query.signer_id
+                    && rec.signer_id.as_deref() != Some(sid.as_str())
+                {
+                    return None;
+                }
+                if let Some(ref k) = query.kid
+                    && rec.kid.as_deref() != Some(k.as_str())
+                {
+                    return None;
+                }
                 if let Some(ref from) = query.from
                     && rec.dispatched_at < *from
                 {
@@ -358,6 +368,96 @@ mod tests {
         let page = store.query(&q).await.unwrap();
         assert_eq!(page.total, Some(1));
         assert_eq!(page.records[0].id, "r1");
+    }
+
+    /// Inserts five records covering every signing shape the new
+    /// filter needs to discriminate:
+    /// - `r1`: signer_id=ci-bot, kid=k1
+    /// - `r2`: signer_id=ci-bot, kid=k2 (same signer, rotated key)
+    /// - `r3`: signer_id=deploy-svc, kid=k1 (different signer, same kid name)
+    /// - `r4`: signer_id=ci-bot, no kid (legacy pre-rotation signature)
+    /// - `r5`: unsigned
+    ///
+    /// Then exercises four queries: signer_id alone,
+    /// (signer_id, kid) pair, kid alone (across signers), and a
+    /// combination that narrows to a single record.
+    #[tokio::test]
+    async fn query_by_signer_id_and_kid() {
+        let store = MemoryAuditStore::new();
+
+        let cases = [
+            ("r1", Some("ci-bot"), Some("k1")),
+            ("r2", Some("ci-bot"), Some("k2")),
+            ("r3", Some("deploy-svc"), Some("k1")),
+            ("r4", Some("ci-bot"), None),
+            ("r5", None, None),
+        ];
+        for (id, signer, kid) in &cases {
+            let mut rec = make_record(id, id);
+            rec.signer_id = signer.map(str::to_owned);
+            rec.kid = kid.map(str::to_owned);
+            store.record(rec).await.unwrap();
+        }
+
+        // signer_id alone — matches r1, r2, r4 (all three ci-bot
+        // records regardless of kid, including the legacy no-kid one)
+        let page = store
+            .query(&AuditQuery {
+                signer_id: Some("ci-bot".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = page.records.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["r1", "r2", "r4"]);
+
+        // (signer_id, kid) pair — narrows ci-bot to k1 only
+        let page = store
+            .query(&AuditQuery {
+                signer_id: Some("ci-bot".to_owned()),
+                kid: Some("k1".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].id, "r1");
+
+        // kid alone — matches across signers (r1, r3 both have k1)
+        let page = store
+            .query(&AuditQuery {
+                kid: Some("k1".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> = page.records.iter().map(|r| r.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["r1", "r3"]);
+
+        // Unsigned actions (r5) and legacy-no-kid actions (r4) never
+        // match a kid filter.
+        let page = store
+            .query(&AuditQuery {
+                kid: Some("k2".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].id, "r2");
+
+        // Signer query that doesn't match anything returns empty
+        // rather than erroring.
+        let page = store
+            .query(&AuditQuery {
+                signer_id: Some("phantom".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(page.records.is_empty());
     }
 
     #[tokio::test]

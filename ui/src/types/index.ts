@@ -131,6 +131,11 @@ export interface AuditRecord {
   previous_hash?: string
   sequence_number?: number
   attachment_metadata?: Record<string, unknown>[]
+  // Action signing fields — present only when the action was signed.
+  signature?: string
+  signer_id?: string
+  kid?: string
+  canonical_hash?: string
 }
 
 export interface AuditPage {
@@ -160,6 +165,17 @@ export interface AuditQuery {
   matched_rule?: string
   caller_id?: string
   chain_id?: string
+  /**
+   * Filter by the `signer_id` stamped on signed actions. Unsigned
+   * records never match.
+   */
+  signer_id?: string
+  /**
+   * Filter by the key identifier (`kid`) stamped on signed actions.
+   * Combine with `signer_id` to narrow to a specific `(signer, key)`
+   * pair across a rotation window.
+   */
+  kid?: string
   from?: string
   to?: string
   limit?: number
