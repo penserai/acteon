@@ -53,7 +53,8 @@ export function Actions() {
 
   const setFilter = (key: string, val: string) => {
     const next = new URLSearchParams(searchParams)
-    if (val) next.set(key, val)
+    const trimmed = val.trim()
+    if (trimmed) next.set(key, trimmed)
     else next.delete(key)
     next.delete('offset')
     setSearchParams(next)
