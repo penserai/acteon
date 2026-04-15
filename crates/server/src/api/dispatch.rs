@@ -96,6 +96,13 @@ pub async fn dispatch(
     if let Some(ref verifier) = state.signature_verifier {
         let outcome = verifier.verify_action(&action);
         outcome.record_metric(&state.metrics);
+        // Rejection paths (and InternalError) emit a structured
+        // tracing::warn with the full variant + signer + kid + scope
+        // context. The HTTP body, by contrast, deliberately returns a
+        // uniform "signature verification failed for signer X"
+        // message so a probing caller can't tell UnknownSigner apart
+        // from InvalidSignature.
+        outcome.log_rejection();
         if let Some(msg) = outcome.internal_error_message() {
             return Ok((
                 StatusCode::INTERNAL_SERVER_ERROR,

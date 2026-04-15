@@ -216,12 +216,21 @@ Callers can independently verify by computing `canonical_bytes` on the original 
 
 | Scenario | HTTP status | Error message |
 |----------|-------------|---------------|
-| Invalid signature | 400 | `signature verification failed: signature did not validate under the registered public key for signer 'X'` |
-| Unknown `signer_id` or `(signer_id, kid)` | 400 | `signature verification failed: unknown signer 'X'` (or `'X' with kid 'Y'` when kid is present) — the error message points at `/.well-known/acteon-signing-keys` |
+| Invalid signature **or** unknown `(signer_id, kid)` | 400 | `signature verification failed for signer 'X'` |
 | Signer not authorized for tenant/namespace | 400 | `signer 'X' is not authorized for tenant=Y namespace=Z` |
 | Unsigned action + `reject_unsigned=true` | 400 | `unsigned action rejected: signing.reject_unsigned is enabled` |
 | Replayed action ID + `reject_replay=true` | 409 | `replay rejected: action ID 'X' has already been dispatched` |
 | Unexpected crypto error (bug or misconfig) | 500 | `signature verification failed with an unexpected crypto error: <detail>` |
+
+Note that `InvalidSignature` and `UnknownSigner` return the **same**
+wire message. This is intentional: a probing client should not be
+able to use error responses to distinguish "this signer doesn't
+exist" from "this signer exists but the signature is wrong". The
+full variant (along with `signer_id`, `kid`, and scope) is written
+to the server's `tracing::warn` log so operators can still debug a
+failed dispatch from logs, and each variant still increments its
+own Prometheus counter (`signing_unknown_signer_total` vs.
+`signing_invalid_total`) for alerting.
 
 ## Metrics
 

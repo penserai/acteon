@@ -14,6 +14,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use base64::Engine;
 use serde::Serialize;
+use tracing::warn;
 use utoipa::ToSchema;
 
 use super::AppState;
@@ -224,6 +225,18 @@ impl VerifyOutcome {
     /// HTTP 400 body message for rejection outcomes, or `None` when
     /// dispatch should proceed. `InternalError` is handled separately
     /// via [`Self::internal_error_message`] since it maps to a 500.
+    ///
+    /// `UnknownSigner` and `InvalidSignature` return the same wire
+    /// message on purpose: distinguishing them would let an attacker
+    /// enumerate which `(signer_id, kid)` pairs exist on the server.
+    /// The JWKS discovery endpoint already exposes the public
+    /// verifier set to anyone who asks, but we don't need to give
+    /// away additional signal per dispatch attempt. Operators can
+    /// still tell the two apart via the [`record_metric`] counters
+    /// and the structured tracing log emitted by [`log_rejection`].
+    ///
+    /// [`record_metric`]: Self::record_metric
+    /// [`log_rejection`]: Self::log_rejection
     #[must_use]
     pub fn error_message(&self) -> Option<String> {
         match self {
@@ -233,20 +246,11 @@ impl VerifyOutcome {
                  provide both 'signature' and 'signer_id' fields"
                     .to_owned(),
             ),
-            Self::UnknownSigner { signer_id, kid } => Some(match kid {
-                Some(k) => format!(
-                    "signature verification failed: unknown signer '{signer_id}' \
-                     with kid '{k}' — check /.well-known/acteon-signing-keys"
-                ),
-                None => format!(
-                    "signature verification failed: unknown signer '{signer_id}' — \
-                     check /.well-known/acteon-signing-keys"
-                ),
-            }),
-            Self::InvalidSignature { signer_id, kid: _ } => Some(format!(
-                "signature verification failed: signature did not validate \
-                 under the registered public key for signer '{signer_id}'"
-            )),
+            Self::UnknownSigner { signer_id, .. } | Self::InvalidSignature { signer_id, .. } => {
+                Some(format!(
+                    "signature verification failed for signer '{signer_id}'"
+                ))
+            }
             Self::ScopeDenied {
                 signer_id,
                 tenant,
@@ -255,6 +259,59 @@ impl VerifyOutcome {
                 "signer '{signer_id}' is not authorized for tenant={tenant} \
                  namespace={namespace}"
             )),
+        }
+    }
+
+    /// Emit a structured `tracing::warn` line describing a rejection
+    /// outcome. Operators debugging a failed dispatch get the full
+    /// variant, `kid`, and scope context in logs — which the
+    /// generic HTTP 400 body deliberately omits. No-ops on the
+    /// success and `UnsignedAllowed` branches.
+    pub fn log_rejection(&self) {
+        match self {
+            Self::UnsignedAllowed | Self::Verified { .. } => {}
+            Self::UnsignedRejected => {
+                warn!(
+                    outcome = "unsigned_rejected",
+                    "signature verification rejected: unsigned action with reject_unsigned enabled"
+                );
+            }
+            Self::UnknownSigner { signer_id, kid } => {
+                warn!(
+                    outcome = "unknown_signer",
+                    signer_id = signer_id.as_str(),
+                    kid = kid.as_deref(),
+                    "signature verification rejected: signer (or signer/kid pair) not in keyring"
+                );
+            }
+            Self::InvalidSignature { signer_id, kid } => {
+                warn!(
+                    outcome = "invalid_signature",
+                    signer_id = signer_id.as_str(),
+                    kid = kid.as_deref(),
+                    "signature verification rejected: Ed25519 signature did not validate"
+                );
+            }
+            Self::ScopeDenied {
+                signer_id,
+                tenant,
+                namespace,
+            } => {
+                warn!(
+                    outcome = "scope_denied",
+                    signer_id = signer_id.as_str(),
+                    tenant = tenant.as_str(),
+                    namespace = namespace.as_str(),
+                    "signature verification rejected: signer not authorized for tenant/namespace"
+                );
+            }
+            Self::InternalError { message } => {
+                warn!(
+                    outcome = "internal_error",
+                    error = message.as_str(),
+                    "signature verification hit an unexpected crypto error"
+                );
+            }
         }
     }
 
