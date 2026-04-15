@@ -170,6 +170,24 @@ impl DynamoDbAuditStore {
             filters.push("chain_id = :chain_id".to_owned());
             values.insert(":chain_id".to_owned(), AttributeValue::S(chain_id.clone()));
         }
+        if let Some(ref signer_id) = query.signer_id {
+            // Alias the attribute name defensively — `signer_id` isn't
+            // a DynamoDB reserved word today but future AWS updates
+            // could add it, and the escape hatch is zero cost.
+            filters.push("#signer_id = :signer_id".to_owned());
+            values.insert(
+                ":signer_id".to_owned(),
+                AttributeValue::S(signer_id.clone()),
+            );
+            names.insert("#signer_id".to_owned(), "signer_id".to_owned());
+        }
+        if let Some(ref kid) = query.kid {
+            // Same alias rationale as `signer_id`. `kid` is short
+            // enough that a future AWS collision is plausible.
+            filters.push("#kid = :kid".to_owned());
+            values.insert(":kid".to_owned(), AttributeValue::S(kid.clone()));
+            names.insert("#kid".to_owned(), "kid".to_owned());
+        }
         // Filter out fence items that may appear in GSI queries.
         filters.push("attribute_not_exists(#fence)".to_owned());
         names.insert("#fence".to_owned(), "_fence".to_owned());
@@ -245,9 +263,12 @@ impl AuditStore for DynamoDbAuditStore {
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
 
-        // Require at least namespace + tenant for GSI queries.
+        // Require at least namespace + tenant for GSI queries, UNLESS
+        // we're searching for specific signing data (IR use case).
+        let is_signer_query = query.signer_id.is_some() || query.kid.is_some();
         let (namespace, tenant) = match (&query.namespace, &query.tenant) {
-            (Some(ns), Some(t)) => (ns.clone(), t.clone()),
+            (Some(ns), Some(t)) => (Some(ns.clone()), Some(t.clone())),
+            _ if is_signer_query => (None, None),
             _ => {
                 // Without namespace+tenant we cannot use the GSI efficiently.
                 // Return empty for now (a full table scan would be expensive).
@@ -261,7 +282,6 @@ impl AuditStore for DynamoDbAuditStore {
             }
         };
 
-        let ns_tenant = Self::ns_tenant(&namespace, &tenant);
         let (filter_parts, filter_values, filter_names) = Self::build_filters(query);
 
         let cursor = query
@@ -270,143 +290,205 @@ impl AuditStore for DynamoDbAuditStore {
             .map(AuditCursor::decode)
             .transpose()?;
 
-        // Choose GSI based on sort order.
-        let (index_name, key_condition, mut expr_values) = if query.sort_by_sequence_asc {
-            (
-                "ns_tenant_sequence",
-                "ns_tenant = :ns_tenant".to_owned(),
-                HashMap::from([(
-                    ":ns_tenant".to_owned(),
-                    AttributeValue::S(ns_tenant.clone()),
-                )]),
-            )
-        } else {
-            let mut kc = "ns_tenant = :ns_tenant".to_owned();
-            let mut ev = HashMap::from([(
-                ":ns_tenant".to_owned(),
-                AttributeValue::S(ns_tenant.clone()),
-            )]);
+        // If we have namespace+tenant, use the GSI. Otherwise, fall back to a
+        // Scan (IR mode). Both branches normalise to a common
+        // `(items, total)` shape so the downstream record-building code
+        // stays untouched — `QueryOutput` and `ScanOutput` are distinct
+        // SDK types and can't be merged at the if-expression level.
+        let (items, total): (Vec<HashMap<String, AttributeValue>>, Option<u64>) =
+            if let (Some(ns), Some(t)) = (namespace, tenant) {
+                let ns_tenant = Self::ns_tenant(&ns, &t);
 
-            // Add time range conditions on the SK.
-            if let Some(ref from) = query.from {
-                kc.push_str(" AND dispatched_at_ms >= :from_ms");
-                ev.insert(
-                    ":from_ms".to_owned(),
-                    AttributeValue::N(from.timestamp_millis().to_string()),
-                );
-            }
-            if let Some(ref to) = query.to {
-                if query.from.is_some() {
-                    // Already have a range start, add end.
-                    kc = kc.replace(
-                        " AND dispatched_at_ms >= :from_ms",
-                        " AND dispatched_at_ms BETWEEN :from_ms AND :to_ms",
-                    );
+                // Choose GSI based on sort order.
+                let (index_name, key_condition, mut expr_values) = if query.sort_by_sequence_asc {
+                    (
+                        "ns_tenant_sequence",
+                        "ns_tenant = :ns_tenant".to_owned(),
+                        HashMap::from([(
+                            ":ns_tenant".to_owned(),
+                            AttributeValue::S(ns_tenant.clone()),
+                        )]),
+                    )
                 } else {
-                    kc.push_str(" AND dispatched_at_ms <= :to_ms");
+                    let mut kc = "ns_tenant = :ns_tenant".to_owned();
+                    let mut ev = HashMap::from([(
+                        ":ns_tenant".to_owned(),
+                        AttributeValue::S(ns_tenant.clone()),
+                    )]);
+
+                    // Add time range conditions on the SK.
+                    if let Some(ref from) = query.from {
+                        kc.push_str(" AND dispatched_at_ms >= :from_ms");
+                        ev.insert(
+                            ":from_ms".to_owned(),
+                            AttributeValue::N(from.timestamp_millis().to_string()),
+                        );
+                    }
+                    if let Some(ref to) = query.to {
+                        if query.from.is_some() {
+                            // Already have a range start, add end.
+                            kc = kc.replace(
+                                " AND dispatched_at_ms >= :from_ms",
+                                " AND dispatched_at_ms BETWEEN :from_ms AND :to_ms",
+                            );
+                        } else {
+                            kc.push_str(" AND dispatched_at_ms <= :to_ms");
+                        }
+                        ev.insert(
+                            ":to_ms".to_owned(),
+                            AttributeValue::N(to.timestamp_millis().to_string()),
+                        );
+                    }
+
+                    ("ns_tenant_dispatched", kc, ev)
+                };
+
+                // Merge filter values.
+                expr_values.extend(filter_values);
+
+                let filter_expression = if filter_parts.is_empty() {
+                    None
+                } else {
+                    Some(filter_parts.join(" AND "))
+                };
+
+                // Build the ExclusiveStartKey from the cursor, if any. The
+                // cursor carries the sort key + record id; the ns_tenant comes
+                // from the query.
+                let exclusive_start_key: Option<HashMap<String, AttributeValue>> = match cursor
+                    .as_ref()
+                {
+                    None => None,
+                    Some(cursor) => {
+                        let mut start = HashMap::new();
+                        start.insert("ns_tenant".to_owned(), AttributeValue::S(ns_tenant.clone()));
+                        let id = cursor.id.clone().unwrap_or_default();
+                        start.insert("id".to_owned(), AttributeValue::S(id));
+                        match cursor.kind {
+                            CursorKind::Ts => {
+                                if query.sort_by_sequence_asc {
+                                    return Err(AuditError::Serialization(
+                                        "cursor kind 'ts' does not match sort_by_sequence_asc=true"
+                                            .into(),
+                                    ));
+                                }
+                                start.insert(
+                                    "dispatched_at_ms".to_owned(),
+                                    AttributeValue::N(
+                                        cursor.dispatched_at_ms.unwrap_or(0).to_string(),
+                                    ),
+                                );
+                            }
+                            CursorKind::Seq => {
+                                if !query.sort_by_sequence_asc {
+                                    return Err(AuditError::Serialization(
+                                        "cursor kind 'seq' requires sort_by_sequence_asc=true"
+                                            .into(),
+                                    ));
+                                }
+                                start.insert(
+                                    "sequence_number".to_owned(),
+                                    AttributeValue::N(
+                                        cursor.sequence_number.unwrap_or(0).to_string(),
+                                    ),
+                                );
+                            }
+                        }
+                        Some(start)
+                    }
+                };
+
+                // Skip the count entirely. The previous implementation walked
+                // every page just to compute `total` — that's an O(matching
+                // items) operation per query and was the main source of linear
+                // degradation. Cursor-based pagination treats `total` as
+                // best-effort and leaves it `None`; offset callers also pay no
+                // count here (the prior behaviour was already worse than useful
+                // on large tenants, and offset paging on DynamoDB GSIs is a
+                // bad pattern anyway).
+                let scan_forward = query.sort_by_sequence_asc;
+                // Fetch limit + 1 so we can detect a definitive last page
+                // without returning an empty trailing cursor. DynamoDB also
+                // exposes LastEvaluatedKey, but it can lag behind filter
+                // expressions: relying on the over-fetch sidesteps those edge
+                // cases.
+                let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
+                let mut q = self
+                    .client
+                    .query()
+                    .table_name(&self.table_name)
+                    .index_name(index_name)
+                    .key_condition_expression(&key_condition)
+                    .scan_index_forward(scan_forward)
+                    .limit(probe_limit);
+
+                for (k, v) in &expr_values {
+                    q = q.expression_attribute_values(k, v.clone());
                 }
-                ev.insert(
-                    ":to_ms".to_owned(),
-                    AttributeValue::N(to.timestamp_millis().to_string()),
+                for (k, v) in &filter_names {
+                    q = q.expression_attribute_names(k, v);
+                }
+                if let Some(ref fe) = filter_expression {
+                    q = q.filter_expression(fe);
+                }
+                if let Some(key) = exclusive_start_key {
+                    q = q.set_exclusive_start_key(Some(key));
+                }
+
+                let resp = q
+                    .send()
+                    .await
+                    .map_err(|e| AuditError::Storage(e.to_string()))?;
+                (resp.items().to_vec(), None)
+            } else {
+                // IR MODE: Perform a full table scan. This is expensive and should
+                // only be used for cross-tenant investigations by signer_id or kid.
+                tracing::warn!(
+                    signer_id = ?query.signer_id,
+                    kid = ?query.kid,
+                    "performing cross-tenant DynamoDB scan for audit records"
                 );
-            }
 
-            ("ns_tenant_dispatched", kc, ev)
-        };
+                let filter_expression = if filter_parts.is_empty() {
+                    None
+                } else {
+                    Some(filter_parts.join(" AND "))
+                };
 
-        // Merge filter values.
-        expr_values.extend(filter_values);
+                let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
+                let mut s = self
+                    .client
+                    .scan()
+                    .table_name(&self.table_name)
+                    .limit(probe_limit);
 
-        let filter_expression = if filter_parts.is_empty() {
-            None
-        } else {
-            Some(filter_parts.join(" AND "))
-        };
-
-        // Build the ExclusiveStartKey from the cursor, if any. The
-        // cursor carries the sort key + record id; the ns_tenant comes
-        // from the query.
-        let exclusive_start_key: Option<HashMap<String, AttributeValue>> = match cursor.as_ref() {
-            None => None,
-            Some(cursor) => {
-                let mut start = HashMap::new();
-                start.insert("ns_tenant".to_owned(), AttributeValue::S(ns_tenant.clone()));
-                let id = cursor.id.clone().unwrap_or_default();
-                start.insert("id".to_owned(), AttributeValue::S(id));
-                match cursor.kind {
-                    CursorKind::Ts => {
-                        if query.sort_by_sequence_asc {
-                            return Err(AuditError::Serialization(
-                                "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
-                            ));
-                        }
-                        start.insert(
-                            "dispatched_at_ms".to_owned(),
-                            AttributeValue::N(cursor.dispatched_at_ms.unwrap_or(0).to_string()),
-                        );
-                    }
-                    CursorKind::Seq => {
-                        if !query.sort_by_sequence_asc {
-                            return Err(AuditError::Serialization(
-                                "cursor kind 'seq' requires sort_by_sequence_asc=true".into(),
-                            ));
-                        }
-                        start.insert(
-                            "sequence_number".to_owned(),
-                            AttributeValue::N(cursor.sequence_number.unwrap_or(0).to_string()),
-                        );
-                    }
+                for (k, v) in &filter_values {
+                    s = s.expression_attribute_values(k, v.clone());
                 }
-                Some(start)
-            }
-        };
+                for (k, v) in &filter_names {
+                    s = s.expression_attribute_names(k, v);
+                }
+                if let Some(ref fe) = filter_expression {
+                    s = s.filter_expression(fe);
+                }
+                if let Some(ref cursor) = cursor {
+                    let mut start = HashMap::new();
+                    start.insert(
+                        "id".to_owned(),
+                        AttributeValue::S(cursor.id.clone().unwrap_or_default()),
+                    );
+                    s = s.set_exclusive_start_key(Some(start));
+                }
 
-        // Skip the count entirely. The previous implementation walked
-        // every page just to compute `total` — that's an O(matching
-        // items) operation per query and was the main source of linear
-        // degradation. Cursor-based pagination treats `total` as
-        // best-effort and leaves it `None`; offset callers also pay no
-        // count here (the prior behaviour was already worse than useful
-        // on large tenants, and offset paging on DynamoDB GSIs is a
-        // bad pattern anyway).
-        let total = None;
+                let resp = s
+                    .send()
+                    .await
+                    .map_err(|e| AuditError::Storage(e.to_string()))?;
+                (resp.items().to_vec(), None)
+            };
 
-        let scan_forward = query.sort_by_sequence_asc;
-        // Fetch limit + 1 so we can detect a definitive last page
-        // without returning an empty trailing cursor. DynamoDB also
-        // exposes LastEvaluatedKey, but it can lag behind filter
-        // expressions: relying on the over-fetch sidesteps those edge
-        // cases.
-        let probe_limit = i32::try_from(limit).unwrap_or(50).saturating_add(1);
-        let mut q = self
-            .client
-            .query()
-            .table_name(&self.table_name)
-            .index_name(index_name)
-            .key_condition_expression(&key_condition)
-            .scan_index_forward(scan_forward)
-            .limit(probe_limit);
-
-        for (k, v) in &expr_values {
-            q = q.expression_attribute_values(k, v.clone());
-        }
-        for (k, v) in &filter_names {
-            q = q.expression_attribute_names(k, v);
-        }
-        if let Some(ref fe) = filter_expression {
-            q = q.filter_expression(fe);
-        }
-        if let Some(key) = exclusive_start_key {
-            q = q.set_exclusive_start_key(Some(key));
-        }
-
-        let resp = q
-            .send()
-            .await
-            .map_err(|e| AuditError::Storage(e.to_string()))?;
-
-        let mut records: Vec<AuditRecord> = Vec::with_capacity(resp.items().len());
-        for item in resp.items() {
+        let mut records: Vec<AuditRecord> = Vec::with_capacity(items.len());
+        for item in &items {
             match item_to_record(item) {
                 Ok(record) => records.push(record),
                 Err(e) => {

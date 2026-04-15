@@ -190,17 +190,12 @@ const SELECT_COLUMNS: &str = "\
     caller_id, auth_method, record_hash, previous_hash, sequence_number, \
     attachment_metadata, signature, signer_id, kid, canonical_hash";
 
-/// Escape a string value for safe interpolation inside a `ClickHouse` SQL
-/// single-quoted literal.  `ClickHouse` uses backslash escaping by default.
-fn escape_ch(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'")
-}
-
 /// Build a `WHERE` clause and its corresponding SQL fragment from an
-/// [`AuditQuery`].  Returns a string that is either empty or starts with
-/// `WHERE `.
-fn build_where_clause(query: &AuditQuery) -> String {
+/// [`AuditQuery`]. Returns the SQL string with placeholders and a vector of
+/// values to bind.
+fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>) {
     let mut conditions: Vec<String> = Vec::new();
+    let mut binds: Vec<String> = Vec::new();
 
     let string_filters: &[(&Option<String>, &str)] = &[
         (&query.namespace, "namespace"),
@@ -212,11 +207,14 @@ fn build_where_clause(query: &AuditQuery) -> String {
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
         (&query.chain_id, "chain_id"),
+        (&query.signer_id, "signer_id"),
+        (&query.kid, "kid"),
     ];
 
     for (value, col) in string_filters {
         if let Some(v) = value {
-            conditions.push(format!("{col} = '{}'", escape_ch(v)));
+            conditions.push(format!("{col} = ?"));
+            binds.push(v.clone());
         }
     }
 
@@ -229,9 +227,9 @@ fn build_where_clause(query: &AuditQuery) -> String {
     }
 
     if conditions.is_empty() {
-        String::new()
+        (String::new(), binds)
     } else {
-        format!("WHERE {}", conditions.join(" AND "))
+        (format!("WHERE {}", conditions.join(" AND ")), binds)
     }
 }
 
@@ -350,9 +348,10 @@ impl AuditStore for ClickHouseAuditStore {
         Ok(rows.into_iter().next().map(Into::into))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn query(&self, query: &AuditQuery) -> Result<AuditPage, AuditError> {
         let limit = query.effective_limit();
-        let mut where_clause = build_where_clause(query);
+        let (mut where_clause, binds) = build_where_clause(query);
 
         let cursor = query
             .cursor
@@ -373,16 +372,11 @@ impl AuditStore for ClickHouseAuditStore {
                             "cursor kind 'ts' does not match sort_by_sequence_asc=true".into(),
                         ));
                     }
-                    // ts is i64 (no injection surface). id originated
-                    // server-side from a UUID v7 that we round-tripped
-                    // through the opaque cursor; escape_ch matches the
-                    // rest of build_where_clause and gives us
-                    // belt-and-braces protection against any future
-                    // change in the cursor source.
                     let ts = cursor.dispatched_at_ms.unwrap_or(0);
-                    let id = escape_ch(cursor.id.as_deref().unwrap_or(""));
+                    // For the cursor we still interpolate the numeric TS
+                    // but bind the ID.
                     where_clause =
-                        format!("{where_clause} {prefix} (dispatched_at, id) < ({ts}, '{id}')");
+                        format!("{where_clause} {prefix} (dispatched_at, id) < ({ts}, ?)");
                 }
                 CursorKind::Seq => {
                     if !query.sort_by_sequence_asc {
@@ -400,9 +394,11 @@ impl AuditStore for ClickHouseAuditStore {
         // the count for O(limit) page latency.
         let total = if cursor.is_none() {
             let count_sql = format!("SELECT count() FROM {} {where_clause}", self.table);
-            let count = self
-                .client
-                .query(&count_sql)
+            let mut q = self.client.query(&count_sql);
+            for b in &binds {
+                q = q.bind(b);
+            }
+            let count = q
                 .fetch_one::<u64>()
                 .await
                 .map_err(|e| AuditError::Storage(e.to_string()))?;
@@ -429,9 +425,17 @@ impl AuditStore for ClickHouseAuditStore {
             self.table,
         );
 
-        let rows = self
-            .client
-            .query(&data_sql)
+        let mut data_q = self.client.query(&data_sql);
+        for b in &binds {
+            data_q = data_q.bind(b);
+        }
+        if let Some(ref cursor) = cursor
+            && let CursorKind::Ts = cursor.kind
+        {
+            data_q = data_q.bind(cursor.id.as_deref().unwrap_or(""));
+        }
+
+        let rows = data_q
             .fetch_all::<AuditSelectRow>()
             .await
             .map_err(|e| AuditError::Storage(e.to_string()))?;

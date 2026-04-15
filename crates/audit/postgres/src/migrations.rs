@@ -2,6 +2,7 @@ use sqlx::PgPool;
 
 /// Run the audit table migration, creating the table and indexes if they do
 /// not already exist.
+#[allow(clippy::too_many_lines)]
 pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Error> {
     let table = format!("{prefix}audit");
 
@@ -112,6 +113,9 @@ pub async fn run_migrations(pool: &PgPool, prefix: &str) -> Result<(), sqlx::Err
         // Key identifier for rotation — nullable so legacy single-key
         // signatures (no kid) deserialize cleanly.
         format!("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS kid TEXT"),
+        format!(
+            "CREATE INDEX IF NOT EXISTS idx_{prefix}audit_signer_id ON {table} (signer_id, kid, dispatched_at DESC) WHERE signer_id IS NOT NULL"
+        ),
     ];
     for stmt in &signing_stmts {
         sqlx::query(stmt).execute(pool).await?;

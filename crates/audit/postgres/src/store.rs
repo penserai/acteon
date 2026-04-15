@@ -411,6 +411,8 @@ fn build_where_clause(query: &AuditQuery) -> (String, Vec<String>, Option<u32>, 
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
         (&query.chain_id, "chain_id"),
+        (&query.signer_id, "signer_id"),
+        (&query.kid, "kid"),
     ];
 
     for (value, col) in fields {

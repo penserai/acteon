@@ -99,7 +99,11 @@ impl ElasticsearchAuditStore {
                     "auth_method":      { "type": "keyword" },
                     "record_hash":      { "type": "keyword" },
                     "previous_hash":    { "type": "keyword" },
-                    "sequence_number":  { "type": "long" }
+                    "sequence_number":  { "type": "long" },
+                    "signature":        { "type": "keyword", "index": false },
+                    "signer_id":        { "type": "keyword" },
+                    "kid":              { "type": "keyword" },
+                    "canonical_hash":   { "type": "keyword", "index": false }
                 }
             }
         });
@@ -463,6 +467,8 @@ fn build_es_query(query: &AuditQuery) -> serde_json::Value {
         (&query.matched_rule, "matched_rule"),
         (&query.caller_id, "caller_id"),
         (&query.chain_id, "chain_id"),
+        (&query.signer_id, "signer_id"),
+        (&query.kid, "kid"),
     ];
 
     for (value, field) in fields {

@@ -212,6 +212,32 @@ Looks up the audit record by action ID and returns:
 
 Callers can independently verify by computing `canonical_bytes` on the original action, hashing with SHA-256, and comparing to `canonical_hash`.
 
+## Querying audit records by signer
+
+`GET /v1/audit` accepts two optional query parameters that narrow
+the result set by the signing metadata stored on each record:
+
+| Parameter | Matches |
+|---|---|
+| `signer_id` | Records whose `signer_id` equals the given value. Unsigned records never match. |
+| `kid` | Records whose `kid` equals the given value. Combine with `signer_id` to pin the query to a specific `(signer, key)` pair. Legacy signatures with no `kid` never match a `kid` filter. |
+
+**Incident response example.** If a key tagged `ci-bot/k1` is
+suspected of compromise, list every action it signed before you
+rotated — across all tenants at once — with:
+
+```
+GET /v1/audit?signer_id=ci-bot&kid=k1
+```
+
+The same filter is exposed on the admin UI's "Audit Trail" page
+as free-text inputs next to the tenant/namespace filters.
+
+Signature metadata (`signer_id`, `kid`, `signature`,
+`canonical_hash`) is surfaced in the audit record detail drawer
+when present, so operators can spot-check individual records
+without leaving the UI.
+
 ## Batch dispatch
 
 `POST /v1/dispatch/batch` verifies each action independently. A
