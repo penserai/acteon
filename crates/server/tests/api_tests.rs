@@ -490,9 +490,12 @@ async fn dispatch_batch_unsigned_rejected_when_required() {
 #[tokio::test]
 async fn dispatch_batch_all_rejected_skips_dispatch() {
     // When every action fails verification, the gateway dispatch
-    // call should be skipped entirely — no permit is taken, no
-    // rules are evaluated. The response still mirrors the input
-    // length with one error per entry.
+    // call should be skipped entirely — no rules are evaluated and
+    // the read lock on the gateway RwLock is never acquired. Permits
+    // on the dispatch semaphore *are* still taken before signing
+    // runs (to bound CPU on Ed25519 verification), but they're
+    // released as soon as this handler returns. The response still
+    // mirrors the input length with one error per entry.
     let (state, _key) = build_test_state_with_signing(true);
     let app = build_app(state);
 

@@ -918,11 +918,21 @@ impl Gateway {
         // Process actions in parallel with bounded concurrency.
         // The executor already has its own concurrency limits, so we use a
         // reasonable batch concurrency here (e.g., 32 concurrent dispatches).
+        //
+        // `buffered` (as opposed to `buffer_unordered`) still runs up to
+        // BATCH_CONCURRENCY futures concurrently but yields their results
+        // in the same order they were submitted. This ordering guarantee
+        // is part of the public contract — callers (server API batch
+        // dispatch, client SDKs, simulation harness) index the result
+        // vector position-by-position against the input vector. See the
+        // server-side test `dispatch_batch_results_preserve_input_order`
+        // and the gateway-level regression test
+        // `dispatch_batch_preserves_order_under_latency_skew`.
         const BATCH_CONCURRENCY: usize = 32;
 
         stream::iter(actions)
             .map(|action| self.dispatch_inner(action, caller, dry_run))
-            .buffer_unordered(BATCH_CONCURRENCY)
+            .buffered(BATCH_CONCURRENCY)
             .collect()
             .await
     }
@@ -6462,6 +6472,97 @@ mod tests {
         let snap = gw.metrics().snapshot();
         assert_eq!(snap.dispatched, 3);
         assert_eq!(snap.executed, 3);
+    }
+
+    /// Regression test for the `buffer_unordered` → `buffered` fix in
+    /// `dispatch_batch_inner`. Submits a batch where earlier actions
+    /// take longer to execute than later ones, then asserts every
+    /// result slot echoes the tag of the action at the same input
+    /// index. If the stream were still unordered, index 0 (the
+    /// slowest) would end up last in completion order and land in
+    /// the wrong slot.
+    #[tokio::test]
+    async fn dispatch_batch_preserves_order_under_latency_skew() {
+        use tokio::time::sleep;
+
+        struct LatencySkewProvider;
+
+        #[async_trait]
+        impl DynProvider for LatencySkewProvider {
+            fn name(&self) -> &str {
+                "email"
+            }
+            async fn execute(&self, action: &Action) -> Result<ProviderResponse, ProviderError> {
+                let delay_ms = action
+                    .payload
+                    .get("delay_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let tag = action
+                    .payload
+                    .get("tag")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                sleep(Duration::from_millis(delay_ms)).await;
+                Ok(ProviderResponse::success(serde_json::json!({ "tag": tag })))
+            }
+            async fn health_check(&self) -> Result<(), ProviderError> {
+                Ok(())
+            }
+        }
+
+        let store = Arc::new(MemoryStateStore::new());
+        let lock = Arc::new(MemoryDistributedLock::new());
+        let gw = GatewayBuilder::new()
+            .state(store)
+            .lock(lock)
+            .provider(Arc::new(LatencySkewProvider))
+            .executor_config(ExecutorConfig {
+                max_retries: 0,
+                execution_timeout: Duration::from_secs(5),
+                max_concurrent: 10,
+                ..ExecutorConfig::default()
+            })
+            .build()
+            .expect("gateway should build");
+
+        // Delays decrease with index: idx 0 waits 200ms, idx 4 waits 0ms.
+        // In completion order the results would be 4, 3, 2, 1, 0.
+        // Since BATCH_CONCURRENCY=32 is above our batch size of 5,
+        // every action runs concurrently — the skew is the whole
+        // point.
+        let actions: Vec<Action> = (0..5usize)
+            .map(|i| {
+                let delay = (4 - i) * 50;
+                Action::new(
+                    "notifications",
+                    "tenant-1",
+                    "email",
+                    "send_email",
+                    serde_json::json!({
+                        "tag": format!("idx-{i}"),
+                        "delay_ms": delay,
+                    }),
+                )
+            })
+            .collect();
+
+        let results = gw.dispatch_batch(actions, None).await;
+        assert_eq!(results.len(), 5);
+        for (expected_idx, result) in results.iter().enumerate() {
+            let outcome = result.as_ref().expect("action should execute");
+            let ActionOutcome::Executed(resp) = outcome else {
+                panic!("expected Executed, got {outcome:?}");
+            };
+            let actual_tag = resp.body.get("tag").and_then(serde_json::Value::as_str);
+            assert_eq!(
+                actual_tag,
+                Some(format!("idx-{expected_idx}").as_str()),
+                "result at index {expected_idx} carries the wrong tag — \
+                 batch ordering has regressed"
+            );
+        }
     }
 
     #[tokio::test]
