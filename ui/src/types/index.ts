@@ -41,7 +41,14 @@ export interface MetricsResponse {
   signing_unknown_signer?: number
   signing_scope_denied?: number
   signing_unsigned_rejected?: number
-  signing_replay_rejected?: number
+  signing_unsigned_allowed?: number
+  // Replay protection is independent of signing — this counter
+  // increments whether or not a valid signature was presented.
+  replay_rejected?: number
+  // `true` when the server has `[signing]` configured, even if no
+  // signed traffic has flowed yet. Lets the dashboard show the
+  // signing cards on day zero instead of waiting for the first event.
+  signing_enabled?: boolean
   embedding?: EmbeddingMetrics
 }
 

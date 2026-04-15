@@ -94,9 +94,16 @@ pub struct GatewayMetrics {
     /// Unsigned actions rejected because `signing.reject_unsigned`
     /// is enabled.
     pub signing_unsigned_rejected: AtomicU64,
+    /// Unsigned actions passed through because `signing.reject_unsigned`
+    /// is off. Lets operators compute the signed-vs-unsigned ratio
+    /// directly without subtracting every rejection counter from
+    /// `dispatched`.
+    pub signing_unsigned_allowed: AtomicU64,
     /// Actions rejected because their action ID was already seen
-    /// within the `replay_ttl_seconds` window.
-    pub signing_replay_rejected: AtomicU64,
+    /// within the `replay_ttl_seconds` window. Replay protection is
+    /// independent of signing — this counter increments whether or
+    /// not a valid signature was presented.
+    pub replay_rejected: AtomicU64,
 }
 
 impl GatewayMetrics {
@@ -307,10 +314,17 @@ impl GatewayMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Increment the `signing_replay_rejected` counter (action ID
-    /// already seen within the replay protection window).
-    pub fn increment_signing_replay_rejected(&self) {
-        self.signing_replay_rejected.fetch_add(1, Ordering::Relaxed);
+    /// Increment the `signing_unsigned_allowed` counter (unsigned
+    /// action passed through because `signing.reject_unsigned` is off).
+    pub fn increment_signing_unsigned_allowed(&self) {
+        self.signing_unsigned_allowed
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the `replay_rejected` counter (action ID already
+    /// seen within the replay protection window).
+    pub fn increment_replay_rejected(&self) {
+        self.replay_rejected.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Take a consistent point-in-time snapshot of all counters.
@@ -354,7 +368,8 @@ impl GatewayMetrics {
             signing_unknown_signer: self.signing_unknown_signer.load(Ordering::Relaxed),
             signing_scope_denied: self.signing_scope_denied.load(Ordering::Relaxed),
             signing_unsigned_rejected: self.signing_unsigned_rejected.load(Ordering::Relaxed),
-            signing_replay_rejected: self.signing_replay_rejected.load(Ordering::Relaxed),
+            signing_unsigned_allowed: self.signing_unsigned_allowed.load(Ordering::Relaxed),
+            replay_rejected: self.replay_rejected.load(Ordering::Relaxed),
         }
     }
 }
@@ -442,9 +457,12 @@ pub struct MetricsSnapshot {
     /// Unsigned actions rejected because `signing.reject_unsigned`
     /// is enabled.
     pub signing_unsigned_rejected: u64,
+    /// Unsigned actions that passed through because
+    /// `signing.reject_unsigned` is off.
+    pub signing_unsigned_allowed: u64,
     /// Actions rejected because their action ID was already seen
     /// within the `replay_ttl_seconds` window.
-    pub signing_replay_rejected: u64,
+    pub replay_rejected: u64,
 }
 
 /// Maximum number of latency samples retained per provider.
@@ -803,7 +821,8 @@ mod tests {
         assert_eq!(snap.signing_unknown_signer, 0);
         assert_eq!(snap.signing_scope_denied, 0);
         assert_eq!(snap.signing_unsigned_rejected, 0);
-        assert_eq!(snap.signing_replay_rejected, 0);
+        assert_eq!(snap.signing_unsigned_allowed, 0);
+        assert_eq!(snap.replay_rejected, 0);
     }
 
     #[test]
@@ -848,7 +867,8 @@ mod tests {
         m.increment_signing_unknown_signer();
         m.increment_signing_scope_denied();
         m.increment_signing_unsigned_rejected();
-        m.increment_signing_replay_rejected();
+        m.increment_signing_unsigned_allowed();
+        m.increment_replay_rejected();
 
         let snap = m.snapshot();
         assert_eq!(snap.dispatched, 2);
@@ -889,7 +909,8 @@ mod tests {
         assert_eq!(snap.signing_unknown_signer, 1);
         assert_eq!(snap.signing_scope_denied, 1);
         assert_eq!(snap.signing_unsigned_rejected, 1);
-        assert_eq!(snap.signing_replay_rejected, 1);
+        assert_eq!(snap.signing_unsigned_allowed, 1);
+        assert_eq!(snap.replay_rejected, 1);
     }
 
     #[test]

@@ -137,9 +137,18 @@ impl SignatureVerifier {
                     signer_id: signer_id.clone(),
                     kid: action.kid.clone(),
                 },
-                _ => VerifyOutcome::InvalidSignature {
+                acteon_crypto::CryptoError::SignatureInvalid => VerifyOutcome::InvalidSignature {
                     signer_id: signer_id.clone(),
                     kid: action.kid.clone(),
+                },
+                // Any other CryptoError variant (InvalidKey, InvalidFormat,
+                // DecryptionFailed, EncryptionFailed) is an internal fault
+                // — those error types are for the encryption path, not
+                // signature verification, and shouldn't reach this arm in
+                // normal operation. Surface as a 500 so operators notice
+                // instead of mislabeling them as "invalid signature".
+                other => VerifyOutcome::InternalError {
+                    message: other.to_string(),
                 },
             };
         }
@@ -199,6 +208,10 @@ pub enum VerifyOutcome {
         tenant: String,
         namespace: String,
     },
+    /// An unexpected crypto error was returned during verification.
+    /// Indicates a bug or misconfiguration rather than a rejected
+    /// signature — the dispatch handler maps this to HTTP 500.
+    InternalError { message: String },
 }
 
 impl VerifyOutcome {
@@ -209,11 +222,12 @@ impl VerifyOutcome {
     }
 
     /// HTTP 400 body message for rejection outcomes, or `None` when
-    /// dispatch should proceed.
+    /// dispatch should proceed. `InternalError` is handled separately
+    /// via [`Self::internal_error_message`] since it maps to a 500.
     #[must_use]
     pub fn error_message(&self) -> Option<String> {
         match self {
-            Self::UnsignedAllowed | Self::Verified { .. } => None,
+            Self::UnsignedAllowed | Self::Verified { .. } | Self::InternalError { .. } => None,
             Self::UnsignedRejected => Some(
                 "unsigned action rejected: signing.reject_unsigned is enabled; \
                  provide both 'signature' and 'signer_id' fields"
@@ -244,15 +258,30 @@ impl VerifyOutcome {
         }
     }
 
+    /// HTTP 500 body message when an unexpected crypto error surfaced
+    /// during verification (none otherwise).
+    #[must_use]
+    pub fn internal_error_message(&self) -> Option<String> {
+        match self {
+            Self::InternalError { message } => Some(format!(
+                "signature verification failed with an unexpected crypto error: {message}"
+            )),
+            _ => None,
+        }
+    }
+
     /// Bump the gateway counter that corresponds to this outcome.
     pub fn record_metric(&self, metrics: &acteon_gateway::GatewayMetrics) {
         match self {
-            Self::UnsignedAllowed => {}
+            Self::UnsignedAllowed => metrics.increment_signing_unsigned_allowed(),
             Self::Verified { .. } => metrics.increment_signing_verified(),
             Self::UnsignedRejected => metrics.increment_signing_unsigned_rejected(),
             Self::UnknownSigner { .. } => metrics.increment_signing_unknown_signer(),
             Self::InvalidSignature { .. } => metrics.increment_signing_invalid(),
             Self::ScopeDenied { .. } => metrics.increment_signing_scope_denied(),
+            // InternalError is a bug, not a signing event — don't
+            // count it against the verification metrics.
+            Self::InternalError { .. } => {}
         }
     }
 }

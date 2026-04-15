@@ -55,10 +55,12 @@ impl TestServer {
             .build()?;
 
         let gateway = Arc::new(RwLock::new(gateway));
+        let metrics = gateway.read().await.metrics_arc();
 
         // Create app state
         let app_state = acteon_server::api::AppState {
             gateway,
+            metrics,
             audit: Some(audit),
             analytics: None,
             auth: None,

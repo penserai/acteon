@@ -141,11 +141,26 @@ pub struct MetricsResponse {
     #[schema(example = 0)]
     #[serde(default)]
     pub signing_unsigned_rejected: u64,
-    /// Actions rejected because their action ID was already seen
-    /// within the replay protection window.
+    /// Unsigned actions passed through because
+    /// `signing.reject_unsigned` is off. Lets operators compute the
+    /// signed-vs-unsigned traffic ratio without subtracting every
+    /// rejection counter from `dispatched`.
     #[schema(example = 0)]
     #[serde(default)]
-    pub signing_replay_rejected: u64,
+    pub signing_unsigned_allowed: u64,
+    /// Actions rejected because their action ID was already seen
+    /// within the replay protection window. Replay protection is
+    /// independent of signing — this counter increments whether or
+    /// not a valid signature was presented.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub replay_rejected: u64,
+    /// Whether signing is enabled on the server. Lets the dashboard
+    /// distinguish "signing configured but idle" (show the cards with
+    /// zeros) from "signing not configured" (hide the cards).
+    #[schema(example = false)]
+    #[serde(default)]
+    pub signing_enabled: bool,
     /// Embedding cache metrics (present when embedding provider is enabled).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub embedding: Option<EmbeddingMetricsResponse>,

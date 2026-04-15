@@ -221,6 +221,7 @@ Callers can independently verify by computing `canonical_bytes` on the original 
 | Signer not authorized for tenant/namespace | 400 | `signer 'X' is not authorized for tenant=Y namespace=Z` |
 | Unsigned action + `reject_unsigned=true` | 400 | `unsigned action rejected: signing.reject_unsigned is enabled` |
 | Replayed action ID + `reject_replay=true` | 409 | `replay rejected: action ID 'X' has already been dispatched` |
+| Unexpected crypto error (bug or misconfig) | 500 | `signature verification failed with an unexpected crypto error: <detail>` |
 
 ## Metrics
 
@@ -232,11 +233,18 @@ as a Prometheus counter. They're exposed at `GET /metrics/prometheus`
 | Metric | Counted on |
 |---|---|
 | `acteon_signing_verified_total` | Cryptographically valid signature + scope-authorized |
+| `acteon_signing_unsigned_allowed_total` | Unsigned action passed through because `signing.reject_unsigned` is off |
 | `acteon_signing_invalid_total` | Signature present but Ed25519 verification failed |
 | `acteon_signing_unknown_signer_total` | `signer_id` (or `(signer_id, kid)` during a rotation) not in the keyring |
 | `acteon_signing_scope_denied_total` | Crypto valid but signer not authorized for the action's tenant/namespace |
 | `acteon_signing_unsigned_rejected_total` | Unsigned action blocked by `signing.reject_unsigned` |
-| `acteon_signing_replay_rejected_total` | Action ID already seen inside the replay TTL window |
+| `acteon_replay_rejected_total` | Action ID already seen inside the replay TTL window (independent of signing) |
+
+Note that `acteon_replay_rejected_total` does **not** carry a
+`signing_` prefix. Replay protection is driven by
+`signing.reject_replay` in the config but runs independently of
+signature verification — unsigned actions are subject to the same
+deduplication window.
 
 **What to alert on.** Verified signatures are the happy path — a
 healthy deployment should see them trend with dispatch volume.
@@ -256,19 +264,29 @@ as a security signal and page on it:
 increase(acteon_signing_scope_denied_total[15m]) > 0
 ```
 
-`signing_replay_rejected` fires when a client retries a
+`acteon_replay_rejected_total` fires when a client retries a
 previously-dispatched action id within the TTL. Low rates are
 noise (e.g. clients with misconfigured retries), sudden bursts
 can indicate a replay attack.
 
+To compute the signed-vs-unsigned traffic ratio during a rollout:
+
+```promql
+rate(acteon_signing_verified_total[5m])
+  /
+(rate(acteon_signing_verified_total[5m]) + rate(acteon_signing_unsigned_allowed_total[5m]))
+```
+
 **Grafana**: the bundled `acteon-overview` dashboard has an
-"Action Signing" row with a time-series panel of all six rates
-and a stat panel for the totals.
+"Action Signing" row with a time-series panel of the verification
+rates and a stat panel for the totals.
 
 **Dashboard UI**: the admin UI dashboard renders a compact "Sig
-Verified / Sig Rejected" stat-card pair — but only when at least
-one of the signing counters is non-zero, so operators who haven't
-enabled signing don't see empty cards.
+Verified / Sig Rejected" stat-card pair whenever signing is
+configured on the server — including the first run with zero
+traffic — so operators can confirm the config was picked up
+without having to dispatch a test action first. The cards stay
+hidden on deployments that don't enable signing at all.
 
 ## Rust client
 

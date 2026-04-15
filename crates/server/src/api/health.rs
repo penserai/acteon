@@ -61,7 +61,9 @@ fn build_metrics_response(
         signing_unknown_signer: snap.signing_unknown_signer,
         signing_scope_denied: snap.signing_scope_denied,
         signing_unsigned_rejected: snap.signing_unsigned_rejected,
-        signing_replay_rejected: snap.signing_replay_rejected,
+        signing_unsigned_allowed: snap.signing_unsigned_allowed,
+        replay_rejected: snap.replay_rejected,
+        signing_enabled: state.signature_verifier.is_some(),
         embedding,
     }
 }

@@ -46,7 +46,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use acteon_audit::AnalyticsStore;
 use acteon_audit::store::AuditStore;
 use acteon_embedding::EmbeddingMetrics;
-use acteon_gateway::Gateway;
+use acteon_gateway::{Gateway, GatewayMetrics};
 use acteon_rules::EmbeddingEvalSupport;
 
 use self::stream::ConnectionRegistry;
@@ -66,6 +66,10 @@ use self::openapi::ApiDoc;
 pub struct AppState {
     /// The gateway instance.
     pub gateway: Arc<RwLock<Gateway>>,
+    /// Shared handle to the gateway's metric counters. Lets hot-path
+    /// handlers bump counters without acquiring the gateway `RwLock`
+    /// — the inner counters are `AtomicU64`, so no lock is required.
+    pub metrics: Arc<GatewayMetrics>,
     /// Optional audit store (None when audit is disabled).
     pub audit: Option<Arc<dyn AuditStore>>,
     /// Optional analytics store (None when audit is disabled).

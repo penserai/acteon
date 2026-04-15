@@ -367,9 +367,17 @@ fn render_snapshot(snap: &MetricsSnapshot) -> String {
     );
     write_counter(
         &mut buf,
-        "acteon_signing_replay_rejected_total",
+        "acteon_signing_unsigned_allowed_total",
+        "Unsigned actions passed through because signing.reject_unsigned is off.",
+        snap.signing_unsigned_allowed,
+    );
+
+    // -- Replay protection counter (independent of signing) --
+    write_counter(
+        &mut buf,
+        "acteon_replay_rejected_total",
         "Actions rejected because their action ID was already seen within the replay protection window.",
-        snap.signing_replay_rejected,
+        snap.replay_rejected,
     );
 
     buf
@@ -591,7 +599,8 @@ mod tests {
             signing_unknown_signer: 0,
             signing_scope_denied: 0,
             signing_unsigned_rejected: 0,
-            signing_replay_rejected: 0,
+            signing_unsigned_allowed: 0,
+            replay_rejected: 0,
         }
     }
 
@@ -635,7 +644,8 @@ mod tests {
             signing_unknown_signer: 3,
             signing_scope_denied: 1,
             signing_unsigned_rejected: 5,
-            signing_replay_rejected: 4,
+            signing_unsigned_allowed: 7,
+            replay_rejected: 4,
         }
     }
 
@@ -804,7 +814,7 @@ mod tests {
 
     // -- render_snapshot tests --
 
-    /// All 39 gateway counter metric names that must appear in the output.
+    /// All 40 gateway counter metric names that must appear in the output.
     const EXPECTED_COUNTER_METRICS: &[&str] = &[
         "acteon_actions_dispatched_total",
         "acteon_actions_executed_total",
@@ -844,11 +854,12 @@ mod tests {
         "acteon_signing_unknown_signer_total",
         "acteon_signing_scope_denied_total",
         "acteon_signing_unsigned_rejected_total",
-        "acteon_signing_replay_rejected_total",
+        "acteon_signing_unsigned_allowed_total",
+        "acteon_replay_rejected_total",
     ];
 
     #[test]
-    fn render_snapshot_contains_all_39_counter_metrics() {
+    fn render_snapshot_contains_all_40_counter_metrics() {
         let snap = zero_snapshot();
         let output = render_snapshot(&snap);
 
@@ -933,7 +944,8 @@ mod tests {
         assert!(output.contains("acteon_signing_unknown_signer_total 3"));
         assert!(output.contains("acteon_signing_scope_denied_total 1"));
         assert!(output.contains("acteon_signing_unsigned_rejected_total 5"));
-        assert!(output.contains("acteon_signing_replay_rejected_total 4"));
+        assert!(output.contains("acteon_signing_unsigned_allowed_total 7"));
+        assert!(output.contains("acteon_replay_rejected_total 4"));
     }
 
     #[test]
@@ -1159,7 +1171,7 @@ mod tests {
         providers.insert("email".to_string(), sample_provider_stats());
         render_provider_metrics(&mut output, &providers);
 
-        // 39 counter metrics from the snapshot
+        // 40 counter metrics from the snapshot
         for metric in EXPECTED_COUNTER_METRICS {
             assert!(output.contains(metric), "Missing snapshot metric: {metric}");
         }
@@ -1169,16 +1181,16 @@ mod tests {
             assert!(output.contains(name), "Missing provider metric: {name}");
         }
 
-        // Total: 39 + 8 = 47 unique metric families
+        // Total: 40 + 8 = 48 unique metric families
         let type_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.starts_with("# TYPE "))
             .collect();
-        assert_eq!(type_lines.len(), 47, "Expected 47 TYPE declarations");
+        assert_eq!(type_lines.len(), 48, "Expected 48 TYPE declarations");
     }
 
     #[test]
-    fn full_render_no_providers_has_39_type_lines() {
+    fn full_render_no_providers_has_40_type_lines() {
         let snap = zero_snapshot();
         let mut output = render_snapshot(&snap);
         let empty: HashMap<String, ProviderStatsSnapshot> = HashMap::new();
@@ -1190,8 +1202,8 @@ mod tests {
             .collect();
         assert_eq!(
             type_lines.len(),
-            39,
-            "Expected 39 TYPE declarations without providers"
+            40,
+            "Expected 40 TYPE declarations without providers"
         );
     }
 }
