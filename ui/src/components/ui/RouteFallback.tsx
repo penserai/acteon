@@ -5,10 +5,11 @@ import styles from './RouteFallback.module.css'
  * fetched. Kept intentionally small: a centered spinner with a
  * hidden "Loading page" label for screen readers.
  *
- * Used as the `<Suspense fallback={...}>` for every route in
- * `App.tsx`. Because the eager bundle already carries the AppShell
- * (sidebar + header), this fallback only fills the main content
- * area — navigation stays responsive while the page chunk loads.
+ * Rendered by the `<Suspense>` boundary inside `AppShell.tsx`
+ * (wrapping the `<Outlet />`). Because the Suspense lives below
+ * the Sidebar + Header in the component tree, this fallback only
+ * replaces the main content area — the shell stays mounted and
+ * navigation remains responsive while the page chunk loads.
  */
 export function RouteFallback() {
   return (

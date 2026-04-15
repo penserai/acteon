@@ -1,10 +1,9 @@
-import { lazy, useEffect, Suspense } from 'react'
+import { lazy, useEffect } from 'react'
 import type { ComponentType } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { AppShell } from './components/layout/AppShell'
 import { ToastProvider } from './components/ui/Toast'
 import { CommandPalette } from './components/command-palette/CommandPalette'
-import { RouteFallback } from './components/ui/RouteFallback'
 import { connectEvents, disconnectEvents } from './stores/events'
 import { Dashboard } from './pages/Dashboard'
 
@@ -80,40 +79,45 @@ function App() {
   return (
     <ToastProvider>
       <CommandPalette />
-      <Suspense fallback={<RouteFallback />}>
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route index element={<Dashboard />} />
-            <Route path="alerting" element={<Alerting />} />
-            <Route path="dispatch" element={<Dispatch />} />
-            <Route path="rules" element={<Rules />} />
-            <Route path="playground" element={<RulePlayground />} />
-            <Route path="audit" element={<Actions />} />
-            <Route path="events" element={<Events />} />
-            <Route path="groups" element={<Groups />} />
-            <Route path="silences" element={<Silences />} />
-            <Route path="time-intervals" element={<TimeIntervals />} />
-            <Route path="chains" element={<Chains />} />
-            <Route path="chains/:chainId" element={<ChainDetail />} />
-            <Route path="chain-definitions" element={<ChainDefinitions />} />
-            <Route path="approvals" element={<Approvals />} />
-            <Route path="circuit-breakers" element={<Providers />} />
-            <Route path="provider-health" element={<ProviderHealth />} />
-            <Route path="dlq" element={<DeadLetterQueue />} />
-            <Route path="stream" element={<EventStream />} />
-            <Route path="embeddings" element={<Embeddings />} />
-            <Route path="scheduled" element={<ScheduledActions />} />
-            <Route path="recurring" element={<RecurringActions />} />
-            <Route path="quotas" element={<Quotas />} />
-            <Route path="retention" element={<RetentionPolicies />} />
-            <Route path="wasm-plugins" element={<WasmPlugins />} />
-            <Route path="templates" element={<Templates />} />
-            <Route path="analytics" element={<Analytics />} />
-            <Route path="compliance" element={<ComplianceStatus />} />
-            <Route path="settings/*" element={<Settings />} />
-          </Route>
-        </Routes>
-      </Suspense>
+      {/*
+        The Suspense boundary for lazy route chunks lives inside
+        AppShell (wrapping the <Outlet />), not here. That keeps the
+        Sidebar + Header mounted during navigation and lets framer-
+        motion's AnimatePresence run its exit animation before the
+        RouteFallback spinner appears. See AppShell.tsx for details.
+      */}
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route index element={<Dashboard />} />
+          <Route path="alerting" element={<Alerting />} />
+          <Route path="dispatch" element={<Dispatch />} />
+          <Route path="rules" element={<Rules />} />
+          <Route path="playground" element={<RulePlayground />} />
+          <Route path="audit" element={<Actions />} />
+          <Route path="events" element={<Events />} />
+          <Route path="groups" element={<Groups />} />
+          <Route path="silences" element={<Silences />} />
+          <Route path="time-intervals" element={<TimeIntervals />} />
+          <Route path="chains" element={<Chains />} />
+          <Route path="chains/:chainId" element={<ChainDetail />} />
+          <Route path="chain-definitions" element={<ChainDefinitions />} />
+          <Route path="approvals" element={<Approvals />} />
+          <Route path="circuit-breakers" element={<Providers />} />
+          <Route path="provider-health" element={<ProviderHealth />} />
+          <Route path="dlq" element={<DeadLetterQueue />} />
+          <Route path="stream" element={<EventStream />} />
+          <Route path="embeddings" element={<Embeddings />} />
+          <Route path="scheduled" element={<ScheduledActions />} />
+          <Route path="recurring" element={<RecurringActions />} />
+          <Route path="quotas" element={<Quotas />} />
+          <Route path="retention" element={<RetentionPolicies />} />
+          <Route path="wasm-plugins" element={<WasmPlugins />} />
+          <Route path="templates" element={<Templates />} />
+          <Route path="analytics" element={<Analytics />} />
+          <Route path="compliance" element={<ComplianceStatus />} />
+          <Route path="settings/*" element={<Settings />} />
+        </Route>
+      </Routes>
     </ToastProvider>
   )
 }
