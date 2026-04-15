@@ -24,6 +24,7 @@ use acteon_server::auth::crypto::SecretString;
 use acteon_server::config::ConfigSnapshot;
 use acteon_state::StateStore;
 use acteon_state_memory::{MemoryDistributedLock, MemoryStateStore};
+use base64::Engine as _;
 use chrono::Utc;
 
 // -- Mock provider --------------------------------------------------------
@@ -118,6 +119,34 @@ fn build_test_state_with_audit_and_analytics(
         signature_verifier: None,
         replay_protection: None,
     }
+}
+
+/// Build a test `AppState` with a [`SignatureVerifier`] pre-populated
+/// with a single generated keypair. Returns the signing key alongside
+/// the state so tests can produce valid signatures for the registered
+/// signer.
+fn build_test_state_with_signing(
+    reject_unsigned: bool,
+) -> (AppState, acteon_crypto::signing::ActionSigningKey) {
+    let (signing_key, verifying_key) = acteon_crypto::signing::generate_keypair("test-signer");
+    let mut keyring = acteon_crypto::signing::Keyring::new();
+    keyring.insert(verifying_key);
+    let verifier = acteon_server::api::SignatureVerifier::new(keyring, reject_unsigned);
+
+    let mut state = build_test_state(vec![]);
+    state.signature_verifier = Some(Arc::new(verifier));
+    (state, signing_key)
+}
+
+/// Produce a signed copy of `action` using the provided key. Mirrors
+/// what [`ActeonClient::dispatch_signed`] does on the Rust client:
+/// set `signer_id`, compute canonical bytes, sign, and stash the
+/// base64 signature.
+fn sign_action(mut action: Action, key: &acteon_crypto::signing::ActionSigningKey) -> Action {
+    action.signer_id = Some(key.signer_id().to_owned());
+    let canonical = action.canonical_bytes();
+    action.signature = Some(key.sign(&canonical));
+    action
 }
 
 /// Build a test `AppState` with auth enabled. The provided grant set is
@@ -288,6 +317,212 @@ async fn dispatch_batch_returns_array() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(json.is_array());
     assert_eq!(json.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn dispatch_batch_all_signed_all_verified() {
+    let (state, key) = build_test_state_with_signing(false);
+    let metrics = Arc::clone(&state.metrics);
+    let app = build_app(state);
+
+    let actions = vec![
+        sign_action(test_action(), &key),
+        sign_action(test_action(), &key),
+        sign_action(test_action(), &key),
+    ];
+    let body = serde_json::to_string(&actions).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch/batch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+    for entry in arr {
+        assert!(
+            entry.get("Executed").is_some(),
+            "expected Executed, got {entry}"
+        );
+    }
+    assert_eq!(metrics.snapshot().signing_verified, 3);
+    assert_eq!(metrics.snapshot().signing_invalid, 0);
+}
+
+#[tokio::test]
+async fn dispatch_batch_mixed_rejections_slot_by_index() {
+    // Batch of four: index 0 and 2 are correctly signed, index 1 has a
+    // bad signature (truncated + re-padded), index 3 is signed by an
+    // unknown signer. The response should be the same length as the
+    // input, with error entries at 1 and 3 and Executed outcomes at
+    // 0 and 2.
+    let (state, key) = build_test_state_with_signing(false);
+    let metrics = Arc::clone(&state.metrics);
+    let app = build_app(state);
+
+    let good_0 = sign_action(test_action(), &key);
+    let mut bad_1 = sign_action(test_action(), &key);
+    // Flip a byte inside the base64 signature to guarantee a crypto
+    // failure without breaking the decoder.
+    if let Some(ref mut sig) = bad_1.signature {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(sig.as_bytes())
+            .unwrap();
+        let mut tampered = bytes.clone();
+        tampered[0] ^= 0xFF;
+        *sig = base64::engine::general_purpose::STANDARD.encode(tampered);
+    }
+    let good_2 = sign_action(test_action(), &key);
+    let (unknown_key, _) = acteon_crypto::signing::generate_keypair("phantom-signer");
+    let bad_3 = sign_action(test_action(), &unknown_key);
+
+    let actions = vec![good_0, bad_1, good_2, bad_3];
+    let body = serde_json::to_string(&actions).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch/batch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 4);
+    assert!(arr[0].get("Executed").is_some(), "idx 0: {arr:?}");
+    assert!(
+        arr[1].get("error").is_some(),
+        "idx 1 should be an error: {arr:?}"
+    );
+    assert!(arr[2].get("Executed").is_some(), "idx 2: {arr:?}");
+    assert!(
+        arr[3].get("error").is_some(),
+        "idx 3 should be an error: {arr:?}"
+    );
+    // The wire messages for InvalidSignature and UnknownSigner must
+    // follow the same format so a probing caller can't tell them
+    // apart when they target the SAME signer_id. (The signer_id
+    // itself is interpolated from caller input and remains visible
+    // — the point is that a call targeting `test-signer` can't
+    // distinguish "signer exists but wrong key" from "signer
+    // doesn't exist at all".)
+    assert_eq!(
+        arr[1]["error"],
+        "signature verification failed for signer 'test-signer'"
+    );
+    assert_eq!(
+        arr[3]["error"],
+        "signature verification failed for signer 'phantom-signer'"
+    );
+    // Metrics should reflect per-branch granularity though.
+    let snap = metrics.snapshot();
+    assert_eq!(snap.signing_verified, 2);
+    assert_eq!(snap.signing_invalid, 1);
+    assert_eq!(snap.signing_unknown_signer, 1);
+}
+
+#[tokio::test]
+async fn dispatch_batch_unsigned_rejected_when_required() {
+    let (state, key) = build_test_state_with_signing(true);
+    let metrics = Arc::clone(&state.metrics);
+    let app = build_app(state);
+
+    // Only the middle action is unsigned; the other two are valid.
+    let actions = vec![
+        sign_action(test_action(), &key),
+        test_action(),
+        sign_action(test_action(), &key),
+    ];
+    let body = serde_json::to_string(&actions).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch/batch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 3);
+    assert!(arr[0].get("Executed").is_some());
+    assert_eq!(
+        arr[1]["error"],
+        "unsigned action rejected: signing.reject_unsigned is enabled; \
+         provide both 'signature' and 'signer_id' fields"
+    );
+    assert!(arr[2].get("Executed").is_some());
+    let snap = metrics.snapshot();
+    assert_eq!(snap.signing_verified, 2);
+    assert_eq!(snap.signing_unsigned_rejected, 1);
+}
+
+#[tokio::test]
+async fn dispatch_batch_all_rejected_skips_dispatch() {
+    // When every action fails verification, the gateway dispatch
+    // call should be skipped entirely — no rules are evaluated and
+    // the read lock on the gateway RwLock is never acquired. Permits
+    // on the dispatch semaphore *are* still taken before signing
+    // runs (to bound CPU on Ed25519 verification), but they're
+    // released as soon as this handler returns. The response still
+    // mirrors the input length with one error per entry.
+    let (state, _key) = build_test_state_with_signing(true);
+    let app = build_app(state);
+
+    let actions = vec![test_action(), test_action()];
+    let body = serde_json::to_string(&actions).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::POST)
+                .uri("/v1/dispatch/batch")
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = json.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    assert!(arr[0].get("error").is_some());
+    assert!(arr[1].get("error").is_some());
 }
 
 #[tokio::test]

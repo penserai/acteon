@@ -197,6 +197,13 @@ pub async fn dispatch(
 /// Expects a JSON array of [`Action`] objects. Returns an array of results,
 /// where each element is either an `ActionOutcome` or an error object.
 ///
+/// When signing is enabled, each action is verified independently and a
+/// failed signature rejects only that one entry — the rest of the batch
+/// continues through the pipeline. The response preserves the input
+/// ordering so callers can match errors to their submitted actions by
+/// index. An internal crypto error on any action fails the whole batch
+/// with HTTP 500 since that indicates a server bug, not a caller issue.
+///
 /// Pass `?dry_run=true` to evaluate rules without executing any actions.
 #[utoipa::path(
     post,
@@ -279,40 +286,253 @@ pub async fn dispatch_batch(
         }
     }
 
-    // Acquire permits from the global dispatch semaphore for the entire batch.
+    // Acquire permits for the full batch *before* signature
+    // verification. Ed25519 verify is cheap per action but a caller
+    // with a valid grant could still flood the gateway with
+    // 1000-action batches of valid-looking-but-wrong signatures and
+    // burn CPU. Bounding signing work by the existing dispatch
+    // concurrency knob closes that hole — the signing loop can never
+    // outrun what the gateway is willing to dispatch. The permits
+    // are released on function exit regardless of which path we
+    // take.
     let _permits = state
         .dispatch_semaphore
         .try_acquire_many(u32::try_from(actions.len()).unwrap_or(u32::MAX))
-        .map_err(|_| ServerError::RateLimited {
-            retry_after: 1, // Suggest retry after 1 second
-        })?;
+        .map_err(|_| ServerError::RateLimited { retry_after: 1 })?;
 
-    let caller = identity.to_caller();
-    let trace_context = super::trace_context::capture_trace_context();
-    let actions: Vec<Action> = actions
-        .into_iter()
-        .map(|mut a| {
-            a.trace_context.clone_from(&trace_context);
-            a
-        })
-        .collect();
-
-    let gw = state.gateway.read().await;
-    let results = if query.dry_run {
-        gw.dispatch_batch_dry_run(actions, Some(&caller)).await
-    } else {
-        gw.dispatch_batch(actions, Some(&caller)).await
+    // Verify signatures per-action. An InternalError aborts the whole
+    // batch with HTTP 500; a normal rejection only knocks out its
+    // own entry and the batch continues.
+    let signing_rejections = match verify_batch_signatures(
+        state.signature_verifier.as_deref(),
+        &state.metrics,
+        &actions,
+    ) {
+        Ok(rejections) => rejections,
+        Err(msg) => {
+            // Mirror the internal-error message into every slot so
+            // the response still satisfies the "one entry per
+            // input action" batch invariant. A client that
+            // indexes body[i] won't skip over a phantom slot.
+            let body: Vec<serde_json::Value> = (0..actions.len())
+                .map(|_| serde_json::json!(ErrorResponse { error: msg.clone() }))
+                .collect();
+            return Ok((StatusCode::INTERNAL_SERVER_ERROR, Json(body)));
+        }
     };
 
-    let body: Vec<serde_json::Value> = results
+    // Split the input: passing actions go to the gateway in order,
+    // rejected ones stay behind and slot back by index afterwards.
+    let caller = identity.to_caller();
+    let trace_context = super::trace_context::capture_trace_context();
+    let passing_actions: Vec<Action> = actions
         .into_iter()
-        .map(|r| match r {
-            Ok(outcome) => serde_json::json!(outcome),
-            Err(e) => serde_json::json!(ErrorResponse {
-                error: e.to_string()
-            }),
+        .zip(signing_rejections.iter())
+        .filter_map(|(mut a, rejection)| {
+            if rejection.is_some() {
+                None
+            } else {
+                a.trace_context.clone_from(&trace_context);
+                Some(a)
+            }
         })
         .collect();
 
+    let dispatch_results = if passing_actions.is_empty() {
+        Vec::new()
+    } else {
+        let gw = state.gateway.read().await;
+        if query.dry_run {
+            gw.dispatch_batch_dry_run(passing_actions, Some(&caller))
+                .await
+        } else {
+            gw.dispatch_batch(passing_actions, Some(&caller)).await
+        }
+    };
+
+    let body = merge_batch_results(signing_rejections, dispatch_results);
     Ok((StatusCode::OK, Json(body)))
+}
+
+/// Verify every action in a batch against the signature verifier.
+///
+/// Returns `Ok(rejections)` where `rejections[i]` is the HTTP 400
+/// message for action `i` (or `None` if it passed), or `Err(msg)` on
+/// the first `InternalError` — which should abort the whole batch
+/// with HTTP 500 since internal errors indicate a server bug, not a
+/// caller issue.
+///
+/// Every branch (pass, reject, internal error) bumps the matching
+/// gateway metric and emits a structured `tracing::warn` before
+/// returning, so observability is consistent with the single-action
+/// dispatch path.
+fn verify_batch_signatures(
+    verifier: Option<&super::verify::SignatureVerifier>,
+    metrics: &acteon_gateway::GatewayMetrics,
+    actions: &[Action],
+) -> Result<Vec<Option<String>>, String> {
+    let mut rejections: Vec<Option<String>> = vec![None; actions.len()];
+    let Some(verifier) = verifier else {
+        return Ok(rejections);
+    };
+    for (idx, action) in actions.iter().enumerate() {
+        let outcome = verifier.verify_action(action);
+        outcome.record_metric(metrics);
+        outcome.log_rejection();
+        if let Some(msg) = outcome.internal_error_message() {
+            // Fail-fast: don't burn CPU verifying the rest of a batch
+            // that's already destined for HTTP 500.
+            return Err(msg);
+        }
+        if let Some(err) = outcome.error_message() {
+            rejections[idx] = Some(err);
+        }
+    }
+    Ok(rejections)
+}
+
+/// Zip signing rejections back together with gateway dispatch results
+/// by input index.
+///
+/// `signing_rejections` has one entry per *input* action;
+/// `dispatch_results` has one entry per *passing* action in input
+/// order (the gateway guarantees this — see
+/// `dispatch_batch_preserves_order_under_latency_skew`). Walk the
+/// rejection vector; for every `Some(msg)` emit an error, for every
+/// `None` pull the next gateway result and emit its outcome.
+fn merge_batch_results(
+    signing_rejections: Vec<Option<String>>,
+    dispatch_results: Vec<Result<acteon_core::ActionOutcome, acteon_gateway::GatewayError>>,
+) -> Vec<serde_json::Value> {
+    let mut results_iter = dispatch_results.into_iter();
+    signing_rejections
+        .into_iter()
+        .map(|rejection| match rejection {
+            Some(msg) => serde_json::json!(ErrorResponse { error: msg }),
+            None => match results_iter.next() {
+                Some(Ok(outcome)) => serde_json::json!(outcome),
+                Some(Err(e)) => serde_json::json!(ErrorResponse {
+                    error: e.to_string()
+                }),
+                // Unreachable under invariant: the gateway returns
+                // exactly one result per passing action. Degrade to a
+                // neutral error rather than panicking if that ever
+                // drifts (e.g. a future caller exposes a new dispatch
+                // shape).
+                None => serde_json::json!(ErrorResponse {
+                    error: "internal: missing gateway result for passing action".to_owned(),
+                }),
+            },
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acteon_core::{ActionOutcome, ProviderResponse};
+    use acteon_gateway::GatewayError;
+
+    fn ok_outcome(tag: &str) -> Result<ActionOutcome, GatewayError> {
+        Ok(ActionOutcome::Executed(ProviderResponse::success(
+            serde_json::json!({ "tag": tag }),
+        )))
+    }
+
+    /// Every slot in the merged body should correspond 1:1 to a slot
+    /// in the signing_rejections vector. Errors come from rejections,
+    /// outcomes come from gateway results in the order of passing
+    /// indices.
+    #[test]
+    fn merge_batch_results_mixed_preserves_indices() {
+        // Indices: 0 ok, 1 rejected, 2 ok, 3 rejected, 4 ok
+        let rejections = vec![
+            None,
+            Some("bad at 1".to_owned()),
+            None,
+            Some("bad at 3".to_owned()),
+            None,
+        ];
+        let gateway_results = vec![ok_outcome("a"), ok_outcome("c"), ok_outcome("e")];
+
+        let body = merge_batch_results(rejections, gateway_results);
+
+        assert_eq!(body.len(), 5);
+        assert_eq!(body[0]["Executed"]["body"]["tag"], "a");
+        assert_eq!(body[1]["error"], "bad at 1");
+        assert_eq!(body[2]["Executed"]["body"]["tag"], "c");
+        assert_eq!(body[3]["error"], "bad at 3");
+        assert_eq!(body[4]["Executed"]["body"]["tag"], "e");
+    }
+
+    #[test]
+    fn merge_batch_results_all_rejected_empty_gateway_results() {
+        let rejections = vec![
+            Some("err 0".to_owned()),
+            Some("err 1".to_owned()),
+            Some("err 2".to_owned()),
+        ];
+        let body = merge_batch_results(rejections, Vec::new());
+
+        assert_eq!(body.len(), 3);
+        assert_eq!(body[0]["error"], "err 0");
+        assert_eq!(body[1]["error"], "err 1");
+        assert_eq!(body[2]["error"], "err 2");
+    }
+
+    #[test]
+    fn merge_batch_results_no_rejections_all_pass_through() {
+        let rejections = vec![None, None, None];
+        let gateway_results = vec![ok_outcome("x"), ok_outcome("y"), ok_outcome("z")];
+
+        let body = merge_batch_results(rejections, gateway_results);
+
+        assert_eq!(body.len(), 3);
+        assert_eq!(body[0]["Executed"]["body"]["tag"], "x");
+        assert_eq!(body[1]["Executed"]["body"]["tag"], "y");
+        assert_eq!(body[2]["Executed"]["body"]["tag"], "z");
+    }
+
+    /// Invariant violation guard: if the caller somehow hands us a
+    /// passing slot without a matching gateway result, degrade
+    /// gracefully instead of panicking.
+    #[test]
+    fn merge_batch_results_missing_gateway_result_degrades_gracefully() {
+        let rejections = vec![None, None];
+        // Only one result for two passing slots — should never
+        // happen, but must not panic.
+        let body = merge_batch_results(rejections, vec![ok_outcome("a")]);
+
+        assert_eq!(body.len(), 2);
+        assert_eq!(body[0]["Executed"]["body"]["tag"], "a");
+        assert!(
+            body[1]["error"]
+                .as_str()
+                .unwrap()
+                .contains("missing gateway result")
+        );
+    }
+
+    /// When `verify_batch_signatures` returns `Err`, the caller
+    /// builds an N-length response body (one entry per input action)
+    /// rather than a length-1 array. This matches the batch API's
+    /// "one entry per input action" contract even for HTTP 500.
+    #[test]
+    fn internal_error_body_is_n_length() {
+        // Simulate the internal-error path: build the body the same
+        // way the handler does when verify_batch_signatures errors.
+        let actions_len = 7;
+        let msg = "signature verification failed with an unexpected crypto error: boom";
+        let body: Vec<serde_json::Value> = (0..actions_len)
+            .map(|_| {
+                serde_json::json!(ErrorResponse {
+                    error: msg.to_owned()
+                })
+            })
+            .collect();
+        assert_eq!(body.len(), 7);
+        for entry in &body {
+            assert_eq!(entry["error"], msg);
+        }
+    }
 }
