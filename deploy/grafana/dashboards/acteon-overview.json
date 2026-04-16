@@ -578,10 +578,10 @@
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 66 },
       "id": 302,
       "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
-      "title": "WASM Plugin Totals",
+      "title": "WASM Plugin Activity (last 5m)",
       "targets": [
-        { "expr": "acteon_wasm_invocations_total", "legendFormat": "Invocations", "refId": "A" },
-        { "expr": "acteon_wasm_errors_total", "legendFormat": "Errors", "refId": "B" }
+        { "expr": "increase(acteon_wasm_invocations_total[5m])", "legendFormat": "Invocations", "refId": "A" },
+        { "expr": "increase(acteon_wasm_errors_total[5m])", "legendFormat": "Errors", "refId": "B" }
       ],
       "type": "stat"
     }

@@ -165,26 +165,38 @@ The guardrail emits three counters via `GET /metrics/prometheus`
 "LLM Guardrail" row with a decisions rate timeseries and a stat
 panel for the totals.
 
-**What to alert on.** A rising `errors` rate means the evaluator
-is failing and the guardrail's fail-open/fail-closed policy
-(configured server-side) is kicking in — either the LLM is
-unhealthy or the rule is misconfigured:
+**What to alert on.** Alerting on errors is the **primary**
+security-critical signal, not the deny ratio. In fail-open
+configurations the guardrail lets actions through when the
+evaluator errors, so an attacker who can force timeouts (large
+inputs, upstream LLM slowness) quietly bypasses the guard. The
+deny ratio in that attack stays flat or even drops because
+`denied` doesn't grow while `allowed` + `errors` keep going up.
+Page on errors first:
 
 ```promql
 rate(acteon_llm_guardrail_errors_total[5m]) > 0.1
 ```
 
-A high deny ratio on rules that aren't supposed to fire often is
-usually a sign of a prompt-injection probe run or a misconfigured
-evaluator flagging legitimate traffic:
+For **baseline health** — is the evaluator denying about as often
+as expected, or has something drifted? — compute deny prevalence
+against *all evaluated traffic* (include errors in the
+denominator). The `+ 1e-9` guards against division-by-zero
+`NaN` during quiet periods, which Grafana would otherwise render
+as "No Data" and hide the alert entirely:
 
 ```promql
 rate(acteon_llm_guardrail_denied_total[5m])
   /
-(rate(acteon_llm_guardrail_allowed_total[5m]) + rate(acteon_llm_guardrail_denied_total[5m])) > 0.2
+(rate(acteon_llm_guardrail_allowed_total[5m])
+   + rate(acteon_llm_guardrail_denied_total[5m])
+   + rate(acteon_llm_guardrail_errors_total[5m])
+   + 1e-9) > 0.2
 ```
 
-Treat sustained non-zero `denied` on rules targeting external
-input surfaces (public webhooks, customer-facing dispatch) as a
-security signal worth paging on, since prompt-injection attempts
-will show up here first.
+A sustained non-zero `denied` rate on rules targeting external
+input surfaces (public webhooks, customer-facing dispatch) is
+still worth investigating — prompt-injection attempts that the
+evaluator successfully catches show up here — but treat it as a
+secondary signal. The errors alert above is what catches an
+actual bypass.

@@ -1768,6 +1768,106 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
     }
 
+    /// Two skip paths and one error path in the recurring worker all
+    /// used to silently ignore their events instead of incrementing
+    /// the corresponding gateway counter. Operators wiring up
+    /// `acteon_recurring_errors_total` alerts were seeing a flat
+    /// line even when deserialization was failing. Regression-test
+    /// the wiring by loading a mix of pending keys and asserting
+    /// the counters tick.
+    #[tokio::test]
+    async fn recurring_skip_and_error_paths_increment_metrics() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+        let metrics = Arc::new(GatewayMetrics::default());
+
+        // Case 1 — disabled action: should increment recurring_skipped.
+        let disabled_id = "rec-skip-disabled";
+        let disabled = make_test_recurring_action(
+            disabled_id,
+            namespace,
+            tenant,
+            "*/5 * * * *",
+            false, // enabled=false -> should_skip=true
+        );
+        let rec_key = StateKey::new(namespace, tenant, KeyKind::RecurringAction, disabled_id);
+        state
+            .set(&rec_key, &serde_json::to_string(&disabled).unwrap(), None)
+            .await
+            .unwrap();
+        let past_due = Utc::now() - chrono::Duration::seconds(10);
+        let pending_key = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, disabled_id);
+        state
+            .set(&pending_key, &past_due.timestamp_millis().to_string(), None)
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        // Case 2 — malformed state value: should_json::from_str fails,
+        // increments recurring_errors.
+        let corrupt_id = "rec-err-corrupt";
+        let rec_key2 = StateKey::new(namespace, tenant, KeyKind::RecurringAction, corrupt_id);
+        state.set(&rec_key2, "{not-valid-json", None).await.unwrap();
+        let pending_key2 = StateKey::new(namespace, tenant, KeyKind::PendingRecurring, corrupt_id);
+        state
+            .set(
+                &pending_key2,
+                &past_due.timestamp_millis().to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .index_timeout(&pending_key2, past_due.timestamp_millis())
+            .await
+            .unwrap();
+
+        let (rec_tx, _rec_rx) = mpsc::channel(10);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::clone(&metrics))
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Give the processor one cycle to drain both pending entries.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let snap = metrics.snapshot();
+        assert!(
+            snap.recurring_skipped >= 1,
+            "disabled action should increment recurring_skipped; got snap={snap:?}"
+        );
+        assert!(
+            snap.recurring_errors >= 1,
+            "malformed state should increment recurring_errors; got snap={snap:?}"
+        );
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
     #[tokio::test]
     async fn dispatches_recurring_preserves_template_fields() {
         let group_manager = Arc::new(GroupManager::new());
