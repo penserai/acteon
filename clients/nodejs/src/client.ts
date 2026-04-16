@@ -153,6 +153,8 @@ import {
   CoverageQuery,
   CoverageReport,
   parseCoverageReport,
+  SigningKeysResponse,
+  parseSigningKeysResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 import { readFileSync } from "node:fs";
@@ -288,6 +290,64 @@ export class ActeonClient {
       return response.ok;
     } catch {
       return false;
+    }
+  }
+
+  // =========================================================================
+  // Signing key discovery (JWKS-style)
+  // =========================================================================
+
+  /**
+   * Fetch the server's active signing keyring.
+   *
+   * Calls `GET /.well-known/acteon-signing-keys`, a public,
+   * unauthenticated endpoint that publishes the public half of
+   * every `(signer_id, kid)` pair the server will accept
+   * signatures from. Useful for:
+   *
+   * - verifying dispatched actions independently without pinning
+   *   public keys at deploy time
+   * - detecting a rotation in progress — a signer with more than
+   *   one entry means the operator is staging a rotation and the
+   *   client should start sending the new `kid`
+   *
+   * Returns a response with an empty `keys` array when signing is
+   * disabled on the server.
+   *
+   * @throws {HttpError} If the server returns a non-2xx status.
+   */
+  async fetchSigningKeys(): Promise<SigningKeysResponse> {
+    const response = await this.request(
+      "GET",
+      "/.well-known/acteon-signing-keys",
+    );
+    if (!response.ok) {
+      throw new HttpError(
+        response.status,
+        `Failed to fetch signing keys: ${response.status}`,
+      );
+    }
+    // Wrap both JSON decode failures (proxy returns 200 OK with an
+    // HTML body) and shape validation failures from
+    // parseSigningKeysResponse in a typed ConnectionError so
+    // callers see "malformed signing keys response" instead of a
+    // raw SyntaxError.
+    let data: Record<string, unknown>;
+    try {
+      data = (await response.json()) as Record<string, unknown>;
+    } catch (e) {
+      throw new ConnectionError(
+        `malformed signing keys response: ${(e as Error).message}`,
+      );
+    }
+    try {
+      return parseSigningKeysResponse(data);
+    } catch (e) {
+      // parseSigningKeysResponse throws plain Errors with a
+      // "malformed signing keys response:" prefix; rewrap as a
+      // typed ConnectionError so `catch (e: ConnectionError)`
+      // works on the caller side.
+      throw new ConnectionError((e as Error).message);
     }
   }
 

@@ -150,6 +150,64 @@ func (c *Client) Health(ctx context.Context) (bool, error) {
 	return resp.StatusCode == http.StatusOK, nil
 }
 
+// FetchSigningKeys returns the server's active signing keyring.
+//
+// Hits GET /.well-known/acteon-signing-keys, a public, unauthenticated
+// endpoint that publishes the public half of every (signer_id, kid)
+// pair the server will accept signatures from. Useful for:
+//   - verifying dispatched actions independently without pinning
+//     public keys at deploy time
+//   - detecting a rotation in progress (a signer with more than one
+//     entry means the operator is staging a rotation and the client
+//     should start sending the new kid).
+//
+// Returns a response with an empty Keys slice when signing is
+// disabled on the server.
+func (c *Client) FetchSigningKeys(ctx context.Context) (*SigningKeysResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/.well-known/acteon-signing-keys", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Cap the response body. The endpoint is public (no auth) so a
+	// malicious or misconfigured upstream could return an arbitrarily
+	// large payload and trigger an OOM in the client. A real keyring
+	// is tens-to-hundreds of bytes per entry; 1MB is three orders of
+	// magnitude of headroom.
+	const maxSigningKeysResponseBytes = 1 << 20 // 1 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSigningKeysResponseBytes))
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "failed to fetch signing keys"}
+	}
+
+	var out SigningKeysResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		// Wrap the raw json.Unmarshal error so upstream callers get a
+		// clear "malformed response" signal instead of a cryptic
+		// "invalid character '<' looking for beginning of value" —
+		// which is what they'd see if a proxy or waiting-room page
+		// returned 200 OK with an HTML body.
+		return nil, &ConnectionError{
+			Message: "malformed signing keys response: " + err.Error(),
+		}
+	}
+
+	// Match the defensive posture of the other SDKs: when the server
+	// omits `count` (or sends count=0 with a non-empty keys array
+	// due to a shape drift), derive it from len(Keys). The server
+	// always emits count today — this is belt-and-braces against a
+	// future minor change.
+	if out.Count == 0 && len(out.Keys) > 0 {
+		out.Count = len(out.Keys)
+	}
+	return &out, nil
+}
+
 // Dispatch dispatches a single action.
 func (c *Client) Dispatch(ctx context.Context, action *Action) (*ActionOutcome, error) {
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dispatch", action)

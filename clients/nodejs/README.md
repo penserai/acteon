@@ -206,6 +206,7 @@ try {
 | `setRuleEnabled(name, enabled)` | Enable/disable a rule |
 | `queryAudit(query)` | Query audit records |
 | `getAuditRecord(actionId)` | Get specific audit record |
+| `fetchSigningKeys()` | Fetch the server's active signing keyring (JWKS-style discovery) |
 
 ### Action Fields
 

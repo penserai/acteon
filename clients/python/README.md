@@ -209,6 +209,7 @@ except HttpError as e:
 | `set_rule_enabled(name, enabled)` | Enable/disable a rule |
 | `query_audit(query)` | Query audit records |
 | `get_audit_record(action_id)` | Get specific audit record |
+| `fetch_signing_keys()` | Fetch the server's active signing keyring (JWKS-style discovery) |
 
 ### Action Fields
 

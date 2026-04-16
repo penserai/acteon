@@ -117,8 +117,7 @@ pub async fn dlq_drain(State(state): State<AppState>) -> impl IntoResponse {
             timestamp: e
                 .timestamp
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_secs()),
         })
         .collect();
 

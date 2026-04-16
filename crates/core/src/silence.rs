@@ -129,9 +129,7 @@ impl SilenceMatcher {
                 let Some(value) = label_value else {
                     return false;
                 };
-                compile_regex(&self.value)
-                    .map(|re| re.is_match(value))
-                    .unwrap_or(false)
+                compile_regex(&self.value).is_ok_and(|re| re.is_match(value))
             }
             MatchOp::NotRegex => {
                 // Missing labels satisfy a negative regex match (they
@@ -139,9 +137,7 @@ impl SilenceMatcher {
                 let Some(value) = label_value else {
                     return true;
                 };
-                compile_regex(&self.value)
-                    .map(|re| !re.is_match(value))
-                    .unwrap_or(true)
+                compile_regex(&self.value).map_or(true, |re| !re.is_match(value))
             }
         }
     }

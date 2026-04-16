@@ -195,6 +195,75 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Signing key discovery (JWKS-style)
+    // =========================================================================
+
+    /**
+     * Fetches the server's active signing keyring.
+     *
+     * <p>Calls {@code GET /.well-known/acteon-signing-keys}, a public,
+     * unauthenticated endpoint that publishes the public half of
+     * every {@code (signer_id, kid)} pair the server will accept
+     * signatures from. Useful for:
+     *
+     * <ul>
+     *   <li>verifying dispatched actions independently without pinning
+     *       public keys at deploy time, or</li>
+     *   <li>detecting a rotation in progress — a signer with more
+     *       than one entry in the response means the operator is
+     *       staging a rotation and the client should start sending
+     *       the new {@code kid}.</li>
+     * </ul>
+     *
+     * <p>Returns a response with an empty {@code keys} list when
+     * signing is disabled on the server.
+     *
+     * @throws ActeonException if the server returns a non-200 status
+     *         or the response cannot be parsed.
+     */
+    public SigningKeysResponse fetchSigningKeys() throws ActeonException {
+        HttpResponse<String> response;
+        try {
+            HttpRequest request = requestBuilder("/.well-known/acteon-signing-keys")
+                .GET()
+                .build();
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+
+        if (response.statusCode() != 200) {
+            throw new HttpException(response.statusCode(), "Failed to fetch signing keys");
+        }
+
+        // Wrap JSON parse errors so upstream callers see a typed
+        // "malformed response" signal instead of a raw Jackson
+        // exception — which is what they'd see if a proxy or
+        // waiting-room page returned 200 OK with an HTML body.
+        Map<String, Object> data;
+        try {
+            data = objectMapper.readValue(
+                response.body(),
+                new TypeReference<Map<String, Object>>() {}
+            );
+        } catch (IOException e) {
+            throw new ConnectionException(
+                "malformed signing keys response: " + e.getMessage(), e);
+        }
+
+        try {
+            return SigningKeysResponse.fromMap(data);
+        } catch (IllegalArgumentException e) {
+            // fromMap's helpers already prefix their messages with
+            // "malformed signing keys response:", so pass through.
+            throw new ConnectionException(e.getMessage(), e);
+        }
+    }
+
+    // =========================================================================
     // Action Dispatch
     // =========================================================================
 

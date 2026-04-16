@@ -8,6 +8,7 @@ import {
   parseWasmPlugin,
   parseListPluginsResponse,
   parsePluginInvocationResponse,
+  parseSigningKeysResponse,
   registerPluginRequestToApi,
   createEc2StartInstancesPayload,
   createEc2StopInstancesPayload,
@@ -570,5 +571,134 @@ describe("createAsgUpdateGroupPayload", () => {
     assert.equal(payload.default_cooldown, 300);
     assert.equal(payload.health_check_type, "ELB");
     assert.equal(payload.health_check_grace_period, 120);
+  });
+});
+
+describe("parseSigningKeysResponse", () => {
+  it("parses a full response with multiple keys", () => {
+    const raw = {
+      keys: [
+        {
+          signer_id: "ci-bot",
+          kid: "k1",
+          algorithm: "Ed25519",
+          public_key: "LZkUda4pibD+v4yfHrLyw9Dnt7OLa6PGzSRGOcN1c4o=",
+          tenants: ["acme"],
+          namespaces: ["prod", "staging"],
+        },
+        {
+          signer_id: "ci-bot",
+          kid: "k2",
+          algorithm: "Ed25519",
+          public_key: "BBBB",
+          tenants: ["acme"],
+          namespaces: ["prod", "staging"],
+        },
+      ],
+      count: 2,
+    };
+    const resp = parseSigningKeysResponse(raw);
+    assert.equal(resp.count, 2);
+    assert.equal(resp.keys.length, 2);
+    assert.equal(resp.keys[0].kid, "k1");
+    assert.equal(resp.keys[1].kid, "k2");
+    assert.deepEqual(resp.keys[0].namespaces, ["prod", "staging"]);
+  });
+
+  it("handles signing-disabled (empty keys) shape", () => {
+    const resp = parseSigningKeysResponse({ keys: [], count: 0 });
+    assert.equal(resp.count, 0);
+    assert.equal(resp.keys.length, 0);
+  });
+
+  it("derives count from keys.length when server omits it", () => {
+    // Defensive — the server always emits count today, but we
+    // shouldn't break if a minor server change ever drops it.
+    const resp = parseSigningKeysResponse({
+      keys: [
+        {
+          signer_id: "x",
+          kid: "k0",
+          algorithm: "Ed25519",
+          public_key: "AAAA",
+          tenants: ["*"],
+          namespaces: ["*"],
+        },
+      ],
+    });
+    assert.equal(resp.count, 1);
+  });
+
+  it("defaults missing tenants/namespaces to empty arrays", () => {
+    const resp = parseSigningKeysResponse({
+      keys: [
+        {
+          signer_id: "minimal",
+          kid: "k0",
+          algorithm: "Ed25519",
+          public_key: "AAAA",
+        },
+      ],
+      count: 1,
+    });
+    assert.deepEqual(resp.keys[0].tenants, []);
+    assert.deepEqual(resp.keys[0].namespaces, []);
+  });
+
+  it("throws on missing signer_id rather than coercing to 'undefined'", () => {
+    // The failure mode we're guarding against: `String(undefined)`
+    // yields the literal string `"undefined"`, which survives any
+    // `if (entry.signer_id)` check and lets garbage flow through
+    // the caller's code. Fail loudly instead.
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({
+          keys: [
+            {
+              kid: "k0",
+              algorithm: "Ed25519",
+              public_key: "AAAA",
+            },
+          ],
+        }),
+      /malformed signing keys response.*signer_id/,
+    );
+  });
+
+  it("throws when 'keys' is an object instead of an array", () => {
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({
+          keys: { notAnArray: true } as unknown as Array<Record<string, unknown>>,
+        }),
+      /malformed signing keys response.*'keys'/,
+    );
+  });
+
+  it("throws when count is a string instead of a number", () => {
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({ keys: [], count: "2" as unknown as number }),
+      /malformed signing keys response.*'count'/,
+    );
+  });
+
+  it("throws when a scope list contains non-string entries", () => {
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({
+          keys: [
+            {
+              signer_id: "ci-bot",
+              kid: "k0",
+              algorithm: "Ed25519",
+              public_key: "AAAA",
+              tenants: [1, 2, 3] as unknown as string[],
+              namespaces: ["*"],
+            },
+          ],
+        }),
+      /malformed signing keys response.*tenants/,
+    );
   });
 });

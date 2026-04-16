@@ -3461,3 +3461,108 @@ export function parseCoverageReport(data: Record<string, unknown>): CoverageRepo
     unmatched_rules: (data.unmatched_rules as string[]) ?? [],
   };
 }
+
+// =============================================================================
+// Signing key discovery
+// =============================================================================
+
+/** One verifying key in the server's active signing keyring. */
+export interface SigningKeyEntry {
+  signer_id: string;
+  kid: string;
+  algorithm: string;
+  /** Raw 32-byte Ed25519 public key, base64-encoded. */
+  public_key: string;
+  /** Tenant scopes this key is authorized for. `["*"]` means all. */
+  tenants: string[];
+  /** Namespace scopes this key is authorized for. `["*"]` means all. */
+  namespaces: string[];
+}
+
+/** Response body from `GET /.well-known/acteon-signing-keys`. */
+export interface SigningKeysResponse {
+  keys: SigningKeyEntry[];
+  /** Always equal to `keys.length`; mirrored from the server for
+   * callers who only want a count. */
+  count: number;
+}
+
+/** Parse a raw signing keys payload from the server.
+ *
+ * Tolerant of a missing `count` field: falls back to `keys.length`
+ * so a minor server-side shape change doesn't break client code.
+ *
+ * Strict about required string fields: a missing or null
+ * `signer_id`/`kid`/`algorithm`/`public_key` throws instead of
+ * coercing to `"undefined"` or `"null"` — a silently-bad string
+ * would sneak past `if (key.signer_id)` checks in caller code and
+ * let garbage flow downstream.
+ *
+ * @throws {Error} with a message beginning `malformed signing keys
+ *   response:` when the shape is invalid.
+ */
+export function parseSigningKeysResponse(
+  data: Record<string, unknown>,
+): SigningKeysResponse {
+  if (data.keys !== undefined && !Array.isArray(data.keys)) {
+    throw new Error(
+      `malformed signing keys response: 'keys' should be an array, got ${typeof data.keys}`,
+    );
+  }
+  const rawKeys = (data.keys as Array<Record<string, unknown>>) ?? [];
+  const keys: SigningKeyEntry[] = rawKeys.map((k, i) => ({
+    signer_id: requireString(k, "signer_id", i),
+    kid: requireString(k, "kid", i),
+    algorithm: requireString(k, "algorithm", i),
+    public_key: requireString(k, "public_key", i),
+    tenants: optionalStringList(k, "tenants", i),
+    namespaces: optionalStringList(k, "namespaces", i),
+  }));
+  if (data.count !== undefined && typeof data.count !== "number") {
+    throw new Error(
+      `malformed signing keys response: 'count' should be a number, got ${typeof data.count}`,
+    );
+  }
+  return {
+    keys,
+    count: typeof data.count === "number" ? data.count : keys.length,
+  };
+}
+
+function requireString(
+  entry: Record<string, unknown>,
+  field: string,
+  index: number,
+): string {
+  const value = entry[field];
+  if (typeof value !== "string") {
+    throw new Error(
+      `malformed signing keys response: keys[${index}].${field} should be a string, got ${value === null ? "null" : typeof value}`,
+    );
+  }
+  return value;
+}
+
+function optionalStringList(
+  entry: Record<string, unknown>,
+  field: string,
+  index: number,
+): string[] {
+  const value = entry[field];
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(
+      `malformed signing keys response: keys[${index}].${field} should be an array, got ${typeof value}`,
+    );
+  }
+  for (const item of value) {
+    if (typeof item !== "string") {
+      throw new Error(
+        `malformed signing keys response: keys[${index}].${field} contains non-string element of type ${typeof item}`,
+      );
+    }
+  }
+  return value as string[];
+}

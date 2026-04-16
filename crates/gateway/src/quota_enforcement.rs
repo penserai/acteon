@@ -301,7 +301,7 @@ impl Gateway {
 
         let mut incremented: Vec<Incremented> = Vec::with_capacity(prepared.len());
         let mut failure: Option<String> = None;
-        for (prep, res) in prepared.into_iter().zip(results.into_iter()) {
+        for (prep, res) in prepared.into_iter().zip(results) {
             match res {
                 Ok(new_count) => {
                     #[allow(clippy::cast_sign_loss)]

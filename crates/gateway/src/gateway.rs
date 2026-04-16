@@ -2777,13 +2777,11 @@ impl Gateway {
         if !is_new {
             // Step was previously dispatched. Reload chain state to check progress.
             let already_advanced = if let Some(json) = self.state.get(&chain_key).await? {
-                serde_json::from_str::<ChainState>(&json)
-                    .map(|fresh| {
-                        // For branching chains, check if the step result is already
-                        // recorded. For linear chains, the index check is sufficient.
-                        fresh.step_results[step_idx].is_some() || fresh.current_step != step_idx
-                    })
-                    .unwrap_or(false)
+                serde_json::from_str::<ChainState>(&json).is_ok_and(|fresh| {
+                    // For branching chains, check if the step result is already
+                    // recorded. For linear chains, the index check is sufficient.
+                    fresh.step_results[step_idx].is_some() || fresh.current_step != step_idx
+                })
             } else {
                 false
             };

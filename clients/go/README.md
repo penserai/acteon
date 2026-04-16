@@ -250,6 +250,7 @@ if err != nil {
 | `SetRuleEnabled(ctx, name, enabled)` | Enable/disable a rule |
 | `QueryAudit(ctx, query)` | Query audit records |
 | `GetAuditRecord(ctx, actionID)` | Get specific audit record |
+| `FetchSigningKeys(ctx)` | Fetch the server's active signing keyring (JWKS-style discovery) |
 
 ### Action Fields
 
