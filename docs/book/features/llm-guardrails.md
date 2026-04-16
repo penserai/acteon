@@ -147,3 +147,44 @@ Protect LLM-targeted actions from prompt injection:
     evaluator_name: "injection-detector"
     block_on_flag: true
 ```
+
+## Monitoring
+
+### Prometheus Metrics
+
+The guardrail emits three counters via `GET /metrics/prometheus`
+(and as JSON at `GET /metrics`):
+
+| Metric | Counted on |
+|---|---|
+| `acteon_llm_guardrail_allowed_total` | Evaluator returned `Allow` (action passes through) |
+| `acteon_llm_guardrail_denied_total` | Evaluator returned `Deny` or `Flag` + `block_on_flag=true` (action suppressed) |
+| `acteon_llm_guardrail_errors_total` | Evaluator errored — timeout, HTTP failure from the LLM, JSON parse error on the response, etc. |
+
+**Grafana.** The bundled `acteon-overview` dashboard has an
+"LLM Guardrail" row with a decisions rate timeseries and a stat
+panel for the totals.
+
+**What to alert on.** A rising `errors` rate means the evaluator
+is failing and the guardrail's fail-open/fail-closed policy
+(configured server-side) is kicking in — either the LLM is
+unhealthy or the rule is misconfigured:
+
+```promql
+rate(acteon_llm_guardrail_errors_total[5m]) > 0.1
+```
+
+A high deny ratio on rules that aren't supposed to fire often is
+usually a sign of a prompt-injection probe run or a misconfigured
+evaluator flagging legitimate traffic:
+
+```promql
+rate(acteon_llm_guardrail_denied_total[5m])
+  /
+(rate(acteon_llm_guardrail_allowed_total[5m]) + rate(acteon_llm_guardrail_denied_total[5m])) > 0.2
+```
+
+Treat sustained non-zero `denied` on rules targeting external
+input surfaces (public webhooks, customer-facing dispatch) as a
+security signal worth paging on, since prompt-injection attempts
+will show up here first.

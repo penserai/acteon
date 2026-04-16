@@ -591,13 +591,41 @@ The drawer includes **Pause/Resume** and **Delete** buttons.
 
 ### Prometheus Metrics
 
-Recurring action processing exports the following metrics via the `GET /health` endpoint:
+Recurring action processing exports three counters via
+`GET /metrics/prometheus` (and as JSON at `GET /metrics`):
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `recurring_dispatched` | Counter | Total recurring action occurrences dispatched |
-| `recurring_active` | Gauge | Currently active recurring actions |
-| `recurring_errors` | Counter | Failed recurring action dispatches |
+| Metric | Counted on |
+|---|---|
+| `acteon_recurring_dispatched_total` | Every successful recurring occurrence dispatched through the gateway |
+| `acteon_recurring_errors_total` | Dispatch failures — cron parse error, state store unavailable, claim refused for a genuine reason, etc. |
+| `acteon_recurring_skipped_total` | Occurrences skipped because another replica claimed them first (normal behavior under the CAS claim pattern — **not** an error signal) |
+
+**Grafana.** The bundled `acteon-overview` dashboard has a
+"Recurring Actions" row with a rate timeseries and a stat panel
+for the totals.
+
+**What to alert on.** A sustained error rate is the primary
+signal:
+
+```promql
+rate(acteon_recurring_errors_total[5m]) > 0.1
+```
+
+A drop in dispatch rate when recurring actions are configured
+often means the background processor is wedged — the claim TTL
+(120s) expired without progress. Compare the dispatched rate
+against the count of active recurring actions from
+`GET /v1/recurring`:
+
+```promql
+rate(acteon_recurring_dispatched_total[5m]) == 0
+```
+
+**Do not alert on `acteon_recurring_skipped_total`**: it fires
+every time a second replica loses the CAS race to claim an
+occurrence, which is the happy path in multi-replica deployments.
+Skipped > dispatched is normal if you run many replicas and few
+recurring actions. Use it as a capacity signal, not a health one.
 
 ### Structured Logging
 

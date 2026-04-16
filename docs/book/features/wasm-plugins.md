@@ -735,15 +735,41 @@ verdict, message, execution duration, and memory usage.
 
 ### Prometheus Metrics
 
-WASM plugin operations export the following metrics:
+WASM plugin operations export two counters via
+`GET /metrics/prometheus` (and as JSON at `GET /metrics`):
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `wasm_invocations_total` | Counter | Total WASM plugin invocations |
-| `wasm_invocation_errors` | Counter | Failed invocations (timeouts, memory exceeded, etc.) |
-| `wasm_invocation_duration_us` | Histogram | Invocation latency distribution |
-| `wasm_plugins_registered` | Gauge | Currently registered plugins |
-| `wasm_memory_used_bytes` | Gauge | Total memory allocated across all plugins |
+| Metric | Counted on |
+|---|---|
+| `acteon_wasm_invocations_total` | Every successful WASM plugin invocation from a rule's `WasmCall` expression |
+| `acteon_wasm_errors_total` | Invocation failures — timeouts, memory-limit exceeded, JSON decode errors on the plugin's return value, or any other runtime fault |
+
+**Grafana.** The bundled `acteon-overview` dashboard has a "WASM
+Plugins" row with a time-series panel of the invocation + error
+rates and a stat panel for the totals.
+
+**What to alert on.** A sustained error rate is the primary
+signal — a plugin that started timing out or blowing past its
+memory limit will spike `acteon_wasm_errors_total` cleanly:
+
+```promql
+rate(acteon_wasm_errors_total[5m]) > 0.1
+```
+
+Error ratio (errors as a fraction of total invocations) catches
+the less obvious case where invocations keep flowing but more of
+them are failing — typical of a plugin that's crept past its fuel
+budget after a dependency update:
+
+```promql
+rate(acteon_wasm_errors_total[5m])
+  /
+rate(acteon_wasm_invocations_total[5m]) > 0.05
+```
+
+A sudden drop in invocation rate when rule traffic is steady
+often means a plugin was unloaded or a rule using `WasmCall` was
+disabled — worth a warning-level alert if the expected baseline is
+well-known.
 
 ### Structured Logging
 
