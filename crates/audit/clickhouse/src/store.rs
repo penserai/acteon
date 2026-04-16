@@ -318,7 +318,7 @@ impl AuditStore for ClickHouseAuditStore {
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Option<AuditRecord>, AuditError> {
-        let sql = format!("SELECT {SELECT_COLUMNS} FROM {} WHERE id = ?", self.table,);
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM {} WHERE id = ?", self.table);
 
         let rows = self
             .client

@@ -161,7 +161,7 @@ fn build_top_entries(
     top_n: usize,
 ) -> Vec<AnalyticsTopEntry> {
     let mut entries: Vec<(String, u64)> = top_counts.into_iter().collect();
-    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     entries.truncate(top_n);
     entries
         .into_iter()
