@@ -2171,3 +2171,28 @@ type CoverageReport struct {
 	Entries            []CoverageEntry `json:"entries"`
 	UnmatchedRules     []string        `json:"unmatched_rules"`
 }
+
+// SigningKeyEntry is one verifying key in the server's active
+// signing keyring. Mirrors the shape returned by
+// GET /.well-known/acteon-signing-keys.
+type SigningKeyEntry struct {
+	SignerID  string `json:"signer_id"`
+	Kid       string `json:"kid"`
+	Algorithm string `json:"algorithm"`
+	// PublicKey is a raw 32-byte Ed25519 public key, base64-encoded.
+	PublicKey string `json:"public_key"`
+	// Tenants scope. ["*"] means all tenants.
+	Tenants []string `json:"tenants"`
+	// Namespaces scope. ["*"] means all namespaces.
+	Namespaces []string `json:"namespaces"`
+}
+
+// SigningKeysResponse is the body returned by the JWKS-style
+// signing key discovery endpoint. Keys is empty when signing is
+// disabled on the server.
+type SigningKeysResponse struct {
+	Keys []SigningKeyEntry `json:"keys"`
+	// Count is always equal to len(Keys); mirrored from the server
+	// for callers who only want a count.
+	Count int `json:"count"`
+}

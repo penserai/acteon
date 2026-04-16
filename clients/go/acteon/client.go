@@ -150,6 +150,42 @@ func (c *Client) Health(ctx context.Context) (bool, error) {
 	return resp.StatusCode == http.StatusOK, nil
 }
 
+// FetchSigningKeys returns the server's active signing keyring.
+//
+// Hits GET /.well-known/acteon-signing-keys, a public, unauthenticated
+// endpoint that publishes the public half of every (signer_id, kid)
+// pair the server will accept signatures from. Useful for:
+//   - verifying dispatched actions independently without pinning
+//     public keys at deploy time
+//   - detecting a rotation in progress (a signer with more than one
+//     entry means the operator is staging a rotation and the client
+//     should start sending the new kid).
+//
+// Returns a response with an empty Keys slice when signing is
+// disabled on the server.
+func (c *Client) FetchSigningKeys(ctx context.Context) (*SigningKeysResponse, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/.well-known/acteon-signing-keys", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Status: resp.StatusCode, Message: "failed to fetch signing keys"}
+	}
+
+	var out SigningKeysResponse
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	return &out, nil
+}
+
 // Dispatch dispatches a single action.
 func (c *Client) Dispatch(ctx context.Context, action *Action) (*ActionOutcome, error) {
 	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/dispatch", action)

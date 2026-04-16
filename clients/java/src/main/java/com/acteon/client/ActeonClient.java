@@ -195,6 +195,57 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Signing key discovery (JWKS-style)
+    // =========================================================================
+
+    /**
+     * Fetches the server's active signing keyring.
+     *
+     * <p>Calls {@code GET /.well-known/acteon-signing-keys}, a public,
+     * unauthenticated endpoint that publishes the public half of
+     * every {@code (signer_id, kid)} pair the server will accept
+     * signatures from. Useful for:
+     *
+     * <ul>
+     *   <li>verifying dispatched actions independently without pinning
+     *       public keys at deploy time, or</li>
+     *   <li>detecting a rotation in progress — a signer with more
+     *       than one entry in the response means the operator is
+     *       staging a rotation and the client should start sending
+     *       the new {@code kid}.</li>
+     * </ul>
+     *
+     * <p>Returns a response with an empty {@code keys} list when
+     * signing is disabled on the server.
+     *
+     * @throws ActeonException if the server returns a non-200 status
+     *         or the response cannot be parsed.
+     */
+    public SigningKeysResponse fetchSigningKeys() throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder("/.well-known/acteon-signing-keys")
+                .GET()
+                .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+            if (response.statusCode() == 200) {
+                Map<String, Object> data = objectMapper.readValue(
+                    response.body(),
+                    new TypeReference<Map<String, Object>>() {}
+                );
+                return SigningKeysResponse.fromMap(data);
+            } else {
+                throw new HttpException(response.statusCode(), "Failed to fetch signing keys");
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Action Dispatch
     // =========================================================================
 

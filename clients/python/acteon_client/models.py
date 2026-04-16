@@ -3959,3 +3959,48 @@ class CoverageReport:
             entries=[CoverageEntry.from_dict(e) for e in data.get("entries", [])],
             unmatched_rules=data.get("unmatched_rules", []),
         )
+
+
+@dataclass
+class SigningKeyEntry:
+    """One verifying key entry in the server's active signing keyring.
+
+    Mirrors the response shape of
+    ``GET /.well-known/acteon-signing-keys``.
+    """
+
+    signer_id: str
+    kid: str
+    algorithm: str
+    public_key: str  # base64-encoded raw 32-byte Ed25519 public key
+    tenants: list[str]
+    namespaces: list[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SigningKeyEntry":
+        return cls(
+            signer_id=data["signer_id"],
+            kid=data["kid"],
+            algorithm=data["algorithm"],
+            public_key=data["public_key"],
+            tenants=list(data.get("tenants", [])),
+            namespaces=list(data.get("namespaces", [])),
+        )
+
+
+@dataclass
+class SigningKeysResponse:
+    """Response body from the JWKS-style signing key discovery endpoint.
+
+    ``keys`` is empty when signing is disabled on the server. The
+    server also returns a ``count`` field we preserve as a
+    convenience, but it is always equal to ``len(keys)``.
+    """
+
+    keys: list[SigningKeyEntry]
+    count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SigningKeysResponse":
+        keys = [SigningKeyEntry.from_dict(k) for k in data.get("keys", [])]
+        return cls(keys=keys, count=int(data.get("count", len(keys))))

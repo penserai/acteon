@@ -93,6 +93,8 @@ from .models import (
     CoverageEntry,
     CoverageQuery,
     CoverageReport,
+    SigningKeyEntry,
+    SigningKeysResponse,
 )
 
 
@@ -202,6 +204,37 @@ class ActeonClient:
             return response.status_code == 200
         except ConnectionError:
             return False
+
+    # =========================================================================
+    # Signing key discovery (JWKS-style)
+    # =========================================================================
+
+    def fetch_signing_keys(self) -> SigningKeysResponse:
+        """Fetch the server's active signing keyring.
+
+        Calls ``GET /.well-known/acteon-signing-keys``, a public,
+        unauthenticated endpoint that publishes the public half of
+        every ``(signer_id, kid)`` pair the server will accept
+        signatures from. Callers use this to:
+
+        - verify dispatched actions independently without pinning
+          public keys at deploy time, or
+        - detect a rotation in progress (a signer with more than one
+          entry in the response means the operator is staging a
+          rotation and the client should start sending the new
+          ``kid``).
+
+        Returns an empty ``keys`` list when signing is disabled on
+        the server.
+
+        Raises:
+            ConnectionError: If unable to connect to the server.
+            HttpError: If the server returns a non-200 status.
+        """
+        response = self._request("GET", "/.well-known/acteon-signing-keys")
+        if response.status_code == 200:
+            return SigningKeysResponse.from_dict(response.json())
+        raise HttpError(response.status_code, "Failed to fetch signing keys")
 
     # =========================================================================
     # Action Dispatch
@@ -2594,6 +2627,18 @@ class AsyncActeonClient:
             return response.status_code == 200
         except ConnectionError:
             return False
+
+    async def fetch_signing_keys(self) -> SigningKeysResponse:
+        """Fetch the server's active signing keyring.
+
+        See :meth:`ActeonClient.fetch_signing_keys` for the full
+        description — this is the async counterpart with identical
+        semantics.
+        """
+        response = await self._request("GET", "/.well-known/acteon-signing-keys")
+        if response.status_code == 200:
+            return SigningKeysResponse.from_dict(response.json())
+        raise HttpError(response.status_code, "Failed to fetch signing keys")
 
     async def dispatch(
         self, action: Action, *, dry_run: bool = False

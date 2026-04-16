@@ -3461,3 +3461,51 @@ export function parseCoverageReport(data: Record<string, unknown>): CoverageRepo
     unmatched_rules: (data.unmatched_rules as string[]) ?? [],
   };
 }
+
+// =============================================================================
+// Signing key discovery
+// =============================================================================
+
+/** One verifying key in the server's active signing keyring. */
+export interface SigningKeyEntry {
+  signer_id: string;
+  kid: string;
+  algorithm: string;
+  /** Raw 32-byte Ed25519 public key, base64-encoded. */
+  public_key: string;
+  /** Tenant scopes this key is authorized for. `["*"]` means all. */
+  tenants: string[];
+  /** Namespace scopes this key is authorized for. `["*"]` means all. */
+  namespaces: string[];
+}
+
+/** Response body from `GET /.well-known/acteon-signing-keys`. */
+export interface SigningKeysResponse {
+  keys: SigningKeyEntry[];
+  /** Always equal to `keys.length`; mirrored from the server for
+   * callers who only want a count. */
+  count: number;
+}
+
+/** Parse a raw signing keys payload from the server.
+ *
+ * Tolerant of a missing `count` field: falls back to `keys.length`
+ * so a minor server-side shape change doesn't break client code.
+ */
+export function parseSigningKeysResponse(
+  data: Record<string, unknown>,
+): SigningKeysResponse {
+  const rawKeys = (data.keys as Array<Record<string, unknown>>) ?? [];
+  const keys: SigningKeyEntry[] = rawKeys.map((k) => ({
+    signer_id: String(k.signer_id),
+    kid: String(k.kid),
+    algorithm: String(k.algorithm),
+    public_key: String(k.public_key),
+    tenants: (k.tenants as string[]) ?? [],
+    namespaces: (k.namespaces as string[]) ?? [],
+  }));
+  return {
+    keys,
+    count: typeof data.count === "number" ? data.count : keys.length,
+  };
+}

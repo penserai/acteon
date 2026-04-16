@@ -435,3 +435,48 @@ let outcome = client.dispatch_signed(&action, &key).await?;
 ## Polyglot SDKs
 
 The Python, Node.js, Go, and Java SDKs carry `signature` and `signer_id` as optional fields on the Action model for passthrough to the server. Client-side signing is not implemented in the polyglot SDKs — sign on the server side or use the Rust client.
+
+### Discovery endpoint helper
+
+All four polyglot SDKs (plus the Rust client) expose a
+`fetch_signing_keys()` / `fetchSigningKeys()` / `FetchSigningKeys()`
+method that hits `GET /.well-known/acteon-signing-keys` and returns
+the parsed keyring. Use it to verify dispatched actions
+independently, or to detect a rotation in progress — when a signer
+has more than one entry, the operator is staging a new key and
+clients should start sending the new `kid`.
+
+```python
+# Python
+resp = client.fetch_signing_keys()
+for key in resp.keys:
+    print(f"{key.signer_id}/{key.kid}: {key.public_key}")
+```
+
+```typescript
+// Node.js
+const resp = await client.fetchSigningKeys();
+for (const key of resp.keys) {
+  console.log(`${key.signer_id}/${key.kid}: ${key.public_key}`);
+}
+```
+
+```go
+// Go
+resp, err := client.FetchSigningKeys(ctx)
+if err != nil { /* ... */ }
+for _, k := range resp.Keys {
+    fmt.Printf("%s/%s: %s\n", k.SignerID, k.Kid, k.PublicKey)
+}
+```
+
+```java
+// Java
+SigningKeysResponse resp = client.fetchSigningKeys();
+for (SigningKeyEntry key : resp.getKeys()) {
+    System.out.printf("%s/%s: %s%n", key.getSignerId(), key.getKid(), key.getPublicKey());
+}
+```
+
+The response has an empty `keys` list when signing is disabled on
+the server.

@@ -737,3 +737,61 @@ func TestNewAsgUpdateGroupPayloadWithOptions(t *testing.T) {
 		t.Errorf("expected health_check_grace_period 120, got %v", p["health_check_grace_period"])
 	}
 }
+
+func TestSigningKeysResponseUnmarshal(t *testing.T) {
+	body := []byte(`{
+		"keys": [
+			{
+				"signer_id": "ci-bot",
+				"kid": "k1",
+				"algorithm": "Ed25519",
+				"public_key": "LZkUda4pibD+v4yfHrLyw9Dnt7OLa6PGzSRGOcN1c4o=",
+				"tenants": ["acme"],
+				"namespaces": ["prod", "staging"]
+			},
+			{
+				"signer_id": "ci-bot",
+				"kid": "k2",
+				"algorithm": "Ed25519",
+				"public_key": "BBBB",
+				"tenants": ["acme"],
+				"namespaces": ["prod", "staging"]
+			}
+		],
+		"count": 2
+	}`)
+
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Count != 2 {
+		t.Errorf("count: got %d, want 2", resp.Count)
+	}
+	if len(resp.Keys) != 2 {
+		t.Fatalf("keys: got %d, want 2", len(resp.Keys))
+	}
+	if resp.Keys[0].SignerID != "ci-bot" || resp.Keys[0].Kid != "k1" {
+		t.Errorf("keys[0]: got %+v", resp.Keys[0])
+	}
+	if resp.Keys[1].Kid != "k2" {
+		t.Errorf("keys[1] kid: got %q", resp.Keys[1].Kid)
+	}
+	if resp.Keys[0].Algorithm != "Ed25519" {
+		t.Errorf("algorithm: got %q", resp.Keys[0].Algorithm)
+	}
+}
+
+func TestSigningKeysResponseEmptyWhenDisabled(t *testing.T) {
+	// Server emits {"keys": [], "count": 0} when [signing].enabled
+	// is false — the client should round-trip that cleanly rather
+	// than requiring callers to special-case a missing "keys" field.
+	body := []byte(`{"keys": [], "count": 0}`)
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Count != 0 || len(resp.Keys) != 0 {
+		t.Errorf("expected empty response, got count=%d keys=%d", resp.Count, len(resp.Keys))
+	}
+}
