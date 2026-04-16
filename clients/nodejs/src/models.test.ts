@@ -644,4 +644,61 @@ describe("parseSigningKeysResponse", () => {
     assert.deepEqual(resp.keys[0].tenants, []);
     assert.deepEqual(resp.keys[0].namespaces, []);
   });
+
+  it("throws on missing signer_id rather than coercing to 'undefined'", () => {
+    // The failure mode we're guarding against: `String(undefined)`
+    // yields the literal string `"undefined"`, which survives any
+    // `if (entry.signer_id)` check and lets garbage flow through
+    // the caller's code. Fail loudly instead.
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({
+          keys: [
+            {
+              kid: "k0",
+              algorithm: "Ed25519",
+              public_key: "AAAA",
+            },
+          ],
+        }),
+      /malformed signing keys response.*signer_id/,
+    );
+  });
+
+  it("throws when 'keys' is an object instead of an array", () => {
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({
+          keys: { notAnArray: true } as unknown as Array<Record<string, unknown>>,
+        }),
+      /malformed signing keys response.*'keys'/,
+    );
+  });
+
+  it("throws when count is a string instead of a number", () => {
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({ keys: [], count: "2" as unknown as number }),
+      /malformed signing keys response.*'count'/,
+    );
+  });
+
+  it("throws when a scope list contains non-string entries", () => {
+    assert.throws(
+      () =>
+        parseSigningKeysResponse({
+          keys: [
+            {
+              signer_id: "ci-bot",
+              kid: "k0",
+              algorithm: "Ed25519",
+              public_key: "AAAA",
+              tenants: [1, 2, 3] as unknown as string[],
+              namespaces: ["*"],
+            },
+          ],
+        }),
+      /malformed signing keys response.*tenants/,
+    );
+  });
 });

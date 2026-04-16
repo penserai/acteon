@@ -222,26 +222,44 @@ public class ActeonClient implements AutoCloseable {
      *         or the response cannot be parsed.
      */
     public SigningKeysResponse fetchSigningKeys() throws ActeonException {
+        HttpResponse<String> response;
         try {
             HttpRequest request = requestBuilder("/.well-known/acteon-signing-keys")
                 .GET()
                 .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-            if (response.statusCode() == 200) {
-                Map<String, Object> data = objectMapper.readValue(
-                    response.body(),
-                    new TypeReference<Map<String, Object>>() {}
-                );
-                return SigningKeysResponse.fromMap(data);
-            } else {
-                throw new HttpException(response.statusCode(), "Failed to fetch signing keys");
-            }
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
             throw new ConnectionException(e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ConnectionException("Request interrupted", e);
+        }
+
+        if (response.statusCode() != 200) {
+            throw new HttpException(response.statusCode(), "Failed to fetch signing keys");
+        }
+
+        // Wrap JSON parse errors so upstream callers see a typed
+        // "malformed response" signal instead of a raw Jackson
+        // exception — which is what they'd see if a proxy or
+        // waiting-room page returned 200 OK with an HTML body.
+        Map<String, Object> data;
+        try {
+            data = objectMapper.readValue(
+                response.body(),
+                new TypeReference<Map<String, Object>>() {}
+            );
+        } catch (IOException e) {
+            throw new ConnectionException(
+                "malformed signing keys response: " + e.getMessage(), e);
+        }
+
+        try {
+            return SigningKeysResponse.fromMap(data);
+        } catch (IllegalArgumentException e) {
+            // fromMap's helpers already prefix their messages with
+            // "malformed signing keys response:", so pass through.
+            throw new ConnectionException(e.getMessage(), e);
         }
     }
 

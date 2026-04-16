@@ -42,19 +42,83 @@ public class SigningKeyEntry {
     public List<String> getNamespaces() { return namespaces; }
     public void setNamespaces(List<String> namespaces) { this.namespaces = namespaces; }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Build a {@code SigningKeyEntry} from a generic {@code Map}
+     * decoded by Jackson. Throws {@link IllegalArgumentException} on
+     * missing or wrong-typed required fields so callers see a clear
+     * "malformed response" error instead of a raw
+     * {@link ClassCastException} bubbling from deep inside the
+     * parser.
+     *
+     * <p>Kept as a static factory (rather than annotated Jackson
+     * deserialization) so this class matches the {@code fromMap}
+     * convention used by every other model in this SDK (see
+     * {@link ProviderHealthStatus}, {@link ActionOutcome}, etc).
+     * A codebase-wide migration to annotated deserialization is a
+     * separate concern.
+     */
     public static SigningKeyEntry fromMap(Map<String, Object> data) {
         SigningKeyEntry entry = new SigningKeyEntry();
-        entry.signerId = (String) data.get("signer_id");
-        entry.kid = (String) data.get("kid");
-        entry.algorithm = (String) data.get("algorithm");
-        entry.publicKey = (String) data.get("public_key");
-        entry.tenants = data.containsKey("tenants") && data.get("tenants") != null
-            ? new ArrayList<>((List<String>) data.get("tenants"))
-            : new ArrayList<>();
-        entry.namespaces = data.containsKey("namespaces") && data.get("namespaces") != null
-            ? new ArrayList<>((List<String>) data.get("namespaces"))
-            : new ArrayList<>();
+        entry.signerId = requireString(data, "signer_id");
+        entry.kid = requireString(data, "kid");
+        entry.algorithm = requireString(data, "algorithm");
+        entry.publicKey = requireString(data, "public_key");
+        entry.tenants = optionalStringList(data, "tenants");
+        entry.namespaces = optionalStringList(data, "namespaces");
         return entry;
+    }
+
+    /**
+     * Pull a required string field out of a raw JSON map. Missing,
+     * null, and wrong-type values all surface as a
+     * {@link IllegalArgumentException} with the offending field name
+     * included so an operator can tell from the message exactly
+     * which part of the response was malformed.
+     */
+    static String requireString(Map<String, Object> data, String field) {
+        Object value = data.get(field);
+        if (value == null) {
+            throw new IllegalArgumentException(
+                "malformed signing keys response: missing required string field '" + field + "'"
+            );
+        }
+        if (!(value instanceof String)) {
+            throw new IllegalArgumentException(
+                "malformed signing keys response: field '" + field
+                    + "' should be a string, got " + value.getClass().getSimpleName()
+            );
+        }
+        return (String) value;
+    }
+
+    /**
+     * Read an optional scope list. Missing or null becomes an empty
+     * list (distinguishable from the wildcard {@code ["*"]} shape
+     * the server emits when no scope is configured). Wrong shape
+     * (e.g. an object, a number, or a list of non-strings) is a
+     * malformed response, not silently coerced.
+     */
+    @SuppressWarnings("unchecked")
+    static List<String> optionalStringList(Map<String, Object> data, String field) {
+        Object value = data.get(field);
+        if (value == null) {
+            return new ArrayList<>();
+        }
+        if (!(value instanceof List<?>)) {
+            throw new IllegalArgumentException(
+                "malformed signing keys response: field '" + field
+                    + "' should be a list, got " + value.getClass().getSimpleName()
+            );
+        }
+        List<?> raw = (List<?>) value;
+        for (Object item : raw) {
+            if (item != null && !(item instanceof String)) {
+                throw new IllegalArgumentException(
+                    "malformed signing keys response: field '" + field
+                        + "' contains non-string element of type " + item.getClass().getSimpleName()
+                );
+            }
+        }
+        return new ArrayList<>((List<String>) raw);
     }
 }

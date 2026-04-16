@@ -85,6 +85,16 @@ class TestSigningKeysResponse(unittest.TestCase):
         resp = SigningKeysResponse.from_dict({"keys": []})
         self.assertEqual(resp.count, 0)
 
+    def test_from_dict_handles_missing_keys_field(self):
+        # Covers the path where a minor server change drops the
+        # `keys` field entirely. We fall back to an empty list
+        # rather than raising, because a sparse response is a
+        # recoverable state — callers that loop over `resp.keys`
+        # simply find nothing to verify against.
+        resp = SigningKeysResponse.from_dict({})
+        self.assertEqual(resp.keys, [])
+        self.assertEqual(resp.count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

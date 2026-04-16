@@ -170,7 +170,13 @@ func (c *Client) FetchSigningKeys(ctx context.Context) (*SigningKeysResponse, er
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Cap the response body. The endpoint is public (no auth) so a
+	// malicious or misconfigured upstream could return an arbitrarily
+	// large payload and trigger an OOM in the client. A real keyring
+	// is tens-to-hundreds of bytes per entry; 1MB is three orders of
+	// magnitude of headroom.
+	const maxSigningKeysResponseBytes = 1 << 20 // 1 MiB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSigningKeysResponseBytes))
 	if err != nil {
 		return nil, &ConnectionError{Message: err.Error()}
 	}
@@ -181,7 +187,23 @@ func (c *Client) FetchSigningKeys(ctx context.Context) (*SigningKeysResponse, er
 
 	var out SigningKeysResponse
 	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, &ConnectionError{Message: err.Error()}
+		// Wrap the raw json.Unmarshal error so upstream callers get a
+		// clear "malformed response" signal instead of a cryptic
+		// "invalid character '<' looking for beginning of value" —
+		// which is what they'd see if a proxy or waiting-room page
+		// returned 200 OK with an HTML body.
+		return nil, &ConnectionError{
+			Message: "malformed signing keys response: " + err.Error(),
+		}
+	}
+
+	// Match the defensive posture of the other SDKs: when the server
+	// omits `count` (or sends count=0 with a non-empty keys array
+	// due to a shape drift), derive it from len(Keys). The server
+	// always emits count today — this is belt-and-braces against a
+	// future minor change.
+	if out.Count == 0 && len(out.Keys) > 0 {
+		out.Count = len(out.Keys)
 	}
 	return &out, nil
 }

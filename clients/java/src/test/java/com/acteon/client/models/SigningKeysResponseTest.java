@@ -91,4 +91,96 @@ class SigningKeysResponseTest {
         assertTrue(entry.getTenants().isEmpty());
         assertTrue(entry.getNamespaces().isEmpty());
     }
+
+    @Test
+    void testEntryThrowsOnMissingRequiredField() {
+        // The fromMap used to do `(String) data.get("signer_id")`
+        // which returned null silently, letting the null flow into
+        // caller business logic. Now it throws a clear error.
+        Map<String, Object> key = new HashMap<>();
+        // signer_id deliberately omitted
+        key.put("kid", "k0");
+        key.put("algorithm", "Ed25519");
+        key.put("public_key", "AAAA");
+
+        IllegalArgumentException ex = assertThrows(
+            IllegalArgumentException.class,
+            () -> SigningKeyEntry.fromMap(key)
+        );
+        assertTrue(ex.getMessage().contains("signer_id"),
+            "error should name the missing field: " + ex.getMessage());
+        assertTrue(ex.getMessage().contains("malformed signing keys response"),
+            "error should identify itself as a malformed response: " + ex.getMessage());
+    }
+
+    @Test
+    void testEntryThrowsOnWrongTypedField() {
+        // The old unchecked cast `(String) data.get("kid")` would
+        // throw ClassCastException with no useful context when the
+        // server sent a number. Now we throw a typed error that
+        // names the offending field and its actual type.
+        Map<String, Object> key = new HashMap<>();
+        key.put("signer_id", "ci-bot");
+        key.put("kid", 42); // wrong type
+        key.put("algorithm", "Ed25519");
+        key.put("public_key", "AAAA");
+
+        IllegalArgumentException ex = assertThrows(
+            IllegalArgumentException.class,
+            () -> SigningKeyEntry.fromMap(key)
+        );
+        assertTrue(ex.getMessage().contains("kid"));
+        assertTrue(ex.getMessage().contains("should be a string"));
+    }
+
+    @Test
+    void testResponseThrowsWhenKeysIsNotArray() {
+        // Guards the `(List<Map<String,Object>>) data.get("keys")`
+        // cast — without the shape check, a server bug that sent
+        // an object instead of an array would become a
+        // ClassCastException deep in the caller.
+        Map<String, Object> data = new HashMap<>();
+        data.put("keys", "not an array");
+        data.put("count", 0);
+
+        IllegalArgumentException ex = assertThrows(
+            IllegalArgumentException.class,
+            () -> SigningKeysResponse.fromMap(data)
+        );
+        assertTrue(ex.getMessage().contains("'keys'"));
+    }
+
+    @Test
+    void testResponseThrowsWhenCountIsWrongType() {
+        // count="2" (string) used to be silently cast via (Number)
+        // and throw ClassCastException. Now the error is typed.
+        Map<String, Object> data = new HashMap<>();
+        data.put("keys", Collections.emptyList());
+        data.put("count", "2");
+
+        IllegalArgumentException ex = assertThrows(
+            IllegalArgumentException.class,
+            () -> SigningKeysResponse.fromMap(data)
+        );
+        assertTrue(ex.getMessage().contains("'count'"));
+    }
+
+    @Test
+    void testEntryThrowsOnNonStringScopeElement() {
+        // Unchecked cast would let `[1, 2, 3]` sail through and
+        // explode when callers iterate the list expecting strings.
+        Map<String, Object> key = new HashMap<>();
+        key.put("signer_id", "ci-bot");
+        key.put("kid", "k1");
+        key.put("algorithm", "Ed25519");
+        key.put("public_key", "AAAA");
+        key.put("tenants", List.of(1, 2, 3));
+
+        IllegalArgumentException ex = assertThrows(
+            IllegalArgumentException.class,
+            () -> SigningKeyEntry.fromMap(key)
+        );
+        assertTrue(ex.getMessage().contains("tenants"));
+        assertTrue(ex.getMessage().contains("non-string"));
+    }
 }

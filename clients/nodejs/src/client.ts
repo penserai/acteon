@@ -321,14 +321,34 @@ export class ActeonClient {
       "GET",
       "/.well-known/acteon-signing-keys",
     );
-    const data = (await response.json()) as Record<string, unknown>;
-    if (response.ok) {
-      return parseSigningKeysResponse(data);
+    if (!response.ok) {
+      throw new HttpError(
+        response.status,
+        `Failed to fetch signing keys: ${response.status}`,
+      );
     }
-    throw new HttpError(
-      response.status,
-      `Failed to fetch signing keys: ${response.status}`,
-    );
+    // Wrap both JSON decode failures (proxy returns 200 OK with an
+    // HTML body) and shape validation failures from
+    // parseSigningKeysResponse in a typed ConnectionError so
+    // callers see "malformed signing keys response" instead of a
+    // raw SyntaxError.
+    let data: Record<string, unknown>;
+    try {
+      data = (await response.json()) as Record<string, unknown>;
+    } catch (e) {
+      throw new ConnectionError(
+        `malformed signing keys response: ${(e as Error).message}`,
+      );
+    }
+    try {
+      return parseSigningKeysResponse(data);
+    } catch (e) {
+      // parseSigningKeysResponse throws plain Errors with a
+      // "malformed signing keys response:" prefix; rewrap as a
+      // typed ConnectionError so `catch (e: ConnectionError)`
+      // works on the caller side.
+      throw new ConnectionError((e as Error).message);
+    }
   }
 
   // =========================================================================

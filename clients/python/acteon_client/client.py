@@ -228,13 +228,25 @@ class ActeonClient:
         the server.
 
         Raises:
-            ConnectionError: If unable to connect to the server.
+            ConnectionError: If unable to connect or the server
+                returned a malformed (non-JSON) body under a 200
+                status — which can happen when a proxy or
+                waiting-room page intercepts the request.
             HttpError: If the server returns a non-200 status.
         """
         response = self._request("GET", "/.well-known/acteon-signing-keys")
-        if response.status_code == 200:
+        if response.status_code != 200:
+            raise HttpError(response.status_code, "Failed to fetch signing keys")
+        try:
             return SigningKeysResponse.from_dict(response.json())
-        raise HttpError(response.status_code, "Failed to fetch signing keys")
+        except ValueError as e:
+            # httpx raises JSONDecodeError (a ValueError subclass)
+            # when the 200 body isn't JSON. Rewrap so callers get a
+            # typed "malformed response" signal instead of a raw
+            # JSON decode error.
+            raise ConnectionError(
+                f"malformed signing keys response: {e}"
+            ) from e
 
     # =========================================================================
     # Action Dispatch
@@ -2636,9 +2648,14 @@ class AsyncActeonClient:
         semantics.
         """
         response = await self._request("GET", "/.well-known/acteon-signing-keys")
-        if response.status_code == 200:
+        if response.status_code != 200:
+            raise HttpError(response.status_code, "Failed to fetch signing keys")
+        try:
             return SigningKeysResponse.from_dict(response.json())
-        raise HttpError(response.status_code, "Failed to fetch signing keys")
+        except ValueError as e:
+            raise ConnectionError(
+                f"malformed signing keys response: {e}"
+            ) from e
 
     async def dispatch(
         self, action: Action, *, dry_run: bool = False

@@ -795,3 +795,40 @@ func TestSigningKeysResponseEmptyWhenDisabled(t *testing.T) {
 		t.Errorf("expected empty response, got count=%d keys=%d", resp.Count, len(resp.Keys))
 	}
 }
+
+// The client method applies a defensive fallback (Count = len(Keys)
+// when the server omits count) to keep behavior consistent with
+// Python/Node/Java. Verify that a raw `json.Unmarshal` followed by
+// the client-side normalisation matches that posture.
+func TestSigningKeysResponseCountFallback(t *testing.T) {
+	body := []byte(`{
+		"keys": [
+			{"signer_id": "a", "kid": "k1", "algorithm": "Ed25519", "public_key": "AAAA", "tenants": ["*"], "namespaces": ["*"]},
+			{"signer_id": "b", "kid": "k1", "algorithm": "Ed25519", "public_key": "BBBB", "tenants": ["*"], "namespaces": ["*"]}
+		]
+	}`)
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Mimic the fallback applied by FetchSigningKeys.
+	if resp.Count == 0 && len(resp.Keys) > 0 {
+		resp.Count = len(resp.Keys)
+	}
+	if resp.Count != 2 {
+		t.Errorf("expected derived count=2, got %d", resp.Count)
+	}
+}
+
+func TestSigningKeysResponseRejectsMalformedJSON(t *testing.T) {
+	// When a proxy returns 200 OK with an HTML body, json.Unmarshal
+	// should fail with a clear decode error. The client wraps this
+	// in a "malformed signing keys response: ..." ConnectionError
+	// — we check only that Unmarshal surfaces the error at all,
+	// since the wrapping is done in client.go.
+	body := []byte(`<!doctype html><html><body>Waiting Room</body></html>`)
+	var resp SigningKeysResponse
+	if err := json.Unmarshal(body, &resp); err == nil {
+		t.Fatalf("expected unmarshal error on HTML body, got nil")
+	}
+}

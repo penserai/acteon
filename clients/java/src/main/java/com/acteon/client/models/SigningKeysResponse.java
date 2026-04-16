@@ -22,23 +22,51 @@ public class SigningKeysResponse {
     public int getCount() { return count; }
     public void setCount(int count) { this.count = count; }
 
+    /**
+     * Build a {@code SigningKeysResponse} from a decoded Jackson
+     * map. Throws {@link IllegalArgumentException} on malformed
+     * shapes — missing required fields, wrong types, etc — so
+     * callers see a clear error instead of a
+     * {@link ClassCastException} from deep inside the parser.
+     */
     @SuppressWarnings("unchecked")
     public static SigningKeysResponse fromMap(Map<String, Object> data) {
         SigningKeysResponse resp = new SigningKeysResponse();
-        List<Map<String, Object>> rawKeys = data.containsKey("keys") && data.get("keys") != null
-            ? (List<Map<String, Object>>) data.get("keys")
-            : new ArrayList<>();
+
+        Object rawKeysObj = data.get("keys");
+        List<Map<String, Object>> rawKeys;
+        if (rawKeysObj == null) {
+            rawKeys = new ArrayList<>();
+        } else if (rawKeysObj instanceof List<?>) {
+            rawKeys = (List<Map<String, Object>>) rawKeysObj;
+        } else {
+            throw new IllegalArgumentException(
+                "malformed signing keys response: 'keys' should be an array, got "
+                    + rawKeysObj.getClass().getSimpleName()
+            );
+        }
+
         List<SigningKeyEntry> keys = new ArrayList<>(rawKeys.size());
         for (Map<String, Object> k : rawKeys) {
             keys.add(SigningKeyEntry.fromMap(k));
         }
         resp.keys = keys;
+
         // Defensive: derive from keys.size() when the server omits
         // count (it always emits it today, but we shouldn't break on
-        // a minor server change).
-        resp.count = data.containsKey("count") && data.get("count") != null
-            ? ((Number) data.get("count")).intValue()
-            : keys.size();
+        // a minor server change). Wrong type on count (e.g. "2" as a
+        // string) is a malformed response.
+        Object rawCount = data.get("count");
+        if (rawCount == null) {
+            resp.count = keys.size();
+        } else if (rawCount instanceof Number) {
+            resp.count = ((Number) rawCount).intValue();
+        } else {
+            throw new IllegalArgumentException(
+                "malformed signing keys response: 'count' should be a number, got "
+                    + rawCount.getClass().getSimpleName()
+            );
+        }
         return resp;
     }
 }
