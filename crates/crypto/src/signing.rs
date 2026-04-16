@@ -60,6 +60,20 @@ impl ActionSigningKey {
         let sig = self.inner.sign(message);
         B64.encode(sig.to_bytes())
     }
+
+    /// Raw 32-byte secret seed material.
+    ///
+    /// Used by the `acteon keys generate` CLI command to emit a
+    /// freshly created key in hex or base64 form so an operator can
+    /// stash it in a secret manager. Callers are responsible for
+    /// handling the returned bytes carefully — they are unencrypted
+    /// secret key material. The `ActionSigningKey` itself remains
+    /// zeroized on drop; this method copies the bytes out and the
+    /// caller's copy is **not** zeroized automatically.
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 32] {
+        self.inner.to_bytes()
+    }
 }
 
 impl fmt::Debug for ActionSigningKey {

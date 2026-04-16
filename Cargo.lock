@@ -138,10 +138,13 @@ name = "acteon-cli"
 version = "0.1.0"
 dependencies = [
  "acteon-core",
+ "acteon-crypto",
  "acteon-ops",
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "clap",
+ "hex",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -150,6 +153,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
