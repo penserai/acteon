@@ -91,6 +91,16 @@ fn default_replay_ttl() -> u64 {
 /// either key (legacy clients that don't stamp a `kid`) or from the
 /// specific key matching the action's `kid`. Once all in-flight
 /// signed actions have been processed, remove the old entry.
+///
+/// # Drift warning
+///
+/// The `acteon keys` CLI (`crates/cli/src/commands/keys/mod.rs`)
+/// keeps a **local mirror** of this struct so it can parse a
+/// `[[signing.keyring]]` block without pulling in the full
+/// `acteon-server` crate tree. When adding or renaming fields here,
+/// update the CLI's `KeyringEntry` as well — the `read_keyring`
+/// tests over there are the canary, but they only cover the current
+/// shape.
 #[derive(Debug, Deserialize)]
 pub struct KeyringEntry {
     /// Unique identifier for this signer. Must match the `signer_id`

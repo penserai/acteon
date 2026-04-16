@@ -11,13 +11,15 @@
 //! See `docs/book/features/action-signing.md` for the full rotation
 //! workflow.
 
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use clap::{Args, Subcommand, ValueEnum};
 use serde::Deserialize;
+use zeroize::Zeroizing;
 
 use acteon_crypto::signing::{ActionSigningKey, DEFAULT_KID, generate_keypair_with_kid};
 
@@ -95,6 +97,17 @@ pub struct GenerateArgs {
     /// that's what the server parser accepts in either form.
     #[arg(long, value_enum, default_value_t = KeyEncoding::Hex)]
     pub encoding: KeyEncoding,
+
+    /// Write the secret key to this file instead of stderr.
+    ///
+    /// When set, the secret is written with mode 0600 on Unix (no
+    /// group/world read). Nothing about the secret touches stdout
+    /// or stderr in this mode, so it's safe to run inside a CI job
+    /// that log-captures both streams — as long as the configured
+    /// path lands in a filesystem the secret scraper can't reach
+    /// (e.g. a tmpfs mount or a path that the CI runner evicts).
+    #[arg(long, value_name = "PATH")]
+    pub secret_out: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -120,6 +133,11 @@ pub struct RotateArgs {
     /// Encoding for the printed secret/public key bytes.
     #[arg(long, value_enum, default_value_t = KeyEncoding::Hex)]
     pub encoding: KeyEncoding,
+
+    /// Write the secret key to this file instead of stderr. Same
+    /// semantics as `keys generate --secret-out`.
+    #[arg(long, value_name = "PATH")]
+    pub secret_out: Option<PathBuf>,
 }
 
 pub fn run(args: &KeysArgs) -> anyhow::Result<()> {
@@ -130,16 +148,16 @@ pub fn run(args: &KeysArgs) -> anyhow::Result<()> {
     }
 }
 
-// Keeps the `Result` return type so the `run` dispatch in
-// `KeysCommand` matches uniformly across all three subcommands —
-// `list` and `rotate` can both fail on file IO, and forcing this
-// one to be infallible would break the symmetry without saving
-// anything.
-#[allow(clippy::unnecessary_wraps)]
 fn run_generate(args: &GenerateArgs) -> anyhow::Result<()> {
     let (sk, vk) = generate_keypair_with_kid(&args.signer_id, &args.kid);
-    print_keypair(&args.signer_id, &args.kid, &sk, &vk, args.encoding);
-    Ok(())
+    emit_keypair(
+        &args.signer_id,
+        &args.kid,
+        &sk,
+        &vk,
+        args.encoding,
+        args.secret_out.as_deref(),
+    )
 }
 
 fn run_list(args: &ListArgs) -> anyhow::Result<()> {
@@ -152,18 +170,48 @@ fn run_list(args: &ListArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Compute per-column widths from actual data so long signer_ids
+    // (e.g. `prod-us-east-1-deploy-service`) or comma-joined
+    // tenant/namespace lists don't overflow fixed-width padding and
+    // break the table layout. Headers contribute to the minimum so
+    // short data never collapses the columns below the label width.
+    let rows: Vec<_> = entries
+        .iter()
+        .map(|e| {
+            (
+                e.signer_id.as_str(),
+                e.kid.as_str(),
+                e.tenants.join(","),
+                e.namespaces.join(","),
+            )
+        })
+        .collect();
+
+    let w_signer = rows
+        .iter()
+        .map(|r| r.0.len())
+        .max()
+        .unwrap_or(0)
+        .max("SIGNER_ID".len());
+    let w_kid = rows
+        .iter()
+        .map(|r| r.1.len())
+        .max()
+        .unwrap_or(0)
+        .max("KID".len());
+    let w_tenants = rows
+        .iter()
+        .map(|r| r.2.len())
+        .max()
+        .unwrap_or(0)
+        .max("TENANTS".len());
+
     println!(
-        "{:<24} {:<6} {:<24} NAMESPACES",
+        "{:<w_signer$}  {:<w_kid$}  {:<w_tenants$}  NAMESPACES",
         "SIGNER_ID", "KID", "TENANTS"
     );
-    for entry in &entries {
-        println!(
-            "{:<24} {:<6} {:<24} {}",
-            entry.signer_id,
-            entry.kid,
-            entry.tenants.join(","),
-            entry.namespaces.join(","),
-        );
+    for (signer, kid, tenants, namespaces) in &rows {
+        println!("{signer:<w_signer$}  {kid:<w_kid$}  {tenants:<w_tenants$}  {namespaces}");
     }
     Ok(())
 }
@@ -186,7 +234,14 @@ fn run_rotate(args: &RotateArgs) -> anyhow::Result<()> {
         next_kid,
     );
     eprintln!();
-    print_keypair(&args.signer_id, &next_kid, &sk, &vk, args.encoding);
+    emit_keypair(
+        &args.signer_id,
+        &next_kid,
+        &sk,
+        &vk,
+        args.encoding,
+        args.secret_out.as_deref(),
+    )?;
     eprintln!();
     eprintln!(
         "After capturing the SECRET, append the keyring entry above to {}, \n\
@@ -197,42 +252,104 @@ fn run_rotate(args: &RotateArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Print a freshly generated keypair plus a TOML stub.
+/// Emit a freshly generated keypair.
 ///
-/// Output layout:
-/// - Header (`signer_id`, `kid`)
-/// - Secret key in the requested encoding
-/// - Public key in the requested encoding
-/// - Ready-to-paste `[[signing.keyring]]` block (always base64
-///   public key — the server parser accepts both, but base64 matches
-///   the discovery endpoint output and the existing docs)
-fn print_keypair(
+/// Stream split:
+/// - **stdout** receives only the ready-to-paste
+///   `[[signing.keyring]]` block (public material only). Safe to
+///   redirect into `>> config.toml`.
+/// - **stderr** receives the human-readable header, the secret key
+///   (unless `--secret-out` was set), the public key, and the
+///   "append this to your config" hint.
+/// - When `secret_out` is `Some`, the raw secret bytes are written
+///   to that file (mode 0600 on Unix, plain write on Windows)
+///   instead of to stderr. This is the recommended path for any
+///   automated / CI context where both stdout and stderr may be
+///   captured into logs.
+///
+/// The secret bytes live in a `Zeroizing<[u8; 32]>` wrapper for the
+/// duration of this function so the stack copy is wiped as soon as
+/// the wrapper drops — the underlying `ActionSigningKey` also
+/// zeroizes on drop, but an unwrapped `[u8; 32]` returned from
+/// `to_bytes()` would otherwise linger until the stack frame is
+/// overwritten by an unrelated call.
+fn emit_keypair(
     signer_id: &str,
     kid: &str,
     sk: &ActionSigningKey,
     vk: &acteon_crypto::signing::ActionVerifyingKey,
-    format: KeyEncoding,
-) {
-    let secret_bytes = sk.to_bytes();
+    encoding: KeyEncoding,
+    secret_out: Option<&Path>,
+) -> anyhow::Result<()> {
+    let secret_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(sk.to_bytes());
     let public_bytes = vk.public_key_bytes();
+    let secret_encoded = Zeroizing::new(encoding.encode(secret_bytes.as_ref()));
 
-    println!("# Acteon signing keypair");
-    println!("# signer_id = {signer_id}");
-    println!("# kid       = {kid}");
-    println!();
-    println!("SECRET (capture into a secret manager NOW — printed once):");
-    println!("  {}", format.encode(&secret_bytes));
-    println!();
-    println!("PUBLIC:");
-    println!("  {}", format.encode(&public_bytes));
-    println!();
-    println!("# Append to your server config:");
+    // --- Human-readable block on stderr ---
+    eprintln!("# Acteon signing keypair");
+    eprintln!("# signer_id = {signer_id}");
+    eprintln!("# kid       = {kid}");
+    eprintln!();
+
+    if let Some(path) = secret_out {
+        write_secret_file(path, secret_encoded.as_str())?;
+        eprintln!(
+            "SECRET written to {} (mode 0600 on Unix). Move it to your secret manager.",
+            path.display()
+        );
+    } else {
+        eprintln!("SECRET (capture into a secret manager NOW — printed once):");
+        eprintln!("  {}", secret_encoded.as_str());
+    }
+    eprintln!();
+    eprintln!("PUBLIC:");
+    eprintln!("  {}", encoding.encode(&public_bytes));
+    eprintln!();
+    eprintln!("# Append the block on stdout to your server config:");
+
+    // --- TOML stub on stdout — safe to pipe into a file ---
     println!("[[signing.keyring]]");
     println!("signer_id = \"{signer_id}\"");
     println!("kid = \"{kid}\"");
     println!("public_key = \"{}\"", B64.encode(public_bytes));
     println!("# tenants = [\"*\"]      # uncomment to scope");
     println!("# namespaces = [\"*\"]   # uncomment to scope");
+
+    Ok(())
+}
+
+/// Write the secret key to `path` with tight permissions.
+///
+/// On Unix, the file is created with mode 0600 (owner read/write
+/// only) so a shared CI runner or container with multiple
+/// unprivileged processes can't read it. On Windows we fall back to
+/// a plain write — the ACL story differs enough that operators
+/// there should be setting permissions via the host's own tooling.
+fn write_secret_file(path: &Path, contents: &str) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .with_context(|| format!("failed to open {} for writing", path.display()))?;
+        f.write_all(contents.as_bytes())
+            .with_context(|| format!("failed to write secret to {}", path.display()))?;
+        // Trailing newline is convenient when the file is `cat`ed,
+        // and harmless when parsed back by `parse_signing_key`
+        // (which `.trim()`s its input).
+        f.write_all(b"\n")
+            .with_context(|| format!("failed to write newline to {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, format!("{contents}\n"))
+            .with_context(|| format!("failed to write secret to {}", path.display()))?;
+    }
+    Ok(())
 }
 
 // --- TOML parsing ----------------------------------------------------------

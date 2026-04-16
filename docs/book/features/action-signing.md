@@ -39,9 +39,28 @@ public_key = "LZkUda4pibD+v4yfHrLyw9Dnt7OLa6PGzSRGOcN1c4o="
 # namespaces = ["*"]   # uncomment to scope
 ```
 
-The secret is printed to stdout exactly once and never persisted
-by the CLI — capture it into your secret manager immediately, then
-paste the public key block into the server config.
+### Stream layout and `--secret-out`
+
+The output is deliberately split across stdout and stderr so you can
+pipe the config into a file without dragging the secret with it:
+
+- **stdout**: only the ready-to-paste `[[signing.keyring]]` TOML
+  block (public material only). Safe to redirect —
+  `acteon keys generate ci-bot >> config.toml` appends the entry
+  to your config.
+- **stderr**: the human-readable header, the secret key (printed
+  once), the public key, and the "append this" hint.
+
+For automated / CI bootstrap where both streams may be log-captured,
+pass `--secret-out <path>` and the secret is written to that file
+(mode 0600 on Unix) without touching stdout or stderr at all:
+
+```text
+$ acteon keys generate ci-bot --kid k1 --secret-out /run/secrets/ci-bot.key
+```
+
+Capture that file into your secret manager, then paste the public
+key block from stdout into the server config.
 
 Two more subcommands, both read-only on disk:
 
