@@ -6,6 +6,28 @@ use acteon_state::{KeyKind, StateKey};
 use super::super::{BackgroundProcessor, RecurringActionDueEvent};
 
 impl BackgroundProcessor {
+    /// Refresh the `recurring_active` gauge by counting entries in the
+    /// pending-recurring index. Called once per recurring tick before
+    /// dispatching due actions, so the gauge reflects the steady-state
+    /// number of scheduled recurring actions even when no dispatches
+    /// are happening.
+    pub(crate) async fn refresh_recurring_active_gauge(&self) {
+        match self
+            .state
+            .scan_keys_by_kind(KeyKind::PendingRecurring)
+            .await
+        {
+            Ok(entries) => {
+                self.metrics.set_recurring_active(entries.len() as u64);
+            }
+            Err(e) => {
+                debug!(error = %e, "failed to refresh recurring_active gauge");
+            }
+        }
+    }
+}
+
+impl BackgroundProcessor {
     /// Process recurring actions that are due for dispatch.
     ///
     /// Uses the timeout index to efficiently find expired `PendingRecurring`
@@ -25,6 +47,10 @@ impl BackgroundProcessor {
         let Some(ref tx) = self.recurring_action_tx else {
             return Ok(());
         };
+
+        // Refresh the active gauge first so it stays current even when no
+        // recurring actions are due in this tick.
+        self.refresh_recurring_active_gauge().await;
 
         let now = Utc::now();
         let now_ms = now.timestamp_millis();

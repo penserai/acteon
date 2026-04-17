@@ -275,6 +275,12 @@ fn render_snapshot(snap: &MetricsSnapshot) -> String {
         "Recurring actions skipped (disabled, expired, etc.).",
         snap.recurring_skipped,
     );
+    write_gauge(
+        &mut buf,
+        "acteon_recurring_active",
+        "Recurring actions currently scheduled and eligible for dispatch.",
+        snap.recurring_active,
+    );
 
     // -- Quota counters --
     write_counter(
@@ -507,6 +513,15 @@ fn write_counter(buf: &mut String, name: &str, help: &str, value: u64) {
     buf.push('\n');
 }
 
+/// Write a single gauge metric with HELP and TYPE annotations.
+fn write_gauge(buf: &mut String, name: &str, help: &str, value: u64) {
+    use std::fmt::Write;
+    let _ = writeln!(buf, "# HELP {name} {help}");
+    let _ = writeln!(buf, "# TYPE {name} gauge");
+    let _ = writeln!(buf, "{name} {value}");
+    buf.push('\n');
+}
+
 /// Write HELP and TYPE header for a counter with provider labels.
 fn write_provider_counter_header(buf: &mut String, name: &str, help: &str) {
     use std::fmt::Write;
@@ -585,6 +600,7 @@ mod tests {
             recurring_dispatched: 0,
             recurring_errors: 0,
             recurring_skipped: 0,
+            recurring_active: 0,
             quota_exceeded: 0,
             quota_warned: 0,
             quota_degraded: 0,
@@ -630,6 +646,7 @@ mod tests {
             recurring_dispatched: 4,
             recurring_errors: 1,
             recurring_skipped: 2,
+            recurring_active: 9,
             quota_exceeded: 3,
             quota_warned: 2,
             quota_degraded: 1,
@@ -930,6 +947,8 @@ mod tests {
         assert!(output.contains("acteon_recurring_dispatched_total 4"));
         assert!(output.contains("acteon_recurring_errors_total 1"));
         assert!(output.contains("acteon_recurring_skipped_total 2"));
+        assert!(output.contains("acteon_recurring_active 9"));
+        assert!(output.contains("# TYPE acteon_recurring_active gauge"));
         assert!(output.contains("acteon_quota_exceeded_total 3"));
         assert!(output.contains("acteon_quota_warned_total 2"));
         assert!(output.contains("acteon_quota_degraded_total 1"));
@@ -1181,12 +1200,12 @@ mod tests {
             assert!(output.contains(name), "Missing provider metric: {name}");
         }
 
-        // Total: 40 + 8 = 48 unique metric families
+        // 40 counters + 1 gauge from the snapshot + 8 provider families = 49.
         let type_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.starts_with("# TYPE "))
             .collect();
-        assert_eq!(type_lines.len(), 48, "Expected 48 TYPE declarations");
+        assert_eq!(type_lines.len(), 49, "Expected 49 TYPE declarations");
     }
 
     #[test]
@@ -1202,8 +1221,18 @@ mod tests {
             .collect();
         assert_eq!(
             type_lines.len(),
-            40,
-            "Expected 40 TYPE declarations without providers"
+            41,
+            "Expected 41 TYPE declarations without providers (40 counters + 1 gauge)"
         );
+    }
+
+    #[test]
+    fn write_gauge_format() {
+        let mut buf = String::new();
+        write_gauge(&mut buf, "acteon_test_gauge", "A test gauge.", 42);
+        let lines: Vec<&str> = buf.lines().collect();
+        assert_eq!(lines[0], "# HELP acteon_test_gauge A test gauge.");
+        assert_eq!(lines[1], "# TYPE acteon_test_gauge gauge");
+        assert_eq!(lines[2], "acteon_test_gauge 42");
     }
 }

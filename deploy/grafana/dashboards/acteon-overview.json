@@ -311,12 +311,25 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "blue", "value": null }] } } },
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 35 },
+      "id": 19,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Recurring Actions Active",
+      "description": "Recurring actions currently scheduled and eligible for dispatch. Refreshed once per recurring_check_interval tick.",
+      "targets": [
+        { "expr": "acteon_recurring_active", "legendFormat": "Active", "refId": "A" }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "fieldConfig": { "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
         "overrides": [
           { "matcher": { "id": "byName", "options": "Errors" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] }
         ]
       },
-      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 35 },
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 35 },
       "id": 11,
       "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
       "title": "Recurring Action Totals",
@@ -336,7 +349,7 @@
           "unit": "ops"
         }
       },
-      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 35 },
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 35 },
       "id": 12,
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
       "title": "Recurring Action Rate",

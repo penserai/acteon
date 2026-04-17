@@ -591,18 +591,19 @@ The drawer includes **Pause/Resume** and **Delete** buttons.
 
 ### Prometheus Metrics
 
-Recurring action processing exports three counters via
-`GET /metrics/prometheus` (and as JSON at `GET /metrics`):
+Recurring action processing exports three counters and one gauge
+via `GET /metrics/prometheus` (and as JSON at `GET /metrics`):
 
-| Metric | Counted on |
-|---|---|
-| `acteon_recurring_dispatched_total` | Every successful recurring occurrence dispatched through the gateway |
-| `acteon_recurring_errors_total` | Dispatch failures — cron parse error, state store unavailable, claim refused for a genuine reason, etc. |
-| `acteon_recurring_skipped_total` | Occurrences skipped because another replica claimed them first (normal behavior under the CAS claim pattern — **not** an error signal) |
+| Metric | Type | Counted on |
+|---|---|---|
+| `acteon_recurring_dispatched_total` | counter | Every successful recurring occurrence dispatched through the gateway |
+| `acteon_recurring_errors_total` | counter | Dispatch failures — cron parse error, state store unavailable, claim refused for a genuine reason, etc. |
+| `acteon_recurring_skipped_total` | counter | Occurrences skipped because another replica claimed them first (normal behavior under the CAS claim pattern — **not** an error signal) |
+| `acteon_recurring_active` | gauge | Recurring actions currently scheduled and eligible for dispatch. Refreshed once per `recurring_check_interval` tick by counting the pending-recurring index. |
 
 **Grafana.** The bundled `acteon-overview` dashboard has a
-"Recurring Actions" row with a rate timeseries and a stat panel
-for the totals.
+"Recurring Actions" row with stat panels for active count and
+totals plus a rate timeseries.
 
 **What to alert on.** A sustained error rate is the primary
 signal:
@@ -614,11 +615,11 @@ rate(acteon_recurring_errors_total[5m]) > 0.1
 A drop in dispatch rate when recurring actions are configured
 often means the background processor is wedged — the claim TTL
 (120s) expired without progress. Compare the dispatched rate
-against the count of active recurring actions from
-`GET /v1/recurring`:
+against `acteon_recurring_active` to spot a stuck worker without
+hitting `GET /v1/recurring`:
 
 ```promql
-rate(acteon_recurring_dispatched_total[5m]) == 0
+acteon_recurring_active > 0 and rate(acteon_recurring_dispatched_total[5m]) == 0
 ```
 
 **Do not alert on `acteon_recurring_skipped_total`**: it fires
