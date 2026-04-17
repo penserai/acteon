@@ -94,7 +94,11 @@ impl GatewayBuilder {
             llm_evaluator: None,
             llm_policy: String::new(),
             llm_policies: HashMap::new(),
-            llm_fail_open: true,
+            // Fail closed by default: when the LLM evaluator errors,
+            // deny the action rather than silently letting it
+            // through. Operators who explicitly accept the bypass
+            // risk can flip this with `.llm_fail_open(true)`.
+            llm_fail_open: false,
             chains: HashMap::new(),
             completed_chain_ttl: None,
             embedding: None,
@@ -283,10 +287,19 @@ impl GatewayBuilder {
         self
     }
 
-    /// Set whether the LLM guardrail fails open (default: `true`).
+    /// Set whether the LLM guardrail fails open (default: `false`).
     ///
-    /// When `true`, LLM evaluation errors allow the action to proceed.
-    /// When `false`, errors cause the action to be denied.
+    /// When `false` (the default, fail-closed), LLM evaluation errors
+    /// cause the action to be denied — the guardrail is treated as a
+    /// hard gate that must succeed for the action to proceed. This is
+    /// the safer default for security-oriented deployments because an
+    /// attacker who can force evaluator timeouts (oversized prompts,
+    /// upstream slowness) cannot quietly bypass the check.
+    ///
+    /// When `true` (fail-open), evaluator errors allow the action
+    /// through. Use this when availability matters more than the
+    /// guarantee that every action was evaluated — for example, when
+    /// the guardrail is an advisory check on a low-stakes flow.
     #[must_use]
     pub fn llm_fail_open(mut self, fail_open: bool) -> Self {
         self.llm_fail_open = fail_open;
@@ -924,6 +937,20 @@ mod tests {
         async fn health_check(&self) -> Result<(), acteon_provider::ProviderError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn llm_fail_open_default_is_false() {
+        // The builder defaults to fail-closed so a deployment that
+        // wires an LLM evaluator without explicitly setting
+        // fail_open does not silently bypass the guardrail when the
+        // evaluator errors. Operators who want fail-open behavior
+        // must opt in via .llm_fail_open(true). See issue #120.
+        let builder = GatewayBuilder::new();
+        assert!(
+            !builder.llm_fail_open,
+            "GatewayBuilder default for llm_fail_open must remain false (fail-closed)"
+        );
     }
 
     #[test]

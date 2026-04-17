@@ -148,6 +148,54 @@ Protect LLM-targeted actions from prompt injection:
     block_on_flag: true
 ```
 
+## Failure Handling
+
+When the LLM evaluator errors — timeout, HTTP failure, JSON parse error,
+provider rate limit — the gateway must decide whether to let the action
+through or block it. The `fail_open` parameter on `[llm_guardrail]`
+controls that choice:
+
+| Mode | Behavior on evaluator error | Counter that increments |
+|---|---|---|
+| `fail_open = false` (**default**, **fail-closed**) | Action is denied (`ActionOutcome::Suppressed`) with reason `"LLM guardrail unavailable: <error>"` | `acteon_llm_guardrail_errors_total` |
+| `fail_open = true` (fail-open) | Action proceeds as if the guardrail allowed it | `acteon_llm_guardrail_errors_total` |
+
+Either way, `acteon_llm_guardrail_errors_total` increments — the
+counter measures evaluator availability, not the dispatch outcome. The
+deny vs. allow decision is what `fail_open` flips.
+
+**Why fail-closed is the default.** Operators who turn the guardrail on
+are explicitly opting into a content-safety check. If the evaluator is
+unreachable, the natural mental model is "the check didn't run, so the
+action should be blocked." Fail-open delivers the opposite: the check
+silently doesn't run and the action proceeds. An attacker who can force
+evaluator timeouts (oversized prompts, prompt-injection that triggers a
+long thought chain, regional outages) gets a free pass past the guard.
+
+**When to set `fail_open = true`.** Override the default if the cost of
+a missed action exceeds the cost of a security bypass — for example,
+when the guardrail is an advisory check on an internal-only flow that
+must not stall on third-party LLM availability. Document the choice in
+your config (with a comment) so a future operator can tell the
+deviation from default was deliberate.
+
+```toml title="acteon.toml — explicit fail-open opt-in"
+[llm_guardrail]
+enabled = true
+endpoint = "https://api.openai.com/v1/chat/completions"
+api_key = "ENC[...]"
+policy = "Internal advisory only — availability over correctness."
+fail_open = true   # Deliberately fail-open: this guardrail is advisory
+                   # and must not block the action if the LLM is down.
+```
+
+!!! warning "Migration note"
+    Acteon ≤ 0.1.x defaulted `fail_open` to `true`. This release flips
+    the default to `false` to align with the principle of least
+    surprise for security-oriented deployments. If you were relying on
+    the implicit fail-open behavior, set `fail_open = true` explicitly
+    in your `acteon.toml` to preserve the old behavior.
+
 ## Monitoring
 
 ### Prometheus Metrics
