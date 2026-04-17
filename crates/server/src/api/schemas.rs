@@ -89,6 +89,12 @@ pub struct MetricsResponse {
     /// Recurring actions skipped (disabled, expired, etc.).
     #[schema(example = 0)]
     pub recurring_skipped: u64,
+    /// Recurring actions currently scheduled and eligible for dispatch.
+    /// Refreshed once per `recurring_check_interval` tick by counting
+    /// the pending-recurring index.
+    #[schema(example = 0)]
+    #[serde(default)]
+    pub recurring_active: u64,
     /// Actions blocked by tenant quota.
     #[schema(example = 0)]
     pub quota_exceeded: u64,

@@ -1147,6 +1147,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recurring_active_gauge_tracks_pending_count() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let metrics = Arc::new(GatewayMetrics::default());
+        let namespace = "test-ns";
+        let tenant = "test-tenant";
+
+        // Index three pending recurring actions across two tenants — none of
+        // them are due yet, but the gauge should still see them.
+        let future = Utc::now() + chrono::Duration::hours(1);
+        for (id, t) in [("rec-a", "t1"), ("rec-b", "t1"), ("rec-c", "t2")] {
+            let pending_key = StateKey::new(namespace, t, KeyKind::PendingRecurring, id);
+            state
+                .set(&pending_key, &future.timestamp_millis().to_string(), None)
+                .await
+                .unwrap();
+            state
+                .index_timeout(&pending_key, future.timestamp_millis())
+                .await
+                .unwrap();
+        }
+
+        let (rec_tx, _rec_rx) = mpsc::channel(10);
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .metrics(Arc::clone(&metrics))
+            .config(BackgroundConfig {
+                enable_group_flush: false,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                enable_scheduled_actions: false,
+                enable_recurring_actions: true,
+                recurring_check_interval: Duration::from_millis(50),
+                namespace: namespace.to_owned(),
+                tenant: tenant.to_owned(),
+                ..BackgroundConfig::default()
+            })
+            .group_manager(group_manager)
+            .state(Arc::clone(&state))
+            .recurring_action_channel(rec_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move { processor.run().await });
+
+        // Poll until the worker has refreshed the gauge at least once.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if metrics.snapshot().recurring_active == 3 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "gauge never reached 3, last value = {}",
+                    metrics.snapshot().recurring_active
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+    }
+
+    #[tokio::test]
     async fn builder_with_recurring_channel() {
         let group_manager = Arc::new(GroupManager::new());
         let state = Arc::new(MemoryStateStore::new());

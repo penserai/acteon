@@ -24,6 +24,7 @@ export interface MetricsResponse {
   recurring_dispatched?: number
   recurring_errors?: number
   recurring_skipped?: number
+  recurring_active?: number
   quota_exceeded?: number
   quota_warned?: number
   quota_degraded?: number

@@ -100,6 +100,7 @@ All metrics use the `acteon_` prefix. Counters are monotonically increasing from
 | `acteon_recurring_dispatched_total` | counter | Recurring actions dispatched |
 | `acteon_recurring_errors_total` | counter | Recurring action dispatch errors |
 | `acteon_recurring_skipped_total` | counter | Recurring actions skipped |
+| `acteon_recurring_active` | gauge | Recurring actions currently scheduled and eligible for dispatch |
 
 ### Quota Counters
 

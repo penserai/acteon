@@ -61,6 +61,10 @@ pub struct GatewayMetrics {
     pub recurring_errors: AtomicU64,
     /// Recurring actions skipped (disabled, expired, etc.).
     pub recurring_skipped: AtomicU64,
+    /// Recurring actions currently scheduled and eligible for dispatch.
+    /// Refreshed once per `recurring_check_interval` tick by counting
+    /// the pending-recurring index.
+    pub recurring_active: AtomicU64,
     /// Actions blocked by tenant quota.
     pub quota_exceeded: AtomicU64,
     /// Actions that passed with a quota warning.
@@ -227,6 +231,12 @@ impl GatewayMetrics {
         self.recurring_skipped.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Set the recurring active gauge to the current count of scheduled
+    /// recurring actions. Called from the recurring worker tick.
+    pub fn set_recurring_active(&self, value: u64) {
+        self.recurring_active.store(value, Ordering::Relaxed);
+    }
+
     /// Increment the quota exceeded (blocked) counter.
     pub fn increment_quota_exceeded(&self) {
         self.quota_exceeded.fetch_add(1, Ordering::Relaxed);
@@ -354,6 +364,7 @@ impl GatewayMetrics {
             recurring_dispatched: self.recurring_dispatched.load(Ordering::Relaxed),
             recurring_errors: self.recurring_errors.load(Ordering::Relaxed),
             recurring_skipped: self.recurring_skipped.load(Ordering::Relaxed),
+            recurring_active: self.recurring_active.load(Ordering::Relaxed),
             quota_exceeded: self.quota_exceeded.load(Ordering::Relaxed),
             quota_warned: self.quota_warned.load(Ordering::Relaxed),
             quota_degraded: self.quota_degraded.load(Ordering::Relaxed),
@@ -425,6 +436,8 @@ pub struct MetricsSnapshot {
     pub recurring_errors: u64,
     /// Recurring actions skipped (disabled, expired, etc.).
     pub recurring_skipped: u64,
+    /// Recurring actions currently scheduled and eligible for dispatch.
+    pub recurring_active: u64,
     /// Actions blocked by tenant quota.
     pub quota_exceeded: u64,
     /// Actions that passed with a quota warning.
@@ -807,6 +820,7 @@ mod tests {
         assert_eq!(snap.recurring_dispatched, 0);
         assert_eq!(snap.recurring_errors, 0);
         assert_eq!(snap.recurring_skipped, 0);
+        assert_eq!(snap.recurring_active, 0);
         assert_eq!(snap.quota_exceeded, 0);
         assert_eq!(snap.quota_warned, 0);
         assert_eq!(snap.quota_degraded, 0);
@@ -853,6 +867,7 @@ mod tests {
         m.increment_recurring_dispatched();
         m.increment_recurring_errors();
         m.increment_recurring_skipped();
+        m.set_recurring_active(7);
         m.increment_quota_exceeded();
         m.increment_quota_warned();
         m.increment_quota_degraded();
@@ -895,6 +910,7 @@ mod tests {
         assert_eq!(snap.recurring_dispatched, 1);
         assert_eq!(snap.recurring_errors, 1);
         assert_eq!(snap.recurring_skipped, 1);
+        assert_eq!(snap.recurring_active, 7);
         assert_eq!(snap.quota_exceeded, 1);
         assert_eq!(snap.quota_warned, 1);
         assert_eq!(snap.quota_degraded, 1);
