@@ -1,7 +1,5 @@
 package com.acteon.client.models;
 
-import java.util.Map;
-
 /**
  * A single entry in a top-N analytics result.
  */
@@ -18,13 +16,4 @@ public class AnalyticsTopEntry {
 
     public double getPercentage() { return percentage; }
     public void setPercentage(double percentage) { this.percentage = percentage; }
-
-    @SuppressWarnings("unchecked")
-    public static AnalyticsTopEntry fromMap(Map<String, Object> data) {
-        AnalyticsTopEntry entry = new AnalyticsTopEntry();
-        entry.label = (String) data.get("label");
-        entry.count = ((Number) data.get("count")).intValue();
-        entry.percentage = ((Number) data.get("percentage")).doubleValue();
-        return entry;
-    }
 }

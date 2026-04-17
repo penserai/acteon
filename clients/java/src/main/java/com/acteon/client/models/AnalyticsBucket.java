@@ -1,7 +1,5 @@
 package com.acteon.client.models;
 
-import java.util.Map;
-
 /**
  * A single time bucket in an analytics response.
  */
@@ -38,30 +36,4 @@ public class AnalyticsBucket {
 
     public Double getErrorRate() { return errorRate; }
     public void setErrorRate(Double errorRate) { this.errorRate = errorRate; }
-
-    @SuppressWarnings("unchecked")
-    public static AnalyticsBucket fromMap(Map<String, Object> data) {
-        AnalyticsBucket bucket = new AnalyticsBucket();
-        bucket.timestamp = (String) data.get("timestamp");
-        bucket.count = ((Number) data.get("count")).intValue();
-        bucket.group = (String) data.get("group");
-
-        if (data.get("avg_duration_ms") != null) {
-            bucket.avgDurationMs = ((Number) data.get("avg_duration_ms")).doubleValue();
-        }
-        if (data.get("p50_duration_ms") != null) {
-            bucket.p50DurationMs = ((Number) data.get("p50_duration_ms")).doubleValue();
-        }
-        if (data.get("p95_duration_ms") != null) {
-            bucket.p95DurationMs = ((Number) data.get("p95_duration_ms")).doubleValue();
-        }
-        if (data.get("p99_duration_ms") != null) {
-            bucket.p99DurationMs = ((Number) data.get("p99_duration_ms")).doubleValue();
-        }
-        if (data.get("error_rate") != null) {
-            bucket.errorRate = ((Number) data.get("error_rate")).doubleValue();
-        }
-
-        return bucket;
-    }
 }

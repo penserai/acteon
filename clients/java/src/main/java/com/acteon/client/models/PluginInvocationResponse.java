@@ -22,18 +22,4 @@ public class PluginInvocationResponse {
 
     public Double getDurationMs() { return durationMs; }
     public void setDurationMs(Double durationMs) { this.durationMs = durationMs; }
-
-    @SuppressWarnings("unchecked")
-    public static PluginInvocationResponse fromMap(Map<String, Object> data) {
-        PluginInvocationResponse response = new PluginInvocationResponse();
-        response.verdict = (Boolean) data.get("verdict");
-        response.message = (String) data.get("message");
-        if (data.containsKey("metadata") && data.get("metadata") != null) {
-            response.metadata = (Map<String, Object>) data.get("metadata");
-        }
-        if (data.containsKey("duration_ms") && data.get("duration_ms") != null) {
-            response.durationMs = ((Number) data.get("duration_ms")).doubleValue();
-        }
-        return response;
-    }
 }

@@ -1,29 +1,27 @@
 package com.acteon.client.models;
 
+import com.acteon.client.JsonMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 class WasmPluginTest {
+    private static final ObjectMapper MAPPER = JsonMapper.build();
 
     @Test
-    void testWasmPluginConfigFromMapComplete() {
-        Map<String, Object> data = new HashMap<>();
-        data.put("memory_limit_bytes", 16777216L);
-        data.put("timeout_ms", 100L);
-        List<String> funcs = new ArrayList<>();
-        funcs.add("log");
-        funcs.add("time");
-        data.put("allowed_host_functions", funcs);
+    void wasmPluginConfigDeserializesAllFields() throws Exception {
+        String json = """
+            {
+              "memory_limit_bytes": 16777216,
+              "timeout_ms": 100,
+              "allowed_host_functions": ["log", "time"]
+            }
+            """;
 
-        WasmPluginConfig config = WasmPluginConfig.fromMap(data);
+        WasmPluginConfig config = MAPPER.readValue(json, WasmPluginConfig.class);
 
-        assertEquals(16777216L, config.getMemoryLimitBytes());
+        assertEquals(16_777_216L, config.getMemoryLimitBytes());
         assertEquals(100L, config.getTimeoutMs());
         assertEquals(2, config.getAllowedHostFunctions().size());
         assertEquals("log", config.getAllowedHostFunctions().get(0));
@@ -31,8 +29,8 @@ class WasmPluginTest {
     }
 
     @Test
-    void testWasmPluginConfigFromMapMinimal() {
-        WasmPluginConfig config = WasmPluginConfig.fromMap(new HashMap<>());
+    void wasmPluginConfigDeserializesEmpty() throws Exception {
+        WasmPluginConfig config = MAPPER.readValue("{}", WasmPluginConfig.class);
 
         assertNull(config.getMemoryLimitBytes());
         assertNull(config.getTimeoutMs());
@@ -40,75 +38,83 @@ class WasmPluginTest {
     }
 
     @Test
-    void testWasmPluginFromMapComplete() {
-        Map<String, Object> configData = new HashMap<>();
-        configData.put("memory_limit_bytes", 16777216L);
-        configData.put("timeout_ms", 100L);
+    void wasmPluginDeserializesAllFields() throws Exception {
+        String json = """
+            {
+              "name": "my-plugin",
+              "description": "A test plugin",
+              "status": "active",
+              "enabled": true,
+              "config": {
+                "memory_limit_bytes": 16777216,
+                "timeout_ms": 100
+              },
+              "created_at": "2026-02-15T00:00:00Z",
+              "updated_at": "2026-02-15T01:00:00Z",
+              "invocation_count": 42
+            }
+            """;
 
-        Map<String, Object> data = new HashMap<>();
-        data.put("name", "my-plugin");
-        data.put("description", "A test plugin");
-        data.put("status", "active");
-        data.put("enabled", true);
-        data.put("config", configData);
-        data.put("created_at", "2026-02-15T00:00:00Z");
-        data.put("updated_at", "2026-02-15T01:00:00Z");
-        data.put("invocation_count", 42);
-
-        WasmPlugin plugin = WasmPlugin.fromMap(data);
+        WasmPlugin plugin = MAPPER.readValue(json, WasmPlugin.class);
 
         assertEquals("my-plugin", plugin.getName());
         assertEquals("A test plugin", plugin.getDescription());
         assertEquals("active", plugin.getStatus());
         assertTrue(plugin.isEnabled());
         assertNotNull(plugin.getConfig());
-        assertEquals(16777216L, plugin.getConfig().getMemoryLimitBytes());
+        assertEquals(16_777_216L, plugin.getConfig().getMemoryLimitBytes());
         assertEquals("2026-02-15T00:00:00Z", plugin.getCreatedAt());
         assertEquals(42, plugin.getInvocationCount());
     }
 
     @Test
-    void testWasmPluginFromMapMinimal() {
-        Map<String, Object> data = new HashMap<>();
-        data.put("name", "minimal-plugin");
-        data.put("status", "active");
-        data.put("created_at", "2026-02-15T00:00:00Z");
-        data.put("updated_at", "2026-02-15T00:00:00Z");
+    void wasmPluginDefaultsEnabledToTrueWhenAbsent() throws Exception {
+        // The pre-Jackson-migration fromMap treated absent "enabled"
+        // as enabled. Preserve that contract via a field initializer
+        // on WasmPlugin.
+        String json = """
+            {
+              "name": "minimal-plugin",
+              "status": "active",
+              "created_at": "2026-02-15T00:00:00Z",
+              "updated_at": "2026-02-15T00:00:00Z"
+            }
+            """;
 
-        WasmPlugin plugin = WasmPlugin.fromMap(data);
+        WasmPlugin plugin = MAPPER.readValue(json, WasmPlugin.class);
 
         assertEquals("minimal-plugin", plugin.getName());
         assertNull(plugin.getDescription());
         assertNull(plugin.getConfig());
         assertEquals(0, plugin.getInvocationCount());
+        assertTrue(plugin.isEnabled(), "missing 'enabled' should default to true");
     }
 
-    @SuppressWarnings("unchecked")
     @Test
-    void testListPluginsResponseFromMap() {
-        Map<String, Object> pluginA = new HashMap<>();
-        pluginA.put("name", "plugin-a");
-        pluginA.put("status", "active");
-        pluginA.put("enabled", true);
-        pluginA.put("created_at", "2026-02-15T00:00:00Z");
-        pluginA.put("updated_at", "2026-02-15T00:00:00Z");
+    void listPluginsResponseDeserializesItems() throws Exception {
+        String json = """
+            {
+              "plugins": [
+                {
+                  "name": "plugin-a",
+                  "status": "active",
+                  "enabled": true,
+                  "created_at": "2026-02-15T00:00:00Z",
+                  "updated_at": "2026-02-15T00:00:00Z"
+                },
+                {
+                  "name": "plugin-b",
+                  "status": "disabled",
+                  "enabled": false,
+                  "created_at": "2026-02-15T00:00:00Z",
+                  "updated_at": "2026-02-15T00:00:00Z"
+                }
+              ],
+              "count": 2
+            }
+            """;
 
-        Map<String, Object> pluginB = new HashMap<>();
-        pluginB.put("name", "plugin-b");
-        pluginB.put("status", "disabled");
-        pluginB.put("enabled", false);
-        pluginB.put("created_at", "2026-02-15T00:00:00Z");
-        pluginB.put("updated_at", "2026-02-15T00:00:00Z");
-
-        List<Map<String, Object>> plugins = new ArrayList<>();
-        plugins.add(pluginA);
-        plugins.add(pluginB);
-
-        Map<String, Object> data = new HashMap<>();
-        data.put("plugins", plugins);
-        data.put("count", 2);
-
-        ListPluginsResponse response = ListPluginsResponse.fromMap(data);
+        ListPluginsResponse response = MAPPER.readValue(json, ListPluginsResponse.class);
 
         assertEquals(2, response.getPlugins().size());
         assertEquals(2, response.getCount());
@@ -119,29 +125,29 @@ class WasmPluginTest {
     }
 
     @Test
-    void testListPluginsResponseFromMapEmpty() {
-        Map<String, Object> data = new HashMap<>();
-        data.put("plugins", new ArrayList<>());
-        data.put("count", 0);
+    void listPluginsResponseDeserializesEmpty() throws Exception {
+        String json = """
+            {"plugins": [], "count": 0}
+            """;
 
-        ListPluginsResponse response = ListPluginsResponse.fromMap(data);
+        ListPluginsResponse response = MAPPER.readValue(json, ListPluginsResponse.class);
 
         assertEquals(0, response.getPlugins().size());
         assertEquals(0, response.getCount());
     }
 
     @Test
-    void testPluginInvocationResponseFromMapComplete() {
-        Map<String, Object> metadata = new HashMap<>();
-        metadata.put("score", 0.95);
+    void pluginInvocationResponseDeserializesAllFields() throws Exception {
+        String json = """
+            {
+              "verdict": true,
+              "message": "all good",
+              "metadata": {"score": 0.95},
+              "duration_ms": 12.5
+            }
+            """;
 
-        Map<String, Object> data = new HashMap<>();
-        data.put("verdict", true);
-        data.put("message", "all good");
-        data.put("metadata", metadata);
-        data.put("duration_ms", 12.5);
-
-        PluginInvocationResponse response = PluginInvocationResponse.fromMap(data);
+        PluginInvocationResponse response = MAPPER.readValue(json, PluginInvocationResponse.class);
 
         assertTrue(response.isVerdict());
         assertEquals("all good", response.getMessage());
@@ -151,11 +157,12 @@ class WasmPluginTest {
     }
 
     @Test
-    void testPluginInvocationResponseFromMapMinimal() {
-        Map<String, Object> data = new HashMap<>();
-        data.put("verdict", false);
+    void pluginInvocationResponseDeserializesMinimal() throws Exception {
+        String json = """
+            {"verdict": false}
+            """;
 
-        PluginInvocationResponse response = PluginInvocationResponse.fromMap(data);
+        PluginInvocationResponse response = MAPPER.readValue(json, PluginInvocationResponse.class);
 
         assertFalse(response.isVerdict());
         assertNull(response.getMessage());

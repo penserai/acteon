@@ -1,12 +1,10 @@
 package com.acteon.client.models;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-
 import java.time.Duration;
-import java.util.Map;
 
 /**
- * Outcome of dispatching an action.
+ * Outcome of dispatching an action. Decoded from the Rust serde
+ * adjacent-tagged enum shape via {@code ActionOutcomeDeserializer}.
  */
 public class ActionOutcome {
     private OutcomeType type;
@@ -88,94 +86,4 @@ public class ActionOutcome {
 
     public String getOverageBehavior() { return overageBehavior; }
     public void setOverageBehavior(String overageBehavior) { this.overageBehavior = overageBehavior; }
-
-    /**
-     * Parse an ActionOutcome from a raw JSON string.
-     * Handles both object responses like {"Executed": {...}} and string responses like "Deduplicated".
-     */
-    public static ActionOutcome fromJson(String json) {
-        String trimmed = json.trim();
-
-        // Handle string response like "Deduplicated"
-        if (trimmed.equals("\"Deduplicated\"")) {
-            ActionOutcome outcome = new ActionOutcome();
-            outcome.type = OutcomeType.DEDUPLICATED;
-            return outcome;
-        }
-
-        // For object responses, parse as map
-        try {
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            @SuppressWarnings("unchecked")
-            Map<String, Object> data = mapper.readValue(json, Map.class);
-            return fromMap(data);
-        } catch (Exception e) {
-            ActionOutcome outcome = new ActionOutcome();
-            outcome.type = OutcomeType.FAILED;
-            outcome.error = new ActionError("PARSE_ERROR", "Failed to parse outcome: " + e.getMessage(), false, 0);
-            return outcome;
-        }
-    }
-
-    /**
-     * Parse an ActionOutcome from a raw JSON map.
-     */
-    @SuppressWarnings("unchecked")
-    public static ActionOutcome fromMap(Map<String, Object> data) {
-        ActionOutcome outcome = new ActionOutcome();
-
-        if (data.containsKey("Executed")) {
-            outcome.type = OutcomeType.EXECUTED;
-            Map<String, Object> resp = (Map<String, Object>) data.get("Executed");
-            outcome.response = ProviderResponse.fromMap(resp);
-        } else if (data.containsKey("Deduplicated") || data.isEmpty()) {
-            outcome.type = OutcomeType.DEDUPLICATED;
-        } else if (data.containsKey("Suppressed")) {
-            outcome.type = OutcomeType.SUPPRESSED;
-            Map<String, Object> suppressed = (Map<String, Object>) data.get("Suppressed");
-            outcome.rule = (String) suppressed.get("rule");
-        } else if (data.containsKey("Rerouted")) {
-            outcome.type = OutcomeType.REROUTED;
-            Map<String, Object> rerouted = (Map<String, Object>) data.get("Rerouted");
-            outcome.originalProvider = (String) rerouted.get("original_provider");
-            outcome.newProvider = (String) rerouted.get("new_provider");
-            if (rerouted.containsKey("response")) {
-                outcome.response = ProviderResponse.fromMap((Map<String, Object>) rerouted.get("response"));
-            }
-        } else if (data.containsKey("Throttled")) {
-            outcome.type = OutcomeType.THROTTLED;
-            Map<String, Object> throttled = (Map<String, Object>) data.get("Throttled");
-            Map<String, Object> retryAfter = (Map<String, Object>) throttled.get("retry_after");
-            long secs = ((Number) retryAfter.getOrDefault("secs", 0)).longValue();
-            long nanos = ((Number) retryAfter.getOrDefault("nanos", 0)).longValue();
-            outcome.retryAfter = Duration.ofSeconds(secs).plusNanos(nanos);
-        } else if (data.containsKey("Failed")) {
-            outcome.type = OutcomeType.FAILED;
-            Map<String, Object> failed = (Map<String, Object>) data.get("Failed");
-            outcome.error = ActionError.fromMap(failed);
-        } else if (data.containsKey("DryRun")) {
-            outcome.type = OutcomeType.DRY_RUN;
-            Map<String, Object> dryRun = (Map<String, Object>) data.get("DryRun");
-            outcome.verdict = (String) dryRun.get("verdict");
-            outcome.matchedRule = (String) dryRun.get("matched_rule");
-            outcome.wouldBeProvider = (String) dryRun.get("would_be_provider");
-        } else if (data.containsKey("Scheduled")) {
-            outcome.type = OutcomeType.SCHEDULED;
-            Map<String, Object> scheduled = (Map<String, Object>) data.get("Scheduled");
-            outcome.actionId = (String) scheduled.get("action_id");
-            outcome.scheduledFor = (String) scheduled.get("scheduled_for");
-        } else if (data.containsKey("QuotaExceeded")) {
-            outcome.type = OutcomeType.QUOTA_EXCEEDED;
-            Map<String, Object> quota = (Map<String, Object>) data.get("QuotaExceeded");
-            outcome.tenant = (String) quota.get("tenant");
-            outcome.quotaLimit = ((Number) quota.getOrDefault("limit", 0)).longValue();
-            outcome.quotaUsed = ((Number) quota.getOrDefault("used", 0)).longValue();
-            outcome.overageBehavior = (String) quota.get("overage_behavior");
-        } else {
-            outcome.type = OutcomeType.FAILED;
-            outcome.error = new ActionError("UNKNOWN", "Unknown outcome", false, 0);
-        }
-
-        return outcome;
-    }
 }
