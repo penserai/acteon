@@ -40,7 +40,13 @@ pub struct LlmGuardrailServerConfig {
     /// metadata `llm_policy` entries.
     #[serde(default)]
     pub policies: HashMap<String, String>,
-    /// Whether to allow actions when the LLM is unreachable.
+    /// Whether to allow actions when the LLM is unreachable
+    /// (default: `false`, fail-closed).
+    ///
+    /// Fail-closed is the safer default: evaluator errors deny the
+    /// action rather than silently letting it through. Set this to
+    /// `true` only when availability matters more than the guarantee
+    /// that every action was evaluated.
     #[serde(default = "default_llm_fail_open")]
     pub fail_open: bool,
     /// Request timeout in seconds.
@@ -77,7 +83,8 @@ fn default_llm_model() -> String {
 }
 
 fn default_llm_fail_open() -> bool {
-    true
+    // Fail closed by default — see the field doc comment for rationale.
+    false
 }
 
 /// Configuration for the embedding provider used by semantic routing.
