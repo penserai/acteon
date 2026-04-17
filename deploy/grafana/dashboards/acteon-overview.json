@@ -540,6 +540,50 @@
         { "expr": "acteon_replay_rejected_total", "legendFormat": "Replay rejected", "refId": "G" }
       ],
       "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 65 },
+      "id": 300,
+      "title": "WASM Plugins",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ops"
+        }
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 66 },
+      "id": 301,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "title": "WASM Plugin Invocations",
+      "targets": [
+        { "expr": "rate(acteon_wasm_invocations_total[5m])", "legendFormat": "invocations", "refId": "A" },
+        { "expr": "rate(acteon_wasm_errors_total[5m])", "legendFormat": "errors", "refId": "B" }
+      ],
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "steps": [{ "color": "green", "value": null }] } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Errors" }, "properties": [{ "id": "thresholds", "value": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }] }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 66 },
+      "id": 302,
+      "options": { "colorMode": "background", "graphMode": "area", "textMode": "value_and_name", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "WASM Plugin Activity (last 5m)",
+      "targets": [
+        { "expr": "increase(acteon_wasm_invocations_total[5m])", "legendFormat": "Invocations", "refId": "A" },
+        { "expr": "increase(acteon_wasm_errors_total[5m])", "legendFormat": "Errors", "refId": "B" }
+      ],
+      "type": "stat"
     }
   ],
   "refresh": "30s",

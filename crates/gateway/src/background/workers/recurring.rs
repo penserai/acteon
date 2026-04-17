@@ -47,7 +47,13 @@ impl BackgroundProcessor {
             // Parse namespace:tenant:pending_recurring:recurring_id
             let parts: Vec<&str> = key.splitn(4, ':').collect();
             if parts.len() < 4 {
+                // Malformed pending key is a genuine error — counts as
+                // a recurring error so dashboards catch it. The key
+                // parse is the worker's first sanity check and
+                // failure here means the state store is corrupt or
+                // under-version.
                 warn!(key = %key, "invalid pending recurring key format");
+                self.metrics.increment_recurring_errors();
                 continue;
             }
             let namespace = parts[0];
@@ -70,7 +76,13 @@ impl BackgroundProcessor {
                 )
                 .await?;
             if !claimed {
+                // Another replica grabbed this occurrence first. Normal
+                // behavior under multi-replica CAS contention — record
+                // it as a skip so capacity dashboards can show the
+                // ratio, but don't treat it as an error.
                 debug!(recurring_id = %recurring_id, "recurring action already claimed by another instance");
+                self.metrics.increment_recurring_skipped();
+                skipped += 1;
                 continue;
             }
 
@@ -88,14 +100,26 @@ impl BackgroundProcessor {
             let data_str = match self.decrypt_state_value(&raw_str) {
                 Ok(v) => v,
                 Err(e) => {
+                    // Encrypted state couldn't be opened — wrong
+                    // master key, corrupt ciphertext, or key rotation
+                    // in progress without re-encryption. Operators
+                    // must notice this; bump the error counter so
+                    // the Grafana error-rate alert fires.
                     warn!(recurring_id = %recurring_id, error = %e, "failed to decrypt recurring action data");
+                    self.metrics.increment_recurring_errors();
                     continue;
                 }
             };
 
             let Ok(recurring) = serde_json::from_str::<acteon_core::RecurringAction>(&data_str)
             else {
+                // Stored JSON doesn't match the current
+                // `RecurringAction` schema. Either a malformed write
+                // got through or we're running a binary older than
+                // the state it's reading. Either way, an operator
+                // needs to see it.
                 warn!(recurring_id = %recurring_id, "failed to deserialize recurring action");
+                self.metrics.increment_recurring_errors();
                 continue;
             };
 
@@ -114,6 +138,7 @@ impl BackgroundProcessor {
                     StateKey::new(namespace, tenant, KeyKind::PendingRecurring, recurring_id);
                 self.state.delete(&pending_key).await?;
                 self.state.remove_timeout_index(&pending_key).await?;
+                self.metrics.increment_recurring_skipped();
                 skipped += 1;
                 continue;
             }
@@ -128,6 +153,7 @@ impl BackgroundProcessor {
                         last_executed_secs_ago = gap,
                         "skipping recently-executed recurring action"
                     );
+                    self.metrics.increment_recurring_skipped();
                     skipped += 1;
                     continue;
                 }
