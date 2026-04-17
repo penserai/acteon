@@ -68,7 +68,7 @@ public class ActeonClient implements AutoCloseable {
     public ActeonClient(String baseUrl, String apiKey, Duration timeout) {
         this.baseUrl = baseUrl.replaceAll("/$", "");
         this.apiKey = apiKey;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonMapper.build();
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(timeout)
             .build();
@@ -80,7 +80,7 @@ public class ActeonClient implements AutoCloseable {
     public ActeonClient(String baseUrl, String apiKey, Duration timeout, TlsConfig tlsConfig) {
         this.baseUrl = baseUrl.replaceAll("/$", "");
         this.apiKey = apiKey;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = JsonMapper.build();
 
         HttpClient.Builder builder = HttpClient.newBuilder().connectTimeout(timeout);
         if (tlsConfig != null) {
@@ -243,23 +243,11 @@ public class ActeonClient implements AutoCloseable {
         // "malformed response" signal instead of a raw Jackson
         // exception — which is what they'd see if a proxy or
         // waiting-room page returned 200 OK with an HTML body.
-        Map<String, Object> data;
         try {
-            data = objectMapper.readValue(
-                response.body(),
-                new TypeReference<Map<String, Object>>() {}
-            );
+            return objectMapper.readValue(response.body(), SigningKeysResponse.class);
         } catch (IOException e) {
             throw new ConnectionException(
                 "malformed signing keys response: " + e.getMessage(), e);
-        }
-
-        try {
-            return SigningKeysResponse.fromMap(data);
-        } catch (IllegalArgumentException e) {
-            // fromMap's helpers already prefix their messages with
-            // "malformed signing keys response:", so pass through.
-            throw new ConnectionException(e.getMessage(), e);
         }
     }
 
@@ -280,11 +268,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                Map<String, Object> data = objectMapper.readValue(
-                    response.body(),
-                    new TypeReference<Map<String, Object>>() {}
-                );
-                return ActionOutcome.fromMap(data);
+                return objectMapper.readValue(response.body(), ActionOutcome.class);
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -311,11 +295,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                Map<String, Object> data = objectMapper.readValue(
-                    response.body(),
-                    new TypeReference<Map<String, Object>>() {}
-                );
-                return ActionOutcome.fromMap(data);
+                return objectMapper.readValue(response.body(), ActionOutcome.class);
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -341,15 +321,10 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                List<Map<String, Object>> data = objectMapper.readValue(
+                return objectMapper.readValue(
                     response.body(),
-                    new TypeReference<List<Map<String, Object>>>() {}
+                    new TypeReference<List<BatchResult>>() {}
                 );
-                List<BatchResult> results = new ArrayList<>();
-                for (Map<String, Object> item : data) {
-                    results.add(BatchResult.fromMap(item));
-                }
-                return results;
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -376,15 +351,10 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                List<Map<String, Object>> data = objectMapper.readValue(
+                return objectMapper.readValue(
                     response.body(),
-                    new TypeReference<List<Map<String, Object>>>() {}
+                    new TypeReference<List<BatchResult>>() {}
                 );
-                List<BatchResult> results = new ArrayList<>();
-                for (Map<String, Object> item : data) {
-                    results.add(BatchResult.fromMap(item));
-                }
-                return results;
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -2245,9 +2215,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
-                return ListProviderHealthResponse.fromMap(data);
+                return objectMapper.readValue(response.body(), ListProviderHealthResponse.class);
             } else {
                 throw new HttpException(response.statusCode(), "Failed to list provider health");
             }
@@ -2275,9 +2243,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
-                return ListPluginsResponse.fromMap(data);
+                return objectMapper.readValue(response.body(), ListPluginsResponse.class);
             } else {
                 throw new HttpException(response.statusCode(), "Failed to list plugins");
             }
@@ -2302,9 +2268,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200 || response.statusCode() == 201) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
-                return WasmPlugin.fromMap(data);
+                return objectMapper.readValue(response.body(), WasmPlugin.class);
             } else {
                 ErrorResponse error = parseResponse(response, ErrorResponse.class);
                 throw new ApiException(error.getCode(), error.getMessage(), error.isRetryable());
@@ -2331,9 +2295,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
-                return Optional.of(WasmPlugin.fromMap(data));
+                return Optional.of(objectMapper.readValue(response.body(), WasmPlugin.class));
             } else if (response.statusCode() == 404) {
                 return Optional.empty();
             } else {
@@ -2389,9 +2351,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> data = objectMapper.readValue(response.body(), Map.class);
-                return PluginInvocationResponse.fromMap(data);
+                return objectMapper.readValue(response.body(), PluginInvocationResponse.class);
             } else if (response.statusCode() == 404) {
                 throw new HttpException(response.statusCode(), "Plugin not found: " + name);
             } else {
@@ -2856,11 +2816,7 @@ public class ActeonClient implements AutoCloseable {
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
             if (response.statusCode() == 200) {
-                Map<String, Object> data = objectMapper.readValue(
-                    response.body(),
-                    new TypeReference<Map<String, Object>>() {}
-                );
-                return AnalyticsResponse.fromMap(data);
+                return objectMapper.readValue(response.body(), AnalyticsResponse.class);
             } else {
                 throw new HttpException(response.statusCode(), "Failed to query analytics");
             }

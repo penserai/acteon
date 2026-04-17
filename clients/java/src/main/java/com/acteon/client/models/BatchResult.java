@@ -1,9 +1,9 @@
 package com.acteon.client.models;
 
-import java.util.Map;
-
 /**
- * Result from a batch dispatch operation.
+ * Result from a batch dispatch operation. The wire shape is either
+ * {@code {"error": {...}}} or a bare {@link ActionOutcome} variant —
+ * see {@code BatchResultDeserializer} for the polymorphic decode.
  */
 public class BatchResult {
     private boolean success;
@@ -18,19 +18,4 @@ public class BatchResult {
 
     public ErrorResponse getError() { return error; }
     public void setError(ErrorResponse error) { this.error = error; }
-
-    @SuppressWarnings("unchecked")
-    public static BatchResult fromMap(Map<String, Object> data) {
-        BatchResult result = new BatchResult();
-
-        if (data.containsKey("error")) {
-            result.success = false;
-            result.error = ErrorResponse.fromMap((Map<String, Object>) data.get("error"));
-        } else {
-            result.success = true;
-            result.outcome = ActionOutcome.fromMap(data);
-        }
-
-        return result;
-    }
 }

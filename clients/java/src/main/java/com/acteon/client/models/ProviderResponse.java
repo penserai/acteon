@@ -6,7 +6,11 @@ import java.util.Map;
  * Response from a provider.
  */
 public class ProviderResponse {
-    private String status;
+    /**
+     * Defaults to {@code "success"} when the server omits the field —
+     * matches the pre-Jackson-migration {@code fromMap} behavior.
+     */
+    private String status = "success";
     private Map<String, Object> body;
     private Map<String, String> headers;
 
@@ -18,13 +22,4 @@ public class ProviderResponse {
 
     public Map<String, String> getHeaders() { return headers; }
     public void setHeaders(Map<String, String> headers) { this.headers = headers; }
-
-    @SuppressWarnings("unchecked")
-    public static ProviderResponse fromMap(Map<String, Object> data) {
-        ProviderResponse response = new ProviderResponse();
-        response.status = (String) data.getOrDefault("status", "success");
-        response.body = (Map<String, Object>) data.getOrDefault("body", Map.of());
-        response.headers = (Map<String, String>) data.getOrDefault("headers", Map.of());
-        return response;
-    }
 }

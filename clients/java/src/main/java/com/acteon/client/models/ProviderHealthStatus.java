@@ -1,7 +1,5 @@
 package com.acteon.client.models;
 
-import java.util.Map;
-
 /**
  * Health and metrics for a single provider.
  */
@@ -62,30 +60,4 @@ public class ProviderHealthStatus {
 
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }
-
-    @SuppressWarnings("unchecked")
-    public static ProviderHealthStatus fromMap(Map<String, Object> data) {
-        ProviderHealthStatus status = new ProviderHealthStatus();
-        status.provider = (String) data.get("provider");
-        status.healthy = (Boolean) data.get("healthy");
-        status.healthCheckError = (String) data.get("health_check_error");
-        status.circuitBreakerState = (String) data.get("circuit_breaker_state");
-        status.totalRequests = ((Number) data.get("total_requests")).intValue();
-        status.successes = ((Number) data.get("successes")).intValue();
-        status.failures = ((Number) data.get("failures")).intValue();
-        status.successRate = ((Number) data.get("success_rate")).doubleValue();
-        status.avgLatencyMs = ((Number) data.get("avg_latency_ms")).doubleValue();
-        status.p50LatencyMs = ((Number) data.get("p50_latency_ms")).doubleValue();
-        status.p95LatencyMs = ((Number) data.get("p95_latency_ms")).doubleValue();
-        status.p99LatencyMs = ((Number) data.get("p99_latency_ms")).doubleValue();
-
-        if (data.containsKey("last_request_at") && data.get("last_request_at") != null) {
-            status.lastRequestAt = ((Number) data.get("last_request_at")).longValue();
-        }
-        if (data.containsKey("last_error") && data.get("last_error") != null) {
-            status.lastError = (String) data.get("last_error");
-        }
-
-        return status;
-    }
 }
