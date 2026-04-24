@@ -295,7 +295,7 @@ pub fn router(state: AppState) -> Router {
             "/v1/providers/health",
             get(provider_health::list_provider_health),
         )
-        // Bus (Phase 1)
+        // Bus (Phase 1 + 2)
         .route(
             "/v1/bus/topics",
             get(bus::list_topics).post(bus::create_topic),
@@ -303,6 +303,29 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/bus/topics/{kafka_name}", delete(bus::delete_topic))
         .route("/v1/bus/publish", post(bus::publish))
         .route("/v1/bus/subscribe/{subscription_id}", get(bus::subscribe))
+        // Phase 2: durable subscriptions + ack + lag + DLQ. Per-subscription
+        // endpoints include the (namespace, tenant) in the path so each
+        // operation does an O(1) StateKey lookup instead of scanning.
+        .route(
+            "/v1/bus/subscriptions",
+            get(bus::list_subscriptions).post(bus::create_subscription),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}",
+            delete(bus::delete_subscription),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/ack",
+            post(bus::ack_subscription),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/lag",
+            get(bus::subscription_lag),
+        )
+        .route(
+            "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
+            post(bus::deadletter_subscription),
+        )
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
         .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))

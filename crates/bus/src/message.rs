@@ -94,6 +94,13 @@ pub struct DeliveryReceipt {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Position within a Kafka topic that a consumer can commit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct OffsetPosition {
+    pub partition: i32,
+    pub offset: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

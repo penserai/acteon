@@ -58,6 +58,8 @@ pub enum KeyKind {
     TimeInterval,
     /// Bus topic metadata (Phase 1 of the agentic bus).
     BusTopic,
+    /// Bus subscription metadata (Phase 2 of the agentic bus).
+    BusSubscription,
     Custom(String),
 }
 
@@ -95,6 +97,7 @@ impl KeyKind {
             Self::ActiveSilences => "active_silences",
             Self::TimeInterval => "time_interval",
             Self::BusTopic => "bus_topic",
+            Self::BusSubscription => "bus_subscription",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -192,6 +195,7 @@ mod tests {
         assert_eq!(KeyKind::ChainDefinition.as_str(), "chain_def");
         assert_eq!(KeyKind::TimeInterval.as_str(), "time_interval");
         assert_eq!(KeyKind::BusTopic.as_str(), "bus_topic");
+        assert_eq!(KeyKind::BusSubscription.as_str(), "bus_subscription");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

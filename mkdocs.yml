@@ -184,6 +184,7 @@ nav:
   - Agentic Bus:
     - Master Plan: concepts/bus-master-plan.md
     - Phase 1 (Topics + Publish + Subscribe): features/bus-phase-1.md
+    - Phase 2 (Subscriptions + Ack + Lag + DLQ): features/bus-phase-2.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
