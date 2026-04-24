@@ -53,6 +53,8 @@ async fn ui_serves_index_html() {
         replay_protection: None,
         #[cfg(feature = "swarm")]
         swarm_registry: None,
+        #[cfg(feature = "bus")]
+        bus_backend: None,
     };
 
     let app = acteon_server::api::router(state);

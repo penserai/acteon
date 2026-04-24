@@ -56,6 +56,8 @@ pub enum KeyKind {
     ActiveSilences,
     /// Time interval definition (recurring schedule).
     TimeInterval,
+    /// Bus topic metadata (Phase 1 of the agentic bus).
+    BusTopic,
     Custom(String),
 }
 
@@ -92,6 +94,7 @@ impl KeyKind {
             Self::Silence => "silence",
             Self::ActiveSilences => "active_silences",
             Self::TimeInterval => "time_interval",
+            Self::BusTopic => "bus_topic",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -188,6 +191,7 @@ mod tests {
         assert_eq!(KeyKind::TemplateProfile.as_str(), "template_profile");
         assert_eq!(KeyKind::ChainDefinition.as_str(), "chain_def");
         assert_eq!(KeyKind::TimeInterval.as_str(), "time_interval");
+        assert_eq!(KeyKind::BusTopic.as_str(), "bus_topic");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

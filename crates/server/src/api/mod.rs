@@ -2,6 +2,7 @@ pub mod analytics;
 pub mod approvals;
 pub mod audit;
 pub mod auth;
+pub mod bus;
 pub mod chains;
 pub mod circuit_breakers;
 pub mod compliance;
@@ -103,6 +104,10 @@ pub struct AppState {
     /// or no `swarm`-type provider is configured).
     #[cfg(feature = "swarm")]
     pub swarm_registry: Option<std::sync::Arc<acteon_swarm_provider::SwarmRunRegistry>>,
+    /// Agentic bus backend (None when the `bus` feature is disabled or
+    /// `[bus].enabled = false`).
+    #[cfg(feature = "bus")]
+    pub bus_backend: Option<acteon_bus::SharedBackend>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -290,6 +295,14 @@ pub fn router(state: AppState) -> Router {
             "/v1/providers/health",
             get(provider_health::list_provider_health),
         )
+        // Bus (Phase 1)
+        .route(
+            "/v1/bus/topics",
+            get(bus::list_topics).post(bus::create_topic),
+        )
+        .route("/v1/bus/topics/{kafka_name}", delete(bus::delete_topic))
+        .route("/v1/bus/publish", post(bus::publish))
+        .route("/v1/bus/subscribe/{subscription_id}", get(bus::subscribe))
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
         .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))

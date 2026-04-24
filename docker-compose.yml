@@ -135,6 +135,42 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # Kafka broker for the agentic bus feature —
+  #   docker compose --profile kafka up
+  # Single-broker KRaft mode (no Zookeeper). Advertises on localhost:9092
+  # for the host and kafka:9092 inside the compose network.
+  kafka:
+    image: apache/kafka:3.7.0
+    profiles: [kafka]
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # Two data listeners: PLAINTEXT (intra-compose, kafka:29092) and
+      # HOST (host machine, localhost:9092). Separate ports so the
+      # advertised addresses match each side.
+      KAFKA_LISTENERS: PLAINTEXT://:29092,CONTROLLER://:9093,HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      CLUSTER_ID: 5L6g3nShT-eMCtK--X86sw
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-cluster.sh cluster-id --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   redis-data:
   prometheus-data:
@@ -143,3 +179,4 @@ volumes:
   clickhouse-data:
   elasticsearch-data:
   dynamodb-data:
+  kafka-data:

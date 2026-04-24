@@ -120,6 +120,8 @@ fn build_test_state_with_audit_and_analytics(
         replay_protection: None,
         #[cfg(feature = "swarm")]
         swarm_registry: None,
+        #[cfg(feature = "bus")]
+        bus_backend: None,
     }
 }
 
@@ -1188,6 +1190,8 @@ fn build_approval_state_with_providers(
         replay_protection: None,
         #[cfg(feature = "swarm")]
         swarm_registry: None,
+        #[cfg(feature = "bus")]
+        bus_backend: None,
     }
 }
 

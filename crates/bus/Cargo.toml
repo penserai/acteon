@@ -1,0 +1,32 @@
+[package]
+name = "acteon-bus"
+description = "Kafka-backed agentic message bus transport for Acteon (Phase 1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+acteon-core = { workspace = true }
+
+async-stream = "0.3"
+async-trait = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+parking_lot = "0.12"
+rdkafka = { version = "0.37", features = ["cmake-build", "tokio"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "time"] }
+uuid = { workspace = true }
+
+[lints]
+workspace = true

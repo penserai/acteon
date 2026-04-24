@@ -53,6 +53,8 @@ discord = ["dep:acteon-discord"]
 extras-alerting = ["opsgenie", "victorops", "pushover", "telegram", "wechat", "discord"]
 # Ambient agent-swarm provider — long-running goal-driven runs dispatched as Actions.
 swarm = ["dep:acteon-swarm", "dep:acteon-swarm-provider"]
+# Agentic message bus (Kafka-backed). Phase 1: topics + publish + subscribe.
+bus = ["dep:acteon-bus"]
 
 [dependencies]
 acteon-audit = { workspace = true, features = ["openapi"] }
@@ -84,6 +86,7 @@ acteon-telegram = { workspace = true, optional = true }
 acteon-wechat = { workspace = true, optional = true }
 acteon-swarm = { workspace = true, optional = true }
 acteon-swarm-provider = { workspace = true, optional = true, features = ["openapi"] }
+acteon-bus = { workspace = true, optional = true }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }

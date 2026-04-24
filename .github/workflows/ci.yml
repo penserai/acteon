@@ -11,6 +11,13 @@ env:
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
 
+# `acteon-bus` brings in `rdkafka-sys` 4.10 which vendors librdkafka
+# 2.12.1 and builds it statically through `cmake-build`. librdkafka
+# 2.12.1 has a regression where rdkafka_conf.c includes curl/curl.h
+# unconditionally even when `-DWITH_CURL=0` is passed, so the build
+# fails on runners that don't have libcurl headers. Every Rust job
+# that compiles the workspace needs them.
+
 jobs:
   check:
     name: "Check (${{ matrix.rust }})"
@@ -21,6 +28,8 @@ jobs:
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
@@ -37,6 +46,8 @@ jobs:
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
@@ -54,6 +65,8 @@ jobs:
         rust: [stable, "1.88"]
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.rust }}
@@ -99,6 +112,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install librdkafka build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
