@@ -384,7 +384,9 @@ pub struct WeChatProviderConfig {
 #[serde(default)]
 pub struct SwarmProviderConfig {
     /// Path to a `swarm.toml` that contains the full
-    /// [`acteon_swarm::SwarmConfig`] (roles, engine, safety, etc.).
+    /// `acteon_swarm::SwarmConfig` (roles, engine, safety, etc.).
+    /// The crate is only in scope when compiled with `--features swarm`,
+    /// so this is a plain code reference rather than a rustdoc link.
     pub config_path: Option<String>,
     /// Path to the `acteon-swarm-hook` binary used for Claude Agent
     /// SDK PreToolUse/PostToolUse/Stop hooks.
