@@ -662,6 +662,180 @@ impl ActeonClient {
             encode_segment(topic_name)
         )
     }
+
+    // ----- Phase 4: agents -----
+
+    /// Register an agent. First agent in a `(namespace, tenant)`
+    /// causes the shared inbox topic `{ns}.{tenant}.agents-inbox` to
+    /// be auto-created.
+    pub async fn register_bus_agent(&self, req: &RegisterBusAgent) -> Result<BusAgent, Error> {
+        let url = format!("{}/v1/bus/agents", self.base_url);
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusAgent>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// List agents, optionally filtered by namespace/tenant/capability/status.
+    pub async fn list_bus_agents(
+        &self,
+        filter: &BusAgentFilter,
+    ) -> Result<ListBusAgentsResponse, Error> {
+        let url = format!("{}/v1/bus/agents", self.base_url);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .query(filter)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<ListBusAgentsResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Fetch a single agent record.
+    pub async fn get_bus_agent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+    ) -> Result<BusAgent, Error> {
+        let url = self.agent_url(namespace, tenant, agent_id, None);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusAgent>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Patch-style update of the mutable fields on an agent record.
+    pub async fn update_bus_agent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+        req: &UpdateBusAgent,
+    ) -> Result<BusAgent, Error> {
+        let url = self.agent_url(namespace, tenant, agent_id, None);
+        let resp = self
+            .add_auth(self.client.put(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusAgent>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Delete an agent record. The shared inbox topic is left in
+    /// place — other agents in the tenant may still need it.
+    pub async fn delete_bus_agent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+    ) -> Result<(), Error> {
+        let url = self.agent_url(namespace, tenant, agent_id, None);
+        let resp = self
+            .add_auth(self.client.delete(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Record a heartbeat. Agents typically call this once per
+    /// `heartbeat_ttl_ms / 3` to stay `Online`.
+    pub async fn heartbeat_bus_agent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+    ) -> Result<BusAgentHeartbeat, Error> {
+        let url = self.agent_url(namespace, tenant, agent_id, Some("heartbeat"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusAgentHeartbeat>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Deliver a message to the agent's inbox. Keyed by `agent_id` so
+    /// Kafka routes to a stable partition per agent.
+    pub async fn send_to_bus_agent(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+        req: &SendToBusAgent,
+    ) -> Result<BusAgentSendReceipt, Error> {
+        let url = self.agent_url(namespace, tenant, agent_id, Some("send"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusAgentSendReceipt>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    fn agent_url(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        agent_id: &str,
+        suffix: Option<&str>,
+    ) -> String {
+        let ns = encode_segment(namespace);
+        let t = encode_segment(tenant);
+        let a = encode_segment(agent_id);
+        match suffix {
+            Some(s) => format!("{}/v1/bus/agents/{ns}/{t}/{a}/{s}", self.base_url),
+            None => format!("{}/v1/bus/agents/{ns}/{t}/{a}", self.base_url),
+        }
+    }
 }
 
 // ----- Phase 3: DTOs -----
@@ -731,6 +905,100 @@ pub struct PublishTyped<'a, T: serde::Serialize> {
     pub name: Option<&'a str>,
     pub key: Option<&'a str>,
     pub headers: BTreeMap<String, String>,
+}
+
+// ----- Phase 4: agent DTOs -----
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct RegisterBusAgent {
+    pub agent_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inbox_topic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat_ttl_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct UpdateBusAgent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inbox_topic: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heartbeat_ttl_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusAgent {
+    pub agent_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    pub inbox_topic: String,
+    pub heartbeat_ttl_ms: i64,
+    #[serde(default)]
+    pub last_heartbeat_at: Option<String>,
+    pub status: String,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListBusAgentsResponse {
+    pub agents: Vec<BusAgent>,
+    pub count: usize,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct BusAgentFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusAgentHeartbeat {
+    pub agent_id: String,
+    pub last_heartbeat_at: String,
+    pub status: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct SendToBusAgent {
+    pub payload: serde_json::Value,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusAgentSendReceipt {
+    pub inbox_topic: String,
+    pub agent_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: String,
 }
 
 async fn map_error(resp: reqwest::Response) -> Error {

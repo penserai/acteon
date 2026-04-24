@@ -69,6 +69,7 @@ fn authorize_bus_op(
         BusOp::Publish => (Permission::Dispatch, "publish"),
         BusOp::Subscribe => (Permission::StreamSubscribe, "subscribe"),
         BusOp::ManageSchema => (Permission::Dispatch, "schema"),
+        BusOp::ManageAgent => (Permission::Dispatch, "agent"),
     };
     if !identity.role.has_permission(permission) {
         return Err((
@@ -106,6 +107,11 @@ enum BusOp {
     Subscribe,
     /// Schema CRUD + topic-binding CRUD (Phase 3).
     ManageSchema,
+    /// Agent CRUD + heartbeat + send-to-agent (Phase 4). Send also
+    /// flows through [`BusOp::Publish`] on the underlying topic so
+    /// operators can restrict *inbox writes* independently of *agent
+    /// registry ops*.
+    ManageAgent,
 }
 
 /// Parse a `namespace.tenant.name` Kafka topic string.
@@ -2691,5 +2697,881 @@ pub async fn unbind_topic_schema(
     {
         let _ = (state, namespace, tenant, name);
         service_unavailable("bus feature not compiled")
+    }
+}
+
+// =============================================================================
+// Phase 4: Agent identity + shared inbox + heartbeat
+// =============================================================================
+
+/// Body of `POST /v1/bus/agents`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RegisterAgentRequest {
+    pub agent_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Override inbox topic (defaults to
+    /// `{namespace}.{tenant}.agents-inbox`).
+    #[serde(default)]
+    pub inbox_topic: Option<String>,
+    #[serde(default)]
+    pub heartbeat_ttl_ms: Option<i64>,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+}
+
+/// Body of `PUT /v1/bus/agents/{ns}/{t}/{id}`. Only the mutable fields
+/// appear here — `agent_id`, `namespace`, `tenant`, and `created_at`
+/// are immutable after registration.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateAgentRequest {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    pub inbox_topic: Option<String>,
+    #[serde(default)]
+    pub heartbeat_ttl_ms: Option<i64>,
+    #[serde(default)]
+    pub labels: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AgentResponse {
+    pub agent_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub capabilities: Vec<String>,
+    pub inbox_topic: String,
+    pub heartbeat_ttl_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    pub status: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListAgentsResponse {
+    pub agents: Vec<AgentResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListAgentsParams {
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Filter to agents advertising this capability token.
+    #[serde(default)]
+    pub capability: Option<String>,
+    /// Filter by derived status (`online`, `idle`, `dead`, `unknown`).
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HeartbeatResponse {
+    pub agent_id: String,
+    pub last_heartbeat_at: DateTime<Utc>,
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SendToAgentRequest {
+    /// Free-form payload.
+    #[schema(value_type = Object)]
+    pub payload: serde_json::Value,
+    /// Optional operator-set headers. `acteon.*` keys are reserved.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SendToAgentResponse {
+    pub inbox_topic: String,
+    pub agent_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+}
+
+#[cfg(feature = "bus")]
+fn agent_to_response(a: &acteon_core::Agent) -> AgentResponse {
+    AgentResponse {
+        agent_id: a.agent_id.clone(),
+        namespace: a.namespace.clone(),
+        tenant: a.tenant.clone(),
+        display_name: a.display_name.clone(),
+        capabilities: a.capabilities.clone(),
+        inbox_topic: a.effective_inbox_topic(),
+        heartbeat_ttl_ms: a.heartbeat_ttl_ms,
+        last_heartbeat_at: a.last_heartbeat_at,
+        status: agent_status_str(a.status()),
+        labels: a.labels.clone(),
+        created_at: a.created_at,
+        updated_at: a.updated_at,
+    }
+}
+
+#[cfg(feature = "bus")]
+fn agent_status_str(s: acteon_core::AgentStatus) -> String {
+    match s {
+        acteon_core::AgentStatus::Online => "online",
+        acteon_core::AgentStatus::Idle => "idle",
+        acteon_core::AgentStatus::Dead => "dead",
+        acteon_core::AgentStatus::Unknown => "unknown",
+    }
+    .to_string()
+}
+
+/// Ensure the shared inbox topic exists in state + Kafka. Called from
+/// `register_agent` and `send_to_agent` — first agent to register a
+/// `(namespace, tenant)` causes the topic to be auto-created; every
+/// subsequent call is a no-op (state lookup short-circuits).
+///
+/// Returns `Ok(topic_name)` on success. We deliberately `set(&key)`
+/// the row unconditionally after creation: a crash between Kafka
+/// create and state insert would otherwise leave the inbox topic in
+/// Kafka but unregistered in Acteon, which would fail the publish-
+/// edge governance check.
+#[cfg(feature = "bus")]
+async fn ensure_agent_inbox_topic(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    inbox_topic_name: &str,
+) -> Result<(), axum::response::Response> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusTopic,
+        inbox_topic_name,
+    );
+    let Some(backend) = state.bus_backend.as_ref() else {
+        return Err(service_unavailable("bus feature not enabled"));
+    };
+    let gw = state.gateway.read().await;
+    let store = gw.state_store();
+    if matches!(store.get(&key).await, Ok(Some(_))) {
+        return Ok(());
+    }
+    // Derive the leaf name from the Kafka-form topic. Our naming
+    // convention is `{ns}.{tenant}.{leaf}`; the leaf is everything
+    // after the second dot.
+    let leaf_name = inbox_topic_name
+        .splitn(3, '.')
+        .nth(2)
+        .unwrap_or(inbox_topic_name);
+    let topic = Topic::new(leaf_name, namespace, tenant);
+    if let Err(e) = topic.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid inbox topic name '{inbox_topic_name}': {e}"),
+            }),
+        )
+            .into_response());
+    }
+    let body = match serde_json::to_string(&topic) {
+        Ok(b) => b,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response());
+        }
+    };
+    if let Err(e) = store.set(&key, &body, None).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response());
+    }
+    drop(gw);
+    if let Err(e) = backend.create_topic(&topic).await {
+        // Already exists (AlreadyExists from admin) is fine — another
+        // agent may have raced the create. Log everything else.
+        if !e.to_string().to_lowercase().contains("alreadyexists") {
+            tracing::warn!(error = %e, topic = %inbox_topic_name, "auto-create of agent inbox topic failed");
+        }
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/agents",
+    tag = "bus",
+    request_body = RegisterAgentRequest,
+    responses(
+        (status = 201, description = "Agent registered", body = AgentResponse),
+        (status = 400, description = "Invalid agent definition", body = ErrorResponse),
+        (status = 409, description = "Agent already exists", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn register_agent(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Json(req): Json<RegisterAgentRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &req.tenant, &req.namespace, BusOp::ManageAgent)
+        {
+            return resp;
+        }
+        let mut agent = acteon_core::Agent::new(&req.agent_id, &req.namespace, &req.tenant);
+        agent.display_name = req.display_name.clone();
+        agent.capabilities = req.capabilities.clone();
+        agent.inbox_topic = req.inbox_topic.clone();
+        if let Some(ttl) = req.heartbeat_ttl_ms {
+            agent.heartbeat_ttl_ms = ttl;
+        }
+        agent.labels = req.labels.clone();
+        if let Err(e) = agent.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let inbox = agent.effective_inbox_topic();
+        // Require that a custom inbox belongs to the same tenant. Same
+        // check we enforce on subscriptions so an agent can't hijack
+        // another tenant's topic.
+        if let Ok((topic_ns, topic_t, _)) = parse_kafka_name(&inbox)
+            && (topic_ns != agent.namespace || topic_t != agent.tenant)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "inbox topic {inbox} crosses tenants: must be under {}.{}",
+                        agent.namespace, agent.tenant
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        let key = StateKey::new(
+            agent.namespace.clone(),
+            agent.tenant.clone(),
+            KeyKind::BusAgent,
+            agent.id(),
+        );
+        let gw = state.gateway.read().await;
+        match gw.state_store().get(&key).await {
+            Ok(Some(_)) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "agent {}.{}.{} already registered",
+                            agent.namespace, agent.tenant, agent.agent_id
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+        }
+        drop(gw);
+        // Provision the shared inbox topic on first registration.
+        if let Err(resp) =
+            ensure_agent_inbox_topic(&state, &agent.namespace, &agent.tenant, &inbox).await
+        {
+            return resp;
+        }
+        let payload = match serde_json::to_string(&agent) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let gw = state.gateway.read().await;
+        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        (StatusCode::CREATED, Json(agent_to_response(&agent))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/agents",
+    tag = "bus",
+    params(ListAgentsParams),
+    responses(
+        (status = 200, description = "Agent list", body = ListAgentsResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn list_agents(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(params): Query<ListAgentsParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        let gw = state.gateway.read().await;
+        let rows = match gw.state_store().scan_keys_by_kind(KeyKind::BusAgent).await {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let agents: Vec<acteon_core::Agent> = rows
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Agent>(&v).ok())
+            .filter(|a| params.namespace.as_deref().is_none_or(|n| a.namespace == n))
+            .filter(|a| params.tenant.as_deref().is_none_or(|t| a.tenant == t))
+            .filter(|a| {
+                params
+                    .capability
+                    .as_deref()
+                    .is_none_or(|c| a.capabilities.iter().any(|cap| cap == c))
+            })
+            .filter(|a| identity.is_authorized(&a.tenant, &a.namespace, "bus", "agent"))
+            .filter(|a| {
+                params
+                    .status
+                    .as_deref()
+                    .is_none_or(|s| agent_status_str(a.status()).eq_ignore_ascii_case(s))
+            })
+            .collect();
+        let responses: Vec<AgentResponse> = agents.iter().map(agent_to_response).collect();
+        let count = responses.len();
+        (
+            StatusCode::OK,
+            Json(ListAgentsResponse {
+                agents: responses,
+                count,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("agent_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Agent detail", body = AgentResponse),
+        (status = 404, description = "Agent not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn get_agent(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+            return resp;
+        }
+        match load_agent(&state, &namespace, &tenant, &agent_id).await {
+            Ok(a) => (StatusCode::OK, Json(agent_to_response(&a))).into_response(),
+            Err(resp) => resp,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, agent_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    tag = "bus",
+    request_body = UpdateAgentRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("agent_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Agent updated", body = AgentResponse),
+        (status = 400, description = "Invalid update", body = ErrorResponse),
+        (status = 404, description = "Agent not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn update_agent(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    Json(req): Json<UpdateAgentRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+            return resp;
+        }
+        let mut agent = match load_agent(&state, &namespace, &tenant, &agent_id).await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+        if let Some(d) = req.display_name.clone() {
+            agent.display_name = Some(d);
+        }
+        if let Some(c) = req.capabilities.clone() {
+            agent.capabilities = c;
+        }
+        if let Some(i) = req.inbox_topic.clone() {
+            agent.inbox_topic = Some(i);
+        }
+        if let Some(ttl) = req.heartbeat_ttl_ms {
+            agent.heartbeat_ttl_ms = ttl;
+        }
+        if let Some(l) = req.labels.clone() {
+            agent.labels = l;
+        }
+        agent.updated_at = Utc::now();
+        if let Err(e) = agent.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusAgent,
+            agent.id(),
+        );
+        let payload = match serde_json::to_string(&agent) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let gw = state.gateway.read().await;
+        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        (StatusCode::OK, Json(agent_to_response(&agent))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, agent_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("agent_id" = String, Path),
+    ),
+    responses(
+        (status = 204, description = "Agent deleted"),
+        (status = 404, description = "Agent not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn delete_agent(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+            return resp;
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusAgent,
+            &agent_id,
+        );
+        let gw = state.gateway.read().await;
+        match gw.state_store().get(&key).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("agent {namespace}.{tenant}.{agent_id} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        if let Err(e) = gw.state_store().delete(&key).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        StatusCode::NO_CONTENT.into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, agent_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/heartbeat",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("agent_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Heartbeat recorded", body = HeartbeatResponse),
+        (status = 404, description = "Agent not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn heartbeat_agent(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+            return resp;
+        }
+        let mut agent = match load_agent(&state, &namespace, &tenant, &agent_id).await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+        let now = Utc::now();
+        agent.last_heartbeat_at = Some(now);
+        agent.updated_at = now;
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusAgent,
+            agent.id(),
+        );
+        let payload = match serde_json::to_string(&agent) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let gw = state.gateway.read().await;
+        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        (
+            StatusCode::OK,
+            Json(HeartbeatResponse {
+                agent_id: agent.agent_id.clone(),
+                last_heartbeat_at: now,
+                status: agent_status_str(agent.status_at(now)),
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, agent_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
+    tag = "bus",
+    request_body = SendToAgentRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("agent_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Message delivered to inbox", body = SendToAgentResponse),
+        (status = 400, description = "Reserved header or invalid payload", body = ErrorResponse),
+        (status = 404, description = "Agent not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn send_to_agent(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, agent_id)): Path<(String, String, String)>,
+    Json(req): Json<SendToAgentRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        // Two-level auth: caller must hold ManageAgent (so random
+        // publishers can't target arbitrary agents) and Publish on the
+        // inbox topic's tenant (reusing the same gate as direct
+        // `/v1/bus/publish`).
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        if let Some(reserved) = req.headers.keys().find(|k| k.starts_with("acteon.")) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "header '{reserved}' uses the reserved 'acteon.' prefix; those are set by the server"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        let agent = match load_agent(&state, &namespace, &tenant, &agent_id).await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+        let inbox = agent.effective_inbox_topic();
+        // Defensive: confirm the inbox topic is still registered. In
+        // normal flow `register_agent` guarantees this, but operators
+        // can delete the topic out from under the agent and we want a
+        // clean 404 rather than a downstream Kafka error.
+        let inbox_key = StateKey::new(namespace.clone(), tenant.clone(), KeyKind::BusTopic, &inbox);
+        {
+            let gw = state.gateway.read().await;
+            match gw.state_store().get(&inbox_key).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "agent inbox topic {inbox} is not registered; re-register the agent or create the topic"
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        // Key by agent_id so Kafka's partitioner routes all messages
+        // for a given agent to a stable partition — gives us per-agent
+        // FIFO without any extra subscription machinery.
+        let mut msg = acteon_bus::BusMessage::new(inbox.clone(), req.payload.clone())
+            .with_key(&agent.agent_id);
+        for (k, v) in &req.headers {
+            msg = msg.with_header(k.clone(), v.clone());
+        }
+        // Stamp the recipient so subscribers can route locally without
+        // parsing the payload. `with_header` silently drops reserved
+        // `acteon.*` keys — the server inserts them directly.
+        msg.headers
+            .insert("acteon.agent.id".into(), agent.agent_id.clone());
+        match backend.produce(msg).await {
+            Ok(receipt) => (
+                StatusCode::OK,
+                Json(SendToAgentResponse {
+                    inbox_topic: receipt.topic,
+                    agent_id: agent.agent_id,
+                    partition: receipt.partition,
+                    offset: receipt.offset,
+                    produced_at: receipt.timestamp,
+                }),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, agent_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+/// Direct `StateKey` lookup of an agent record.
+#[cfg(feature = "bus")]
+async fn load_agent(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    agent_id: &str,
+) -> Result<acteon_core::Agent, axum::response::Response> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusAgent,
+        agent_id.to_string(),
+    );
+    let gw = state.gateway.read().await;
+    match gw.state_store().get(&key).await {
+        Ok(Some(raw)) => serde_json::from_str::<acteon_core::Agent>(&raw).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("corrupt agent record for {namespace}.{tenant}.{agent_id}: {e}"),
+                }),
+            )
+                .into_response()
+        }),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("agent {namespace}.{tenant}.{agent_id} not found"),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response()),
     }
 }
