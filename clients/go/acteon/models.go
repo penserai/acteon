@@ -2196,3 +2196,36 @@ type SigningKeysResponse struct {
 	// for callers who only want a count.
 	Count int `json:"count"`
 }
+
+// -----------------------------------------------------------------------
+// Swarm runs
+// -----------------------------------------------------------------------
+
+// SwarmRunSnapshot is a point-in-time view of a long-running swarm goal.
+type SwarmRunSnapshot struct {
+	RunID      string         `json:"run_id"`
+	PlanID     string         `json:"plan_id"`
+	Objective  string         `json:"objective"`
+	Status     string         `json:"status"`
+	StartedAt  string         `json:"started_at"`
+	FinishedAt *string        `json:"finished_at,omitempty"`
+	Metrics    map[string]any `json:"metrics,omitempty"`
+	Error      *string        `json:"error,omitempty"`
+	Namespace  string         `json:"namespace"`
+	Tenant     string         `json:"tenant"`
+}
+
+// SwarmRunFilter contains query parameters for ListSwarmRuns.
+type SwarmRunFilter struct {
+	Namespace string
+	Tenant    string
+	Status    string
+	Limit     int
+	Offset    int
+}
+
+// ListSwarmRunsResponse is the response shape from GET /v1/swarm/runs.
+type ListSwarmRunsResponse struct {
+	Runs  []SwarmRunSnapshot `json:"runs"`
+	Total int                `json:"total"`
+}

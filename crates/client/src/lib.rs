@@ -85,6 +85,7 @@ mod rules;
 mod signing_keys;
 mod silences;
 mod streaming;
+mod swarm;
 mod templates;
 mod time_intervals;
 
@@ -112,6 +113,7 @@ pub use retention::*;
 pub use rules::*;
 pub use signing_keys::*;
 pub use silences::*;
+pub use swarm::*;
 pub use templates::*;
 pub use time_intervals::*;
 

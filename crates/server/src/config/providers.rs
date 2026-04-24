@@ -223,6 +223,25 @@ pub struct ProviderConfig {
     /// ```
     #[serde(default)]
     pub wechat: WeChatProviderConfig,
+
+    /// Nested configuration block for the `"swarm"` provider type.
+    ///
+    /// The swarm provider accepts long-running agent-swarm goals as
+    /// fire-and-forget dispatches and tracks them in an in-memory
+    /// registry. Only available when the server is compiled with the
+    /// `swarm` feature.
+    ///
+    /// Example TOML:
+    /// ```toml
+    /// [[providers]]
+    /// name = "ambient-swarm"
+    /// type = "swarm"
+    /// swarm.config_path = "/etc/acteon/swarm.toml"
+    /// swarm.hooks_binary = "/usr/local/bin/acteon-swarm-hook"
+    /// swarm.max_concurrent_runs = 4
+    /// ```
+    #[serde(default)]
+    pub swarm: SwarmProviderConfig,
 }
 
 /// Nested configuration block for the `OpsGenie` provider.
@@ -354,4 +373,23 @@ pub struct WeChatProviderConfig {
     pub token_refresh_buffer_seconds: Option<u64>,
     /// Override base URL for the `WeChat` Work API (testing only).
     pub api_base_url: Option<String>,
+}
+
+/// Nested configuration block for the agent-swarm provider.
+///
+/// All fields are optional at the TOML layer; `main.rs` rejects
+/// configurations missing required paths when the provider is
+/// constructed.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct SwarmProviderConfig {
+    /// Path to a `swarm.toml` that contains the full
+    /// [`acteon_swarm::SwarmConfig`] (roles, engine, safety, etc.).
+    pub config_path: Option<String>,
+    /// Path to the `acteon-swarm-hook` binary used for Claude Agent
+    /// SDK PreToolUse/PostToolUse/Stop hooks.
+    pub hooks_binary: Option<String>,
+    /// Maximum concurrent inflight swarm runs before new dispatches
+    /// are rejected with a `RegistryFull` error. Defaults to `4`.
+    pub max_concurrent_runs: Option<usize>,
 }

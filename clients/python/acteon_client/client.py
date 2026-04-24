@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from typing import Iterator, Optional, Union
+from urllib.parse import quote
 import httpx
 
 from .errors import ActeonError, ConnectionError, HttpError, ApiError
@@ -37,6 +38,9 @@ from .models import (
     ListRecurringResponse,
     RecurringDetail,
     UpdateRecurringAction,
+    SwarmRunSnapshot,
+    SwarmRunFilter,
+    ListSwarmRunsResponse,
     CreateQuotaRequest,
     UpdateQuotaRequest,
     QuotaPolicy,
@@ -2550,6 +2554,43 @@ class ActeonClient:
             raise ConnectionError(str(e)) from e
         except httpx.TimeoutException as e:
             raise ConnectionError(f"Request timed out: {e}") from e
+
+
+    # ------------------------------------------------------------------
+    # Swarm runs
+    # ------------------------------------------------------------------
+
+    def list_swarm_runs(
+        self, filter: Optional[SwarmRunFilter] = None
+    ) -> ListSwarmRunsResponse:
+        """List swarm runs tracked by the server-side registry."""
+        params = filter.to_params() if filter else {}
+        response = self._request("GET", "/v1/swarm/runs", params=params)
+        if response.status_code == 200:
+            return ListSwarmRunsResponse.from_dict(response.json())
+        raise HttpError(response.status_code, "Failed to list swarm runs")
+
+    def get_swarm_run(self, run_id: str) -> Optional[SwarmRunSnapshot]:
+        """Fetch a single swarm run snapshot. Returns ``None`` if unknown."""
+        # quote() with safe="" encodes '/', '?', and '#' — otherwise a
+        # maliciously crafted run_id could inject path/query segments.
+        encoded = quote(run_id, safe="")
+        response = self._request("GET", f"/v1/swarm/runs/{encoded}")
+        if response.status_code == 200:
+            return SwarmRunSnapshot.from_dict(response.json())
+        if response.status_code == 404:
+            return None
+        raise HttpError(response.status_code, "Failed to fetch swarm run")
+
+    def cancel_swarm_run(self, run_id: str) -> Optional[SwarmRunSnapshot]:
+        """Request cancellation of an inflight swarm run."""
+        encoded = quote(run_id, safe="")
+        response = self._request("POST", f"/v1/swarm/runs/{encoded}/cancel")
+        if response.status_code == 200:
+            return SwarmRunSnapshot.from_dict(response.json())
+        if response.status_code == 404:
+            return None
+        raise HttpError(response.status_code, "Failed to cancel swarm run")
 
 
 class AsyncActeonClient:

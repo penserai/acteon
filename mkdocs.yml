@@ -180,6 +180,7 @@ nav:
     - Simulation & Testing: examples/simulation.md
   - Agent Swarm:
     - Orchestrator: features/agent-swarm.md
+    - Ambient Swarm Provider: features/swarm-provider.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md

@@ -60,7 +60,17 @@ const outcomeVariant: Record<string, keyof typeof variants> = {
   Active: 'success',
   Paused: 'warning',
   Completed: 'neutral',
+  // Swarm run statuses (lowercase, as the server emits them).
+  // `running`, `completed`, `failed`, `cancelled`, `timed_out` also appear
+  // in the chain-status block above and resolve to the same variants —
+  // listing them again documents the intent for future readers.
+  accepted: 'pending',
+  adversarial: 'info',
+  cancelling: 'warning',
 }
+
+// All chain-status keys reused by swarm runs (running, completed, failed,
+// cancelled, timed_out) resolve via the shared entries declared earlier.
 
 interface BadgeProps {
   variant?: keyof typeof variants

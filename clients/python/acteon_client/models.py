@@ -4004,3 +4004,79 @@ class SigningKeysResponse:
     def from_dict(cls, data: dict[str, Any]) -> "SigningKeysResponse":
         keys = [SigningKeyEntry.from_dict(k) for k in data.get("keys", [])]
         return cls(keys=keys, count=int(data.get("count", len(keys))))
+
+
+# ----------------------------------------------------------------------
+# Swarm runs
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class SwarmRunSnapshot:
+    """Snapshot of a single long-running swarm goal tracked by the server."""
+
+    run_id: str
+    plan_id: str
+    objective: str
+    status: str
+    started_at: str
+    namespace: str
+    tenant: str
+    finished_at: Optional[str] = None
+    metrics: Optional[dict[str, Any]] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SwarmRunSnapshot":
+        return cls(
+            run_id=data["run_id"],
+            plan_id=data["plan_id"],
+            objective=data["objective"],
+            status=data["status"],
+            started_at=data["started_at"],
+            namespace=data["namespace"],
+            tenant=data["tenant"],
+            finished_at=data.get("finished_at"),
+            metrics=data.get("metrics"),
+            error=data.get("error"),
+        )
+
+
+@dataclass
+class SwarmRunFilter:
+    """Query parameters for listing swarm runs."""
+
+    namespace: Optional[str] = None
+    tenant: Optional[str] = None
+    status: Optional[str] = None
+    limit: Optional[int] = None
+    offset: Optional[int] = None
+
+    def to_params(self) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if self.namespace is not None:
+            params["namespace"] = self.namespace
+        if self.tenant is not None:
+            params["tenant"] = self.tenant
+        if self.status is not None:
+            params["status"] = self.status
+        if self.limit is not None:
+            params["limit"] = self.limit
+        if self.offset is not None:
+            params["offset"] = self.offset
+        return params
+
+
+@dataclass
+class ListSwarmRunsResponse:
+    """Response from listing swarm runs."""
+
+    runs: list[SwarmRunSnapshot]
+    total: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ListSwarmRunsResponse":
+        return cls(
+            runs=[SwarmRunSnapshot.from_dict(r) for r in data.get("runs", [])],
+            total=int(data.get("total", 0)),
+        )

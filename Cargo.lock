@@ -164,6 +164,7 @@ dependencies = [
  "acteon-crypto",
  "chrono",
  "futures",
+ "percent-encoding",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -523,6 +524,8 @@ dependencies = [
  "acteon-state-memory",
  "acteon-state-postgres",
  "acteon-state-redis",
+ "acteon-swarm",
+ "acteon-swarm-provider",
  "acteon-teams",
  "acteon-telegram",
  "acteon-twilio",
@@ -593,12 +596,15 @@ dependencies = [
  "acteon-state-memory",
  "acteon-state-postgres",
  "acteon-state-redis",
+ "acteon-swarm",
+ "acteon-swarm-provider",
  "acteon-wasm-runtime",
  "async-trait",
  "axum 0.8.8",
  "chrono",
  "chrono-tz",
  "criterion",
+ "futures",
  "hyper 1.8.1",
  "hyper-util",
  "parking_lot",
@@ -724,6 +730,27 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "acteon-swarm-provider"
+version = "0.1.0"
+dependencies = [
+ "acteon-core",
+ "acteon-provider",
+ "acteon-swarm",
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "futures",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "utoipa",
  "uuid",
 ]
 

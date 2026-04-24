@@ -26,6 +26,7 @@ pub mod signing_keys;
 pub mod silences;
 pub mod stream;
 pub mod subscribe;
+pub mod swarm;
 pub mod templates;
 pub mod time_intervals;
 pub mod trace_context;
@@ -98,6 +99,10 @@ pub struct AppState {
     pub signature_verifier: Option<Arc<SignatureVerifier>>,
     /// Replay protection config: (enabled, `ttl_seconds`).
     pub replay_protection: Option<(bool, u64)>,
+    /// Swarm provider registry (None when the `swarm` feature is disabled
+    /// or no `swarm`-type provider is configured).
+    #[cfg(feature = "swarm")]
+    pub swarm_registry: Option<std::sync::Arc<acteon_swarm_provider::SwarmRunRegistry>>,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -284,6 +289,13 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/providers/health",
             get(provider_health::list_provider_health),
+        )
+        // Swarm runs
+        .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
+        .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))
+        .route(
+            "/v1/swarm/runs/{run_id}/cancel",
+            post(swarm::cancel_swarm_run),
         )
         // Circuit breaker admin
         .route(

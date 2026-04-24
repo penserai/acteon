@@ -118,6 +118,8 @@ fn build_test_state_with_audit_and_analytics(
         cors_allowed_origins: Vec::new(),
         signature_verifier: None,
         replay_protection: None,
+        #[cfg(feature = "swarm")]
+        swarm_registry: None,
     }
 }
 
@@ -1184,6 +1186,8 @@ fn build_approval_state_with_providers(
         cors_allowed_origins: Vec::new(),
         signature_verifier: None,
         replay_protection: None,
+        #[cfg(feature = "swarm")]
+        swarm_registry: None,
     }
 }
 

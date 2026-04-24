@@ -1,0 +1,50 @@
+.controls {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.detailContent {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1rem;
+}
+
+.metricsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+
+.metricCell {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+  background: var(--color-surface-2);
+  border-radius: 6px;
+}
+
+.metricLabel {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.metricValue {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 0.25rem;
+}
+
+.errorBox {
+  padding: 0.75rem;
+  border-radius: 6px;
+  background: var(--color-danger-bg, #fee);
+  color: var(--color-danger, #900);
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}

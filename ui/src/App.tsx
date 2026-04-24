@@ -69,6 +69,7 @@ const ChainDefinitions = lazyPage(() => import('./pages/ChainDefinitions'), 'Cha
 const Analytics = lazyPage(() => import('./pages/Analytics'), 'Analytics')
 const ComplianceStatus = lazyPage(() => import('./pages/ComplianceStatus'), 'ComplianceStatus')
 const Settings = lazyPage(() => import('./pages/Settings'), 'Settings')
+const SwarmRuns = lazyPage(() => import('./pages/SwarmRuns'), 'SwarmRuns')
 
 function App() {
   useEffect(() => {
@@ -115,6 +116,7 @@ function App() {
           <Route path="templates" element={<Templates />} />
           <Route path="analytics" element={<Analytics />} />
           <Route path="compliance" element={<ComplianceStatus />} />
+          <Route path="swarm" element={<SwarmRuns />} />
           <Route path="settings/*" element={<Settings />} />
         </Route>
       </Routes>

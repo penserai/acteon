@@ -68,7 +68,8 @@ use acteon_core::{
         (name = "Provider Health", description = "Per-provider health and performance monitoring"),
         (name = "Plugins", description = "WASM plugin management"),
         (name = "Templates", description = "Payload template and profile management"),
-        (name = "Analytics", description = "Aggregated action analytics and metrics")
+        (name = "Analytics", description = "Aggregated action analytics and metrics"),
+        (name = "swarm", description = "Long-running agent-swarm runs (ambient agent provider)")
     ),
     paths(
         super::health::health,
@@ -153,6 +154,9 @@ use acteon_core::{
         super::time_intervals::update_time_interval,
         super::time_intervals::delete_time_interval,
         super::signing_keys::discover_signing_keys,
+        super::swarm::list_swarm_runs,
+        super::swarm::get_swarm_run,
+        super::swarm::cancel_swarm_run,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -208,6 +212,7 @@ use acteon_core::{
         super::time_intervals::ListTimeIntervalsResponse,
         super::time_intervals::TimeRangeInput, super::time_intervals::TimeOfDayInput,
         super::signing_keys::SigningKeyEntry, super::signing_keys::SigningKeysResponse,
+        super::swarm::SwarmRunList, super::swarm::SwarmRunApiSnapshot,
     ))
 )]
 pub struct ApiDoc;

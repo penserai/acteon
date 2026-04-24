@@ -51,6 +51,8 @@ telegram = ["dep:acteon-telegram"]
 wechat = ["dep:acteon-wechat"]
 discord = ["dep:acteon-discord"]
 extras-alerting = ["opsgenie", "victorops", "pushover", "telegram", "wechat", "discord"]
+# Ambient agent-swarm provider — long-running goal-driven runs dispatched as Actions.
+swarm = ["dep:acteon-swarm", "dep:acteon-swarm-provider"]
 
 [dependencies]
 acteon-audit = { workspace = true, features = ["openapi"] }
@@ -80,6 +82,8 @@ acteon-victorops = { workspace = true, optional = true }
 acteon-pushover = { workspace = true, optional = true }
 acteon-telegram = { workspace = true, optional = true }
 acteon-wechat = { workspace = true, optional = true }
+acteon-swarm = { workspace = true, optional = true }
+acteon-swarm-provider = { workspace = true, optional = true, features = ["openapi"] }
 acteon-executor = { workspace = true }
 acteon-gateway = { workspace = true }
 acteon-llm = { workspace = true }
