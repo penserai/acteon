@@ -2335,6 +2335,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         swarm_registry,
         #[cfg(feature = "bus")]
         bus_backend,
+        #[cfg(feature = "bus")]
+        bus_schema_validator: acteon_bus::SchemaValidator::new(),
     };
     let app = acteon_server::api::router(state);
 

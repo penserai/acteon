@@ -108,6 +108,11 @@ pub struct AppState {
     /// `[bus].enabled = false`).
     #[cfg(feature = "bus")]
     pub bus_backend: Option<acteon_bus::SharedBackend>,
+    /// Compiled-schema registry for publish-edge validation. Always
+    /// constructed with the bus feature; stays empty until schemas are
+    /// registered.
+    #[cfg(feature = "bus")]
+    pub bus_schema_validator: acteon_bus::SchemaValidator,
 }
 
 /// Build the Axum router with all API routes, middleware, and Swagger UI.
@@ -325,6 +330,25 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/bus/subscriptions/{namespace}/{tenant}/{id}/deadletter",
             post(bus::deadletter_subscription),
+        )
+        // Phase 3: JSON-Schema registry + topic binding. Tenant-scoped
+        // URLs keep state lookups O(1) and make authorization surfaces
+        // explicit, matching topics and subscriptions.
+        .route(
+            "/v1/bus/schemas",
+            get(bus::list_schemas).post(bus::create_schema),
+        )
+        .route(
+            "/v1/bus/schemas/{namespace}/{tenant}/{subject}",
+            get(bus::get_subject_versions),
+        )
+        .route(
+            "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+            get(bus::get_schema_version).delete(bus::delete_schema_version),
+        )
+        .route(
+            "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+            put(bus::bind_topic_schema).delete(bus::unbind_topic_schema),
         )
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))

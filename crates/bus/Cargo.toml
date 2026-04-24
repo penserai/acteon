@@ -15,6 +15,7 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
+jsonschema = { version = "0.46", default-features = false }
 parking_lot = "0.12"
 rdkafka = { version = "0.37", features = ["cmake-build", "tokio"] }
 serde = { workspace = true }
