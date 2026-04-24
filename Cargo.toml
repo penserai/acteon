@@ -70,6 +70,7 @@ members = [
 
     # Swarm orchestrator
     "crates/swarm",
+    "crates/swarm-provider",
 ]
 
 [workspace.package]
@@ -147,6 +148,7 @@ acteon-ops = { path = "crates/ops" }
 acteon-mcp-server = { path = "crates/mcp-server" }
 acteon-cli = { path = "crates/cli" }
 acteon-swarm = { path = "crates/swarm" }
+acteon-swarm-provider = { path = "crates/swarm-provider" }
 
 # Parsing
 nom = "7"

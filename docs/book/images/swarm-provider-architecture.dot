@@ -1,0 +1,251 @@
+// Acteon — Ambient Swarm Provider architecture
+// Render with:  dot -Tpng swarm-provider-architecture.dot -o swarm-provider-architecture.png
+//               dot -Tsvg swarm-provider-architecture.dot -o swarm-provider-architecture.svg
+
+digraph SwarmProviderArch {
+    rankdir   = TB;
+    compound  = true;
+    newrank   = true;
+    nodesep   = 0.45;
+    ranksep   = 0.7;
+    splines   = spline;
+    bgcolor   = "#f8fafc";
+    fontname  = "Helvetica";
+    fontsize  = 11;
+    labelloc  = "t";
+    labeljust = "l";
+    label     = <<font point-size="18"><b>Acteon · Ambient Swarm Provider</b></font><br align="left"/><font point-size="10" color="#64748b">Long-running agent-swarm goals dispatched as Actions. Provider returns 202; background task runs the swarm; HITL controls throttle the stream.</font><br align="left"/> >;
+
+    node [
+        shape     = box,
+        style     = "rounded,filled",
+        fontname  = "Helvetica",
+        fontsize  = 10,
+        margin    = "0.18,0.12",
+        penwidth  = 1.2
+    ];
+    edge [
+        fontname  = "Helvetica",
+        fontsize  = 9,
+        color     = "#64748b",
+        fontcolor = "#475569",
+        arrowsize = 0.8,
+        penwidth  = 1.1
+    ];
+
+    // ===============================================================
+    // Ingress
+    // ===============================================================
+    subgraph cluster_ingress {
+        label    = < <font point-size="10" color="#1d4ed8"><b>① INGRESS</b></font> >;
+        style    = "rounded,filled";
+        fillcolor = "#eff6ff";
+        color    = "#93c5fd";
+        margin   = 12;
+
+        client [
+            label = <<b>Client / SDK</b><br/><font point-size="9" color="#475569">Rust · Python · Node · Go · Java<br/>action_type = "swarm.goal"</font>>,
+            fillcolor = "#dbeafe", color = "#1d4ed8"
+        ];
+    }
+
+    // ===============================================================
+    // Gateway pipeline
+    // ===============================================================
+    subgraph cluster_gateway {
+        label    = < <font point-size="10" color="#c2410c"><b>② GATEWAY PIPELINE</b></font><br/><font point-size="9" color="#a16207">existing Acteon machinery (unchanged)</font> >;
+        style    = "rounded,filled";
+        fillcolor = "#fff7ed";
+        color    = "#fdba74";
+        margin   = 14;
+
+        gateway [
+            label = <<table border="0" cellborder="0" cellpadding="4">
+                <tr><td bgcolor="#fed7aa" border="1" color="#c2410c" cellpadding="6"><b>rules</b></td><td bgcolor="#fed7aa" border="1" color="#c2410c" cellpadding="6"><b>quotas</b></td></tr>
+                <tr><td bgcolor="#fed7aa" border="1" color="#c2410c" cellpadding="6"><b>silences</b></td><td bgcolor="#fed7aa" border="1" color="#c2410c" cellpadding="6"><b>circuit breaker</b></td></tr>
+                <tr><td bgcolor="#fed7aa" border="1" color="#c2410c" cellpadding="6" colspan="2"><b>executor</b> (30s timeout)</td></tr>
+                </table>>,
+            shape = none, style = "", margin = 0
+        ];
+    }
+
+    // ===============================================================
+    // Provider
+    // ===============================================================
+    subgraph cluster_provider {
+        label    = < <font point-size="10" color="#15803d"><b>③ PROVIDER</b></font> >;
+        style    = "rounded,filled";
+        fillcolor = "#f0fdf4";
+        color    = "#86efac";
+        margin   = 12;
+
+        provider [
+            label = <<b>SwarmProvider</b><br/><font point-size="9" color="#475569">crate: acteon-swarm-provider</font><br/><font point-size="9">execute(action) →<br/>202 { run_id, started_at }</font><br/><font point-size="8" color="#166534"><i>fire-and-forget contract</i></font>>,
+            fillcolor = "#bbf7d0", color = "#15803d"
+        ];
+    }
+
+    // ===============================================================
+    // Registry — the shared state heart
+    // ===============================================================
+    subgraph cluster_registry {
+        label    = < <font point-size="10" color="#7e22ce"><b>④ REGISTRY</b></font> >;
+        style    = "rounded,filled";
+        fillcolor = "#faf5ff";
+        color    = "#d8b4fe";
+        margin   = 12;
+
+        registry [
+            label = <<b>SwarmRunRegistry</b><br/><font point-size="9" color="#475569">Arc&lt;Self&gt; shared by provider + HTTP API</font><br align="left"/><br align="left"/><font point-size="9" face="Menlo">runs: DashMap&lt;run_id, Handle&gt;<br align="left"/>inflight_count: AtomicUsize  ← O(1)<br align="left"/>idempotency_index<br align="left"/>updates_tx: broadcast::Sender(256)<br align="left"/></font><font point-size="9" color="#78350f">MAX_LIST_PAGE = 500  (DoS cap)</font><br align="left"/><font point-size="9" color="#7f1d1d"><b>terminal status is absorbing</b></font><br align="left"/>>,
+            fillcolor = "#ede9fe", color = "#7e22ce"
+        ];
+    }
+
+    // ===============================================================
+    // Background execution
+    // ===============================================================
+    subgraph cluster_bg {
+        label    = < <font point-size="10" color="#a16207"><b>⑤ BACKGROUND EXECUTION</b></font> >;
+        style    = "rounded,filled";
+        fillcolor = "#fefce8";
+        color    = "#fde047";
+        margin   = 14;
+
+        spawn [
+            label = <<b>tokio::spawn (per run)</b><br/><font point-size="9">select! {<br align="left"/>  executor.run(plan)<br align="left"/>  cancel.cancelled()<br align="left"/>}<br align="left"/></font><font point-size="8" color="#475569">on terminal: inflight_count --<br/>on every transition: updates_tx.send</font>>,
+            fillcolor = "#fef9c3", color = "#a16207"
+        ];
+
+        exec [
+            label = <<b>SwarmExecutor</b> <font point-size="8">(trait)</font><br/><font point-size="9" face="Menlo">DefaultSwarmExecutor::run(plan)<br align="left"/>└─ acteon_swarm::execute_swarm</font>>,
+            fillcolor = "#fef9c3", color = "#a16207"
+        ];
+
+        claude [
+            label = <<b>Claude Agent SDK</b><br/><font point-size="9">subprocesses<br/>planner · coder · reviewer · …</font>>,
+            fillcolor = "#e0f2fe", color = "#0284c7"
+        ];
+
+        tesserai [
+            label = <<b>TesseraiDB</b><br/><font point-size="9">twins + shared<br/>semantic memory</font>>,
+            fillcolor = "#fef3c7", color = "#b45309"
+        ];
+
+        reaper [
+            label = <<b>Reaper Task</b><br/><font point-size="9">spawn_reaper(24h, 5m)<br/>reap_terminal_older_than<br/>+ idempotency keys</font>>,
+            fillcolor = "#fef9c3", color = "#a16207"
+        ];
+
+        // State machine diagram as table node
+        states [
+            label = <<table border="0" cellborder="0" cellpadding="4">
+                <tr><td colspan="5"><b>state machine</b></td></tr>
+                <tr>
+                  <td bgcolor="#fef9c3" border="1" color="#a16207" cellpadding="4">accepted</td>
+                  <td>→</td>
+                  <td bgcolor="#fef9c3" border="1" color="#a16207" cellpadding="4">running</td>
+                  <td>→</td>
+                  <td bgcolor="#bbf7d0" border="1" color="#15803d" cellpadding="4">completed</td>
+                </tr>
+                <tr><td></td><td></td><td></td><td></td><td bgcolor="#fecaca" border="1" color="#b91c1c" cellpadding="4">failed</td></tr>
+                <tr><td colspan="2"></td>
+                  <td bgcolor="#fed7aa" border="1" color="#b45309" cellpadding="4">cancelling</td>
+                  <td>→</td>
+                  <td bgcolor="#fed7aa" border="1" color="#b45309" cellpadding="4">cancelled</td></tr>
+                <tr><td></td><td></td><td></td><td></td><td bgcolor="#fed7aa" border="1" color="#b45309" cellpadding="4">timed_out</td></tr>
+            </table>>,
+            shape = none, style = "", margin = 0
+        ];
+    }
+
+    // ===============================================================
+    // Observation
+    // ===============================================================
+    subgraph cluster_obs {
+        label    = < <font point-size="10" color="#0e7490"><b>⑥ OBSERVATION</b></font> >;
+        style    = "rounded,filled";
+        fillcolor = "#ecfeff";
+        color    = "#67e8f9";
+        margin   = 12;
+
+        api [
+            label = <<b>HTTP API</b> <font point-size="8">(feature = "swarm")</font><br align="left"/><font point-size="9" face="Menlo">GET  /v1/swarm/runs<br align="left"/>GET  /v1/swarm/runs/{id}<br align="left"/>POST /v1/swarm/runs/{id}/cancel</font><br align="left"/><font point-size="8" color="#475569">· pagination: (page, total)<br align="left"/>· MAX_API_PAGE = 500<br align="left"/>· unknown status → 400</font>>,
+            fillcolor = "#cffafe", color = "#0e7490"
+        ];
+
+        sub [
+            label = <<b>Broadcast Subscribers</b><br/><font point-size="9">registry.subscribe() → broadcast::Receiver<br/>SSE · rule reactors · metrics exporters</font>>,
+            fillcolor = "#cffafe", color = "#0e7490"
+        ];
+
+        ui [
+            label = <<b>UI / SDK clients</b><br/><font point-size="9">SwarmRuns.tsx<br/>5 polyglot SDKs (URL-encoded run_ids)</font>>,
+            fillcolor = "#dbeafe", color = "#1d4ed8"
+        ];
+    }
+
+    // ===============================================================
+    // HITL controls
+    // ===============================================================
+    subgraph cluster_hitl {
+        label    = < <font point-size="10" color="#b91c1c"><b>⑦ HUMAN-IN-THE-LOOP CONTROLS</b></font><br/><font point-size="9" color="#7f1d1d">all reuse existing Acteon surfaces — no new kill switches</font> >;
+        style    = "rounded,filled";
+        fillcolor = "#fef2f2";
+        color    = "#fca5a5";
+        margin   = 14;
+
+        hitl_cancel [
+            label = <<b>POST /cancel</b><br/><font point-size="9">per-run: flips CancellationToken<br/>→ Cancelling → Cancelled</font>>,
+            fillcolor = "#fee2e2", color = "#b91c1c"
+        ];
+        hitl_silence [
+            label = <<b>Silence</b><br/><font point-size="9">action_type = swarm.goal<br/>blocks new goals</font>>,
+            fillcolor = "#fee2e2", color = "#b91c1c"
+        ];
+        hitl_cb [
+            label = <<b>Circuit Breaker</b><br/><font point-size="9">provider = swarm<br/>entire fleet drops</font>>,
+            fillcolor = "#fee2e2", color = "#b91c1c"
+        ];
+        hitl_quota [
+            label = <<b>Quota</b><br/><font point-size="9">per tenant / action_type<br/>block · drop · throttle</font>>,
+            fillcolor = "#fee2e2", color = "#b91c1c"
+        ];
+
+        // keep the four tiles on one row
+        { rank = same; hitl_cancel; hitl_silence; hitl_cb; hitl_quota; }
+        hitl_cancel -> hitl_silence -> hitl_cb -> hitl_quota [style=invis];
+    }
+
+    // ===============================================================
+    // Edges — main dispatch flow
+    // ===============================================================
+    client    -> gateway   [label="POST /v1/dispatch"];
+    gateway   -> provider  [label="dispatch to\nprovider=swarm"];
+    provider  -> registry  [label="registry.start(goal)"];
+    provider  -> client    [label="202 Accepted\n{run_id}", color="#15803d", fontcolor="#15803d", style=dashed, constraint=false];
+
+    // Registry ⇄ background task
+    registry  -> spawn     [label="tokio::spawn", style=dashed];
+    spawn     -> exec      [label="run(plan)"];
+    exec      -> claude    [label="spawn agents"];
+    exec      -> tesserai  [label="knowledge\ngraph"];
+    spawn     -> registry  [label="transition()", style=dashed, color="#7e22ce", fontcolor="#7e22ce", constraint=false];
+    reaper    -> registry  [label="reap terminal\n+ idempotency", style=dashed, color="#a16207", fontcolor="#a16207", constraint=false];
+    spawn     -> states    [style=invis];
+
+    // Observation — all reads from registry; broadcast fans out from registry
+    api       -> registry  [label="list / get / cancel", color="#0e7490", fontcolor="#0e7490", constraint=false];
+    registry  -> sub       [label="broadcast fan-out", color="#0e7490", fontcolor="#0e7490", style=dashed, constraint=false];
+    ui        -> api       [label="HTTP"];
+
+    // HITL — each control enters the pipeline where it's enforced
+    hitl_cancel  -> api      [label="cancel", color="#b91c1c", fontcolor="#b91c1c", style=dashed, constraint=false];
+    hitl_silence -> gateway  [label="blocks dispatch", color="#b91c1c", fontcolor="#b91c1c", style=dashed, constraint=false];
+    hitl_cb      -> gateway  [label="trips at provider", color="#b91c1c", fontcolor="#b91c1c", style=dashed, constraint=false];
+    hitl_quota   -> gateway  [label="caps throughput", color="#b91c1c", fontcolor="#b91c1c", style=dashed, constraint=false];
+
+    // Rank hints to keep the top flow linear
+    { rank = same; client; gateway; provider; registry; }
+    { rank = same; spawn; exec; claude; tesserai; reaper; }
+    { rank = same; api; sub; ui; }
+}

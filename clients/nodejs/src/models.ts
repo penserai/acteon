@@ -3566,3 +3566,67 @@ function optionalStringList(
   }
   return value as string[];
 }
+
+
+// ---------------------------------------------------------------------------
+// Swarm runs
+// ---------------------------------------------------------------------------
+
+export interface SwarmRunSnapshot {
+  runId: string;
+  planId: string;
+  objective: string;
+  status: string;
+  startedAt: string;
+  finishedAt?: string;
+  metrics?: Record<string, unknown>;
+  error?: string;
+  namespace: string;
+  tenant: string;
+}
+
+export function parseSwarmRunSnapshot(data: Record<string, unknown>): SwarmRunSnapshot {
+  return {
+    runId: data.run_id as string,
+    planId: data.plan_id as string,
+    objective: data.objective as string,
+    status: data.status as string,
+    startedAt: data.started_at as string,
+    finishedAt: (data.finished_at as string | undefined) ?? undefined,
+    metrics: (data.metrics as Record<string, unknown> | undefined) ?? undefined,
+    error: (data.error as string | undefined) ?? undefined,
+    namespace: data.namespace as string,
+    tenant: data.tenant as string,
+  };
+}
+
+export interface SwarmRunFilter {
+  namespace?: string;
+  tenant?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export function swarmRunFilterToParams(filter: SwarmRunFilter): URLSearchParams {
+  const params = new URLSearchParams();
+  if (filter.namespace !== undefined) params.set("namespace", filter.namespace);
+  if (filter.tenant !== undefined) params.set("tenant", filter.tenant);
+  if (filter.status !== undefined) params.set("status", filter.status);
+  if (filter.limit !== undefined) params.set("limit", String(filter.limit));
+  if (filter.offset !== undefined) params.set("offset", String(filter.offset));
+  return params;
+}
+
+export interface ListSwarmRunsResponse {
+  runs: SwarmRunSnapshot[];
+  total: number;
+}
+
+export function parseListSwarmRunsResponse(data: Record<string, unknown>): ListSwarmRunsResponse {
+  const runs = ((data.runs as Record<string, unknown>[]) ?? []).map(parseSwarmRunSnapshot);
+  return {
+    runs,
+    total: (data.total as number) ?? runs.length,
+  };
+}

@@ -67,6 +67,12 @@ import {
   parseListRecurringResponse,
   parseRecurringDetail,
   updateRecurringActionToRequest,
+  SwarmRunFilter,
+  SwarmRunSnapshot,
+  ListSwarmRunsResponse,
+  swarmRunFilterToParams,
+  parseSwarmRunSnapshot,
+  parseListSwarmRunsResponse,
   parseListChainsResponse,
   parseChainDetailResponse,
   DagResponse,
@@ -922,6 +928,57 @@ export class ActeonClient {
     } else {
       throw new HttpError(response.status, "Failed to resume recurring action");
     }
+  }
+
+  // =========================================================================
+  // Swarm runs
+  // =========================================================================
+
+  /**
+   * List swarm runs tracked by the server-side registry.
+   */
+  async listSwarmRuns(filter?: SwarmRunFilter): Promise<ListSwarmRunsResponse> {
+    const params = filter ? swarmRunFilterToParams(filter) : undefined;
+    const response = await this.request("GET", "/v1/swarm/runs", { params });
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseListSwarmRunsResponse(data);
+    }
+    throw new HttpError(response.status, "Failed to list swarm runs");
+  }
+
+  /**
+   * Fetch a single swarm run snapshot. Returns `null` if unknown.
+   */
+  async getSwarmRun(runId: string): Promise<SwarmRunSnapshot | null> {
+    // Encode so a maliciously crafted runId containing '/', '?', or '#'
+    // can't escape the path segment into query/fragment territory.
+    const encoded = encodeURIComponent(runId);
+    const response = await this.request("GET", `/v1/swarm/runs/${encoded}`);
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSwarmRunSnapshot(data);
+    }
+    if (response.status === 404) {
+      return null;
+    }
+    throw new HttpError(response.status, "Failed to fetch swarm run");
+  }
+
+  /**
+   * Request cancellation of an inflight swarm run.
+   */
+  async cancelSwarmRun(runId: string): Promise<SwarmRunSnapshot | null> {
+    const encoded = encodeURIComponent(runId);
+    const response = await this.request("POST", `/v1/swarm/runs/${encoded}/cancel`);
+    if (response.ok) {
+      const data = (await response.json()) as Record<string, unknown>;
+      return parseSwarmRunSnapshot(data);
+    }
+    if (response.status === 404) {
+      return null;
+    }
+    throw new HttpError(response.status, "Failed to cancel swarm run");
   }
 
   // =========================================================================

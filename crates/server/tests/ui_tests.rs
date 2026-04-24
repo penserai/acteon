@@ -51,6 +51,8 @@ async fn ui_serves_index_html() {
         cors_allowed_origins: Vec::new(),
         signature_verifier: None,
         replay_protection: None,
+        #[cfg(feature = "swarm")]
+        swarm_registry: None,
     };
 
     let app = acteon_server::api::router(state);

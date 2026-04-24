@@ -6,6 +6,8 @@ The `acteon-swarm` crate provides a generic multi-agent swarm system that decomp
 - **TesseraiDB** — knowledge graph, semantic memory, and digital twin modeling of the swarm
 - **Claude Code** — agent execution using existing Claude Code subscription (no API keys)
 
+> **Ambient mode?** Looking for the always-on goal runner that dispatches swarms as Acteon actions with HITL controls? See [Ambient Swarm Provider](swarm-provider.md) — the orchestrator on this page is the executor underneath.
+
 ### Key Capabilities
 
 | Feature | Description |

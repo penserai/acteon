@@ -627,6 +627,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // Shared handle to the swarm provider's in-memory registry. All
+    // `swarm`-type providers share a single registry so the API layer
+    // can expose a unified /v1/swarm/runs surface regardless of how
+    // many logical swarm providers are defined.
+    #[cfg(feature = "swarm")]
+    let mut swarm_registry_state: Option<
+        std::sync::Arc<acteon_swarm_provider::SwarmRunRegistry>,
+    > = None;
+
     // Register providers from config.
     for provider_cfg in &config.providers {
         let provider: std::sync::Arc<dyn acteon_provider::DynProvider> = match provider_cfg
@@ -1302,13 +1311,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .map_err(|e| format!("provider '{}': {e}", provider_cfg.name))?,
                 )
             }
+            #[cfg(feature = "swarm")]
+            "swarm" => {
+                let sw = &provider_cfg.swarm;
+                let config_path = sw.config_path.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': swarm type requires a 'swarm.config_path' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let hooks_binary = sw.hooks_binary.as_deref().ok_or_else(|| {
+                    format!(
+                        "provider '{}': swarm type requires a 'swarm.hooks_binary' field",
+                        provider_cfg.name
+                    )
+                })?;
+                let swarm_config =
+                    acteon_swarm::SwarmConfig::from_file(std::path::Path::new(config_path))
+                        .map_err(|e| {
+                            format!(
+                                "provider '{}': failed to load swarm config: {e}",
+                                provider_cfg.name
+                            )
+                        })?;
+                let roles = acteon_swarm::RoleRegistry::with_config(
+                    swarm_config.defaults.engine,
+                    &swarm_config.roles,
+                );
+                let registry = if let Some(r) = swarm_registry_state.clone() {
+                    r
+                } else {
+                    let executor =
+                        std::sync::Arc::new(acteon_swarm_provider::DefaultSwarmExecutor::new(
+                            swarm_config.clone(),
+                            roles,
+                            std::path::PathBuf::from(hooks_binary),
+                        ));
+                    let sink = std::sync::Arc::new(acteon_swarm_provider::LoggingSink);
+                    let reg = acteon_swarm_provider::SwarmRunRegistry::new(
+                        executor,
+                        sink,
+                        sw.max_concurrent_runs.unwrap_or(4),
+                    );
+                    swarm_registry_state = Some(reg.clone());
+                    reg
+                };
+                std::sync::Arc::new(acteon_swarm_provider::SwarmProvider::new(
+                    &provider_cfg.name,
+                    registry,
+                ))
+            }
             other => {
                 // Check if the user requested a provider that's not compiled in.
                 let feature_hint = match other {
                     "aws-sns" | "aws-lambda" | "aws-eventbridge" | "aws-sqs" | "aws-s3"
                     | "aws-ec2" | "aws-autoscaling" | "azure-blob" | "azure-eventhubs"
                     | "gcp-pubsub" | "gcp-storage" | "opsgenie" | "victorops" | "pushover"
-                    | "telegram" | "wechat" | "discord" => {
+                    | "telegram" | "wechat" | "discord" | "swarm" => {
                         format!(
                             ". Hint: enable the '{other}' feature on acteon-server \
                              (cargo build --features {other})"
@@ -1331,6 +1390,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "providers registered from config"
         );
     }
+
+    // Spawn the swarm-run reaper if a swarm provider is configured so
+    // terminal runs don't accumulate unbounded in the registry.
+    #[cfg(feature = "swarm")]
+    let _swarm_reaper_handle = swarm_registry_state.as_ref().map(|reg| {
+        // 24h retention, sweep every 5 minutes. Operators who want a
+        // different retention can adjust the numbers here; the reaper is
+        // a last line of defence, not the canonical retention source.
+        reg.spawn_reaper(
+            std::time::Duration::from_secs(24 * 60 * 60),
+            std::time::Duration::from_secs(300),
+        )
+    });
 
     // Wire enrichment configs.
     for enrichment_toml in &config.enrichments {
@@ -2207,6 +2279,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    #[cfg(feature = "swarm")]
+    let swarm_registry = swarm_registry_state.clone();
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         metrics: gateway_metrics,
@@ -2230,6 +2305,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             None
         },
+        #[cfg(feature = "swarm")]
+        swarm_registry,
     };
     let app = acteon_server::api::router(state);
 

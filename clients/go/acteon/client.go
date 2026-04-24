@@ -2716,3 +2716,88 @@ func (c *Client) openSSE(ctx context.Context, path string, lastEventID *string) 
 
 	return ch, nil
 }
+
+// -----------------------------------------------------------------------
+// Swarm runs
+// -----------------------------------------------------------------------
+
+// ListSwarmRuns returns all swarm runs known to the server, optionally filtered.
+func (c *Client) ListSwarmRuns(ctx context.Context, filter *SwarmRunFilter) (*ListSwarmRunsResponse, error) {
+	path := "/v1/swarm/runs"
+	if filter != nil {
+		q := url.Values{}
+		if filter.Namespace != "" {
+			q.Set("namespace", filter.Namespace)
+		}
+		if filter.Tenant != "" {
+			q.Set("tenant", filter.Tenant)
+		}
+		if filter.Status != "" {
+			q.Set("status", filter.Status)
+		}
+		if filter.Limit > 0 {
+			q.Set("limit", fmt.Sprintf("%d", filter.Limit))
+		}
+		if filter.Offset > 0 {
+			q.Set("offset", fmt.Sprintf("%d", filter.Offset))
+		}
+		if encoded := q.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+	}
+	resp, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var out ListSwarmRunsResponse
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("decode list swarm runs: %w", err)
+		}
+		return &out, nil
+	}
+	return nil, fmt.Errorf("list swarm runs failed: status %d", resp.StatusCode)
+}
+
+// GetSwarmRun fetches one swarm run by ID. Returns (nil, nil) if unknown.
+func (c *Client) GetSwarmRun(ctx context.Context, runID string) (*SwarmRunSnapshot, error) {
+	// PathEscape so a maliciously crafted runID with '/', '?', or '#'
+	// cannot escape the path segment into query/fragment territory.
+	resp, err := c.doRequest(ctx, http.MethodGet, "/v1/swarm/runs/"+url.PathEscape(runID), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var out SwarmRunSnapshot
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("decode swarm run: %w", err)
+		}
+		return &out, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("get swarm run failed: status %d", resp.StatusCode)
+}
+
+// CancelSwarmRun requests cancellation of an inflight swarm run. Returns (nil, nil) if unknown.
+func (c *Client) CancelSwarmRun(ctx context.Context, runID string) (*SwarmRunSnapshot, error) {
+	resp, err := c.doRequest(ctx, http.MethodPost, "/v1/swarm/runs/"+url.PathEscape(runID)+"/cancel", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		var out SwarmRunSnapshot
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			return nil, fmt.Errorf("decode swarm run: %w", err)
+		}
+		return &out, nil
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("cancel swarm run failed: status %d", resp.StatusCode)
+}

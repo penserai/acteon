@@ -1228,6 +1228,100 @@ public class ActeonClient implements AutoCloseable {
     }
 
     // =========================================================================
+    // Swarm runs
+    // =========================================================================
+
+    /**
+     * Lists swarm runs tracked by the server-side registry.
+     */
+    public ListSwarmRunsResponse listSwarmRuns(SwarmRunFilter filter) throws ActeonException {
+        try {
+            StringBuilder path = new StringBuilder("/v1/swarm/runs");
+            List<String> params = new ArrayList<>();
+            if (filter != null) {
+                if (filter.getNamespace() != null) {
+                    params.add("namespace=" + URLEncoder.encode(filter.getNamespace(), StandardCharsets.UTF_8));
+                }
+                if (filter.getTenant() != null) {
+                    params.add("tenant=" + URLEncoder.encode(filter.getTenant(), StandardCharsets.UTF_8));
+                }
+                if (filter.getStatus() != null) {
+                    params.add("status=" + URLEncoder.encode(filter.getStatus(), StandardCharsets.UTF_8));
+                }
+                if (filter.getLimit() != null) {
+                    params.add("limit=" + filter.getLimit());
+                }
+                if (filter.getOffset() != null) {
+                    params.add("offset=" + filter.getOffset());
+                }
+            }
+            if (!params.isEmpty()) {
+                path.append("?").append(String.join("&", params));
+            }
+
+            HttpRequest request = requestBuilder(path.toString()).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return parseResponse(response, ListSwarmRunsResponse.class);
+            }
+            throw new HttpException(response.statusCode(), "Failed to list swarm runs");
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Fetches a single swarm run snapshot. Returns empty when unknown.
+     */
+    public Optional<SwarmRunSnapshot> getSwarmRun(String runId) throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder(
+                "/v1/swarm/runs/" + URLEncoder.encode(runId, StandardCharsets.UTF_8)
+            ).GET().build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, SwarmRunSnapshot.class));
+            }
+            if (response.statusCode() == 404) {
+                return Optional.empty();
+            }
+            throw new HttpException(response.statusCode(), "Failed to fetch swarm run");
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /**
+     * Requests cancellation of an inflight swarm run. Returns empty when unknown.
+     */
+    public Optional<SwarmRunSnapshot> cancelSwarmRun(String runId) throws ActeonException {
+        try {
+            HttpRequest request = requestBuilder(
+                "/v1/swarm/runs/" + URLEncoder.encode(runId, StandardCharsets.UTF_8) + "/cancel"
+            ).POST(HttpRequest.BodyPublishers.noBody()).build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return Optional.of(parseResponse(response, SwarmRunSnapshot.class));
+            }
+            if (response.statusCode() == 404) {
+                return Optional.empty();
+            }
+            throw new HttpException(response.statusCode(), "Failed to cancel swarm run");
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    // =========================================================================
     // Quotas
     // =========================================================================
 
