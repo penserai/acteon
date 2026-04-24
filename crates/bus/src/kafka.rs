@@ -21,12 +21,14 @@ use rdkafka::message::{Header, Headers, Message, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
 
-use acteon_core::Topic;
+use rdkafka::TopicPartitionList;
+
+use acteon_core::{PartitionLag, Topic};
 
 use crate::backend::{BusBackend, SubscribeStream};
 use crate::config::KafkaBusConfig;
 use crate::error::BusError;
-use crate::message::{BusMessage, DeliveryReceipt, StartOffset};
+use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
 
 /// `BusBackend` impl that talks to a real Kafka cluster.
 pub struct KafkaBackend {
@@ -282,5 +284,106 @@ impl BusBackend for KafkaBackend {
             }
         };
         Ok(Box::pin(stream))
+    }
+
+    async fn commit_offset(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+        position: OffsetPosition,
+    ) -> Result<(), BusError> {
+        // Out-of-band commits need a consumer that has actually joined
+        // the group — otherwise the broker returns `UnknownMemberId`.
+        // We `subscribe` + pull one record (or timeout) to force a
+        // JoinGroup round-trip, then commit and drop. This costs
+        // hundreds of milliseconds per call on a warm broker, which is
+        // fine for end-of-batch acks but **not** for per-record
+        // commits. A future phase introduces a stateful subscription
+        // registry that holds a single long-lived consumer so commits
+        // stream through it.
+        let cfg = self.consumer_config(group_id, StartOffset::Latest);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("commit consumer: {e}")))?;
+        consumer
+            .subscribe(&[kafka_topic])
+            .map_err(|e| BusError::Transport(format!("commit subscribe: {e}")))?;
+
+        // Wait up to 5 s for assignment. A no-record timeout is fine:
+        // the subscribe poll alone triggers JoinGroup.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::StreamExt::next(&mut consumer.stream()),
+        )
+        .await;
+
+        let mut tpl = TopicPartitionList::new();
+        // Kafka commits the "next offset to read," hence `+1`.
+        tpl.add_partition_offset(
+            kafka_topic,
+            position.partition,
+            rdkafka::Offset::Offset(position.offset + 1),
+        )
+        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+        consumer
+            .commit(&tpl, rdkafka::consumer::CommitMode::Sync)
+            .map_err(map_kafka_error)
+    }
+
+    async fn consumer_lag(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+    ) -> Result<Vec<PartitionLag>, BusError> {
+        let cfg = self.consumer_config(group_id, StartOffset::Latest);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("lag consumer: {e}")))?;
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+
+        let mut request_tpl = TopicPartitionList::new();
+        for p in topic_meta.partitions() {
+            request_tpl
+                .add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::Invalid)
+                .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+        }
+        let committed = consumer
+            .committed_offsets(request_tpl, Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+
+        let mut out = Vec::with_capacity(topic_meta.partitions().len());
+        for p in topic_meta.partitions() {
+            let (_low, high) = consumer
+                .fetch_watermarks(kafka_topic, p.id(), Duration::from_secs(10))
+                .map_err(map_kafka_error)?;
+            // Kafka stores "next" offset; our public contract is
+            // "last consumed" so both backends report the same numbers.
+            let committed_offset =
+                committed
+                    .find_partition(kafka_topic, p.id())
+                    .map_or(-1, |elt| match elt.offset() {
+                        rdkafka::Offset::Offset(next) => next - 1,
+                        _ => -1,
+                    });
+            let lag = if committed_offset < 0 {
+                high
+            } else {
+                (high - committed_offset - 1).max(0)
+            };
+            out.push(PartitionLag {
+                partition: p.id(),
+                committed: committed_offset,
+                high_water_mark: high,
+                lag,
+            });
+        }
+        Ok(out)
     }
 }

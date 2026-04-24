@@ -17,8 +17,10 @@ use tokio::sync::broadcast;
 use acteon_core::Topic;
 
 use crate::backend::{BusBackend, SubscribeStream};
+use acteon_core::PartitionLag;
+
 use crate::error::BusError;
-use crate::message::{BusMessage, DeliveryReceipt, StartOffset};
+use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
 
 struct TopicState {
     log: VecDeque<BusMessage>,
@@ -30,6 +32,8 @@ struct TopicState {
 #[derive(Default)]
 pub struct MemoryBackend {
     topics: Mutex<HashMap<String, TopicState>>,
+    /// `(topic, group) → committed offset`. Phase 2 commit semantics.
+    committed: Mutex<HashMap<(String, String), i64>>,
 }
 
 impl MemoryBackend {
@@ -122,6 +126,56 @@ impl BusBackend for MemoryBackend {
         };
         Ok(Box::pin(stream))
     }
+
+    async fn commit_offset(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+        position: OffsetPosition,
+    ) -> Result<(), BusError> {
+        // Require the topic to exist so tests with typos fail loudly.
+        if !self.topics.lock().contains_key(kafka_topic) {
+            return Err(BusError::TopicNotFound(kafka_topic.into()));
+        }
+        self.committed.lock().insert(
+            (kafka_topic.to_string(), group_id.to_string()),
+            position.offset,
+        );
+        Ok(())
+    }
+
+    async fn consumer_lag(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+    ) -> Result<Vec<PartitionLag>, BusError> {
+        let high_water_mark = {
+            let topics = self.topics.lock();
+            topics
+                .get(kafka_topic)
+                .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?
+                .next_offset
+        };
+        let committed = self
+            .committed
+            .lock()
+            .get(&(kafka_topic.to_string(), group_id.to_string()))
+            .copied()
+            .unwrap_or(-1);
+        // Contract: `committed` = last consumed offset. `lag` = number
+        // of records not yet consumed.
+        let lag = if committed < 0 {
+            high_water_mark
+        } else {
+            (high_water_mark - committed - 1).max(0)
+        };
+        Ok(vec![PartitionLag {
+            partition: 0,
+            committed,
+            high_water_mark,
+            lag,
+        }])
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +263,60 @@ mod tests {
     async fn delete_is_idempotent_on_absent() {
         let backend = MemoryBackend::new();
         let err = backend.delete_topic("nope").await.unwrap_err();
+        assert!(matches!(err, BusError::TopicNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn commit_and_lag_roundtrip() {
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("t1", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+        let name = topic.kafka_topic_name();
+
+        for i in 0..5 {
+            backend
+                .produce(BusMessage::new(name.clone(), serde_json::json!({ "n": i })))
+                .await
+                .unwrap();
+        }
+
+        // Before any commit: committed=-1, lag = full log.
+        let lag = backend.consumer_lag(&name, "g1").await.unwrap();
+        assert_eq!(lag[0].committed, -1);
+        assert_eq!(lag[0].high_water_mark, 5);
+        assert_eq!(lag[0].lag, 5); // uncommitted = full log.
+
+        // Commit offset 2 → consumed through record 2 → lag = 2 (records 3, 4).
+        backend
+            .commit_offset(
+                &name,
+                "g1",
+                OffsetPosition {
+                    partition: 0,
+                    offset: 2,
+                },
+            )
+            .await
+            .unwrap();
+        let lag = backend.consumer_lag(&name, "g1").await.unwrap();
+        assert_eq!(lag[0].committed, 2);
+        assert_eq!(lag[0].lag, 2);
+    }
+
+    #[tokio::test]
+    async fn commit_to_unknown_topic_fails() {
+        let backend = MemoryBackend::new();
+        let err = backend
+            .commit_offset(
+                "ghost",
+                "g",
+                OffsetPosition {
+                    partition: 0,
+                    offset: 0,
+                },
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, BusError::TopicNotFound(_)));
     }
 }
