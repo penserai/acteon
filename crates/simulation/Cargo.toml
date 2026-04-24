@@ -212,5 +212,9 @@ required-features = ["bus"]
 name = "bus_subscription_simulation"
 required-features = ["bus"]
 
+[[example]]
+name = "bus_schema_simulation"
+required-features = ["bus"]
+
 [lints]
 workspace = true

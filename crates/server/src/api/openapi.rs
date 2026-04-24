@@ -169,6 +169,13 @@ use acteon_core::{
         super::bus::ack_subscription,
         super::bus::subscription_lag,
         super::bus::deadletter_subscription,
+        super::bus::create_schema,
+        super::bus::list_schemas,
+        super::bus::get_subject_versions,
+        super::bus::get_schema_version,
+        super::bus::delete_schema_version,
+        super::bus::bind_topic_schema,
+        super::bus::unbind_topic_schema,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -232,6 +239,10 @@ use acteon_core::{
         super::bus::ListSubscriptionsResponse, super::bus::AckRequest,
         super::bus::AckResponse, super::bus::LagEntry, super::bus::LagResponse,
         super::bus::DeadLetterRequest, super::bus::DeadLetterResponse,
+        super::bus::CreateSchemaRequest, super::bus::SchemaResponse,
+        super::bus::ListSchemasResponse, super::bus::BindTopicSchemaRequest,
+        super::bus::BindTopicSchemaResponse, super::bus::SchemaValidationErrorResponse,
+        super::bus::SchemaValidationIssueDto,
     ))
 )]
 pub struct ApiDoc;

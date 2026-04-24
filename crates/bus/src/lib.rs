@@ -21,6 +21,7 @@ pub mod error;
 pub mod kafka;
 pub mod memory;
 pub mod message;
+pub mod schema;
 
 pub use backend::{BusBackend, SharedBackend, SubscribeStream};
 pub use config::{BusConfig, KafkaBusConfig};
@@ -28,5 +29,6 @@ pub use error::BusError;
 pub use kafka::KafkaBackend;
 pub use memory::MemoryBackend;
 pub use message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
+pub use schema::{SchemaValidator, SchemaValidatorError, ValidationIssue};
 
 pub use acteon_core::PartitionLag;

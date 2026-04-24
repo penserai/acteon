@@ -60,6 +60,8 @@ pub enum KeyKind {
     BusTopic,
     /// Bus subscription metadata (Phase 2 of the agentic bus).
     BusSubscription,
+    /// Bus payload schema (Phase 3 of the agentic bus).
+    BusSchema,
     Custom(String),
 }
 
@@ -98,6 +100,7 @@ impl KeyKind {
             Self::TimeInterval => "time_interval",
             Self::BusTopic => "bus_topic",
             Self::BusSubscription => "bus_subscription",
+            Self::BusSchema => "bus_schema",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -196,6 +199,7 @@ mod tests {
         assert_eq!(KeyKind::TimeInterval.as_str(), "time_interval");
         assert_eq!(KeyKind::BusTopic.as_str(), "bus_topic");
         assert_eq!(KeyKind::BusSubscription.as_str(), "bus_subscription");
+        assert_eq!(KeyKind::BusSchema.as_str(), "bus_schema");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 

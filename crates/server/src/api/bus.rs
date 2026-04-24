@@ -68,6 +68,7 @@ fn authorize_bus_op(
         BusOp::Manage => (Permission::Dispatch, "manage"),
         BusOp::Publish => (Permission::Dispatch, "publish"),
         BusOp::Subscribe => (Permission::StreamSubscribe, "subscribe"),
+        BusOp::ManageSchema => (Permission::Dispatch, "schema"),
     };
     if !identity.role.has_permission(permission) {
         return Err((
@@ -103,6 +104,8 @@ enum BusOp {
     Publish,
     /// Subscribe (SSE) to a topic.
     Subscribe,
+    /// Schema CRUD + topic-binding CRUD (Phase 3).
+    ManageSchema,
 }
 
 /// Parse a `namespace.tenant.name` Kafka topic string.
@@ -156,6 +159,10 @@ pub struct TopicResponse {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_subject: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<i32>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -522,7 +529,7 @@ pub async fn delete_topic(
     request_body = PublishRequest,
     responses(
         (status = 200, description = "Published", body = PublishResponse),
-        (status = 400, description = "Invalid topic or reserved header prefix", body = ErrorResponse),
+        (status = 400, description = "Invalid topic, reserved header, or schema-validation failure", body = SchemaValidationErrorResponse),
         (status = 404, description = "Topic not found", body = ErrorResponse),
         (status = 503, description = "Bus feature disabled", body = ErrorResponse),
     ),
@@ -595,12 +602,23 @@ pub async fn publish(
         // that the topic is registered in state *before* we hand the
         // message to Kafka. Without this check a client could bypass
         // Acteon entirely when the broker has `auto.create.topics.enable`
-        // — future schema validation (Phase 3) would have no hook.
+        // — Phase 3 schema validation would have no hook either.
         let topic_key = StateKey::new(ns, tenant, KeyKind::BusTopic, &topic_name);
-        {
+        let topic: Topic = {
             let gw = state.gateway.read().await;
             match gw.state_store().get(&topic_key).await {
-                Ok(Some(_)) => {}
+                Ok(Some(raw)) => match serde_json::from_str::<Topic>(&raw) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: format!("corrupt topic record for {topic_name}: {e}"),
+                            }),
+                        )
+                            .into_response();
+                    }
+                },
                 Ok(None) => {
                     return (
                         StatusCode::NOT_FOUND,
@@ -608,6 +626,61 @@ pub async fn publish(
                             error: format!(
                                 "topic {topic_name} is not registered in Acteon; create it with POST /v1/bus/topics first"
                             ),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        };
+        // Phase 3: if the topic is bound to a schema, validate the
+        // payload before we hand it to Kafka. A bound topic with a
+        // missing compiled validator is a server bug — log it and fall
+        // through rather than blocking publish on a cold cache, since
+        // the state row is the source of truth and we re-hydrate on
+        // startup via `ensure_schema_in_validator` below.
+        if let (Some(subject), Some(version)) = (&topic.schema_subject, topic.schema_version) {
+            if let Err(resp) = ensure_schema_in_validator(
+                &state,
+                &topic.namespace,
+                &topic.tenant,
+                subject,
+                version,
+            )
+            .await
+            {
+                return resp;
+            }
+            match state.bus_schema_validator.validate(
+                &topic.namespace,
+                &topic.tenant,
+                subject,
+                version,
+                &req.payload,
+            ) {
+                Ok(()) => {}
+                Err(acteon_bus::SchemaValidatorError::InvalidPayload(issues)) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(SchemaValidationErrorResponse {
+                            error: format!("payload does not match schema '{subject}' v{version}"),
+                            subject: subject.clone(),
+                            version,
+                            issues: issues
+                                .into_iter()
+                                .map(|i| SchemaValidationIssueDto {
+                                    path: i.path,
+                                    message: i.message,
+                                })
+                                .collect(),
                         }),
                     )
                         .into_response();
@@ -763,6 +836,8 @@ fn topic_to_response(t: &Topic) -> TopicResponse {
         retention_ms: t.retention_ms,
         description: t.description.clone(),
         labels: t.labels.clone(),
+        schema_subject: t.schema_subject.clone(),
+        schema_version: t.schema_version,
         created_at: t.created_at,
         updated_at: t.updated_at,
     }
@@ -1617,5 +1692,1004 @@ async fn load_subscription(
             }),
         )
             .into_response()),
+    }
+}
+
+// =============================================================================
+// Phase 3: JSON-Schema registry + topic binding
+// =============================================================================
+
+/// Body of a request to register a new schema version.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateSchemaRequest {
+    pub subject: String,
+    pub namespace: String,
+    pub tenant: String,
+    /// JSON Schema document (draft 2020-12). Validated by the
+    /// `jsonschema` crate when compiled.
+    #[schema(value_type = Object)]
+    pub body: serde_json::Value,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+}
+
+/// Wire representation of a registered schema version.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SchemaResponse {
+    pub subject: String,
+    pub version: i32,
+    pub namespace: String,
+    pub tenant: String,
+    #[schema(value_type = Object)]
+    pub body: serde_json::Value,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListSchemasResponse {
+    pub schemas: Vec<SchemaResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListSchemasParams {
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// When true, return only the latest version per subject (default
+    /// false — returns all versions).
+    #[serde(default)]
+    pub latest_only: bool,
+}
+
+/// Body of a `PUT /v1/bus/topics/{ns}/{t}/{name}/schema` request.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BindTopicSchemaRequest {
+    pub subject: String,
+    /// Specific version to pin. Must be >= 1.
+    pub version: i32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BindTopicSchemaResponse {
+    pub topic: String,
+    pub subject: String,
+    pub version: i32,
+}
+
+/// Response body for payload-validation failures. Uses a distinct type
+/// so `OpenAPI` consumers can see the per-issue detail without matching
+/// on `ErrorResponse`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SchemaValidationErrorResponse {
+    pub error: String,
+    pub subject: String,
+    pub version: i32,
+    pub issues: Vec<SchemaValidationIssueDto>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SchemaValidationIssueDto {
+    pub path: String,
+    pub message: String,
+}
+
+#[cfg(feature = "bus")]
+fn schema_to_response(s: &acteon_core::Schema) -> SchemaResponse {
+    SchemaResponse {
+        subject: s.subject.clone(),
+        version: s.version,
+        namespace: s.namespace.clone(),
+        tenant: s.tenant.clone(),
+        body: s.body.clone(),
+        labels: s.labels.clone(),
+        created_at: s.created_at,
+    }
+}
+
+/// Rehydrate a schema body into the in-memory validator cache if it
+/// isn't there already. The validator cache is process-local and
+/// survives only while the server is up, so on cold-start or after the
+/// cache was evicted we need to read from state and recompile.
+///
+/// Returns `Err(Response)` for surfacing to callers when the schema row
+/// is missing (bound topic with deleted schema — a governance hole)
+/// or when recompilation fails.
+#[cfg(feature = "bus")]
+async fn ensure_schema_in_validator(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    subject: &str,
+    version: i32,
+) -> Result<(), axum::response::Response> {
+    // Optimistic path: validate() below will succeed if the entry is
+    // present. We re-register unconditionally here which is a cheap
+    // hash-map write; the extra cost is negligible vs. the cross-
+    // process cache-miss path.
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusSchema,
+        format!("{subject}:{version}"),
+    );
+    let gw = state.gateway.read().await;
+    match gw.state_store().get(&key).await {
+        Ok(Some(raw)) => match serde_json::from_str::<acteon_core::Schema>(&raw) {
+            Ok(s) => state
+                .bus_schema_validator
+                .register(&s.namespace, &s.tenant, &s.subject, s.version, &s.body)
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("failed to compile schema {subject}:{version}: {e}"),
+                        }),
+                    )
+                        .into_response()
+                }),
+            Err(e) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("corrupt schema record for {subject}:{version}: {e}"),
+                }),
+            )
+                .into_response()),
+        },
+        Ok(None) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!(
+                    "topic binding points at missing schema '{subject}' v{version} — unbind or re-register the schema"
+                ),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/schemas",
+    tag = "bus",
+    request_body = CreateSchemaRequest,
+    responses(
+        (status = 201, description = "Schema version registered", body = SchemaResponse),
+        (status = 400, description = "Invalid subject or schema body", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn create_schema(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Json(req): Json<CreateSchemaRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &req.tenant, &req.namespace, BusOp::ManageSchema)
+        {
+            return resp;
+        }
+        if let Err(e) = acteon_core::Schema::validate_subject(&req.subject) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(e) = acteon_core::Schema::validate_fragment(&req.namespace) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("invalid namespace: {e}"),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(e) = acteon_core::Schema::validate_fragment(&req.tenant) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("invalid tenant: {e}"),
+                }),
+            )
+                .into_response();
+        }
+        // Compile the body first — a bad body should fail fast with a
+        // 400 rather than land in state and cause 500s on publish later.
+        if let Err(e) = acteon_bus::SchemaValidator::new().register(
+            &req.namespace,
+            &req.tenant,
+            &req.subject,
+            1,
+            &req.body,
+        ) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("schema body invalid: {e}"),
+                }),
+            )
+                .into_response();
+        }
+        // Scan existing versions for this subject to pick the next one.
+        let gw = state.gateway.read().await;
+        let prefix = format!("{}:", req.subject);
+        let next_version: i32 = match gw
+            .state_store()
+            .scan_keys(
+                &req.namespace,
+                &req.tenant,
+                KeyKind::BusSchema,
+                Some(&prefix),
+            )
+            .await
+        {
+            Ok(rows) => rows
+                .iter()
+                .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Schema>(v).ok())
+                .filter(|s| s.subject == req.subject)
+                .map(|s| s.version)
+                .max()
+                .map_or(1, |m| m + 1),
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let now = Utc::now();
+        let schema = acteon_core::Schema {
+            subject: req.subject.clone(),
+            version: next_version,
+            namespace: req.namespace.clone(),
+            tenant: req.tenant.clone(),
+            format: acteon_core::SchemaFormat::default(),
+            body: req.body.clone(),
+            labels: req.labels.clone(),
+            created_at: now,
+        };
+        if let Err(e) = schema.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let key = StateKey::new(
+            schema.namespace.clone(),
+            schema.tenant.clone(),
+            KeyKind::BusSchema,
+            schema.id(),
+        );
+        let payload = match serde_json::to_string(&schema) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        drop(gw);
+        // Eagerly register with the compiled-validator cache so the
+        // next publish is a warm hit.
+        let _ = state.bus_schema_validator.register(
+            &schema.namespace,
+            &schema.tenant,
+            &schema.subject,
+            schema.version,
+            &schema.body,
+        );
+        (StatusCode::CREATED, Json(schema_to_response(&schema))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/schemas",
+    tag = "bus",
+    params(ListSchemasParams),
+    responses(
+        (status = 200, description = "Schema list", body = ListSchemasResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn list_schemas(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(params): Query<ListSchemasParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        // Authorize with whatever scope the caller filtered on; when
+        // neither namespace nor tenant is given, fall through to caller
+        // iteration below — list is a read surface without mutations,
+        // but we still gate on ManageSchema so downstream tools don't
+        // accidentally expose schema bodies to low-privilege clients.
+        let (ns_filter, t_filter) = (params.namespace.as_deref(), params.tenant.as_deref());
+        if let (Some(ns), Some(t)) = (ns_filter, t_filter) {
+            if let Err(resp) = authorize_bus_op(&identity, t, ns, BusOp::ManageSchema) {
+                return resp;
+            }
+        } else if !identity.role.has_permission(Permission::Dispatch) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "insufficient role for bus.schema listing".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let gw = state.gateway.read().await;
+        let rows = match gw.state_store().scan_keys_by_kind(KeyKind::BusSchema).await {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let mut schemas: Vec<acteon_core::Schema> = rows
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Schema>(&v).ok())
+            .filter(|s| ns_filter.is_none_or(|n| s.namespace == n))
+            .filter(|s| t_filter.is_none_or(|t| s.tenant == t))
+            .filter(|s| params.subject.as_deref().is_none_or(|sub| s.subject == sub))
+            .collect();
+        if params.latest_only {
+            let mut by_subject: std::collections::HashMap<
+                (String, String, String),
+                acteon_core::Schema,
+            > = std::collections::HashMap::new();
+            for s in schemas.drain(..) {
+                let key = (s.namespace.clone(), s.tenant.clone(), s.subject.clone());
+                match by_subject.get(&key) {
+                    Some(existing) if existing.version >= s.version => {}
+                    _ => {
+                        by_subject.insert(key, s);
+                    }
+                }
+            }
+            schemas = by_subject.into_values().collect();
+        }
+        schemas.sort_by(|a, b| {
+            a.namespace
+                .cmp(&b.namespace)
+                .then(a.tenant.cmp(&b.tenant))
+                .then(a.subject.cmp(&b.subject))
+                .then(a.version.cmp(&b.version))
+        });
+        let responses: Vec<SchemaResponse> = schemas.iter().map(schema_to_response).collect();
+        let count = responses.len();
+        (
+            StatusCode::OK,
+            Json(ListSchemasResponse {
+                schemas: responses,
+                count,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/schemas/{namespace}/{tenant}/{subject}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path, description = "Topic namespace"),
+        ("tenant" = String, Path, description = "Tenant ID"),
+        ("subject" = String, Path, description = "Schema subject"),
+    ),
+    responses(
+        (status = 200, description = "All versions of the subject", body = ListSchemasResponse),
+        (status = 404, description = "No versions registered", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn get_subject_versions(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, subject)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+            return resp;
+        }
+        let gw = state.gateway.read().await;
+        let rows = match gw
+            .state_store()
+            .scan_keys(
+                &namespace,
+                &tenant,
+                KeyKind::BusSchema,
+                Some(&format!("{subject}:")),
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let mut schemas: Vec<acteon_core::Schema> = rows
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Schema>(&v).ok())
+            .filter(|s| s.subject == subject)
+            .collect();
+        if schemas.is_empty() {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("no versions of subject '{subject}' registered"),
+                }),
+            )
+                .into_response();
+        }
+        schemas.sort_by_key(|s| s.version);
+        let responses: Vec<SchemaResponse> = schemas.iter().map(schema_to_response).collect();
+        let count = responses.len();
+        (
+            StatusCode::OK,
+            Json(ListSchemasResponse {
+                schemas: responses,
+                count,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, subject);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path, description = "Topic namespace"),
+        ("tenant" = String, Path, description = "Tenant ID"),
+        ("subject" = String, Path, description = "Schema subject"),
+        ("version" = String, Path, description = "Version number or 'latest'"),
+    ),
+    responses(
+        (status = 200, description = "Schema version", body = SchemaResponse),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn get_schema_version(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, subject, version)): Path<(String, String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+            return resp;
+        }
+        let schema =
+            match resolve_schema_version(&state, &namespace, &tenant, &subject, &version).await {
+                Ok(s) => s,
+                Err(resp) => return resp,
+            };
+        (StatusCode::OK, Json(schema_to_response(&schema))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, subject, version);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+/// Resolve `"latest"` or a numeric version string to a concrete
+/// `Schema`. Shared by `get_schema_version` and `bind_topic_schema`.
+#[cfg(feature = "bus")]
+async fn resolve_schema_version(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    subject: &str,
+    version: &str,
+) -> Result<acteon_core::Schema, axum::response::Response> {
+    let gw = state.gateway.read().await;
+    if version.eq_ignore_ascii_case("latest") {
+        let rows = gw
+            .state_store()
+            .scan_keys(
+                namespace,
+                tenant,
+                KeyKind::BusSchema,
+                Some(&format!("{subject}:")),
+            )
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response()
+            })?;
+        let latest = rows
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Schema>(&v).ok())
+            .filter(|s| s.subject == subject)
+            .max_by_key(|s| s.version);
+        latest.ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("no versions of subject '{subject}' registered"),
+                }),
+            )
+                .into_response()
+        })
+    } else {
+        let v: i32 = version.parse().map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("version '{version}' is not an integer or 'latest'"),
+                }),
+            )
+                .into_response()
+        })?;
+        let key = StateKey::new(
+            namespace.to_string(),
+            tenant.to_string(),
+            KeyKind::BusSchema,
+            format!("{subject}:{v}"),
+        );
+        match gw.state_store().get(&key).await {
+            Ok(Some(raw)) => serde_json::from_str::<acteon_core::Schema>(&raw).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("corrupt schema record for {subject}:{v}: {e}"),
+                    }),
+                )
+                    .into_response()
+            }),
+            Ok(None) => Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("schema '{subject}' v{v} not found"),
+                }),
+            )
+                .into_response()),
+            Err(e) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()),
+        }
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/bus/schemas/{namespace}/{tenant}/{subject}/{version}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("subject" = String, Path),
+        ("version" = i32, Path),
+    ),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 409, description = "Schema is pinned by a topic; unbind first", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn delete_schema_version(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, subject, version)): Path<(String, String, String, i32)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+            return resp;
+        }
+        // Block the delete if any topic currently pins this version.
+        let gw = state.gateway.read().await;
+        let topic_rows = match gw
+            .state_store()
+            .scan_keys(&namespace, &tenant, KeyKind::BusTopic, None)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let pinned_by: Vec<String> = topic_rows
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<Topic>(&v).ok())
+            .filter(|t| {
+                t.schema_subject.as_deref() == Some(subject.as_str())
+                    && t.schema_version == Some(version)
+            })
+            .map(|t| t.kafka_topic_name())
+            .collect();
+        if !pinned_by.is_empty() {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: format!(
+                        "schema '{subject}' v{version} is pinned by topics: {}; unbind them first",
+                        pinned_by.join(", ")
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusSchema,
+            format!("{subject}:{version}"),
+        );
+        match gw.state_store().get(&key).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("schema '{subject}' v{version} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        if let Err(e) = gw.state_store().delete(&key).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        drop(gw);
+        state
+            .bus_schema_validator
+            .remove(&namespace, &tenant, &subject, version);
+        StatusCode::NO_CONTENT.into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, subject, version);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+    tag = "bus",
+    request_body = BindTopicSchemaRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("name" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Binding set", body = BindTopicSchemaResponse),
+        (status = 404, description = "Topic or schema not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn bind_topic_schema(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, name)): Path<(String, String, String)>,
+    Json(req): Json<BindTopicSchemaRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+            return resp;
+        }
+        // Resolve the schema first — returns 404 if missing.
+        let schema = match resolve_schema_version(
+            &state,
+            &namespace,
+            &tenant,
+            &req.subject,
+            &req.version.to_string(),
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(resp) => return resp,
+        };
+        let kafka_name = format!("{namespace}.{tenant}.{name}");
+        let topic_key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusTopic,
+            &kafka_name,
+        );
+        let gw = state.gateway.read().await;
+        let mut topic: Topic = match gw.state_store().get(&topic_key).await {
+            Ok(Some(raw)) => match serde_json::from_str::<Topic>(&raw) {
+                Ok(t) => t,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("corrupt topic record for {kafka_name}: {e}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("topic {kafka_name} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        topic.schema_subject = Some(schema.subject.clone());
+        topic.schema_version = Some(schema.version);
+        topic.updated_at = Utc::now();
+        let payload = match serde_json::to_string(&topic) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        if let Err(e) = gw.state_store().set(&topic_key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        drop(gw);
+        // Warm the validator cache so the next publish is a hit.
+        let _ = state.bus_schema_validator.register(
+            &schema.namespace,
+            &schema.tenant,
+            &schema.subject,
+            schema.version,
+            &schema.body,
+        );
+        (
+            StatusCode::OK,
+            Json(BindTopicSchemaResponse {
+                topic: kafka_name,
+                subject: schema.subject,
+                version: schema.version,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, name, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("name" = String, Path),
+    ),
+    responses(
+        (status = 204, description = "Binding removed"),
+        (status = 404, description = "Topic not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn unbind_topic_schema(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, name)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageSchema) {
+            return resp;
+        }
+        let kafka_name = format!("{namespace}.{tenant}.{name}");
+        let topic_key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusTopic,
+            &kafka_name,
+        );
+        let gw = state.gateway.read().await;
+        let mut topic: Topic = match gw.state_store().get(&topic_key).await {
+            Ok(Some(raw)) => match serde_json::from_str::<Topic>(&raw) {
+                Ok(t) => t,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("corrupt topic record for {kafka_name}: {e}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("topic {kafka_name} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        topic.schema_subject = None;
+        topic.schema_version = None;
+        topic.updated_at = Utc::now();
+        let payload = match serde_json::to_string(&topic) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        if let Err(e) = gw.state_store().set(&topic_key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        StatusCode::NO_CONTENT.into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, name);
+        service_unavailable("bus feature not compiled")
     }
 }

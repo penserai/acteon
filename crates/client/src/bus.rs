@@ -59,6 +59,10 @@ pub struct BusTopic {
     pub description: Option<String>,
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    #[serde(default)]
+    pub schema_subject: Option<String>,
+    #[serde(default)]
+    pub schema_version: Option<i32>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -438,6 +442,295 @@ impl ActeonClient {
             None => format!("{}/v1/bus/subscriptions/{ns}/{t}/{i}", self.base_url),
         }
     }
+
+    // ----- Phase 3: schemas + topic-schema binding -----
+
+    /// Register a new version of a schema subject. The server allocates
+    /// the next monotonic version and returns the registered schema.
+    pub async fn register_bus_schema(&self, req: &RegisterBusSchema) -> Result<BusSchema, Error> {
+        let url = format!("{}/v1/bus/schemas", self.base_url);
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusSchema>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// List schemas, optionally filtered by namespace/tenant/subject.
+    /// When `latest_only` is true, returns only the latest version per
+    /// subject.
+    pub async fn list_bus_schemas(
+        &self,
+        filter: &BusSchemaFilter,
+    ) -> Result<ListBusSchemasResponse, Error> {
+        let url = format!("{}/v1/bus/schemas", self.base_url);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .query(filter)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<ListBusSchemasResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Fetch every version of a subject, ordered oldest-to-newest.
+    pub async fn get_bus_schema_versions(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        subject: &str,
+    ) -> Result<ListBusSchemasResponse, Error> {
+        let url = self.schema_subject_url(namespace, tenant, subject);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<ListBusSchemasResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Fetch a specific schema version. Pass `"latest"` for the most
+    /// recent; any numeric string is parsed as a version number.
+    pub async fn get_bus_schema(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        subject: &str,
+        version: &str,
+    ) -> Result<BusSchema, Error> {
+        let url = self.schema_version_url(namespace, tenant, subject, version);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusSchema>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Delete a schema version. Fails with 409 if any topic currently
+    /// pins this version.
+    pub async fn delete_bus_schema(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        subject: &str,
+        version: i32,
+    ) -> Result<(), Error> {
+        let url = self.schema_version_url(namespace, tenant, subject, &version.to_string());
+        let resp = self
+            .add_auth(self.client.delete(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Bind a topic to a schema subject + version. The server
+    /// validates every subsequent publish against this binding.
+    pub async fn bind_topic_schema(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        topic_name: &str,
+        subject: &str,
+        version: i32,
+    ) -> Result<BindTopicSchemaResponse, Error> {
+        let url = self.topic_schema_url(namespace, tenant, topic_name);
+        let req = BindTopicSchemaRequest {
+            subject: subject.to_string(),
+            version,
+        };
+        let resp = self
+            .add_auth(self.client.put(&url))
+            .json(&req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BindTopicSchemaResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Drop a topic's schema binding. Publishes after this skip
+    /// validation.
+    pub async fn unbind_topic_schema(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        topic_name: &str,
+    ) -> Result<(), Error> {
+        let url = self.topic_schema_url(namespace, tenant, topic_name);
+        let resp = self
+            .add_auth(self.client.delete(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Convenience: serialize a typed value and publish it. Pair with
+    /// a schema-bound topic for end-to-end type safety.
+    pub async fn publish_typed<T: serde::Serialize>(
+        &self,
+        req: &PublishTyped<'_, T>,
+    ) -> Result<PublishReceipt, Error> {
+        let payload =
+            serde_json::to_value(req.value).map_err(|e| Error::Deserialization(e.to_string()))?;
+        let msg = PublishBusMessage {
+            topic: req.topic.map(str::to_string),
+            namespace: req.namespace.map(str::to_string),
+            tenant: req.tenant.map(str::to_string),
+            name: req.name.map(str::to_string),
+            key: req.key.map(str::to_string),
+            payload,
+            headers: req.headers.clone(),
+        };
+        self.publish_message(&msg).await
+    }
+
+    fn schema_subject_url(&self, namespace: &str, tenant: &str, subject: &str) -> String {
+        format!(
+            "{}/v1/bus/schemas/{}/{}/{}",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(subject)
+        )
+    }
+
+    fn schema_version_url(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        subject: &str,
+        version: &str,
+    ) -> String {
+        format!(
+            "{}/v1/bus/schemas/{}/{}/{}/{}",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(subject),
+            encode_segment(version)
+        )
+    }
+
+    fn topic_schema_url(&self, namespace: &str, tenant: &str, topic_name: &str) -> String {
+        format!(
+            "{}/v1/bus/topics/{}/{}/{}/schema",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(topic_name)
+        )
+    }
+}
+
+// ----- Phase 3: DTOs -----
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct RegisterBusSchema {
+    pub subject: String,
+    pub namespace: String,
+    pub tenant: String,
+    pub body: serde_json::Value,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusSchema {
+    pub subject: String,
+    pub version: i32,
+    pub namespace: String,
+    pub tenant: String,
+    pub body: serde_json::Value,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListBusSchemasResponse {
+    pub schemas: Vec<BusSchema>,
+    pub count: usize,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct BusSchemaFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub latest_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BindTopicSchemaRequest {
+    subject: String,
+    version: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BindTopicSchemaResponse {
+    pub topic: String,
+    pub subject: String,
+    pub version: i32,
+}
+
+/// Typed publish envelope consumed by
+/// [`ActeonClient::publish_typed`]. Borrow-based to avoid clones when
+/// the caller already has a typed value.
+#[derive(Debug)]
+pub struct PublishTyped<'a, T: serde::Serialize> {
+    pub value: &'a T,
+    pub topic: Option<&'a str>,
+    pub namespace: Option<&'a str>,
+    pub tenant: Option<&'a str>,
+    pub name: Option<&'a str>,
+    pub key: Option<&'a str>,
+    pub headers: BTreeMap<String, String>,
 }
 
 async fn map_error(resp: reqwest::Response) -> Error {
