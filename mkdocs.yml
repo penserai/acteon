@@ -186,6 +186,7 @@ nav:
     - Phase 1 (Topics + Publish + Subscribe): features/bus-phase-1.md
     - Phase 2 (Subscriptions + Ack + Lag + DLQ): features/bus-phase-2.md
     - Phase 3 (Schemas + Publish Validation): features/bus-phase-3.md
+    - Phase 4 (Agents + Shared Inbox + Heartbeat): features/bus-phase-4.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
