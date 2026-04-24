@@ -69,7 +69,8 @@ use acteon_core::{
         (name = "Plugins", description = "WASM plugin management"),
         (name = "Templates", description = "Payload template and profile management"),
         (name = "Analytics", description = "Aggregated action analytics and metrics"),
-        (name = "swarm", description = "Long-running agent-swarm runs (ambient agent provider)")
+        (name = "swarm", description = "Long-running agent-swarm runs (ambient agent provider)"),
+        (name = "bus", description = "Agentic message bus (Kafka-backed topics, publish, subscribe)")
     ),
     paths(
         super::health::health,
@@ -157,6 +158,11 @@ use acteon_core::{
         super::swarm::list_swarm_runs,
         super::swarm::get_swarm_run,
         super::swarm::cancel_swarm_run,
+        super::bus::create_topic,
+        super::bus::list_topics,
+        super::bus::delete_topic,
+        super::bus::publish,
+        super::bus::subscribe,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -213,6 +219,9 @@ use acteon_core::{
         super::time_intervals::TimeRangeInput, super::time_intervals::TimeOfDayInput,
         super::signing_keys::SigningKeyEntry, super::signing_keys::SigningKeysResponse,
         super::swarm::SwarmRunList, super::swarm::SwarmRunApiSnapshot,
+        super::bus::CreateTopicRequest, super::bus::TopicResponse,
+        super::bus::ListTopicsResponse, super::bus::PublishRequest,
+        super::bus::PublishResponse,
     ))
 )]
 pub struct ApiDoc;

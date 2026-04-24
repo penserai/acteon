@@ -30,6 +30,7 @@ acteon-client.workspace = true
 acteon-server.workspace = true
 acteon-swarm = { workspace = true, optional = true }
 acteon-swarm-provider = { workspace = true, optional = true }
+acteon-bus = { workspace = true, optional = true }
 
 tokio.workspace = true
 axum.workspace = true
@@ -65,6 +66,7 @@ dynamodb = ["dep:acteon-state-dynamodb"]
 postgres = ["dep:acteon-state-postgres", "dep:acteon-audit-postgres"]
 clickhouse = ["dep:acteon-audit-clickhouse"]
 swarm = ["dep:acteon-swarm", "dep:acteon-swarm-provider"]
+bus = ["dep:acteon-bus"]
 
 [[bench]]
 name = "throughput"
@@ -201,6 +203,10 @@ name = "retry_chain_simulation"
 [[example]]
 name = "swarm_provider_simulation"
 required-features = ["swarm"]
+
+[[example]]
+name = "bus_simulation"
+required-features = ["bus"]
 
 [lints]
 workspace = true
