@@ -2282,6 +2282,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "swarm")]
     let swarm_registry = swarm_registry_state.clone();
 
+    #[cfg(feature = "bus")]
+    let bus_backend: Option<acteon_bus::SharedBackend> = if config.bus.enabled {
+        let kcfg = acteon_bus::KafkaBusConfig {
+            bootstrap_servers: config.bus.kafka.bootstrap_servers.clone(),
+            client_id: config.bus.kafka.client_id.clone(),
+            produce_timeout_ms: config.bus.kafka.produce_timeout_ms,
+            extra: config.bus.kafka.extra.clone(),
+        };
+        match acteon_bus::KafkaBackend::new(&kcfg) {
+            Ok(b) => {
+                info!(
+                    bootstrap = %kcfg.bootstrap_servers,
+                    client_id = %kcfg.client_id,
+                    "agentic bus enabled (Kafka backend)"
+                );
+                Some(b as acteon_bus::SharedBackend)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to initialize bus backend; bus endpoints will return 503");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         metrics: gateway_metrics,
@@ -2307,6 +2333,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         #[cfg(feature = "swarm")]
         swarm_registry,
+        #[cfg(feature = "bus")]
+        bus_backend,
     };
     let app = acteon_server::api::router(state);
 

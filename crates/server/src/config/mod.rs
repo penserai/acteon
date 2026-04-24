@@ -1,6 +1,7 @@
 mod audit;
 mod auth;
 mod background;
+mod bus;
 mod chains;
 mod circuit_breaker;
 mod compliance;
@@ -21,6 +22,7 @@ mod tests;
 pub use audit::*;
 pub use auth::*;
 pub use background::*;
+pub use bus::*;
 pub use chains::*;
 pub use circuit_breaker::*;
 pub use compliance::*;
@@ -119,4 +121,8 @@ pub struct ActeonConfig {
     /// success).
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
+    /// Agentic message bus configuration. Requires the `bus` Cargo
+    /// feature to have any effect.
+    #[serde(default)]
+    pub bus: BusServerConfig,
 }

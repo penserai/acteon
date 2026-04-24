@@ -181,6 +181,9 @@ nav:
   - Agent Swarm:
     - Orchestrator: features/agent-swarm.md
     - Ambient Swarm Provider: features/swarm-provider.md
+  - Agentic Bus:
+    - Master Plan: concepts/bus-master-plan.md
+    - Phase 1 (Topics + Publish + Subscribe): features/bus-phase-1.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
