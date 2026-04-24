@@ -586,3 +586,647 @@ fn sse_stream(
         Ok::<_, Infallible>(ev)
     })
 }
+
+// =============================================================================
+// Phase 2 — Subscriptions + ack + lag + DLQ
+// =============================================================================
+
+/// Request body for `POST /v1/bus/subscriptions`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateSubscriptionRequest {
+    /// Stable identifier. Doubles as the Kafka `group.id`. Must be
+    /// `[a-zA-Z0-9_-]{1..=120}`.
+    pub id: String,
+    /// Target Kafka topic (full `namespace.tenant.name` form).
+    pub topic: String,
+    /// Namespace / tenant for ACL + state scoping.
+    pub namespace: String,
+    pub tenant: String,
+    /// `earliest` or `latest`. Defaults to `latest`.
+    #[serde(default)]
+    pub starting_offset: Option<String>,
+    /// `manual` (default) or `auto_on_delivery`.
+    #[serde(default)]
+    pub ack_mode: Option<String>,
+    /// Optional DLQ topic name (`namespace.tenant.name`).
+    #[serde(default)]
+    pub dead_letter_topic: Option<String>,
+    /// Ack timeout in milliseconds.
+    #[serde(default)]
+    pub ack_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SubscriptionResponse {
+    pub id: String,
+    pub topic: String,
+    pub namespace: String,
+    pub tenant: String,
+    pub starting_offset: String,
+    pub ack_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dead_letter_topic: Option<String>,
+    pub ack_timeout_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListSubscriptionsResponse {
+    pub subscriptions: Vec<SubscriptionResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListSubscriptionsParams {
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    #[serde(default)]
+    pub topic: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AckRequest {
+    pub partition: i32,
+    /// Last consumed offset. The bus commits this + 1 to Kafka so a
+    /// reconnecting consumer resumes after this record.
+    pub offset: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AckResponse {
+    pub committed: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LagEntry {
+    pub partition: i32,
+    pub committed: i64,
+    pub high_water_mark: i64,
+    pub lag: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LagResponse {
+    pub subscription_id: String,
+    pub topic: String,
+    pub partitions: Vec<LagEntry>,
+    pub total_lag: i64,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DeadLetterRequest {
+    pub partition: i32,
+    pub offset: i64,
+    pub reason: String,
+    /// Original message key/payload to preserve in the DLQ record.
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub payload: Option<serde_json::Value>,
+    /// Original headers. `acteon.dlq.*` additions are appended by the
+    /// server before producing.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeadLetterResponse {
+    pub dlq_topic: String,
+    pub partition: i32,
+    pub offset: i64,
+}
+
+// =============================================================================
+// Handlers (all feature-gated like Phase 1)
+// =============================================================================
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/subscriptions",
+    tag = "bus",
+    request_body = CreateSubscriptionRequest,
+    responses(
+        (status = 201, description = "Subscription created", body = SubscriptionResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 409, description = "Subscription id already exists", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn create_subscription(
+    State(state): State<AppState>,
+    Json(req): Json<CreateSubscriptionRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        let mut sub =
+            acteon_core::Subscription::new(&req.id, &req.topic, &req.namespace, &req.tenant);
+        if let Some(so) = req.starting_offset.as_deref() {
+            sub.starting_offset = match so {
+                "earliest" => acteon_core::SubscriptionStartOffset::Earliest,
+                "latest" => acteon_core::SubscriptionStartOffset::Latest,
+                other => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("unknown starting_offset '{other}'"),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+        }
+        if let Some(am) = req.ack_mode.as_deref() {
+            sub.ack_mode = match am {
+                "manual" => acteon_core::AckMode::Manual,
+                "auto_on_delivery" => acteon_core::AckMode::AutoOnDelivery,
+                other => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("unknown ack_mode '{other}'"),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+        }
+        sub.dead_letter_topic = req.dead_letter_topic.clone();
+        if let Some(t) = req.ack_timeout_ms {
+            sub.ack_timeout_ms = t;
+        }
+        sub.description = req.description.clone();
+        sub.labels = req.labels.clone();
+        if let Err(e) = sub.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+
+        let gw = state.gateway.read().await;
+        let store = gw.state_store();
+        let key = StateKey::new(
+            sub.namespace.clone(),
+            sub.tenant.clone(),
+            KeyKind::BusSubscription,
+            sub.id.clone(),
+        );
+        match store.get(&key).await {
+            Ok(Some(_)) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!("subscription {} already exists", sub.id),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Ok(None) => {}
+        }
+        let Ok(body) = serde_json::to_string(&sub) else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed to serialize subscription".into(),
+                }),
+            )
+                .into_response();
+        };
+        if let Err(e) = store.set(&key, &body, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+
+        (StatusCode::CREATED, Json(subscription_to_response(&sub))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/subscriptions",
+    tag = "bus",
+    params(ListSubscriptionsParams),
+    responses(
+        (status = 200, description = "Subscription list", body = ListSubscriptionsResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn list_subscriptions(
+    State(state): State<AppState>,
+    Query(params): Query<ListSubscriptionsParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        let gw = state.gateway.read().await;
+        let store = gw.state_store();
+        let entries = match store.scan_keys_by_kind(KeyKind::BusSubscription).await {
+            Ok(e) => e,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let subs: Vec<SubscriptionResponse> = entries
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Subscription>(&v).ok())
+            .filter(|s| {
+                params.namespace.as_deref().is_none_or(|n| n == s.namespace)
+                    && params.tenant.as_deref().is_none_or(|t| t == s.tenant)
+                    && params.topic.as_deref().is_none_or(|t| t == s.topic)
+            })
+            .map(|s| subscription_to_response(&s))
+            .collect();
+        let body = ListSubscriptionsResponse {
+            count: subs.len(),
+            subscriptions: subs,
+        };
+        (StatusCode::OK, Json(body)).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/bus/subscriptions/{id}",
+    tag = "bus",
+    responses(
+        (status = 204, description = "Subscription deleted"),
+        (status = 404, description = "Subscription not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn delete_subscription(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        let gw = state.gateway.read().await;
+        let store = gw.state_store();
+        let sub = match lookup_subscription(store.as_ref(), &id).await {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("subscription {id} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse { error: e }),
+                )
+                    .into_response();
+            }
+        };
+        let key = StateKey::new(
+            sub.namespace.clone(),
+            sub.tenant.clone(),
+            KeyKind::BusSubscription,
+            sub.id.clone(),
+        );
+        if let Err(e) = store.delete(&key).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        StatusCode::NO_CONTENT.into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/subscriptions/{id}/ack",
+    tag = "bus",
+    request_body = AckRequest,
+    responses(
+        (status = 200, description = "Offset committed", body = AckResponse),
+        (status = 404, description = "Subscription not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn ack_subscription(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AckRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        let sub = match resolve_subscription(&state, &id).await {
+            Ok(s) => s,
+            Err(resp) => return resp,
+        };
+        match backend
+            .commit_offset(
+                &sub.topic,
+                &sub.id,
+                acteon_bus::OffsetPosition {
+                    partition: req.partition,
+                    offset: req.offset,
+                },
+            )
+            .await
+        {
+            Ok(()) => (StatusCode::OK, Json(AckResponse { committed: true })).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/subscriptions/{id}/lag",
+    tag = "bus",
+    responses(
+        (status = 200, description = "Lag snapshot", body = LagResponse),
+        (status = 404, description = "Subscription not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn subscription_lag(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        let sub = match resolve_subscription(&state, &id).await {
+            Ok(s) => s,
+            Err(resp) => return resp,
+        };
+        match backend.consumer_lag(&sub.topic, &sub.id).await {
+            Ok(entries) => {
+                let total_lag: i64 = entries.iter().map(|e| e.lag).sum();
+                let body = LagResponse {
+                    subscription_id: sub.id.clone(),
+                    topic: sub.topic.clone(),
+                    partitions: entries
+                        .into_iter()
+                        .map(|e| LagEntry {
+                            partition: e.partition,
+                            committed: e.committed,
+                            high_water_mark: e.high_water_mark,
+                            lag: e.lag,
+                        })
+                        .collect(),
+                    total_lag,
+                };
+                (StatusCode::OK, Json(body)).into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/subscriptions/{id}/deadletter",
+    tag = "bus",
+    request_body = DeadLetterRequest,
+    responses(
+        (status = 200, description = "Message routed to DLQ", body = DeadLetterResponse),
+        (status = 400, description = "Subscription has no DLQ configured", body = ErrorResponse),
+        (status = 404, description = "Subscription not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn deadletter_subscription(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<DeadLetterRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        let sub = match resolve_subscription(&state, &id).await {
+            Ok(s) => s,
+            Err(resp) => return resp,
+        };
+        let Some(dlq) = sub.dead_letter_topic.clone() else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("subscription {id} has no dead_letter_topic"),
+                }),
+            )
+                .into_response();
+        };
+        // Build the DLQ record preserving the original envelope +
+        // adding `acteon.dlq.*` diagnostic headers.
+        let mut msg = acteon_bus::BusMessage::new(
+            dlq.clone(),
+            req.payload.clone().unwrap_or(serde_json::Value::Null),
+        );
+        if let Some(k) = req.key.clone() {
+            msg = msg.with_key(k);
+        }
+        for (k, v) in &req.headers {
+            msg = msg.with_header(k.clone(), v.clone());
+        }
+        // acteon.* headers bypass the user-header filter via direct
+        // insertion.
+        msg.headers
+            .insert("acteon.dlq.origin_topic".into(), sub.topic.clone());
+        msg.headers.insert(
+            "acteon.dlq.origin_partition".into(),
+            req.partition.to_string(),
+        );
+        msg.headers
+            .insert("acteon.dlq.origin_offset".into(), req.offset.to_string());
+        msg.headers
+            .insert("acteon.dlq.subscription".into(), sub.id.clone());
+        msg.headers
+            .insert("acteon.dlq.reason".into(), req.reason.clone());
+
+        match backend.produce(msg).await {
+            Ok(receipt) => (
+                StatusCode::OK,
+                Json(DeadLetterResponse {
+                    dlq_topic: receipt.topic,
+                    partition: receipt.partition,
+                    offset: receipt.offset,
+                }),
+            )
+                .into_response(),
+            Err(acteon_bus::BusError::TopicNotFound(_)) => (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("dead-letter topic {dlq} not found"),
+                }),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+#[cfg(feature = "bus")]
+fn subscription_to_response(s: &acteon_core::Subscription) -> SubscriptionResponse {
+    SubscriptionResponse {
+        id: s.id.clone(),
+        topic: s.topic.clone(),
+        namespace: s.namespace.clone(),
+        tenant: s.tenant.clone(),
+        starting_offset: match s.starting_offset {
+            acteon_core::SubscriptionStartOffset::Earliest => "earliest".into(),
+            acteon_core::SubscriptionStartOffset::Latest => "latest".into(),
+        },
+        ack_mode: match s.ack_mode {
+            acteon_core::AckMode::Manual => "manual".into(),
+            acteon_core::AckMode::AutoOnDelivery => "auto_on_delivery".into(),
+        },
+        dead_letter_topic: s.dead_letter_topic.clone(),
+        ack_timeout_ms: s.ack_timeout_ms,
+        description: s.description.clone(),
+        labels: s.labels.clone(),
+        created_at: s.created_at,
+        updated_at: s.updated_at,
+    }
+}
+
+#[cfg(feature = "bus")]
+async fn lookup_subscription(
+    store: &dyn acteon_state::StateStore,
+    id: &str,
+) -> Result<Option<acteon_core::Subscription>, String> {
+    let entries = store
+        .scan_keys_by_kind(KeyKind::BusSubscription)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Subscription>(&v).ok())
+        .find(|s| s.id == id))
+}
+
+#[cfg(feature = "bus")]
+async fn resolve_subscription(
+    state: &AppState,
+    id: &str,
+) -> Result<acteon_core::Subscription, axum::response::Response> {
+    let gw = state.gateway.read().await;
+    match lookup_subscription(gw.state_store().as_ref(), id).await {
+        Ok(Some(s)) => Ok(s),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("subscription {id} not found"),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: e }),
+        )
+            .into_response()),
+    }
+}

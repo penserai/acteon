@@ -27,4 +27,6 @@ pub use config::{BusConfig, KafkaBusConfig};
 pub use error::BusError;
 pub use kafka::KafkaBackend;
 pub use memory::MemoryBackend;
-pub use message::{BusMessage, DeliveryReceipt, StartOffset};
+pub use message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
+
+pub use acteon_core::PartitionLag;

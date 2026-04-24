@@ -163,6 +163,12 @@ use acteon_core::{
         super::bus::delete_topic,
         super::bus::publish,
         super::bus::subscribe,
+        super::bus::create_subscription,
+        super::bus::list_subscriptions,
+        super::bus::delete_subscription,
+        super::bus::ack_subscription,
+        super::bus::subscription_lag,
+        super::bus::deadletter_subscription,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -222,6 +228,10 @@ use acteon_core::{
         super::bus::CreateTopicRequest, super::bus::TopicResponse,
         super::bus::ListTopicsResponse, super::bus::PublishRequest,
         super::bus::PublishResponse,
+        super::bus::CreateSubscriptionRequest, super::bus::SubscriptionResponse,
+        super::bus::ListSubscriptionsResponse, super::bus::AckRequest,
+        super::bus::AckResponse, super::bus::LagEntry, super::bus::LagResponse,
+        super::bus::DeadLetterRequest, super::bus::DeadLetterResponse,
     ))
 )]
 pub struct ApiDoc;

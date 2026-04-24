@@ -1,6 +1,7 @@
 pub mod action;
 pub mod analytics;
 pub mod attachment;
+pub mod bus_subscription;
 pub mod bus_topic;
 pub mod caller;
 pub mod chain;
@@ -32,6 +33,10 @@ pub use analytics::{
     AnalyticsTopEntry,
 };
 pub use attachment::{Attachment, ResolvedAttachment};
+pub use bus_subscription::{
+    AckMode, PartitionLag, StartOffset as SubscriptionStartOffset, Subscription,
+    SubscriptionStatus, SubscriptionValidationError,
+};
 pub use bus_topic::{Topic, TopicValidationError};
 pub use caller::Caller;
 pub use chain::{

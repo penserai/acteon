@@ -208,5 +208,9 @@ required-features = ["swarm"]
 name = "bus_simulation"
 required-features = ["bus"]
 
+[[example]]
+name = "bus_subscription_simulation"
+required-features = ["bus"]
+
 [lints]
 workspace = true

@@ -4,10 +4,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::Stream;
 
-use acteon_core::Topic;
+use acteon_core::{PartitionLag, Topic};
 
 use crate::error::BusError;
-use crate::message::{BusMessage, DeliveryReceipt, StartOffset};
+use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
 
 /// Stream yielded by [`BusBackend::subscribe`]. Items are individual
 /// `BusMessage`s; a transport error ends the stream.
@@ -40,6 +40,25 @@ pub trait BusBackend: Send + Sync + 'static {
         group_id: &str,
         from: StartOffset,
     ) -> Result<SubscribeStream, BusError>;
+
+    /// Commit a `(partition, offset)` pair for the given consumer group.
+    /// Phase 2 manual-ack subscriptions call this after the caller
+    /// finishes processing each record.
+    async fn commit_offset(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+        position: OffsetPosition,
+    ) -> Result<(), BusError>;
+
+    /// Report per-partition consumer-group lag
+    /// (`high_water_mark − committed`). Partitions with no committed
+    /// offset report `committed = -1`.
+    async fn consumer_lag(
+        &self,
+        kafka_topic: &str,
+        group_id: &str,
+    ) -> Result<Vec<PartitionLag>, BusError>;
 }
 
 /// Shared-ownership handle for consumers that want to stash a backend
