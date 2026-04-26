@@ -176,6 +176,13 @@ use acteon_core::{
         super::bus::delete_schema_version,
         super::bus::bind_topic_schema,
         super::bus::unbind_topic_schema,
+        super::bus::register_agent,
+        super::bus::list_agents,
+        super::bus::get_agent,
+        super::bus::update_agent,
+        super::bus::delete_agent,
+        super::bus::heartbeat_agent,
+        super::bus::send_to_agent,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -243,6 +250,10 @@ use acteon_core::{
         super::bus::ListSchemasResponse, super::bus::BindTopicSchemaRequest,
         super::bus::BindTopicSchemaResponse, super::bus::SchemaValidationErrorResponse,
         super::bus::SchemaValidationIssueDto,
+        super::bus::RegisterAgentRequest, super::bus::UpdateAgentRequest,
+        super::bus::AgentResponse, super::bus::ListAgentsResponse,
+        super::bus::HeartbeatResponse, super::bus::SendToAgentRequest,
+        super::bus::SendToAgentResponse,
     ))
 )]
 pub struct ApiDoc;

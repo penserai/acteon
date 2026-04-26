@@ -350,6 +350,27 @@ pub fn router(state: AppState) -> Router {
             "/v1/bus/topics/{namespace}/{tenant}/{name}/schema",
             put(bus::bind_topic_schema).delete(bus::unbind_topic_schema),
         )
+        // Phase 4: Agent identity + heartbeat + send-to-agent. Shared
+        // inbox topic `{ns}.{tenant}.agents-inbox` is auto-created on
+        // first registration.
+        .route(
+            "/v1/bus/agents",
+            get(bus::list_agents).post(bus::register_agent),
+        )
+        .route(
+            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}",
+            get(bus::get_agent)
+                .put(bus::update_agent)
+                .delete(bus::delete_agent),
+        )
+        .route(
+            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/heartbeat",
+            post(bus::heartbeat_agent),
+        )
+        .route(
+            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
+            post(bus::send_to_agent),
+        )
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
         .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))
