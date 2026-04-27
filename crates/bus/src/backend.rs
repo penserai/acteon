@@ -59,6 +59,27 @@ pub trait BusBackend: Send + Sync + 'static {
         kafka_topic: &str,
         group_id: &str,
     ) -> Result<Vec<PartitionLag>, BusError>;
+
+    /// One-shot replay of a topic without joining a consumer group.
+    ///
+    /// Conceptually like [`Self::subscribe`] but uses partition
+    /// assignment (Kafka's `assign()` API) instead of dynamic group
+    /// membership. Two consequences matter for the bus's replay
+    /// endpoints:
+    ///
+    /// 1. **No group metadata is created.** Repeated replays do not
+    ///    accumulate dead consumer groups in `__consumer_offsets`.
+    /// 2. **No offset commits.** This is purely a read; offsets are
+    ///    not persisted to Kafka.
+    ///
+    /// Use this for ephemeral, one-off scans (e.g. conversation thread
+    /// replay). For durable consumer-group semantics call
+    /// [`Self::subscribe`] instead.
+    async fn scan_topic(
+        &self,
+        kafka_topic: &str,
+        from: StartOffset,
+    ) -> Result<SubscribeStream, BusError>;
 }
 
 /// Shared-ownership handle for consumers that want to stash a backend

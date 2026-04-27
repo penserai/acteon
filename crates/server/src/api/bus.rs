@@ -3020,20 +3020,36 @@ pub async fn register_agent(
         let inbox = agent.effective_inbox_topic();
         // Require that a custom inbox belongs to the same tenant. Same
         // check we enforce on subscriptions so an agent can't hijack
-        // another tenant's topic.
-        if let Ok((topic_ns, topic_t, _)) = parse_kafka_name(&inbox)
-            && (topic_ns != agent.namespace || topic_t != agent.tenant)
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!(
-                        "inbox topic {inbox} crosses tenants: must be under {}.{}",
-                        agent.namespace, agent.tenant
-                    ),
-                }),
-            )
-                .into_response();
+        // another tenant's topic. Fail-closed: an unparseable
+        // override is rejected — the previous `if let Ok && ...` form
+        // silently accepted malformed names that bypassed the tenant
+        // check entirely (Phase 5 review found the same shape there).
+        if let Some(override_topic) = req.inbox_topic.as_deref() {
+            match parse_kafka_name(override_topic) {
+                Ok((topic_ns, topic_t, _)) => {
+                    if topic_ns != agent.namespace || topic_t != agent.tenant {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: format!(
+                                    "inbox topic {override_topic} crosses tenants: must be under {}.{}",
+                                    agent.namespace, agent.tenant
+                                ),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("inbox topic '{override_topic}' is invalid: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
         }
         let key = StateKey::new(
             agent.namespace.clone(),
@@ -3703,6 +3719,13 @@ pub struct ListConversationsParams {
     /// Filter conversations whose participant list contains this `agent_id`.
     #[serde(default)]
     pub participant: Option<String>,
+    /// Hard cap on returned rows. Default 100, max 500. The current
+    /// implementation scans every row of `KeyKind::BusConversation`
+    /// and filters in memory, so this bounds the response payload
+    /// while a future state-store cursor primitive is added for true
+    /// pagination at scale.
+    #[serde(default)]
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -3911,21 +3934,40 @@ pub async fn register_conversation(
             )
                 .into_response();
         }
-        let events_topic = conv.effective_events_topic();
-        if let Ok((topic_ns, topic_t, _)) = parse_kafka_name(&events_topic)
-            && (topic_ns != conv.namespace || topic_t != conv.tenant)
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!(
-                        "events topic {events_topic} crosses tenants: must be under {}.{}",
-                        conv.namespace, conv.tenant
-                    ),
-                }),
-            )
-                .into_response();
+        // Validate any caller-supplied `events_topic` override before
+        // we touch state or Kafka. Fail-closed: an unparseable name
+        // (zero or too many dots, no namespace.tenant prefix) MUST
+        // be rejected. The earlier `if let Ok(...) && ...` form
+        // silently *accepted* unparseable names, which let a tenant
+        // produce to arbitrary topics — fixed here.
+        if let Some(override_topic) = req.events_topic.as_deref() {
+            match parse_kafka_name(override_topic) {
+                Ok((topic_ns, topic_t, _)) => {
+                    if topic_ns != conv.namespace || topic_t != conv.tenant {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: format!(
+                                    "events topic {override_topic} crosses tenants: must be under {}.{}",
+                                    conv.namespace, conv.tenant
+                                ),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("events topic '{override_topic}' is invalid: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
         }
+        let events_topic = conv.effective_events_topic();
         if let Err(resp) =
             ensure_conversation_events_topic(&state, &conv.namespace, &conv.tenant, &events_topic)
                 .await
@@ -4021,6 +4063,13 @@ pub async fn list_conversations(
                     .into_response();
             }
         };
+        // Bound the response. `scan_keys_by_kind` still pulls every
+        // row from the state store for filtering; a future
+        // state-store cursor primitive will let us push the bound
+        // down to the backend. Until then, the `take(limit)` here
+        // protects the response payload and serialization cost from
+        // OOM at scale.
+        let limit = params.limit.unwrap_or(100).min(500);
         let convs: Vec<acteon_core::Conversation> = rows
             .into_iter()
             .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Conversation>(&v).ok())
@@ -4039,6 +4088,7 @@ pub async fn list_conversations(
                     .is_none_or(|p| c.participants.iter().any(|x| x == p))
             })
             .filter(|c| identity.is_authorized(&c.tenant, &c.namespace, "bus", "conversation"))
+            .take(limit)
             .collect();
         let responses: Vec<ConversationResponse> =
             convs.iter().map(conversation_to_response).collect();
@@ -4424,20 +4474,38 @@ pub async fn append_conversation_message(
             )
                 .into_response();
         }
-        if let Some(sender) = req.sender.as_deref()
-            && !conv.participants.is_empty()
-            && !conv.participants.iter().any(|p| p == sender)
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!(
-                        "sender '{sender}' is not a participant of conversation {}",
-                        conv.conversation_id
-                    ),
-                }),
-            )
-                .into_response();
+        // Participant ACL: when participants is non-empty, the sender
+        // must be present and listed. The earlier `if let Some(sender)`
+        // form silently allowed anonymous posts (sender = None) on
+        // restricted threads, defeating the gate entirely.
+        if !conv.participants.is_empty() {
+            match req.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; `sender` is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
         }
         let events_topic = conv.effective_events_topic();
         let topic_key = StateKey::new(
@@ -4566,14 +4634,11 @@ pub async fn replay_conversation_messages(
         let limit = params.limit.unwrap_or(200).min(1000);
         let timeout_ms = params.timeout_ms.unwrap_or(1500);
         let events_topic = conv.effective_events_topic();
-        // Use a one-shot consumer group so this read doesn't interfere
-        // with any durable subscription state.
-        let group_id = format!(
-            "acteon-replay-{}-{}",
-            conv.conversation_id,
-            uuid::Uuid::new_v4()
-        );
-        let mut stream = match backend.subscribe(&events_topic, &group_id, from).await {
+        // `scan_topic` uses Kafka's `assign()` rather than dynamic
+        // consumer-group subscribe — no `__consumer_offsets` rows are
+        // created so repeated replays don't accumulate dead groups in
+        // the cluster.
+        let mut stream = match backend.scan_topic(&events_topic, from).await {
             Ok(s) => s,
             Err(acteon_bus::BusError::TopicNotFound(_)) => {
                 return (
@@ -4597,8 +4662,14 @@ pub async fn replay_conversation_messages(
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         let mut messages: Vec<ReplayMessageEntry> = Vec::new();
         let mut limit_reached = false;
+        // Fetch `limit + 1` so we can distinguish "exactly `limit`
+        // messages exist" (limit_reached = false) from "more messages
+        // exist past `limit`" (limit_reached = true). Avoids the
+        // off-by-one that would have clients paginate into an empty
+        // tail when the thread length happens to equal the request.
         loop {
-            if messages.len() >= limit {
+            if messages.len() > limit {
+                messages.truncate(limit);
                 limit_reached = true;
                 break;
             }

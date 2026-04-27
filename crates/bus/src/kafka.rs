@@ -402,4 +402,94 @@ impl BusBackend for KafkaBackend {
         }
         Ok(out)
     }
+
+    async fn scan_topic(
+        &self,
+        kafka_topic: &str,
+        from: StartOffset,
+    ) -> Result<SubscribeStream, BusError> {
+        // `assign()` (manual partition placement) bypasses the consumer
+        // group coordinator entirely — no JoinGroup, no
+        // `__consumer_offsets` row, no metadata leak when the consumer
+        // is dropped. We use a unique throwaway `group.id` defensively
+        // because rdkafka still requires the field; without an explicit
+        // commit it never reaches the broker.
+        let group_id = format!("acteon-scan-{}", uuid::Uuid::new_v4());
+        let cfg = self.consumer_config(&group_id, from);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("scan consumer: {e}")))?;
+        // Discover partitions, then `assign` each at the requested
+        // start offset. `Beginning` / `End` map cleanly to our
+        // `StartOffset` variants and don't require a separate seek.
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut tpl = TopicPartitionList::new();
+        let offset = match from {
+            StartOffset::Earliest => rdkafka::Offset::Beginning,
+            StartOffset::Latest => rdkafka::Offset::End,
+        };
+        for p in topic_meta.partitions() {
+            tpl.add_partition_offset(kafka_topic, p.id(), offset)
+                .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+        }
+        consumer
+            .assign(&tpl)
+            .map_err(|e| BusError::Transport(format!("assign: {e}")))?;
+
+        let topic_owned = kafka_topic.to_string();
+        let stream = async_stream::stream! {
+            let mut stream = consumer.stream();
+            while let Some(res) = stream.next().await {
+                match res {
+                    Ok(msg) => {
+                        let payload = msg.payload().map_or(serde_json::Value::Null, |b| {
+                            serde_json::from_slice::<serde_json::Value>(b)
+                                .unwrap_or(serde_json::Value::Null)
+                        });
+                        let key = msg
+                            .key()
+                            .and_then(|b| std::str::from_utf8(b).ok())
+                            .map(str::to_string);
+                        let mut headers = std::collections::BTreeMap::new();
+                        if let Some(h) = msg.headers() {
+                            for i in 0..h.count() {
+                                let rec = h.get(i);
+                                let name = rec.key.to_string();
+                                if let Some(v) = rec.value
+                                    && let Ok(s) = std::str::from_utf8(v)
+                                {
+                                    headers.insert(name, s.to_string());
+                                }
+                            }
+                        }
+                        let timestamp = msg
+                            .timestamp()
+                            .to_millis()
+                            .and_then(|ms| Utc.timestamp_millis_opt(ms).single());
+                        yield Ok(BusMessage {
+                            topic: topic_owned.clone(),
+                            key,
+                            payload,
+                            headers,
+                            partition: Some(msg.partition()),
+                            offset: Some(msg.offset()),
+                            timestamp,
+                        });
+                    }
+                    Err(e) => {
+                        yield Err(BusError::Transport(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        };
+        Ok(Box::pin(stream))
+    }
 }

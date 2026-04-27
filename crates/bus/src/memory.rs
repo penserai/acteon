@@ -179,6 +179,18 @@ impl BusBackend for MemoryBackend {
             lag,
         }])
     }
+
+    async fn scan_topic(
+        &self,
+        kafka_topic: &str,
+        from: StartOffset,
+    ) -> Result<SubscribeStream, BusError> {
+        // Memory backend has no consumer-group concept — `scan_topic`
+        // and `subscribe` are equivalent here. The distinction
+        // matters in the Kafka backend where `scan_topic` uses
+        // `assign()` to avoid leaking consumer-group metadata.
+        self.subscribe(kafka_topic, "memory-scan", from).await
+    }
 }
 
 #[cfg(test)]
