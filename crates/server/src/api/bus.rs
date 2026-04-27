@@ -1953,7 +1953,6 @@ pub async fn create_schema(
         // fine — V1 throughput on a single subject is operator-driven.
         let gw = state.gateway.read().await;
         let prefix = format!("{}:", req.subject);
-        let now = Utc::now();
         let mut allocated: Option<acteon_core::Schema> = None;
         for _ in 0..MAX_VERSION_ALLOC_ATTEMPTS {
             let next_version: i32 = match gw
@@ -1983,6 +1982,10 @@ pub async fn create_schema(
                         .into_response();
                 }
             };
+            // Stamp `created_at` per attempt so the persisted timestamp
+            // reflects when the version was actually claimed, not when
+            // the handler started. Version is the canonical ordering
+            // signal; this just keeps timestamps honest under retry.
             let candidate = acteon_core::Schema {
                 subject: req.subject.clone(),
                 version: next_version,
@@ -1991,7 +1994,7 @@ pub async fn create_schema(
                 format: acteon_core::SchemaFormat::default(),
                 body: req.body.clone(),
                 labels: req.labels.clone(),
-                created_at: now,
+                created_at: Utc::now(),
             };
             if let Err(e) = candidate.validate() {
                 return (
