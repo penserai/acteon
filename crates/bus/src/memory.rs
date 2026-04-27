@@ -26,6 +26,10 @@ struct TopicState {
     log: VecDeque<BusMessage>,
     tx: broadcast::Sender<BusMessage>,
     next_offset: i64,
+    /// Configuration the topic was created with. Used to detect
+    /// "duplicate create with mismatched config" — see `create_topic`.
+    partitions: i32,
+    replication_factor: i16,
 }
 
 /// In-memory backend suitable for unit tests.
@@ -54,10 +58,17 @@ impl BusBackend for MemoryBackend {
     async fn create_topic(&self, topic: &Topic) -> Result<(), BusError> {
         let name = topic.kafka_topic_name();
         let mut topics = self.topics.lock();
-        if topics.contains_key(&name) {
-            // Surface the typed variant so callers can distinguish a
-            // race against a concurrent create from a real failure.
-            // Matches Kafka backend behaviour for parity.
+        if let Some(existing) = topics.get(&name) {
+            // Smart adoption: a duplicate create is benign as long as
+            // the requested config matches the existing topic; only
+            // surface `TopicAlreadyExists` when there's an actual
+            // mismatch. Mirrors the behaviour of `KafkaBackend`,
+            // which compares against fetched broker metadata.
+            if existing.partitions == topic.partitions
+                && existing.replication_factor == topic.replication_factor
+            {
+                return Ok(());
+            }
             return Err(BusError::TopicAlreadyExists(name));
         }
         let (tx, _) = broadcast::channel(1024);
@@ -67,6 +78,8 @@ impl BusBackend for MemoryBackend {
                 log: VecDeque::new(),
                 tx,
                 next_offset: 0,
+                partitions: topic.partitions,
+                replication_factor: topic.replication_factor,
             },
         );
         Ok(())
@@ -324,14 +337,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_topic_returns_typed_already_exists() {
+    async fn create_topic_is_benign_on_matching_recreate() {
+        // Re-creating the same topic with the same config is benign —
+        // operators run setup scripts repeatedly, and the bus
+        // shouldn't fail their second run.
         let backend = MemoryBackend::new();
         let topic = Topic::new("dup", "ns", "tn");
         backend.create_topic(&topic).await.unwrap();
-        let err = backend.create_topic(&topic).await.unwrap_err();
+        backend
+            .create_topic(&topic)
+            .await
+            .expect("matching re-create should be Ok");
+    }
+
+    #[tokio::test]
+    async fn create_topic_rejects_config_mismatch() {
+        // Re-creating with a different partition count is a real drift
+        // — surface as `TopicAlreadyExists` so the caller can decide.
+        let backend = MemoryBackend::new();
+        let mut original = Topic::new("dup", "ns", "tn");
+        original.partitions = 3;
+        backend.create_topic(&original).await.unwrap();
+
+        let mut wider = Topic::new("dup", "ns", "tn");
+        wider.partitions = 8;
+        let err = backend.create_topic(&wider).await.unwrap_err();
         match err {
             BusError::TopicAlreadyExists(name) => {
-                assert_eq!(name, topic.kafka_topic_name());
+                assert_eq!(name, original.kafka_topic_name());
             }
             other => panic!("expected TopicAlreadyExists, got {other:?}"),
         }

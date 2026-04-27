@@ -346,48 +346,50 @@ pub async fn create_topic(
         }
         drop(gw);
 
-        // Now create in Kafka.
+        // Now create in Kafka. The backend internally adopts a
+        // matching pre-existing topic and returns `Ok(())`; it only
+        // surfaces `TopicAlreadyExists` when an orphan Kafka topic has
+        // a *different* partition count or replication factor than
+        // what we asked for, which is a real drift between Acteon's
+        // governance and the broker that operators must reconcile.
         if let Err(e) = backend.create_topic(&topic).await {
-            // `TopicAlreadyExists` here means our state didn't know
-            // about the topic but Kafka did — a leftover orphan. Adopt
-            // it: the state row we just wrote is now the canonical
-            // record. Anything else fails the request with a state
-            // rollback.
-            if matches!(&e, acteon_bus::BusError::TopicAlreadyExists(_)) {
-                tracing::info!(
+            // Best-effort rollback of the state row on Kafka failure.
+            // If the rollback itself fails — e.g. state store
+            // temporary outage — Acteon carries a dangling record that
+            // doesn't exist (or differs) in Kafka. Log loudly so
+            // operators can reconcile.
+            let gw = state.gateway.read().await;
+            if let Err(rollback_err) = gw.state_store().delete(&key).await {
+                tracing::error!(
+                    key = %key.canonical(),
                     kafka_name = %topic.kafka_topic_name(),
-                    "bus: Kafka topic existed before state row; adopted into Acteon governance"
+                    kafka_error = %e,
+                    rollback_error = %rollback_err,
+                    "bus: Kafka create_topic failed and state-store rollback also failed — dangling Topic row needs manual cleanup"
                 );
             } else {
-                // Best-effort rollback of the state row on Kafka
-                // failure. If rollback itself fails — e.g. state store
-                // temporary outage — Acteon carries a dangling record
-                // that doesn't exist in Kafka. Log loudly so operators
-                // can reconcile.
-                let gw = state.gateway.read().await;
-                if let Err(rollback_err) = gw.state_store().delete(&key).await {
-                    tracing::error!(
-                        key = %key.canonical(),
-                        kafka_name = %topic.kafka_topic_name(),
-                        kafka_error = %e,
-                        rollback_error = %rollback_err,
-                        "bus: Kafka create_topic failed and state-store rollback also failed — dangling Topic row needs manual cleanup"
-                    );
-                } else {
-                    tracing::warn!(
-                        kafka_name = %topic.kafka_topic_name(),
-                        kafka_error = %e,
-                        "bus: Kafka create_topic failed; state row rolled back"
-                    );
-                }
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("kafka create_topic failed: {e}"),
-                    }),
-                )
-                    .into_response();
+                tracing::warn!(
+                    kafka_name = %topic.kafka_topic_name(),
+                    kafka_error = %e,
+                    "bus: Kafka create_topic failed; state row rolled back"
+                );
             }
+            // Config-mismatch adoption attempts get a 409 (the topic
+            // is conceptually a conflict on the operator's intent),
+            // matching the existing in-Acteon-state pre-check above.
+            // Other failures stay as 500.
+            let status = if matches!(&e, acteon_bus::BusError::TopicAlreadyExists(_)) {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            return (
+                status,
+                Json(ErrorResponse {
+                    error: format!("kafka create_topic failed: {e}"),
+                }),
+            )
+                .into_response();
         }
 
         (StatusCode::CREATED, Json(topic_to_response(&topic))).into_response()
@@ -2919,12 +2921,18 @@ async fn ensure_agent_inbox_topic(
     }
     drop(gw);
     if let Err(e) = backend.create_topic(&topic).await {
-        // Already exists is fine — another agent may have raced the
-        // create, or the topic existed in Kafka before Acteon learned
-        // about it. Anything else is worth a warning.
-        if !matches!(e, acteon_bus::BusError::TopicAlreadyExists(_)) {
-            tracing::warn!(error = %e, topic = %inbox_topic_name, "auto-create of agent inbox topic failed");
-        }
+        // After the smart-adoption work in the backend, an `Err` here
+        // is one of two things:
+        //
+        // - `TopicAlreadyExists`: the inbox topic exists in Kafka with
+        //   a *different* partition count or replication factor than
+        //   the defaults Acteon would create. Operators should
+        //   reconcile (delete the orphan or import its config). We
+        //   keep going — the inbox is still usable, but log loudly
+        //   because this is a governance drift.
+        // - Anything else: a real backend failure. Same: log + keep
+        //   going. The state row was just written and is canonical.
+        tracing::warn!(error = %e, topic = %inbox_topic_name, "auto-create of agent inbox topic returned an error; continuing with state row as canonical");
     }
     Ok(())
 }
