@@ -268,6 +268,7 @@ use acteon_core::{
         super::bus::AppendConversationMessageRequest,
         super::bus::AppendConversationMessageResponse,
         super::bus::ReplayMessageEntry, super::bus::ReplayConversationResponse,
+        super::bus::ReplayExitReason,
         acteon_core::ConversationState, acteon_core::ConversationTransition,
     ))
 )]

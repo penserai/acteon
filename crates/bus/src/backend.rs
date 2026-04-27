@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -8,6 +9,31 @@ use acteon_core::{PartitionLag, Topic};
 
 use crate::error::BusError;
 use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
+
+/// Where a [`BusBackend::scan_topic`] should start reading. A simple
+/// `Earliest` / `Latest` covers the open-ended replay case; the
+/// `FromOffsets` variant resumes from explicit per-partition offsets,
+/// which is how the conversation-replay endpoint paginates without
+/// holding state on the server.
+#[derive(Debug, Clone)]
+pub enum ScanFrom {
+    /// Read from the earliest retained record on every partition.
+    Earliest,
+    /// Read from the broker's high-water mark on every partition.
+    Latest,
+    /// Read each partition starting at the explicit offset given;
+    /// partitions absent from the map are skipped (the caller has
+    /// already drained them).
+    FromOffsets(BTreeMap<i32, i64>),
+}
+
+/// Snapshot of a scan's position, captured by `scan_topic_watermarks`
+/// or after a partial replay so a client can resume where it left off.
+#[derive(Debug, Clone, Default)]
+pub struct ScanWatermarks {
+    /// Per-partition high-water marks at the time of capture.
+    pub high_water_marks: BTreeMap<i32, i64>,
+}
 
 /// Stream yielded by [`BusBackend::subscribe`]. Items are individual
 /// `BusMessage`s; a transport error ends the stream.
@@ -78,8 +104,16 @@ pub trait BusBackend: Send + Sync + 'static {
     async fn scan_topic(
         &self,
         kafka_topic: &str,
-        from: StartOffset,
+        from: ScanFrom,
     ) -> Result<SubscribeStream, BusError>;
+
+    /// Snapshot the high-water mark of every partition. Replay
+    /// endpoints call this once at the start of a scan so they can
+    /// determine end-of-stream by comparing tracked offsets against
+    /// the captured marks. Without this snapshot, an `assign`-based
+    /// scan never naturally terminates — Kafka keeps the stream open
+    /// waiting for new records.
+    async fn scan_topic_watermarks(&self, kafka_topic: &str) -> Result<ScanWatermarks, BusError>;
 }
 
 /// Shared-ownership handle for consumers that want to stash a backend

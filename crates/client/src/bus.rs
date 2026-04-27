@@ -1319,6 +1319,10 @@ pub struct ReplayBusConversationParams {
     pub limit: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Resume token from a previous response's `cursor`. When set,
+    /// `from` is ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1333,12 +1337,27 @@ pub struct BusConversationReplayMessage {
     pub timestamp: String,
 }
 
+/// Why the server-side replay loop terminated. `Complete` = thread
+/// fully drained at scan time; `Limit` and `Timeout` = partial,
+/// follow-up needed via `cursor`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BusReplayExitReason {
+    Complete,
+    Limit,
+    Timeout,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct BusConversationReplay {
     pub conversation_id: String,
     pub events_topic: String,
     pub messages: Vec<BusConversationReplayMessage>,
-    pub limit_reached: bool,
+    pub exit_reason: BusReplayExitReason,
+    /// `Some` when the scan is incomplete. Pass back as
+    /// `ReplayBusConversationParams.cursor` to continue.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 async fn map_error(resp: reqwest::Response) -> Error {

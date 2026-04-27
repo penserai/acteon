@@ -25,7 +25,7 @@ use rdkafka::TopicPartitionList;
 
 use acteon_core::{PartitionLag, Topic};
 
-use crate::backend::{BusBackend, SubscribeStream};
+use crate::backend::{BusBackend, ScanFrom, ScanWatermarks, SubscribeStream};
 use crate::config::KafkaBusConfig;
 use crate::error::BusError;
 use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
@@ -406,7 +406,7 @@ impl BusBackend for KafkaBackend {
     async fn scan_topic(
         &self,
         kafka_topic: &str,
-        from: StartOffset,
+        from: ScanFrom,
     ) -> Result<SubscribeStream, BusError> {
         // `assign()` (manual partition placement) bypasses the consumer
         // group coordinator entirely — no JoinGroup, no
@@ -415,13 +415,21 @@ impl BusBackend for KafkaBackend {
         // because rdkafka still requires the field; without an explicit
         // commit it never reaches the broker.
         let group_id = format!("acteon-scan-{}", uuid::Uuid::new_v4());
-        let cfg = self.consumer_config(&group_id, from);
+        let consumer_start = match from {
+            ScanFrom::Earliest => StartOffset::Earliest,
+            // Latest and FromOffsets both ignore `auto.offset.reset`
+            // because we always set explicit offsets via `assign`.
+            ScanFrom::Latest | ScanFrom::FromOffsets(_) => StartOffset::Latest,
+        };
+        let cfg = self.consumer_config(&group_id, consumer_start);
         let consumer: StreamConsumer = cfg
             .create()
             .map_err(|e| BusError::Transport(format!("scan consumer: {e}")))?;
         // Discover partitions, then `assign` each at the requested
         // start offset. `Beginning` / `End` map cleanly to our
-        // `StartOffset` variants and don't require a separate seek.
+        // `ScanFrom::Earliest`/`Latest` variants. `FromOffsets` uses
+        // `Offset::Offset(n)` per partition so clients can paginate
+        // a long scan across multiple requests.
         let metadata = consumer
             .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
             .map_err(map_kafka_error)?;
@@ -431,13 +439,36 @@ impl BusBackend for KafkaBackend {
             .find(|t| t.name() == kafka_topic)
             .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
         let mut tpl = TopicPartitionList::new();
-        let offset = match from {
-            StartOffset::Earliest => rdkafka::Offset::Beginning,
-            StartOffset::Latest => rdkafka::Offset::End,
-        };
-        for p in topic_meta.partitions() {
-            tpl.add_partition_offset(kafka_topic, p.id(), offset)
-                .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+        match &from {
+            ScanFrom::Earliest => {
+                for p in topic_meta.partitions() {
+                    tpl.add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::Beginning)
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                }
+            }
+            ScanFrom::Latest => {
+                for p in topic_meta.partitions() {
+                    tpl.add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::End)
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                }
+            }
+            ScanFrom::FromOffsets(offsets) => {
+                // Resume each partition from the next-after-last
+                // offset the caller saw. Partitions absent from the
+                // map are skipped — the contract is "the caller has
+                // already drained them" (e.g. a single-partition
+                // conversation that lives entirely on partition 0).
+                for p in topic_meta.partitions() {
+                    if let Some(&last_seen) = offsets.get(&p.id()) {
+                        tpl.add_partition_offset(
+                            kafka_topic,
+                            p.id(),
+                            rdkafka::Offset::Offset(last_seen + 1),
+                        )
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                    }
+                }
+            }
         }
         consumer
             .assign(&tpl)
@@ -491,5 +522,31 @@ impl BusBackend for KafkaBackend {
             }
         };
         Ok(Box::pin(stream))
+    }
+
+    async fn scan_topic_watermarks(&self, kafka_topic: &str) -> Result<ScanWatermarks, BusError> {
+        // We need a consumer to call `fetch_watermarks`; throwaway
+        // group.id matching `scan_topic`'s pattern.
+        let group_id = format!("acteon-watermark-{}", uuid::Uuid::new_v4());
+        let cfg = self.consumer_config(&group_id, StartOffset::Latest);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("watermark consumer: {e}")))?;
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut high_water_marks = std::collections::BTreeMap::new();
+        for p in topic_meta.partitions() {
+            let (_low, high) = consumer
+                .fetch_watermarks(kafka_topic, p.id(), Duration::from_secs(10))
+                .map_err(map_kafka_error)?;
+            high_water_marks.insert(p.id(), high);
+        }
+        Ok(ScanWatermarks { high_water_marks })
     }
 }

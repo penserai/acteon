@@ -259,6 +259,92 @@ where
         .into_response())
 }
 
+/// Caps on operator-supplied `labels` maps across all create/update
+/// DTOs. Labels are persisted in the state store and replayed via
+/// `list_*` handlers — without bounds, a single registration could
+/// bloat the row and OOM the gateway during a list scan.
+#[cfg(feature = "bus")]
+const MAX_LABELS_COUNT: usize = 32;
+#[cfg(feature = "bus")]
+const MAX_LABEL_KEY_BYTES: usize = 256;
+#[cfg(feature = "bus")]
+const MAX_LABEL_VALUE_BYTES: usize = 4096;
+
+/// Validate a caller-supplied labels map. Same rationale as
+/// [`validate_user_headers`] but applied to the persisted-state path
+/// rather than the publish path.
+#[cfg(feature = "bus")]
+fn validate_user_labels(
+    labels: &std::collections::HashMap<String, String>,
+) -> Result<(), axum::response::Response> {
+    if labels.len() > MAX_LABELS_COUNT {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "too many labels: {}; max is {MAX_LABELS_COUNT}",
+                    labels.len()
+                ),
+            }),
+        )
+            .into_response());
+    }
+    for (k, v) in labels {
+        if k.len() > MAX_LABEL_KEY_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "label key length {} exceeds {MAX_LABEL_KEY_BYTES} bytes",
+                        k.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+        if v.len() > MAX_LABEL_VALUE_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "label '{k}' value length {} exceeds {MAX_LABEL_VALUE_BYTES} bytes",
+                        v.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
+/// Encode a per-partition offset map as an opaque resume token.
+/// URL-safe base64 of a JSON object so clients can pass it back
+/// through query strings without manual escaping. Cheap to decode and
+/// debug-readable when base64-decoded.
+#[cfg(feature = "bus")]
+fn encode_replay_cursor(offsets: &std::collections::BTreeMap<i32, i64>) -> String {
+    use base64::Engine;
+    // Render as `{"P": O, "P": O}`; serde_json keeps key order via
+    // the BTreeMap, so the cursor is stable for a given offset map.
+    let json = serde_json::to_string(offsets).unwrap_or_else(|_| "{}".to_string());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes())
+}
+
+/// Decode a cursor produced by [`encode_replay_cursor`]. Tolerates a
+/// missing or malformed token with a structured error so the handler
+/// can surface a 400.
+#[cfg(feature = "bus")]
+fn decode_replay_cursor(s: &str) -> Result<std::collections::BTreeMap<i32, i64>, String> {
+    use base64::Engine;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s.as_bytes())
+        .map_err(|e| format!("base64: {e}"))?;
+    let json = std::str::from_utf8(&raw).map_err(|e| format!("utf8: {e}"))?;
+    serde_json::from_str::<std::collections::BTreeMap<i32, i64>>(json)
+        .map_err(|e| format!("json: {e}"))
+}
+
 /// Validate a caller-supplied header map. Rejects anything that looks
 /// like an attempt to oversize the publish path. The reserved
 /// `acteon.*` prefix is checked separately by each handler so the
@@ -464,6 +550,9 @@ pub async fn create_topic(
         }
         topic.retention_ms = req.retention_ms;
         topic.description = req.description.clone();
+        if let Err(resp) = validate_user_labels(&req.labels) {
+            return resp;
+        }
         topic.labels = req.labels.clone();
         if let Err(e) = topic.validate() {
             return (
@@ -1309,6 +1398,9 @@ pub async fn create_subscription(
             sub.ack_timeout_ms = t;
         }
         sub.description = req.description.clone();
+        if let Err(resp) = validate_user_labels(&req.labels) {
+            return resp;
+        }
         sub.labels = req.labels.clone();
         if let Err(e) = sub.validate() {
             return (
@@ -2089,6 +2181,9 @@ pub async fn create_schema(
         if let Err(resp) =
             authorize_bus_op(&identity, &req.tenant, &req.namespace, BusOp::ManageSchema)
         {
+            return resp;
+        }
+        if let Err(resp) = validate_user_labels(&req.labels) {
             return resp;
         }
         if let Err(e) = acteon_core::Schema::validate_subject(&req.subject) {
@@ -3121,8 +3216,14 @@ async fn ensure_agent_inbox_topic(
     let Some(backend) = state.bus_backend.as_ref() else {
         return Err(service_unavailable("bus feature not enabled"));
     };
-    let gw = state.gateway.read().await;
-    let store = gw.state_store();
+    // Same lock-amplification fix as `cas_update`: clone the
+    // `Arc<dyn StateStore>` once and drop the gateway read guard
+    // before any `.await`, so DB roundtrips don't queue-head-block
+    // pending gateway writers.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
     if matches!(store.get(&key).await, Ok(Some(_))) {
         return Ok(());
     }
@@ -3157,7 +3258,6 @@ async fn ensure_agent_inbox_topic(
         )
             .into_response());
     }
-    drop(gw);
     if let Err(e) = backend.create_topic(&topic).await {
         // The shared inbox is a tenant-scoped, agent-shared resource.
         // `TopicAlreadyExists` here means another concurrent
@@ -3213,6 +3313,9 @@ pub async fn register_agent(
         agent.inbox_topic = req.inbox_topic.clone();
         if let Some(ttl) = req.heartbeat_ttl_ms {
             agent.heartbeat_ttl_ms = ttl;
+        }
+        if let Err(resp) = validate_user_labels(&req.labels) {
+            return resp;
         }
         agent.labels = req.labels.clone();
         if let Err(e) = agent.validate() {
@@ -3469,6 +3572,11 @@ pub async fn update_agent(
             &agent_id,
         );
         let missing = format!("agent {namespace}.{tenant}.{agent_id} not found");
+        if let Some(labels) = &req.labels
+            && let Err(resp) = validate_user_labels(labels)
+        {
+            return resp;
+        }
         let req_display = req.display_name.clone();
         let req_caps = req.capabilities.clone();
         let req_ttl = req.heartbeat_ttl_ms;
@@ -3936,7 +4044,7 @@ pub struct AppendConversationMessageResponse {
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ReplayConversationParams {
     /// `earliest` (default — full thread) or `latest` (only new
-    /// messages, useful as a probe).
+    /// messages, useful as a probe). Ignored when `cursor` is set.
     #[serde(default)]
     pub from: Option<String>,
     /// Hard cap on returned messages. Default 200, max 1000.
@@ -3946,6 +4054,11 @@ pub struct ReplayConversationParams {
     /// Default 1500ms; bounds replay latency on quiet topics.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Resume token from a previous response's `cursor`. When set,
+    /// `from` is ignored and the scan picks up at the per-partition
+    /// offsets the previous call left off at.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -3961,15 +4074,39 @@ pub struct ReplayMessageEntry {
     pub timestamp: DateTime<Utc>,
 }
 
+/// Why the replay loop terminated. Distinguishes end-of-stream
+/// (operator caller is done) from a partial result (operator must
+/// paginate via `cursor`). The previous `limit_reached: bool` shape
+/// silently lied on timeout: a timeout-bounded scan that didn't hit
+/// the count limit reported `false`, suggesting the thread was
+/// drained when in fact the server just gave up early. Now every
+/// non-`Complete` reason carries an explicit cursor.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayExitReason {
+    /// The scan reached or surpassed every partition's high-water
+    /// mark — there are no more messages on the topic at the time
+    /// the scan started. The caller is done.
+    Complete,
+    /// Hit the per-request `limit` before scanning the whole topic.
+    /// More messages may exist; resume with `cursor`.
+    Limit,
+    /// Hit the `timeout_ms` budget before exhausting partitions or
+    /// the limit. More messages may exist; resume with `cursor`.
+    Timeout,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ReplayConversationResponse {
     pub conversation_id: String,
     pub events_topic: String,
     pub messages: Vec<ReplayMessageEntry>,
-    /// True if the response is bounded by `limit` rather than end of
-    /// the timeout window. Caller can paginate by reading from the
-    /// last returned offset+1 in a subsequent call.
-    pub limit_reached: bool,
+    pub exit_reason: ReplayExitReason,
+    /// Opaque resume token. `None` only when `exit_reason ==
+    /// Complete`; otherwise present and meant to be passed back as
+    /// `cursor` on the next request to continue the scan.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[cfg(feature = "bus")]
@@ -4040,8 +4177,14 @@ async fn ensure_conversation_events_topic(
     let Some(backend) = state.bus_backend.as_ref() else {
         return Err(service_unavailable("bus feature not enabled"));
     };
-    let gw = state.gateway.read().await;
-    let store = gw.state_store();
+    // Same lock-amplification fix as `cas_update`: clone the
+    // `Arc<dyn StateStore>` once and drop the gateway read guard
+    // before any `.await`, so DB roundtrips don't queue-head-block
+    // pending gateway writers.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
     if matches!(store.get(&key).await, Ok(Some(_))) {
         return Ok(());
     }
@@ -4078,7 +4221,6 @@ async fn ensure_conversation_events_topic(
         )
             .into_response());
     }
-    drop(gw);
     if let Err(e) = backend.create_topic(&topic).await
         && !matches!(&e, acteon_bus::BusError::TopicAlreadyExists(_))
     {
@@ -4116,6 +4258,9 @@ pub async fn register_conversation(
             &req.namespace,
             BusOp::ManageConversation,
         ) {
+            return resp;
+        }
+        if let Err(resp) = validate_user_labels(&req.labels) {
             return resp;
         }
         let mut conv =
@@ -4390,6 +4535,11 @@ pub async fn update_conversation(
             &conversation_id,
         );
         let missing = format!("conversation {namespace}.{tenant}.{conversation_id} not found");
+        if let Some(labels) = &req.labels
+            && let Err(resp) = validate_user_labels(labels)
+        {
+            return resp;
+        }
         let req_title = req.title.clone();
         let req_participants = req.participants.clone();
         let req_labels = req.labels.clone();
@@ -4839,10 +4989,56 @@ pub async fn replay_conversation_messages(
             Ok(c) => c,
             Err(resp) => return resp,
         };
-        let from = match params.from.as_deref() {
-            Some("latest") => acteon_bus::StartOffset::Latest,
-            Some("earliest") | None => acteon_bus::StartOffset::Earliest,
-            Some(other) => {
+        let limit = params.limit.unwrap_or(200).min(1000);
+        let timeout_ms = params.timeout_ms.unwrap_or(1500);
+        let events_topic = conv.effective_events_topic();
+        // Capture per-partition high-water marks at scan start so we
+        // can report `Complete` when the tracked offsets reach them.
+        // Without this, an `assign()`-based scan never naturally
+        // ends — Kafka holds the stream open waiting for new records,
+        // and we'd have no way to distinguish "drained" from "took a
+        // 1.5s nap on a quiet topic."
+        let watermarks = match backend.scan_topic_watermarks(&events_topic).await {
+            Ok(w) => w,
+            Err(acteon_bus::BusError::TopicNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("events topic {events_topic} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        // Resume from the cursor if one was provided; otherwise start
+        // at earliest/latest per `from`. `from` is ignored when
+        // `cursor` is set so a paginating client doesn't accidentally
+        // restart the scan.
+        let scan_from = match (&params.cursor, params.from.as_deref()) {
+            (Some(cursor_str), _) => match decode_replay_cursor(cursor_str) {
+                Ok(offsets) => acteon_bus::ScanFrom::FromOffsets(offsets),
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("invalid replay cursor: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            (None, Some("latest")) => acteon_bus::ScanFrom::Latest,
+            (None, Some("earliest") | None) => acteon_bus::ScanFrom::Earliest,
+            (None, Some(other)) => {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
@@ -4852,14 +5048,11 @@ pub async fn replay_conversation_messages(
                     .into_response();
             }
         };
-        let limit = params.limit.unwrap_or(200).min(1000);
-        let timeout_ms = params.timeout_ms.unwrap_or(1500);
-        let events_topic = conv.effective_events_topic();
         // `scan_topic` uses Kafka's `assign()` rather than dynamic
         // consumer-group subscribe — no `__consumer_offsets` rows are
         // created so repeated replays don't accumulate dead groups in
         // the cluster.
-        let mut stream = match backend.scan_topic(&events_topic, from).await {
+        let mut stream = match backend.scan_topic(&events_topic, scan_from).await {
             Ok(s) => s,
             Err(acteon_bus::BusError::TopicNotFound(_)) => {
                 return (
@@ -4882,31 +5075,65 @@ pub async fn replay_conversation_messages(
         };
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         let mut messages: Vec<ReplayMessageEntry> = Vec::new();
-        let mut limit_reached = false;
+        // Track the highest offset *consumed* per partition (matched
+        // or skipped — both advance the scan position). The cursor
+        // is built from these offsets at the end so a follow-up
+        // request resumes at offset+1 per partition.
+        let mut last_offsets: std::collections::BTreeMap<i32, i64> =
+            std::collections::BTreeMap::new();
+        // Each branch terminates the loop with an explicit reason;
+        // `loop { break <value>; }` lets the compiler prove
+        // exhaustiveness without an unread initial value.
         // Fetch `limit + 1` so we can distinguish "exactly `limit`
-        // messages exist" (limit_reached = false) from "more messages
-        // exist past `limit`" (limit_reached = true). Avoids the
-        // off-by-one that would have clients paginate into an empty
-        // tail when the thread length happens to equal the request.
-        loop {
+        // messages exist" from "more exist" (the latter yields
+        // `Limit`).
+        let exit_reason: ReplayExitReason = loop {
             if messages.len() > limit {
                 messages.truncate(limit);
-                limit_reached = true;
-                break;
+                break ReplayExitReason::Limit;
             }
             let now = tokio::time::Instant::now();
             if now >= deadline {
-                break;
+                break ReplayExitReason::Timeout;
+            }
+            // Detect end-of-stream by comparing every partition's
+            // tracked offset against its captured high-water mark.
+            // `hwm - 1` is "last produced offset" (Kafka's `hwm` is
+            // "next-to-be-produced"), so the partition is drained
+            // when `last_offset >= hwm - 1`. Empty partitions
+            // (hwm == 0) are trivially drained.
+            let drained =
+                watermarks
+                    .high_water_marks
+                    .iter()
+                    .all(|(p, hwm)| match last_offsets.get(p) {
+                        _ if *hwm == 0 => true,
+                        Some(seen) => *seen >= *hwm - 1,
+                        None => false,
+                    });
+            if drained {
+                break ReplayExitReason::Complete;
             }
             let remaining = deadline - now;
             tokio::select! {
                 next = stream.next() => {
                     match next {
                         Some(Ok(msg)) => {
-                            // Filter to this conversation. The shared
-                            // events topic carries every conversation
-                            // in the tenant; match on the
-                            // server-stamped header.
+                            let p = msg.partition.unwrap_or(0);
+                            let off = msg.offset.unwrap_or(0);
+                            // Always advance the per-partition cursor,
+                            // even when the message belongs to a
+                            // different conversation; a future
+                            // pagination must skip past every record
+                            // we've physically read.
+                            last_offsets
+                                .entry(p)
+                                .and_modify(|e| {
+                                    if off > *e {
+                                        *e = off;
+                                    }
+                                })
+                                .or_insert(off);
                             let belongs = msg
                                 .headers
                                 .get("acteon.conversation.id")
@@ -4915,29 +5142,43 @@ pub async fn replay_conversation_messages(
                                 continue;
                             }
                             messages.push(ReplayMessageEntry {
-                                partition: msg.partition.unwrap_or(0),
-                                offset: msg.offset.unwrap_or(0),
+                                partition: p,
+                                offset: off,
                                 key: msg.key.clone(),
                                 payload: msg.payload.clone(),
                                 headers: msg.headers.clone(),
                                 timestamp: msg.timestamp.unwrap_or_else(Utc::now),
                             });
                         }
-                        Some(Err(_)) | None => break,
+                        Some(Err(_)) | None => {
+                            // Stream ended unexpectedly — not at the
+                            // high-water mark, but no more messages
+                            // from the backend. Treat as a partial
+                            // result so the client paginates; safer
+                            // than silently lying about completeness.
+                            break ReplayExitReason::Timeout;
+                        }
                     }
                 }
                 () = tokio::time::sleep(remaining) => {
-                    break;
+                    break ReplayExitReason::Timeout;
                 }
             }
-        }
+        };
+        let cursor = match exit_reason {
+            ReplayExitReason::Complete => None,
+            ReplayExitReason::Limit | ReplayExitReason::Timeout => {
+                Some(encode_replay_cursor(&last_offsets))
+            }
+        };
         (
             StatusCode::OK,
             Json(ReplayConversationResponse {
                 conversation_id: conv.conversation_id,
                 events_topic,
                 messages,
-                limit_reached,
+                exit_reason,
+                cursor,
             }),
         )
             .into_response()

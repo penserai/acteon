@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use acteon_core::Topic;
 
-use crate::backend::{BusBackend, SubscribeStream};
+use crate::backend::{BusBackend, ScanFrom, ScanWatermarks, SubscribeStream};
 use acteon_core::PartitionLag;
 
 use crate::error::BusError;
@@ -183,13 +183,58 @@ impl BusBackend for MemoryBackend {
     async fn scan_topic(
         &self,
         kafka_topic: &str,
-        from: StartOffset,
+        from: ScanFrom,
     ) -> Result<SubscribeStream, BusError> {
         // Memory backend has no consumer-group concept — `scan_topic`
         // and `subscribe` are equivalent here. The distinction
         // matters in the Kafka backend where `scan_topic` uses
         // `assign()` to avoid leaking consumer-group metadata.
-        self.subscribe(kafka_topic, "memory-scan", from).await
+        let (start_offset, skip_until_offset) = match from {
+            ScanFrom::Earliest => (StartOffset::Earliest, None),
+            ScanFrom::Latest => (StartOffset::Latest, None),
+            // Memory backend has only one partition (id 0); honor the
+            // partition-0 entry if present, otherwise replay from
+            // earliest. We materialize the skip-until offset and let
+            // the caller filter inline.
+            ScanFrom::FromOffsets(map) => {
+                let skip = map.get(&0).copied();
+                (StartOffset::Earliest, skip)
+            }
+        };
+        let stream = self
+            .subscribe(kafka_topic, "memory-scan", start_offset)
+            .await?;
+        match skip_until_offset {
+            None => Ok(stream),
+            Some(skip) => {
+                use futures::StreamExt;
+                // Caller provided per-partition resume offsets; drop
+                // anything at-or-before `skip` so callers see only
+                // strictly-newer messages. Memory backend doesn't
+                // populate `BusMessage.offset`, so we count by index
+                // — the contract `subscribe(Earliest)` gives is
+                // monotonic-from-zero, matching memory's offset model.
+                let mut idx: i64 = -1;
+                let s = stream.filter(move |m| {
+                    if m.is_ok() {
+                        idx += 1;
+                    }
+                    futures::future::ready(idx > skip)
+                });
+                Ok(Box::pin(s))
+            }
+        }
+    }
+
+    async fn scan_topic_watermarks(&self, kafka_topic: &str) -> Result<ScanWatermarks, BusError> {
+        let topics = self.topics.lock();
+        let state = topics
+            .get(kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut high_water_marks = std::collections::BTreeMap::new();
+        // Single-partition contract for the in-memory backend.
+        high_water_marks.insert(0, state.next_offset);
+        Ok(ScanWatermarks { high_water_marks })
     }
 }
 
