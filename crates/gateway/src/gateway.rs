@@ -5796,6 +5796,22 @@ impl acteon_state::StateStore for PlaygroundStateStore<'_> {
         self.inner.get(key).await
     }
 
+    async fn get_versioned(
+        &self,
+        key: &acteon_state::StateKey,
+    ) -> Result<Option<(String, u64)>, acteon_state::StateError> {
+        // Overrides expose the value but no version metadata; callers
+        // that go through the playground are expected to read-only,
+        // so version 0 ("never seen a version") is the safe answer.
+        if let Some(val) = self.overrides.get(&key.canonical()) {
+            return Ok(Some((val.clone(), 0)));
+        }
+        if let Some(val) = self.overrides.get(&key.id) {
+            return Ok(Some((val.clone(), 0)));
+        }
+        self.inner.get_versioned(key).await
+    }
+
     // All other methods are no-ops or errors since the playground is read-only.
     async fn set(
         &self,
@@ -5913,6 +5929,12 @@ impl acteon_state::StateStore for BorrowedStateStore<'_> {
         k: &acteon_state::StateKey,
     ) -> Result<Option<String>, acteon_state::StateError> {
         self.0.get(k).await
+    }
+    async fn get_versioned(
+        &self,
+        k: &acteon_state::StateKey,
+    ) -> Result<Option<(String, u64)>, acteon_state::StateError> {
+        self.0.get_versioned(k).await
     }
     async fn set(
         &self,

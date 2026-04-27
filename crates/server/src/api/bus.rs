@@ -7,6 +7,14 @@
 //! reference is a plain code span rather than a rustdoc link because
 //! `acteon_bus` is only in scope when built with `--features bus`, and
 //! CI's `cargo doc` runs with default features.
+//
+// The handlers all use `Result<_, axum::response::Response>` for early-
+// return error paths so each error path can shape its own status +
+// body without a custom error enum and `IntoResponse` impl. The Err
+// variant is large because `Response` carries a body buffer, but it's
+// constructed only on errors and consumed immediately, so the size is
+// not a real cost — silence the lint module-wide.
+#![allow(clippy::result_large_err)]
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -132,6 +140,165 @@ fn parse_kafka_name(topic: &str) -> Result<(&str, &str, &str), String> {
         ));
     }
     Ok((parts[0], parts[1], parts[2]))
+}
+
+/// Caps on user-supplied headers across every publish-style handler.
+/// Sized to fit comfortably within typical Kafka `message.max.bytes`
+/// budgets while leaving room for the payload, so a misbehaving
+/// caller can't blow up the producer's memory or wedge the broker
+/// connection with oversized records.
+#[cfg(feature = "bus")]
+const MAX_USER_HEADER_COUNT: usize = 20;
+#[cfg(feature = "bus")]
+const MAX_USER_HEADER_KEY_BYTES: usize = 256;
+#[cfg(feature = "bus")]
+const MAX_USER_HEADER_VALUE_BYTES: usize = 4096;
+
+/// Bound on how many times a CAS-update loop retries on conflict.
+/// The expected per-record contention is low (operator + agent
+/// concurrent edit on the same conversation), so 8 attempts is well
+/// past the realistic worst case before declaring a 409.
+#[cfg(feature = "bus")]
+const MAX_CAS_RETRY_ATTEMPTS: u32 = 8;
+
+/// Read-modify-write a JSON-serialized state row atomically via
+/// `compare_and_swap`. The mutator closure runs on a freshly-loaded
+/// copy each iteration; if the underlying row changed mid-loop, the
+/// CAS fails and we re-read and re-apply. Returns the mutated value
+/// after a successful commit, or a typed `Response` for missing key,
+/// mutator rejection, contention exhaustion, or a backend error.
+///
+/// Used by `update_*` and `transition_*` handlers to close the
+/// load-then-set TOCTOU window the second adversarial review
+/// flagged.
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+async fn cas_update<T, F>(
+    state: &AppState,
+    key: &StateKey,
+    missing_msg: &str,
+    mut mutate: F,
+) -> Result<T, axum::response::Response>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+    F: FnMut(&mut T) -> Result<(), axum::response::Response>,
+{
+    for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+        let gw = state.gateway.read().await;
+        let store = gw.state_store();
+        let (raw, version) = match store.get_versioned(key).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: missing_msg.to_string(),
+                    }),
+                )
+                    .into_response());
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response());
+            }
+        };
+        let mut current: T = serde_json::from_str(&raw).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("corrupt state record at {}: {e}", key.canonical()),
+                }),
+            )
+                .into_response()
+        })?;
+        mutate(&mut current)?;
+        let payload = serde_json::to_string(&current).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()
+        })?;
+        match store.compare_and_swap(key, version, &payload, None).await {
+            Ok(acteon_state::CasResult::Ok) => return Ok(current),
+            // Lost the race; reload and reapply on the next loop iteration.
+            Ok(acteon_state::CasResult::Conflict { .. }) => {}
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response());
+            }
+        }
+    }
+    Err((
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: format!("state at {} is changing too fast; retry", key.canonical()),
+        }),
+    )
+        .into_response())
+}
+
+/// Validate a caller-supplied header map. Rejects anything that looks
+/// like an attempt to oversize the publish path. The reserved
+/// `acteon.*` prefix is checked separately by each handler so the
+/// error message can describe which path the prefix conflict came
+/// from.
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+fn validate_user_headers(
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<(), axum::response::Response> {
+    if headers.len() > MAX_USER_HEADER_COUNT {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "too many headers: {}; max is {MAX_USER_HEADER_COUNT}",
+                    headers.len()
+                ),
+            }),
+        )
+            .into_response());
+    }
+    for (k, v) in headers {
+        if k.len() > MAX_USER_HEADER_KEY_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "header key length {} exceeds {MAX_USER_HEADER_KEY_BYTES} bytes",
+                        k.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+        if v.len() > MAX_USER_HEADER_VALUE_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "header '{k}' value length {} exceeds {MAX_USER_HEADER_VALUE_BYTES} bytes",
+                        v.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
 }
 
 // =============================================================================
@@ -571,6 +738,12 @@ pub async fn publish(
                     .into_response();
             }
         };
+        // Reject oversized header sets before doing anything else; a
+        // misbehaving caller could otherwise saturate the producer's
+        // memory or trip Kafka's `message.max.bytes` ceiling.
+        if let Err(resp) = validate_user_headers(&req.headers) {
+            return resp;
+        }
         // Reject reserved `acteon.*` headers explicitly so callers see a
         // 400 instead of having the header silently dropped by
         // `BusMessage::with_header`. Silent stripping caused a
@@ -1541,6 +1714,9 @@ pub async fn deadletter_subscription(
             )
                 .into_response();
         };
+        if let Err(resp) = validate_user_headers(&req.headers) {
+            return resp;
+        }
         // Governance: confirm the DLQ topic is still registered in
         // state. Normally guaranteed by create_subscription but the
         // topic could have been deleted since then — we don't want to
@@ -2771,16 +2947,17 @@ pub struct RegisterAgentRequest {
 }
 
 /// Body of `PUT /v1/bus/agents/{ns}/{t}/{id}`. Only the mutable fields
-/// appear here — `agent_id`, `namespace`, `tenant`, and `created_at`
-/// are immutable after registration.
+/// appear here — `agent_id`, `namespace`, `tenant`, `created_at`, and
+/// `inbox_topic` are immutable after registration. (Migrating an
+/// agent to a new inbox topic mid-flight would orphan in-flight
+/// messages on the old topic; delete and re-register if you need a
+/// different inbox.)
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateAgentRequest {
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub capabilities: Option<Vec<String>>,
-    #[serde(default)]
-    pub inbox_topic: Option<String>,
     #[serde(default)]
     pub heartbeat_ttl_ms: Option<i64>,
     #[serde(default)]
@@ -2898,6 +3075,34 @@ async fn ensure_agent_inbox_topic(
     tenant: &str,
     inbox_topic_name: &str,
 ) -> Result<(), axum::response::Response> {
+    // Defense in depth: every caller-facing handler validates
+    // `parse_kafka_name` upstream, but if a future caller forgot,
+    // the previous `splitn(3,'.').nth(2).unwrap_or(_)` fallback would
+    // silently provision a topic under `{ns}.{tenant}.{full-bad-name}`
+    // while the producer side used the bad name unchanged — split
+    // brain. Reject unparseable names here too so the contract is
+    // enforced at the boundary.
+    let (parsed_ns, parsed_tenant, leaf_name) =
+        parse_kafka_name(inbox_topic_name).map_err(|msg| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("invalid inbox topic name '{inbox_topic_name}': {msg}"),
+                }),
+            )
+                .into_response()
+        })?;
+    if parsed_ns != namespace || parsed_tenant != tenant {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "inbox topic '{inbox_topic_name}' crosses tenants: must be under {namespace}.{tenant}"
+                ),
+            }),
+        )
+            .into_response());
+    }
     let key = StateKey::new(
         namespace.to_string(),
         tenant.to_string(),
@@ -2912,13 +3117,6 @@ async fn ensure_agent_inbox_topic(
     if matches!(store.get(&key).await, Ok(Some(_))) {
         return Ok(());
     }
-    // Derive the leaf name from the Kafka-form topic. Our naming
-    // convention is `{ns}.{tenant}.{leaf}`; the leaf is everything
-    // after the second dot.
-    let leaf_name = inbox_topic_name
-        .splitn(3, '.')
-        .nth(2)
-        .unwrap_or(inbox_topic_name);
     let topic = Topic::new(leaf_name, namespace, tenant);
     if let Err(e) = topic.validate() {
         return Err((
@@ -3255,64 +3453,46 @@ pub async fn update_agent(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
             return resp;
         }
-        let mut agent = match load_agent(&state, &namespace, &tenant, &agent_id).await {
-            Ok(a) => a,
-            Err(resp) => return resp,
-        };
-        if let Some(d) = req.display_name.clone() {
-            agent.display_name = Some(d);
-        }
-        if let Some(c) = req.capabilities.clone() {
-            agent.capabilities = c;
-        }
-        if let Some(i) = req.inbox_topic.clone() {
-            agent.inbox_topic = Some(i);
-        }
-        if let Some(ttl) = req.heartbeat_ttl_ms {
-            agent.heartbeat_ttl_ms = ttl;
-        }
-        if let Some(l) = req.labels.clone() {
-            agent.labels = l;
-        }
-        agent.updated_at = Utc::now();
-        if let Err(e) = agent.validate() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
             KeyKind::BusAgent,
-            agent.id(),
+            &agent_id,
         );
-        let payload = match serde_json::to_string(&agent) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+        let missing = format!("agent {namespace}.{tenant}.{agent_id} not found");
+        let req_display = req.display_name.clone();
+        let req_caps = req.capabilities.clone();
+        let req_ttl = req.heartbeat_ttl_ms;
+        let req_labels = req.labels.clone();
+        let result = cas_update::<acteon_core::Agent, _>(&state, &key, &missing, |agent| {
+            if let Some(d) = req_display.clone() {
+                agent.display_name = Some(d);
+            }
+            if let Some(c) = req_caps.clone() {
+                agent.capabilities = c;
+            }
+            if let Some(ttl) = req_ttl {
+                agent.heartbeat_ttl_ms = ttl;
+            }
+            if let Some(l) = req_labels.clone() {
+                agent.labels = l;
+            }
+            agent.updated_at = Utc::now();
+            agent.validate().map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
                         error: e.to_string(),
                     }),
                 )
-                    .into_response();
-            }
-        };
-        let gw = state.gateway.read().await;
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
+                    .into_response()
+            })
+        })
+        .await;
+        match result {
+            Ok(agent) => (StatusCode::OK, Json(agent_to_response(&agent))).into_response(),
+            Err(resp) => resp,
         }
-        (StatusCode::OK, Json(agent_to_response(&agent))).into_response()
     }
     #[cfg(not(feature = "bus"))]
     {
@@ -3423,50 +3603,35 @@ pub async fn heartbeat_agent(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
             return resp;
         }
-        let mut agent = match load_agent(&state, &namespace, &tenant, &agent_id).await {
-            Ok(a) => a,
-            Err(resp) => return resp,
-        };
-        let now = Utc::now();
-        agent.last_heartbeat_at = Some(now);
-        agent.updated_at = now;
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
             KeyKind::BusAgent,
-            agent.id(),
+            &agent_id,
         );
-        let payload = match serde_json::to_string(&agent) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
+        let missing = format!("agent {namespace}.{tenant}.{agent_id} not found");
+        let result = cas_update::<acteon_core::Agent, _>(&state, &key, &missing, |agent| {
+            let now = Utc::now();
+            agent.last_heartbeat_at = Some(now);
+            agent.updated_at = now;
+            Ok(())
+        })
+        .await;
+        match result {
+            Ok(agent) => {
+                let now = agent.last_heartbeat_at.unwrap_or_else(Utc::now);
+                (
+                    StatusCode::OK,
+                    Json(HeartbeatResponse {
+                        agent_id: agent.agent_id.clone(),
+                        last_heartbeat_at: now,
+                        status: agent_status_str(agent.status_at(now)),
                     }),
                 )
-                    .into_response();
+                    .into_response()
             }
-        };
-        let gw = state.gateway.read().await;
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
+            Err(resp) => resp,
         }
-        (
-            StatusCode::OK,
-            Json(HeartbeatResponse {
-                agent_id: agent.agent_id.clone(),
-                last_heartbeat_at: now,
-                status: agent_status_str(agent.status_at(now)),
-            }),
-        )
-            .into_response()
     }
     #[cfg(not(feature = "bus"))]
     {
@@ -3511,6 +3676,9 @@ pub async fn send_to_agent(
             return resp;
         }
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        if let Err(resp) = validate_user_headers(&req.headers) {
             return resp;
         }
         if let Some(reserved) = req.headers.keys().find(|k| k.starts_with("acteon.")) {
@@ -3666,16 +3834,19 @@ pub struct CreateConversationRequest {
 }
 
 /// Body of `PUT /v1/bus/conversations/{ns}/{t}/{id}`. Mutable fields
-/// only — id, namespace, tenant, `created_at`, and state are immutable
-/// from this endpoint (state changes via `/transition`).
+/// only. `id`, `namespace`, `tenant`, `created_at`, `events_topic`,
+/// and `state` are immutable from this endpoint — state changes go
+/// through `/transition`, and the events topic is set once at
+/// registration time. Mid-flight events-topic swaps would orphan
+/// in-flight messages on the old topic and have been a topic-
+/// injection vector when the validation was incomplete; closed by
+/// removing the field.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateConversationRequest {
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub participants: Option<Vec<String>>,
-    #[serde(default)]
-    pub events_topic: Option<String>,
     #[serde(default)]
     pub labels: Option<HashMap<String, String>>,
 }
@@ -3828,6 +3999,29 @@ async fn ensure_conversation_events_topic(
     tenant: &str,
     events_topic_name: &str,
 ) -> Result<(), axum::response::Response> {
+    // Defense in depth: parse_kafka_name first so an unparseable name
+    // can never reach Kafka. Mirrors the agent-inbox check.
+    let (parsed_ns, parsed_tenant, leaf_name) =
+        parse_kafka_name(events_topic_name).map_err(|msg| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("invalid events topic name '{events_topic_name}': {msg}"),
+                }),
+            )
+                .into_response()
+        })?;
+    if parsed_ns != namespace || parsed_tenant != tenant {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "events topic '{events_topic_name}' crosses tenants: must be under {namespace}.{tenant}"
+                ),
+            }),
+        )
+            .into_response());
+    }
     let key = StateKey::new(
         namespace.to_string(),
         tenant.to_string(),
@@ -3842,10 +4036,6 @@ async fn ensure_conversation_events_topic(
     if matches!(store.get(&key).await, Ok(Some(_))) {
         return Ok(());
     }
-    let leaf_name = events_topic_name
-        .splitn(3, '.')
-        .nth(2)
-        .unwrap_or(events_topic_name);
     let topic = Topic::new(leaf_name, namespace, tenant);
     if let Err(e) = topic.validate() {
         return Err((
@@ -4184,62 +4374,42 @@ pub async fn update_conversation(
         {
             return resp;
         }
-        let mut conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await
-        {
-            Ok(c) => c,
-            Err(resp) => return resp,
-        };
-        if let Some(t) = req.title.clone() {
-            conv.title = Some(t);
-        }
-        if let Some(p) = req.participants.clone() {
-            conv.participants = p;
-        }
-        if let Some(et) = req.events_topic.clone() {
-            conv.events_topic = Some(et);
-        }
-        if let Some(l) = req.labels.clone() {
-            conv.labels = l;
-        }
-        conv.updated_at = Utc::now();
-        if let Err(e) = conv.validate() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
             KeyKind::BusConversation,
-            conv.id(),
+            &conversation_id,
         );
-        let payload = match serde_json::to_string(&conv) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+        let missing = format!("conversation {namespace}.{tenant}.{conversation_id} not found");
+        let req_title = req.title.clone();
+        let req_participants = req.participants.clone();
+        let req_labels = req.labels.clone();
+        let result = cas_update::<acteon_core::Conversation, _>(&state, &key, &missing, |conv| {
+            if let Some(t) = req_title.clone() {
+                conv.title = Some(t);
+            }
+            if let Some(p) = req_participants.clone() {
+                conv.participants = p;
+            }
+            if let Some(l) = req_labels.clone() {
+                conv.labels = l;
+            }
+            conv.updated_at = Utc::now();
+            conv.validate().map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
                         error: e.to_string(),
                     }),
                 )
-                    .into_response();
-            }
-        };
-        let gw = state.gateway.read().await;
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
+                    .into_response()
+            })
+        })
+        .await;
+        match result {
+            Ok(conv) => (StatusCode::OK, Json(conversation_to_response(&conv))).into_response(),
+            Err(resp) => resp,
         }
-        (StatusCode::OK, Json(conversation_to_response(&conv))).into_response()
     }
     #[cfg(not(feature = "bus"))]
     {
@@ -4359,49 +4529,30 @@ pub async fn transition_conversation(
         {
             return resp;
         }
-        let mut conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await
-        {
-            Ok(c) => c,
-            Err(resp) => return resp,
-        };
-        if let Err(e) = conv.apply_transition(req.transition) {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
             KeyKind::BusConversation,
-            conv.id(),
+            &conversation_id,
         );
-        let payload = match serde_json::to_string(&conv) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+        let missing = format!("conversation {namespace}.{tenant}.{conversation_id} not found");
+        let transition = req.transition;
+        let result = cas_update::<acteon_core::Conversation, _>(&state, &key, &missing, |conv| {
+            conv.apply_transition(transition).map(|_| ()).map_err(|e| {
+                (
+                    StatusCode::CONFLICT,
                     Json(ErrorResponse {
                         error: e.to_string(),
                     }),
                 )
-                    .into_response();
-            }
-        };
-        let gw = state.gateway.read().await;
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
+                    .into_response()
+            })
+        })
+        .await;
+        match result {
+            Ok(conv) => (StatusCode::OK, Json(conversation_to_response(&conv))).into_response(),
+            Err(resp) => resp,
         }
-        (StatusCode::OK, Json(conversation_to_response(&conv))).into_response()
     }
     #[cfg(not(feature = "bus"))]
     {
@@ -4445,6 +4596,9 @@ pub async fn append_conversation_message(
             return resp;
         }
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        if let Err(resp) = validate_user_headers(&req.headers) {
             return resp;
         }
         if let Some(reserved) = req.headers.keys().find(|k| k.starts_with("acteon.")) {
@@ -4554,17 +4708,48 @@ pub async fn append_conversation_message(
                 .insert("acteon.conversation.sender".into(), sender.clone());
         }
         match backend.produce(msg).await {
-            Ok(receipt) => (
-                StatusCode::OK,
-                Json(AppendConversationMessageResponse {
-                    events_topic: receipt.topic,
-                    conversation_id: conv.conversation_id,
-                    partition: receipt.partition,
-                    offset: receipt.offset,
-                    produced_at: receipt.timestamp,
-                }),
-            )
-                .into_response(),
+            Ok(receipt) => {
+                // Bump `updated_at` so list APIs and UI sorts by
+                // activity reflect that the thread is alive. Uses CAS
+                // so a concurrent transition can't be silently dropped
+                // here. Best-effort: a CAS contention failure leaves
+                // the timestamp stale but the message itself is
+                // already on Kafka, so we don't fail the append.
+                let conv_id = conv.conversation_id.clone();
+                let conv_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &conv_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if let Err(_resp) = bump {
+                    tracing::debug!(
+                        conversation_id = %conv_id,
+                        "conversation updated_at bump failed (race or backend outage); message was produced successfully"
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    Json(AppendConversationMessageResponse {
+                        events_topic: receipt.topic,
+                        conversation_id: conv_id,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                    }),
+                )
+                    .into_response()
+            }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {

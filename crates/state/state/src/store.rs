@@ -34,6 +34,13 @@ pub trait StateStore: Send + Sync {
     /// Get the value for a key. Returns `None` if not found or expired.
     async fn get(&self, key: &StateKey) -> Result<Option<String>, StateError>;
 
+    /// Get the value and its current version for a key. Used by
+    /// optimistic-concurrency callers that follow up with
+    /// [`Self::compare_and_swap`]. Returns `None` if not found or
+    /// expired. Versions begin at 1 for newly-inserted entries and
+    /// increment on each successful `set` / `compare_and_swap`.
+    async fn get_versioned(&self, key: &StateKey) -> Result<Option<(String, u64)>, StateError>;
+
     /// Set a value with an optional TTL, overwriting any previous value.
     async fn set(
         &self,

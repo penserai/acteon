@@ -1134,14 +1134,16 @@ pub struct RegisterBusAgent {
     pub labels: HashMap<String, String>,
 }
 
+/// `inbox_topic` is intentionally absent — once an agent is
+/// registered, its inbox is fixed. Migrating to a different topic
+/// would orphan in-flight messages; delete and re-register if you
+/// need a different inbox.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateBusAgent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inbox_topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heartbeat_ttl_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1226,14 +1228,16 @@ pub struct RegisterBusConversation {
     pub labels: HashMap<String, String>,
 }
 
+/// `events_topic` is intentionally absent — once a conversation is
+/// registered, the topic it produces to is fixed. Migrating mid-thread
+/// would split the message log across two topics; delete and
+/// re-register if you need a different topic.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateBusConversation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub participants: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub events_topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub labels: Option<HashMap<String, String>>,
 }

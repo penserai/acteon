@@ -130,6 +130,19 @@ impl StateStore for MemoryStateStore {
         Ok(None)
     }
 
+    async fn get_versioned(&self, key: &StateKey) -> Result<Option<(String, u64)>, StateError> {
+        let rendered = Self::render_key(key);
+        if let Some(entry) = self.data.get(&rendered) {
+            if entry.is_expired() {
+                drop(entry);
+                self.data.remove(&rendered);
+                return Ok(None);
+            }
+            return Ok(Some((entry.value.clone(), entry.version)));
+        }
+        Ok(None)
+    }
+
     async fn set(
         &self,
         key: &StateKey,
