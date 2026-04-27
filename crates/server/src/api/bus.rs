@@ -70,6 +70,7 @@ fn authorize_bus_op(
         BusOp::Subscribe => (Permission::StreamSubscribe, "subscribe"),
         BusOp::ManageSchema => (Permission::Dispatch, "schema"),
         BusOp::ManageAgent => (Permission::Dispatch, "agent"),
+        BusOp::ManageConversation => (Permission::Dispatch, "conversation"),
     };
     if !identity.role.has_permission(permission) {
         return Err((
@@ -112,6 +113,10 @@ enum BusOp {
     /// operators can restrict *inbox writes* independently of *agent
     /// registry ops*.
     ManageAgent,
+    /// Conversation CRUD + transitions + thread reads (Phase 5).
+    /// Appending a message also flows through [`BusOp::Publish`] so
+    /// operators can split read/write ACLs.
+    ManageConversation,
 }
 
 /// Parse a `namespace.tenant.name` Kafka topic string.
@@ -3609,6 +3614,1080 @@ async fn load_agent(
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("agent {namespace}.{tenant}.{agent_id} not found"),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+// =============================================================================
+// Phase 5: Conversations — multi-agent threads on a shared events topic
+// =============================================================================
+
+/// Body of `POST /v1/bus/conversations`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateConversationRequest {
+    pub conversation_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub participants: Vec<String>,
+    /// Override the events topic this conversation produces to.
+    /// Defaults to `{ns}.{tenant}.conversations-events`.
+    #[serde(default)]
+    pub events_topic: Option<String>,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+}
+
+/// Body of `PUT /v1/bus/conversations/{ns}/{t}/{id}`. Mutable fields
+/// only — id, namespace, tenant, `created_at`, and state are immutable
+/// from this endpoint (state changes via `/transition`).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateConversationRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub participants: Option<Vec<String>>,
+    #[serde(default)]
+    pub events_topic: Option<String>,
+    #[serde(default)]
+    pub labels: Option<HashMap<String, String>>,
+}
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/transition`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ConversationTransitionRequest {
+    pub transition: acteon_core::ConversationTransition,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConversationResponse {
+    pub conversation_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub state: acteon_core::ConversationState,
+    pub participants: Vec<String>,
+    pub events_topic: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListConversationsResponse {
+    pub conversations: Vec<ConversationResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListConversationsParams {
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Filter conversations whose participant list contains this `agent_id`.
+    #[serde(default)]
+    pub participant: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AppendConversationMessageRequest {
+    /// Free-form payload — the same shape as `/v1/bus/publish`.
+    #[schema(value_type = Object)]
+    pub payload: serde_json::Value,
+    /// Optional sender (an `agent_id`). Stamped as
+    /// `acteon.conversation.sender` header so subscribers can route
+    /// locally without parsing the payload. Server-validated against
+    /// the conversation's participant list when one is configured.
+    #[serde(default)]
+    pub sender: Option<String>,
+    /// Operator-supplied headers; `acteon.*` prefix is reserved.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AppendConversationMessageResponse {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ReplayConversationParams {
+    /// `earliest` (default — full thread) or `latest` (only new
+    /// messages, useful as a probe).
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Hard cap on returned messages. Default 200, max 1000.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// How long to wait for messages before returning a partial result.
+    /// Default 1500ms; bounds replay latency on quiet topics.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReplayMessageEntry {
+    pub partition: i32,
+    pub offset: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[schema(value_type = Object)]
+    pub payload: serde_json::Value,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReplayConversationResponse {
+    pub conversation_id: String,
+    pub events_topic: String,
+    pub messages: Vec<ReplayMessageEntry>,
+    /// True if the response is bounded by `limit` rather than end of
+    /// the timeout window. Caller can paginate by reading from the
+    /// last returned offset+1 in a subsequent call.
+    pub limit_reached: bool,
+}
+
+#[cfg(feature = "bus")]
+fn conversation_to_response(c: &acteon_core::Conversation) -> ConversationResponse {
+    ConversationResponse {
+        conversation_id: c.conversation_id.clone(),
+        namespace: c.namespace.clone(),
+        tenant: c.tenant.clone(),
+        title: c.title.clone(),
+        state: c.state,
+        participants: c.participants.clone(),
+        events_topic: c.effective_events_topic(),
+        labels: c.labels.clone(),
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+    }
+}
+
+#[cfg(feature = "bus")]
+fn conversation_state_str(s: acteon_core::ConversationState) -> String {
+    match s {
+        acteon_core::ConversationState::Active => "active",
+        acteon_core::ConversationState::Resolved => "resolved",
+        acteon_core::ConversationState::Archived => "archived",
+    }
+    .to_string()
+}
+
+/// Ensure the shared events topic exists in state + Kafka. Same idea
+/// as `ensure_agent_inbox_topic` — first conversation in a tenant
+/// provisions the topic, subsequent registrations are no-ops.
+#[cfg(feature = "bus")]
+async fn ensure_conversation_events_topic(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    events_topic_name: &str,
+) -> Result<(), axum::response::Response> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusTopic,
+        events_topic_name,
+    );
+    let Some(backend) = state.bus_backend.as_ref() else {
+        return Err(service_unavailable("bus feature not enabled"));
+    };
+    let gw = state.gateway.read().await;
+    let store = gw.state_store();
+    if matches!(store.get(&key).await, Ok(Some(_))) {
+        return Ok(());
+    }
+    let leaf_name = events_topic_name
+        .splitn(3, '.')
+        .nth(2)
+        .unwrap_or(events_topic_name);
+    let topic = Topic::new(leaf_name, namespace, tenant);
+    if let Err(e) = topic.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid events topic name '{events_topic_name}': {e}"),
+            }),
+        )
+            .into_response());
+    }
+    let body = match serde_json::to_string(&topic) {
+        Ok(b) => b,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response());
+        }
+    };
+    // Use check_and_set so two concurrent provision attempts can't
+    // both write the topic row. The loser silently no-ops.
+    if let Err(e) = store.check_and_set(&key, &body, None).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response());
+    }
+    drop(gw);
+    if let Err(e) = backend.create_topic(&topic).await
+        && !matches!(&e, acteon_bus::BusError::TopicAlreadyExists(_))
+    {
+        tracing::warn!(error = %e, topic = %events_topic_name, "auto-create of conversation events topic returned a non-AlreadyExists error; continuing with state row as canonical");
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations",
+    tag = "bus",
+    request_body = CreateConversationRequest,
+    responses(
+        (status = 201, description = "Conversation registered", body = ConversationResponse),
+        (status = 400, description = "Invalid conversation definition", body = ErrorResponse),
+        (status = 409, description = "Conversation already exists", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn register_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Json(req): Json<CreateConversationRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(
+            &identity,
+            &req.tenant,
+            &req.namespace,
+            BusOp::ManageConversation,
+        ) {
+            return resp;
+        }
+        let mut conv =
+            acteon_core::Conversation::new(&req.conversation_id, &req.namespace, &req.tenant);
+        conv.title = req.title.clone();
+        conv.participants = req.participants.clone();
+        conv.events_topic = req.events_topic.clone();
+        conv.labels = req.labels.clone();
+        if let Err(e) = conv.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let events_topic = conv.effective_events_topic();
+        if let Ok((topic_ns, topic_t, _)) = parse_kafka_name(&events_topic)
+            && (topic_ns != conv.namespace || topic_t != conv.tenant)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "events topic {events_topic} crosses tenants: must be under {}.{}",
+                        conv.namespace, conv.tenant
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(resp) =
+            ensure_conversation_events_topic(&state, &conv.namespace, &conv.tenant, &events_topic)
+                .await
+        {
+            return resp;
+        }
+        let key = StateKey::new(
+            conv.namespace.clone(),
+            conv.tenant.clone(),
+            KeyKind::BusConversation,
+            conv.id(),
+        );
+        let payload = match serde_json::to_string(&conv) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let gw = state.gateway.read().await;
+        match gw.state_store().check_and_set(&key, &payload, None).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "conversation {}.{}.{} already registered",
+                            conv.namespace, conv.tenant, conv.conversation_id
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        (StatusCode::CREATED, Json(conversation_to_response(&conv))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/conversations",
+    tag = "bus",
+    params(ListConversationsParams),
+    responses(
+        (status = 200, description = "Conversation list", body = ListConversationsResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn list_conversations(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(params): Query<ListConversationsParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        let gw = state.gateway.read().await;
+        let rows = match gw
+            .state_store()
+            .scan_keys_by_kind(KeyKind::BusConversation)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let convs: Vec<acteon_core::Conversation> = rows
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Conversation>(&v).ok())
+            .filter(|c| params.namespace.as_deref().is_none_or(|n| c.namespace == n))
+            .filter(|c| params.tenant.as_deref().is_none_or(|t| c.tenant == t))
+            .filter(|c| {
+                params
+                    .state
+                    .as_deref()
+                    .is_none_or(|s| conversation_state_str(c.state).eq_ignore_ascii_case(s))
+            })
+            .filter(|c| {
+                params
+                    .participant
+                    .as_deref()
+                    .is_none_or(|p| c.participants.iter().any(|x| x == p))
+            })
+            .filter(|c| identity.is_authorized(&c.tenant, &c.namespace, "bus", "conversation"))
+            .collect();
+        let responses: Vec<ConversationResponse> =
+            convs.iter().map(conversation_to_response).collect();
+        let count = responses.len();
+        (
+            StatusCode::OK,
+            Json(ListConversationsResponse {
+                conversations: responses,
+                count,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Conversation detail", body = ConversationResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn get_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => (StatusCode::OK, Json(conversation_to_response(&c))).into_response(),
+            Err(resp) => resp,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    tag = "bus",
+    request_body = UpdateConversationRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Conversation updated", body = ConversationResponse),
+        (status = 400, description = "Invalid update", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn update_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<UpdateConversationRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let mut conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await
+        {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if let Some(t) = req.title.clone() {
+            conv.title = Some(t);
+        }
+        if let Some(p) = req.participants.clone() {
+            conv.participants = p;
+        }
+        if let Some(et) = req.events_topic.clone() {
+            conv.events_topic = Some(et);
+        }
+        if let Some(l) = req.labels.clone() {
+            conv.labels = l;
+        }
+        conv.updated_at = Utc::now();
+        if let Err(e) = conv.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusConversation,
+            conv.id(),
+        );
+        let payload = match serde_json::to_string(&conv) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let gw = state.gateway.read().await;
+        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        (StatusCode::OK, Json(conversation_to_response(&conv))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 204, description = "Conversation deleted"),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn delete_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusConversation,
+            &conversation_id,
+        );
+        let gw = state.gateway.read().await;
+        match gw.state_store().get(&key).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "conversation {namespace}.{tenant}.{conversation_id} not found"
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        if let Err(e) = gw.state_store().delete(&key).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        StatusCode::NO_CONTENT.into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/transition",
+    tag = "bus",
+    request_body = ConversationTransitionRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Transition applied", body = ConversationResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 409, description = "Illegal transition for current state", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn transition_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<ConversationTransitionRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let mut conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await
+        {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if let Err(e) = conv.apply_transition(req.transition) {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusConversation,
+            conv.id(),
+        );
+        let payload = match serde_json::to_string(&conv) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let gw = state.gateway.read().await;
+        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        (StatusCode::OK, Json(conversation_to_response(&conv))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    tag = "bus",
+    request_body = AppendConversationMessageRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Message appended", body = AppendConversationMessageResponse),
+        (status = 400, description = "Reserved header, invalid sender, or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn append_conversation_message(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<AppendConversationMessageRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        if let Some(reserved) = req.headers.keys().find(|k| k.starts_with("acteon.")) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "header '{reserved}' uses the reserved 'acteon.' prefix; those are set by the server"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {}.{}.{} is archived; reopen via /transition to post",
+                        conv.namespace, conv.tenant, conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if let Some(sender) = req.sender.as_deref()
+            && !conv.participants.is_empty()
+            && !conv.participants.iter().any(|p| p == sender)
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "sender '{sender}' is not a participant of conversation {}",
+                        conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        let events_topic = conv.effective_events_topic();
+        let topic_key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusTopic,
+            &events_topic,
+        );
+        {
+            let gw = state.gateway.read().await;
+            match gw.state_store().get(&topic_key).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "events topic {events_topic} is not registered; re-register the conversation or create the topic"
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), req.payload.clone())
+            .with_key(&conv.conversation_id);
+        for (k, v) in &req.headers {
+            msg = msg.with_header(k.clone(), v.clone());
+        }
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(sender) = &req.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), sender.clone());
+        }
+        match backend.produce(msg).await {
+            Ok(receipt) => (
+                StatusCode::OK,
+                Json(AppendConversationMessageResponse {
+                    events_topic: receipt.topic,
+                    conversation_id: conv.conversation_id,
+                    partition: receipt.partition,
+                    offset: receipt.offset,
+                    produced_at: receipt.timestamp,
+                }),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+        ReplayConversationParams,
+    ),
+    responses(
+        (status = 200, description = "Thread replay", body = ReplayConversationResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn replay_conversation_messages(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Query(params): Query<ReplayConversationParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        let from = match params.from.as_deref() {
+            Some("latest") => acteon_bus::StartOffset::Latest,
+            Some("earliest") | None => acteon_bus::StartOffset::Earliest,
+            Some(other) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("unknown 'from' value '{other}' (expected earliest|latest)"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let limit = params.limit.unwrap_or(200).min(1000);
+        let timeout_ms = params.timeout_ms.unwrap_or(1500);
+        let events_topic = conv.effective_events_topic();
+        // Use a one-shot consumer group so this read doesn't interfere
+        // with any durable subscription state.
+        let group_id = format!(
+            "acteon-replay-{}-{}",
+            conv.conversation_id,
+            uuid::Uuid::new_v4()
+        );
+        let mut stream = match backend.subscribe(&events_topic, &group_id, from).await {
+            Ok(s) => s,
+            Err(acteon_bus::BusError::TopicNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("events topic {events_topic} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let mut messages: Vec<ReplayMessageEntry> = Vec::new();
+        let mut limit_reached = false;
+        loop {
+            if messages.len() >= limit {
+                limit_reached = true;
+                break;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline - now;
+            tokio::select! {
+                next = stream.next() => {
+                    match next {
+                        Some(Ok(msg)) => {
+                            // Filter to this conversation. The shared
+                            // events topic carries every conversation
+                            // in the tenant; match on the
+                            // server-stamped header.
+                            let belongs = msg
+                                .headers
+                                .get("acteon.conversation.id")
+                                .is_some_and(|v| v == &conv.conversation_id);
+                            if !belongs {
+                                continue;
+                            }
+                            messages.push(ReplayMessageEntry {
+                                partition: msg.partition.unwrap_or(0),
+                                offset: msg.offset.unwrap_or(0),
+                                key: msg.key.clone(),
+                                payload: msg.payload.clone(),
+                                headers: msg.headers.clone(),
+                                timestamp: msg.timestamp.unwrap_or_else(Utc::now),
+                            });
+                        }
+                        Some(Err(_)) | None => break,
+                    }
+                }
+                () = tokio::time::sleep(remaining) => {
+                    break;
+                }
+            }
+        }
+        (
+            StatusCode::OK,
+            Json(ReplayConversationResponse {
+                conversation_id: conv.conversation_id,
+                events_topic,
+                messages,
+                limit_reached,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+/// Direct `StateKey` lookup of a conversation record.
+#[cfg(feature = "bus")]
+async fn load_conversation(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    conversation_id: &str,
+) -> Result<acteon_core::Conversation, axum::response::Response> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusConversation,
+        conversation_id.to_string(),
+    );
+    let gw = state.gateway.read().await;
+    match gw.state_store().get(&key).await {
+        Ok(Some(raw)) => serde_json::from_str::<acteon_core::Conversation>(&raw).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!(
+                        "corrupt conversation record for {namespace}.{tenant}.{conversation_id}: {e}"
+                    ),
+                }),
+            )
+                .into_response()
+        }),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("conversation {namespace}.{tenant}.{conversation_id} not found"),
             }),
         )
             .into_response()),

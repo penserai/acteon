@@ -64,6 +64,8 @@ pub enum KeyKind {
     BusSchema,
     /// Bus agent identity + heartbeat (Phase 4 of the agentic bus).
     BusAgent,
+    /// Bus conversation thread (Phase 5 of the agentic bus).
+    BusConversation,
     Custom(String),
 }
 
@@ -104,6 +106,7 @@ impl KeyKind {
             Self::BusSubscription => "bus_subscription",
             Self::BusSchema => "bus_schema",
             Self::BusAgent => "bus_agent",
+            Self::BusConversation => "bus_conversation",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -204,6 +207,7 @@ mod tests {
         assert_eq!(KeyKind::BusSubscription.as_str(), "bus_subscription");
         assert_eq!(KeyKind::BusSchema.as_str(), "bus_schema");
         assert_eq!(KeyKind::BusAgent.as_str(), "bus_agent");
+        assert_eq!(KeyKind::BusConversation.as_str(), "bus_conversation");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 
