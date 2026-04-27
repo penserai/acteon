@@ -144,7 +144,15 @@ impl BusBackend for KafkaBackend {
             .map_err(map_kafka_error)?;
         for res in results {
             match res {
-                Ok(_) | Err((_, RDKafkaErrorCode::TopicAlreadyExists)) => {}
+                Ok(_) => {}
+                // Surface the typed variant so callers can decide
+                // whether a concurrent create is fatal or benign.
+                // Previously swallowed silently, which forced consumers
+                // (e.g. agent inbox auto-create) to string-match on the
+                // error message.
+                Err((topic_name, RDKafkaErrorCode::TopicAlreadyExists)) => {
+                    return Err(BusError::TopicAlreadyExists(topic_name));
+                }
                 Err((topic_name, code)) => {
                     return Err(BusError::Transport(format!(
                         "create_topic {topic_name}: {code:?}"
