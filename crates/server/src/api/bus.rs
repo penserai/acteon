@@ -331,15 +331,44 @@ fn encode_replay_cursor(offsets: &std::collections::BTreeMap<i32, i64>) -> Strin
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes())
 }
 
+/// Hard cap on a decoded replay cursor's length, in bytes. A cursor
+/// is a JSON object of `{partition: offset}` — at JSON cost of ~20
+/// bytes per entry, 8 KB comfortably fits ~400 partitions, well past
+/// any realistic Kafka topic. Capping here keeps a malicious client
+/// from forcing the server to allocate megabytes for `serde_json` to
+/// chew through before any business logic runs.
+#[cfg(feature = "bus")]
+const MAX_REPLAY_CURSOR_BYTES: usize = 8 * 1024;
+
 /// Decode a cursor produced by [`encode_replay_cursor`]. Tolerates a
 /// missing or malformed token with a structured error so the handler
-/// can surface a 400.
+/// can surface a 400. Caps the decoded payload at
+/// [`MAX_REPLAY_CURSOR_BYTES`] *before* the JSON parse so a hostile
+/// client can't trigger a CPU/memory denial-of-service by sending a megabyte of
+/// nested JSON in the query string.
 #[cfg(feature = "bus")]
 fn decode_replay_cursor(s: &str) -> Result<std::collections::BTreeMap<i32, i64>, String> {
     use base64::Engine;
+    // Reject the encoded form first to skip the base64 work entirely
+    // when the input is already too big. Base64 expands ~33%, so
+    // anything past `MAX * 4 / 3 + a few` bytes can't possibly decode
+    // to ≤ MAX bytes.
+    if s.len() > MAX_REPLAY_CURSOR_BYTES * 4 / 3 + 4 {
+        return Err(format!(
+            "cursor too large: {} encoded bytes (max ~{} encoded)",
+            s.len(),
+            MAX_REPLAY_CURSOR_BYTES * 4 / 3
+        ));
+    }
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(s.as_bytes())
         .map_err(|e| format!("base64: {e}"))?;
+    if raw.len() > MAX_REPLAY_CURSOR_BYTES {
+        return Err(format!(
+            "cursor too large: {} decoded bytes (max {MAX_REPLAY_CURSOR_BYTES})",
+            raw.len()
+        ));
+    }
     let json = std::str::from_utf8(&raw).map_err(|e| format!("utf8: {e}"))?;
     serde_json::from_str::<std::collections::BTreeMap<i32, i64>>(json)
         .map_err(|e| format!("json: {e}"))
@@ -4085,8 +4114,18 @@ pub struct ReplayMessageEntry {
 #[serde(rename_all = "snake_case")]
 pub enum ReplayExitReason {
     /// The scan reached or surpassed every partition's high-water
-    /// mark — there are no more messages on the topic at the time
-    /// the scan started. The caller is done.
+    /// mark **as snapshotted at the moment the request started**.
+    /// The caller has every message that existed when they asked.
+    ///
+    /// **Snapshot semantics**: new messages produced *after* the
+    /// scan began are *not* part of this response. For chat-style
+    /// usage where the client wants to keep tailing, treat
+    /// `Complete` as "I've drained the snapshot — call me again
+    /// (with the returned `cursor`, which still encodes the per-
+    /// partition tail) for any new messages." Without this caveat,
+    /// a high-volume conversation can race ahead of the scan and
+    /// produce messages that the next replay starting fresh would
+    /// have to re-discover.
     Complete,
     /// Hit the per-request `limit` before scanning the whole topic.
     /// More messages may exist; resume with `cursor`.
@@ -4102,9 +4141,13 @@ pub struct ReplayConversationResponse {
     pub events_topic: String,
     pub messages: Vec<ReplayMessageEntry>,
     pub exit_reason: ReplayExitReason,
-    /// Opaque resume token. `None` only when `exit_reason ==
-    /// Complete`; otherwise present and meant to be passed back as
-    /// `cursor` on the next request to continue the scan.
+    /// Opaque resume token, always present. On `Limit` and
+    /// `Timeout`, pass it back as `cursor` to keep paginating the
+    /// remainder of the snapshot. On `Complete`, the cursor encodes
+    /// the per-partition tail position at scan end — tailing clients
+    /// pass it back to a follow-up request to pick up messages
+    /// produced after this snapshot. Clients doing a one-shot
+    /// drain ignore the cursor when `exit_reason == Complete`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
@@ -5048,6 +5091,45 @@ pub async fn replay_conversation_messages(
                     .into_response();
             }
         };
+        // Pre-seed the per-partition offset tracker so that *if* the
+        // scan exits without consuming any record on a given
+        // partition (timeout, or no matches), the cursor still
+        // points at a sensible resume position. Without this, an
+        // empty `Latest` scan returned `cursor = "{}"`, which
+        // decoded back to `ScanFrom::FromOffsets({})` — an empty TPL
+        // — and the caller's polling loop would never see a new
+        // message. We use `start - 1` because the kafka backend
+        // resumes at `last_seen + 1`.
+        //
+        // For `Earliest`, seed all known partitions with `-1` →
+        // resume at offset 0.
+        // For `Latest`, seed each partition with `hwm - 1` → resume
+        // at `hwm` (next-to-be-produced).
+        // For `FromOffsets(map)`, copy the caller's positions and
+        // fill any partitions absent from the map with `hwm - 1`
+        // (the contract is "caller has already drained them").
+        let mut last_offsets: std::collections::BTreeMap<i32, i64> =
+            std::collections::BTreeMap::new();
+        match &scan_from {
+            acteon_bus::ScanFrom::Earliest => {
+                for &p in watermarks.high_water_marks.keys() {
+                    last_offsets.insert(p, -1);
+                }
+            }
+            acteon_bus::ScanFrom::Latest => {
+                for (&p, &hwm) in &watermarks.high_water_marks {
+                    last_offsets.insert(p, hwm - 1);
+                }
+            }
+            acteon_bus::ScanFrom::FromOffsets(map) => {
+                for (&p, &off) in map {
+                    last_offsets.insert(p, off);
+                }
+                for (&p, &hwm) in &watermarks.high_water_marks {
+                    last_offsets.entry(p).or_insert(hwm - 1);
+                }
+            }
+        }
         // `scan_topic` uses Kafka's `assign()` rather than dynamic
         // consumer-group subscribe — no `__consumer_offsets` rows are
         // created so repeated replays don't accumulate dead groups in
@@ -5075,12 +5157,10 @@ pub async fn replay_conversation_messages(
         };
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
         let mut messages: Vec<ReplayMessageEntry> = Vec::new();
-        // Track the highest offset *consumed* per partition (matched
-        // or skipped — both advance the scan position). The cursor
-        // is built from these offsets at the end so a follow-up
-        // request resumes at offset+1 per partition.
-        let mut last_offsets: std::collections::BTreeMap<i32, i64> =
-            std::collections::BTreeMap::new();
+        // `last_offsets` was pre-seeded above. The loop bumps each
+        // partition's entry on every record physically read so the
+        // cursor reflects scan position rather than per-conversation
+        // position.
         // Each branch terminates the loop with an explicit reason;
         // `loop { break <value>; }` lets the compiler prove
         // exhaustiveness without an unread initial value.
@@ -5165,12 +5245,13 @@ pub async fn replay_conversation_messages(
                 }
             }
         };
-        let cursor = match exit_reason {
-            ReplayExitReason::Complete => None,
-            ReplayExitReason::Limit | ReplayExitReason::Timeout => {
-                Some(encode_replay_cursor(&last_offsets))
-            }
-        };
+        // Always emit a cursor — even on `Complete`. The
+        // `Complete` cursor encodes the per-partition tail at scan
+        // end, so a tailing client can immediately re-poll to pick
+        // up messages produced after this snapshot. Clients that
+        // genuinely just want a one-shot drain ignore the cursor
+        // when `exit_reason == Complete`.
+        let cursor = Some(encode_replay_cursor(&last_offsets));
         (
             StatusCode::OK,
             Json(ReplayConversationResponse {
