@@ -346,12 +346,13 @@ pub async fn create_topic(
         }
         drop(gw);
 
-        // Now create in Kafka. The backend internally adopts a
-        // matching pre-existing topic and returns `Ok(())`; it only
-        // surfaces `TopicAlreadyExists` when an orphan Kafka topic has
-        // a *different* partition count or replication factor than
-        // what we asked for, which is a real drift between Acteon's
-        // governance and the broker that operators must reconcile.
+        // Now create in Kafka. The backend never auto-adopts a
+        // pre-existing topic — silently absorbing an out-of-band topic
+        // is both a privilege-escalation vector (any caller who can
+        // create topics in this tenant could otherwise "claim" a
+        // topic an admin pre-created) and a configuration-drift
+        // hazard. Any duplicate surfaces as `TopicAlreadyExists` and
+        // becomes a 409 below; operators reconcile explicitly.
         if let Err(e) = backend.create_topic(&topic).await {
             // Best-effort rollback of the state row on Kafka failure.
             // If the rollback itself fails — e.g. state store
@@ -374,10 +375,9 @@ pub async fn create_topic(
                     "bus: Kafka create_topic failed; state row rolled back"
                 );
             }
-            // Config-mismatch adoption attempts get a 409 (the topic
-            // is conceptually a conflict on the operator's intent),
-            // matching the existing in-Acteon-state pre-check above.
-            // Other failures stay as 500.
+            // Duplicate-topic errors get a 409 to match the
+            // in-Acteon-state pre-check above; other failures stay
+            // as 500.
             let status = if matches!(&e, acteon_bus::BusError::TopicAlreadyExists(_)) {
                 StatusCode::CONFLICT
             } else {
@@ -2921,18 +2921,22 @@ async fn ensure_agent_inbox_topic(
     }
     drop(gw);
     if let Err(e) = backend.create_topic(&topic).await {
-        // After the smart-adoption work in the backend, an `Err` here
-        // is one of two things:
-        //
-        // - `TopicAlreadyExists`: the inbox topic exists in Kafka with
-        //   a *different* partition count or replication factor than
-        //   the defaults Acteon would create. Operators should
-        //   reconcile (delete the orphan or import its config). We
-        //   keep going — the inbox is still usable, but log loudly
-        //   because this is a governance drift.
-        // - Anything else: a real backend failure. Same: log + keep
-        //   going. The state row was just written and is canonical.
-        tracing::warn!(error = %e, topic = %inbox_topic_name, "auto-create of agent inbox topic returned an error; continuing with state row as canonical");
+        // The shared inbox is a tenant-scoped, agent-shared resource.
+        // `TopicAlreadyExists` here means another concurrent
+        // registration already provisioned it (or it pre-existed in
+        // Kafka). Both cases are benign for the agent we're
+        // registering — the inbox row in state is still our canonical
+        // record, and `send_to_agent` will work either way. Anything
+        // else is a real backend failure but we don't fail the
+        // registration; the state row remains and operators can
+        // reconcile. `&e` keeps the value live for the trace below.
+        if !matches!(&e, acteon_bus::BusError::TopicAlreadyExists(_)) {
+            tracing::warn!(
+                error = %e,
+                topic = %inbox_topic_name,
+                "auto-create of agent inbox topic returned a non-AlreadyExists error; continuing with state row as canonical",
+            );
+        }
     }
     Ok(())
 }

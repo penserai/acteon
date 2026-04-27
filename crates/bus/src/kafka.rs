@@ -70,61 +70,6 @@ impl KafkaBackend {
         }))
     }
 
-    /// Compare an existing Kafka topic's partition count and
-    /// replication factor against `requested`. Used by `create_topic`
-    /// to decide whether a `TopicAlreadyExists` is benign (config
-    /// matches → adopt silently) or a real drift between Acteon's
-    /// view and Kafka's (config differs → surface as
-    /// `BusError::TopicAlreadyExists`). Synchronous — `fetch_metadata`
-    /// blocks the calling thread; this is called from `create_topic`
-    /// which is already on a tokio worker.
-    fn verify_existing_topic_matches(
-        &self,
-        kafka_topic: &str,
-        requested: &Topic,
-    ) -> Result<(), BusError> {
-        // Use a short-lived consumer for `fetch_metadata`; admin
-        // clients don't expose metadata on this rdkafka version.
-        let cfg = self.consumer_config("acteon-create-topic-verify", StartOffset::Latest);
-        let consumer: StreamConsumer = cfg
-            .create()
-            .map_err(|e| BusError::Transport(format!("verify consumer: {e}")))?;
-        let metadata = consumer
-            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
-            .map_err(map_kafka_error)?;
-        let topic_meta = metadata
-            .topics()
-            .iter()
-            .find(|t| t.name() == kafka_topic)
-            .ok_or_else(|| {
-                BusError::Transport(format!(
-                    "create_topic: TopicAlreadyExists but no metadata returned for {kafka_topic}"
-                ))
-            })?;
-        let actual_partitions = i32::try_from(topic_meta.partitions().len()).unwrap_or(i32::MAX);
-        // Replication factor is per-partition; in healthy clusters
-        // every partition has the same replica count, so we read
-        // partition 0. Empty partition list would have triggered
-        // `fetch_metadata` errors earlier.
-        let actual_replication = topic_meta
-            .partitions()
-            .first()
-            .map_or(0, |p| i16::try_from(p.replicas().len()).unwrap_or(i16::MAX));
-        if actual_partitions == requested.partitions
-            && actual_replication == requested.replication_factor
-        {
-            Ok(())
-        } else {
-            Err(BusError::TopicAlreadyExists(format!(
-                "{kafka_topic}: requested partitions={}, replication={}; actual partitions={}, replication={}",
-                requested.partitions,
-                requested.replication_factor,
-                actual_partitions,
-                actual_replication
-            )))
-        }
-    }
-
     fn consumer_config(&self, group_id: &str, from: StartOffset) -> ClientConfig {
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", &self.bootstrap);
@@ -208,15 +153,17 @@ impl BusBackend for KafkaBackend {
             .ok_or_else(|| BusError::Transport("create_topic: empty admin result".into()))?;
         match res {
             Ok(_) => Ok(()),
-            // Smart adoption: a duplicate create is benign as long as
-            // the existing topic matches what we asked for. Fetch
-            // broker metadata, compare partitions and replication
-            // factor; surface `TopicAlreadyExists` only when there's an
-            // actual config mismatch so callers can distinguish a
-            // racy/idempotent create from drift between Acteon's view
-            // and Kafka's reality.
-            Err((topic_name, RDKafkaErrorCode::TopicAlreadyExists)) => {
-                self.verify_existing_topic_matches(&topic_name, topic)
+            // Surface the typed variant so callers can distinguish a
+            // duplicate create from a real failure. Acteon does not
+            // auto-adopt pre-existing Kafka topics — silently inheriting
+            // an out-of-band topic is a privilege-escalation vector
+            // (any caller with create-topic rights could claim a topic
+            // an admin pre-created out of band) and silently inherits
+            // configuration that may not match the request. Operators
+            // who want to bring an orphan under Acteon governance must
+            // do it explicitly via a future admin-only adoption flow.
+            Err((_, RDKafkaErrorCode::TopicAlreadyExists)) => {
+                Err(BusError::TopicAlreadyExists(topic.kafka_topic_name()))
             }
             Err((topic_name, code)) => Err(BusError::Transport(format!(
                 "create_topic {topic_name}: {code:?}"
