@@ -304,8 +304,21 @@ pub async fn create_topic(
             KeyKind::BusTopic,
             topic.id(),
         );
-        match store.get(&key).await {
-            Ok(Some(_)) => {
+        let Ok(body) = serde_json::to_string(&topic) else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed to serialize topic".into(),
+                }),
+            )
+                .into_response();
+        };
+        // Atomic conflict check + insert. Two concurrent creates with
+        // the same key are guaranteed to see exactly one `true` here;
+        // the loser gets `Ok(false)` and a clean 409.
+        match store.check_and_set(&key, &body, None).await {
+            Ok(true) => {}
+            Ok(false) => {
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
@@ -323,26 +336,6 @@ pub async fn create_topic(
                 )
                     .into_response();
             }
-            Ok(None) => {}
-        }
-
-        let Ok(body) = serde_json::to_string(&topic) else {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "failed to serialize topic".into(),
-                }),
-            )
-                .into_response();
-        };
-        if let Err(e) = store.set(&key, &body, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
         }
         drop(gw);
 
@@ -1203,8 +1196,20 @@ pub async fn create_subscription(
             KeyKind::BusSubscription,
             sub.id.clone(),
         );
-        match store.get(&sub_key).await {
-            Ok(Some(_)) => {
+        let Ok(body) = serde_json::to_string(&sub) else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "failed to serialize subscription".into(),
+                }),
+            )
+                .into_response();
+        };
+        // Atomic conflict check + insert; see `create_topic` for the
+        // rationale.
+        match store.check_and_set(&sub_key, &body, None).await {
+            Ok(true) => {}
+            Ok(false) => {
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
@@ -1222,25 +1227,6 @@ pub async fn create_subscription(
                 )
                     .into_response();
             }
-            Ok(None) => {}
-        }
-        let Ok(body) = serde_json::to_string(&sub) else {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "failed to serialize subscription".into(),
-                }),
-            )
-                .into_response();
-        };
-        if let Err(e) = store.set(&sub_key, &body, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
         }
 
         (StatusCode::CREATED, Json(subscription_to_response(&sub))).into_response()
@@ -1720,6 +1706,13 @@ async fn load_subscription(
 // Phase 3: JSON-Schema registry + topic binding
 // =============================================================================
 
+/// Bound on how many times `create_schema` retries scan-then-claim for
+/// the next monotonic version. With N concurrent registrations on the
+/// same subject, the worst case is N attempts; 8 is comfortably above
+/// any realistic operator-driven concurrency on schema CRUD.
+#[cfg(feature = "bus")]
+const MAX_VERSION_ALLOC_ATTEMPTS: u32 = 8;
+
 /// Body of a request to register a new schema version.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateSchemaRequest {
@@ -1952,83 +1945,113 @@ pub async fn create_schema(
             )
                 .into_response();
         }
-        // Scan existing versions for this subject to pick the next one.
+        // Reserving the next monotonic version requires a scan-then-
+        // claim pattern. Two concurrent posts can compute the same
+        // `next_version`; the atomic `check_and_set` below detects
+        // this and we retry up to MAX_VERSION_ALLOC_ATTEMPTS. With N
+        // concurrent posts the loop is N attempts at worst, which is
+        // fine — V1 throughput on a single subject is operator-driven.
         let gw = state.gateway.read().await;
         let prefix = format!("{}:", req.subject);
-        let next_version: i32 = match gw
-            .state_store()
-            .scan_keys(
-                &req.namespace,
-                &req.tenant,
-                KeyKind::BusSchema,
-                Some(&prefix),
-            )
-            .await
-        {
-            Ok(rows) => rows
-                .iter()
-                .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Schema>(v).ok())
-                .filter(|s| s.subject == req.subject)
-                .map(|s| s.version)
-                .max()
-                .map_or(1, |m| m + 1),
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
         let now = Utc::now();
-        let schema = acteon_core::Schema {
-            subject: req.subject.clone(),
-            version: next_version,
-            namespace: req.namespace.clone(),
-            tenant: req.tenant.clone(),
-            format: acteon_core::SchemaFormat::default(),
-            body: req.body.clone(),
-            labels: req.labels.clone(),
-            created_at: now,
-        };
-        if let Err(e) = schema.validate() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
-        let key = StateKey::new(
-            schema.namespace.clone(),
-            schema.tenant.clone(),
-            KeyKind::BusSchema,
-            schema.id(),
-        );
-        let payload = match serde_json::to_string(&schema) {
-            Ok(s) => s,
-            Err(e) => {
+        let mut allocated: Option<acteon_core::Schema> = None;
+        for _ in 0..MAX_VERSION_ALLOC_ATTEMPTS {
+            let next_version: i32 = match gw
+                .state_store()
+                .scan_keys(
+                    &req.namespace,
+                    &req.tenant,
+                    KeyKind::BusSchema,
+                    Some(&prefix),
+                )
+                .await
+            {
+                Ok(rows) => rows
+                    .iter()
+                    .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Schema>(v).ok())
+                    .filter(|s| s.subject == req.subject)
+                    .map(|s| s.version)
+                    .max()
+                    .map_or(1, |m| m + 1),
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            let candidate = acteon_core::Schema {
+                subject: req.subject.clone(),
+                version: next_version,
+                namespace: req.namespace.clone(),
+                tenant: req.tenant.clone(),
+                format: acteon_core::SchemaFormat::default(),
+                body: req.body.clone(),
+                labels: req.labels.clone(),
+                created_at: now,
+            };
+            if let Err(e) = candidate.validate() {
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
                         error: e.to_string(),
                     }),
                 )
                     .into_response();
             }
-        };
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
+            let key = StateKey::new(
+                candidate.namespace.clone(),
+                candidate.tenant.clone(),
+                KeyKind::BusSchema,
+                candidate.id(),
+            );
+            let payload = match serde_json::to_string(&candidate) {
+                Ok(s) => s,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            };
+            match gw.state_store().check_and_set(&key, &payload, None).await {
+                Ok(true) => {
+                    allocated = Some(candidate);
+                    break;
+                }
+                // Lost the race against another concurrent registration
+                // for this subject — rescan and retry on next loop
+                // iteration.
+                Ok(false) => {}
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let Some(schema) = allocated else {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::CONFLICT,
                 Json(ErrorResponse {
-                    error: e.to_string(),
+                    error: format!(
+                        "schema '{}' could not allocate a unique version after {MAX_VERSION_ALLOC_ATTEMPTS} attempts; retry or coordinate writers",
+                        req.subject
+                    ),
                 }),
             )
                 .into_response();
-        }
+        };
         drop(gw);
         // Eagerly register with the compiled-validator cache so the
         // next publish is a warm hit.
@@ -3010,9 +3033,33 @@ pub async fn register_agent(
             KeyKind::BusAgent,
             agent.id(),
         );
+        // Provision the shared inbox topic before reserving the agent
+        // id. Inbox provisioning is idempotent across concurrent
+        // registrations (any `TopicAlreadyExists` is benign — see
+        // `ensure_agent_inbox_topic`); the atomic agent reservation
+        // below is what guarantees only one caller wins for a given
+        // `agent_id`.
+        if let Err(resp) =
+            ensure_agent_inbox_topic(&state, &agent.namespace, &agent.tenant, &inbox).await
+        {
+            return resp;
+        }
+        let payload = match serde_json::to_string(&agent) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
         let gw = state.gateway.read().await;
-        match gw.state_store().get(&key).await {
-            Ok(Some(_)) => {
+        match gw.state_store().check_and_set(&key, &payload, None).await {
+            Ok(true) => {}
+            Ok(false) => {
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
@@ -3033,36 +3080,6 @@ pub async fn register_agent(
                 )
                     .into_response();
             }
-            Ok(None) => {}
-        }
-        drop(gw);
-        // Provision the shared inbox topic on first registration.
-        if let Err(resp) =
-            ensure_agent_inbox_topic(&state, &agent.namespace, &agent.tenant, &inbox).await
-        {
-            return resp;
-        }
-        let payload = match serde_json::to_string(&agent) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-        };
-        let gw = state.gateway.read().await;
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
         }
         (StatusCode::CREATED, Json(agent_to_response(&agent))).into_response()
     }

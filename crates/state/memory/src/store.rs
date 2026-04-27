@@ -464,4 +464,38 @@ mod tests {
         let existed = store.delete(&key).await.unwrap();
         assert!(!existed);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn check_and_set_is_atomic_under_contention() {
+        // 100 concurrent writers race to insert the same key. Exactly
+        // one must observe `Ok(true)`; everyone else gets `Ok(false)`.
+        // This is the contract the bus handlers (`create_topic`,
+        // `create_subscription`, `register_agent`, `create_schema`)
+        // depend on for their conflict-detection guarantees.
+        let store = std::sync::Arc::new(MemoryStateStore::new());
+        let key = test_key(KeyKind::State, "race");
+        let n = 100;
+        let mut handles = Vec::with_capacity(n);
+        for i in 0..n {
+            let store = store.clone();
+            let key = key.clone();
+            handles.push(tokio::spawn(async move {
+                store
+                    .check_and_set(&key, &format!("v{i}"), None)
+                    .await
+                    .unwrap()
+            }));
+        }
+        let mut winners = 0;
+        for h in handles {
+            if h.await.unwrap() {
+                winners += 1;
+            }
+        }
+        assert_eq!(winners, 1, "exactly one writer must win the race");
+        // The stored value must come from one of the writers (we don't
+        // care which); we only assert the key exists.
+        let stored = store.get(&key).await.unwrap();
+        assert!(stored.is_some(), "key must be present after race");
+    }
 }
