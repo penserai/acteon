@@ -183,9 +183,18 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned,
     F: FnMut(&mut T) -> Result<(), axum::response::Response>,
 {
-    for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+    // Clone the `Arc<dyn StateStore>` once outside the loop and drop
+    // the gateway read guard before any `.await` on the state store.
+    // Holding `gw` across DB roundtrips — and worse, across all 8
+    // retry iterations — would block any pending gateway writer
+    // (config reloader, etc.) and cascade into queue-head-blocking
+    // for every other incoming request, since tokio's `RwLock` is
+    // fair. This was the third-pass review's HIGH finding.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
         let gw = state.gateway.read().await;
-        let store = gw.state_store();
+        gw.state_store().clone()
+    };
+    for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
         let (raw, version) = match store.get_versioned(key).await {
             Ok(Some(p)) => p,
             Ok(None) => {
@@ -4385,6 +4394,25 @@ pub async fn update_conversation(
         let req_participants = req.participants.clone();
         let req_labels = req.labels.clone();
         let result = cas_update::<acteon_core::Conversation, _>(&state, &key, &missing, |conv| {
+            // Archived threads are immutable. Allowing edits to title /
+            // participants / labels after archive would undermine the
+            // audit trail (the participant list is the ACL gate at
+            // append time; rewriting it post-archive would let an
+            // operator silently change who *appeared* to have access
+            // to a closed thread). Operators who need a different
+            // shape should reopen via /transition first.
+            if !conv.accepts_messages() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "conversation {} is archived; reopen via /transition before updating",
+                            conv.conversation_id
+                        ),
+                    }),
+                )
+                    .into_response());
+            }
             if let Some(t) = req_title.clone() {
                 conv.title = Some(t);
             }
@@ -4733,9 +4761,17 @@ pub async fn append_conversation_message(
                 )
                 .await;
                 if let Err(_resp) = bump {
-                    tracing::debug!(
+                    // Fail-open: the message is already on Kafka so we
+                    // don't fail the response, but the state row is now
+                    // stale relative to thread activity (UI sort by
+                    // `updated_at` will misrank). `warn!` so operators
+                    // notice if this becomes chronic — it usually
+                    // means either the state store is unreachable or
+                    // a single conversation is taking sustained CAS
+                    // contention beyond `MAX_CAS_RETRY_ATTEMPTS`.
+                    tracing::warn!(
                         conversation_id = %conv_id,
-                        "conversation updated_at bump failed (race or backend outage); message was produced successfully"
+                        "conversation updated_at bump failed (CAS contention exhausted or backend error); message was produced successfully but list/sort will see a stale timestamp",
                     );
                 }
                 (
