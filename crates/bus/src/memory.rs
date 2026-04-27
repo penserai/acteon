@@ -55,7 +55,10 @@ impl BusBackend for MemoryBackend {
         let name = topic.kafka_topic_name();
         let mut topics = self.topics.lock();
         if topics.contains_key(&name) {
-            return Ok(()); // idempotent
+            // Mirrors `KafkaBackend`: any duplicate is a typed
+            // `TopicAlreadyExists`. Acteon does not auto-adopt — see
+            // the matching comment in `KafkaBackend::create_topic`.
+            return Err(BusError::TopicAlreadyExists(name));
         }
         let (tx, _) = broadcast::channel(1024);
         topics.insert(
@@ -318,5 +321,24 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, BusError::TopicNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn create_topic_returns_typed_already_exists() {
+        // Any duplicate create returns the typed variant. The bus does
+        // not auto-adopt or silently absorb idempotent creates —
+        // operators must reconcile drift explicitly. Setup scripts that
+        // want idempotency should ignore `TopicAlreadyExists` at the
+        // call site.
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("dup", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+        let err = backend.create_topic(&topic).await.unwrap_err();
+        match err {
+            BusError::TopicAlreadyExists(name) => {
+                assert_eq!(name, topic.kafka_topic_name());
+            }
+            other => panic!("expected TopicAlreadyExists, got {other:?}"),
+        }
     }
 }

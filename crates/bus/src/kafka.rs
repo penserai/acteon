@@ -142,17 +142,33 @@ impl BusBackend for KafkaBackend {
             .create_topics(&[new_topic], &AdminOptions::new())
             .await
             .map_err(map_kafka_error)?;
-        for res in results {
-            match res {
-                Ok(_) | Err((_, RDKafkaErrorCode::TopicAlreadyExists)) => {}
-                Err((topic_name, code)) => {
-                    return Err(BusError::Transport(format!(
-                        "create_topic {topic_name}: {code:?}"
-                    )));
-                }
+        // `create_topic` only ever submits one `NewTopic` (the trait
+        // takes a single `&Topic`), so we expect exactly one result and
+        // handle it directly. Looping here previously caused an
+        // early-return bug to silently strand later results — moot
+        // today, but the contract is clearer this way.
+        let res = results
+            .into_iter()
+            .next()
+            .ok_or_else(|| BusError::Transport("create_topic: empty admin result".into()))?;
+        match res {
+            Ok(_) => Ok(()),
+            // Surface the typed variant so callers can distinguish a
+            // duplicate create from a real failure. Acteon does not
+            // auto-adopt pre-existing Kafka topics — silently inheriting
+            // an out-of-band topic is a privilege-escalation vector
+            // (any caller with create-topic rights could claim a topic
+            // an admin pre-created out of band) and silently inherits
+            // configuration that may not match the request. Operators
+            // who want to bring an orphan under Acteon governance must
+            // do it explicitly via a future admin-only adoption flow.
+            Err((_, RDKafkaErrorCode::TopicAlreadyExists)) => {
+                Err(BusError::TopicAlreadyExists(topic.kafka_topic_name()))
             }
+            Err((topic_name, code)) => Err(BusError::Transport(format!(
+                "create_topic {topic_name}: {code:?}"
+            ))),
         }
-        Ok(())
     }
 
     async fn delete_topic(&self, kafka_name: &str) -> Result<(), BusError> {
