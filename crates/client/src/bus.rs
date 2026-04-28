@@ -1133,6 +1133,42 @@ impl ActeonClient {
             Err(map_error(resp).await)
         }
     }
+
+    /// Post a tool call and wait for its matching result on the same
+    /// conversation. Wires the receipt's `cursor` directly into the
+    /// lookup so the scan starts strictly *after* the call was
+    /// produced — avoiding the race where the result lands between
+    /// the post and a separate lookup, and the busy-cluster path
+    /// where a cursor-less lookup defaults to scanning from the
+    /// topic tail.
+    ///
+    /// Use this for the common request/response pattern. For
+    /// `reply_to`-routed flows where the result lands in a different
+    /// conversation, call [`Self::post_bus_tool_call`] then
+    /// [`Self::lookup_bus_tool_result`] explicitly.
+    pub async fn post_bus_tool_call_and_wait(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        req: &PostBusToolCall,
+        timeout_ms: Option<u64>,
+    ) -> Result<BusToolResultLookup, Error> {
+        let receipt = self
+            .post_bus_tool_call(namespace, tenant, conversation_id, req)
+            .await?;
+        self.lookup_bus_tool_result(
+            namespace,
+            tenant,
+            &receipt.call_id,
+            &BusToolResultLookupParams {
+                conversation_id: receipt.conversation_id,
+                cursor: Some(receipt.cursor),
+                timeout_ms,
+            },
+        )
+        .await
+    }
 }
 
 // ----- Phase 3: DTOs -----
@@ -1499,14 +1535,28 @@ pub struct BusToolEnvelopeReceipt {
     pub partition: i32,
     pub offset: i64,
     pub produced_at: String,
+    /// Opaque cursor pointing at this envelope's `partition`+`offset`.
+    /// Pass it back as [`BusToolResultLookupParams::cursor`] so the
+    /// lookup scans only messages produced strictly after this
+    /// envelope (avoids the busy-cluster denial-of-service path of
+    /// scanning topic history).
+    pub cursor: String,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BusToolResultLookupParams {
-    /// Specific conversation to scan. Omit to scan the tenant's
-    /// default conversation events topic.
+    /// Required: the conversation to scan. For `reply_to`-routed
+    /// flows, set this to the `reply_to` conversation. (Defaulting
+    /// to the tenant's shared events topic was unsafe — a
+    /// custom-events-topic conversation would have been silently
+    /// scanned at the wrong place.)
+    pub conversation_id: String,
+    /// Resume cursor from the originating call's
+    /// [`BusToolEnvelopeReceipt::cursor`]. Strongly recommended:
+    /// without one the lookup defaults to scanning from the tail of
+    /// the topic, which races with the result landing.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub conversation_id: Option<String>,
+    pub cursor: Option<String>,
     /// How long to wait for a matching result. Default 5000ms; max 30000ms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,

@@ -231,20 +231,15 @@ impl ToolResult {
         if let Some(s) = &self.sender {
             ToolCall::validate_id_field("sender", s)?;
         }
-        match self.status {
-            ToolResultStatus::Error | ToolResultStatus::Canceled => {
-                // We don't *require* an error message on canceled
-                // results — sometimes a cancel is just a cancel —
-                // but if one is supplied, cap its length so a
-                // misbehaving agent can't blow up the publish-edge
-                // header budget on the conversation message.
-                if let Some(m) = &self.error_message
-                    && m.len() > 4096
-                {
-                    return Err(ToolEnvelopeValidationError::ErrorMessageTooLong);
-                }
-            }
-            ToolResultStatus::Ok => {}
+        // Cap unconditionally. The original gate only fired on Error
+        // or Canceled, but a malicious caller could ship a multi-MB
+        // `error_message` alongside `status: ok` to dodge the limit.
+        // The contract is "if you set it, it's bounded," regardless
+        // of which status bucket the result falls into.
+        if let Some(m) = &self.error_message
+            && m.len() > 4096
+        {
+            return Err(ToolEnvelopeValidationError::ErrorMessageTooLong);
         }
         Ok(())
     }
@@ -322,6 +317,19 @@ mod tests {
     fn tool_result_rejects_oversize_error_message() {
         let mut r = ToolResult::error("call-1", "x");
         r.error_message = Some("y".repeat(5000));
+        assert_eq!(
+            r.validate(),
+            Err(ToolEnvelopeValidationError::ErrorMessageTooLong)
+        );
+    }
+
+    #[test]
+    fn tool_result_caps_error_message_even_on_ok() {
+        // The cap applies regardless of status — a malicious caller
+        // could otherwise ship a multi-MB `error_message` with
+        // `status: ok` to bypass it.
+        let mut r = ToolResult::ok("call-1", serde_json::json!({}));
+        r.error_message = Some("z".repeat(5000));
         assert_eq!(
             r.validate(),
             Err(ToolEnvelopeValidationError::ErrorMessageTooLong)

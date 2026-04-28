@@ -2185,6 +2185,89 @@ async fn ensure_schema_in_validator(
     }
 }
 
+/// Apply Phase 3 schema validation to a payload destined for
+/// `kafka_topic`. Used by every publish-style handler that doesn't
+/// already inline the validation block (the original `/v1/bus/publish`
+/// handler still does it inline; the conversation-layer handlers —
+/// tool calls, tool results — call this so a schema-bound events
+/// topic enforces uniformly).
+///
+/// No-ops cleanly when the topic record is missing or has no
+/// `(schema_subject, schema_version)` binding. On a binding mismatch,
+/// returns a 400 with the same `SchemaValidationErrorResponse` shape
+/// the publish handler uses, so SDK consumers see consistent errors.
+#[cfg(feature = "bus")]
+async fn validate_payload_against_topic_schema(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    kafka_topic: &str,
+    payload: &serde_json::Value,
+) -> Result<(), axum::response::Response> {
+    // Clone the `Arc<dyn StateStore>` and drop the gateway guard
+    // before any `.await` — same lock-amplification rule the rest of
+    // the bus handlers follow.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusTopic,
+        kafka_topic,
+    );
+    let topic: Topic = match store.get(&key).await {
+        Ok(Some(raw)) => match serde_json::from_str(&raw) {
+            Ok(t) => t,
+            // Corrupt row — skip validation, let the underlying
+            // produce surface the issue. This mirrors the publish
+            // handler's resilience.
+            Err(_) => return Ok(()),
+        },
+        // Missing topic row (someone deleted it out of band): no
+        // binding to enforce. The underlying produce will fail
+        // separately if Kafka has lost the topic too.
+        Ok(None) | Err(_) => return Ok(()),
+    };
+    let (Some(subject), Some(version)) = (&topic.schema_subject, topic.schema_version) else {
+        return Ok(());
+    };
+    ensure_schema_in_validator(state, &topic.namespace, &topic.tenant, subject, version).await?;
+    match state.bus_schema_validator.validate(
+        &topic.namespace,
+        &topic.tenant,
+        subject,
+        version,
+        payload,
+    ) {
+        Ok(()) => Ok(()),
+        Err(acteon_bus::SchemaValidatorError::InvalidPayload(issues)) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(SchemaValidationErrorResponse {
+                error: format!("payload does not match schema '{subject}' v{version}"),
+                subject: subject.clone(),
+                version,
+                issues: issues
+                    .into_iter()
+                    .map(|i| SchemaValidationIssueDto {
+                        path: i.path,
+                        message: i.message,
+                    })
+                    .collect(),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/v1/bus/schemas",
@@ -5380,6 +5463,14 @@ pub struct ToolEnvelopeReceipt {
     pub partition: i32,
     pub offset: i64,
     pub produced_at: DateTime<Utc>,
+    /// Opaque resume cursor encoding `{partition: offset}`. Pass it
+    /// back to `GET /v1/bus/tool-calls/{...}/result` as `?cursor=`
+    /// so the lookup scans only messages produced *after* this
+    /// envelope. Without a cursor, the lookup defaults to scanning
+    /// from the tail (which races with the result landing) or has
+    /// to do a full-history scan — neither is acceptable on a busy
+    /// cluster.
+    pub cursor: String,
 }
 
 /// Result of a `GET /v1/bus/tool-calls/{ns}/{t}/{call_id}/result` —
@@ -5399,13 +5490,22 @@ pub struct ToolResultLookupResponse {
 
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ToolResultLookupParams {
-    /// Specific conversation to scan. When omitted, the bus scans
-    /// the tenant's default conversation events topic
-    /// (`{ns}.{tenant}.conversations-events`). For `reply_to`
-    /// patterns that route results to a different thread, set this
-    /// to that conversation id.
+    /// **Required.** The conversation to scan for the matching
+    /// result. For `reply_to`-routed flows, set this to the
+    /// `reply_to` conversation. Required (rather than defaulting to
+    /// the tenant's shared events topic) so a conversation
+    /// registered with a custom `events_topic` is scanned at the
+    /// right Kafka topic — falling back to the default would have
+    /// silently looked at the wrong place.
+    pub conversation_id: String,
+    /// Resume cursor from the originating
+    /// `POST /tool-calls` receipt — encodes the per-partition
+    /// offset where the call was produced. Without it, the scan
+    /// defaults to `Latest` (cheap on a busy cluster, but races
+    /// with the result landing) — passing the receipt's `cursor`
+    /// is strongly recommended for production flows.
     #[serde(default)]
-    pub conversation_id: Option<String>,
+    pub cursor: Option<String>,
     /// How long to wait for a matching result. Default 5s; max 30s.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
@@ -5564,6 +5664,21 @@ pub async fn post_tool_call(
             }
         };
         let events_topic = conv.effective_events_topic();
+        // Phase 3 schema validation. If the conversation events topic
+        // has a schema binding, the payload must match — otherwise
+        // tool envelopes would silently bypass the publish-edge gate
+        // that `/v1/bus/publish` enforces.
+        if let Err(resp) = validate_payload_against_topic_schema(
+            &state,
+            &conv.namespace,
+            &conv.tenant,
+            &events_topic,
+            &payload,
+        )
+        .await
+        {
+            return resp;
+        }
         let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
             .with_key(&conv.conversation_id);
         // Conversation-level routing headers, mirroring
@@ -5584,18 +5699,57 @@ pub async fn post_tool_call(
             envelope.reply_to.as_deref(),
         );
         match backend.produce(msg).await {
-            Ok(receipt) => (
-                StatusCode::OK,
-                Json(ToolEnvelopeReceipt {
-                    events_topic: receipt.topic,
-                    conversation_id: conv.conversation_id,
-                    call_id: envelope.call_id,
-                    partition: receipt.partition,
-                    offset: receipt.offset,
-                    produced_at: receipt.timestamp,
-                }),
-            )
-                .into_response(),
+            Ok(receipt) => {
+                // Include a cursor pointing at this envelope's
+                // partition+offset so the caller can scan
+                // strictly-newer messages on a follow-up
+                // `lookup_tool_result` without re-reading topic
+                // history. Same encoding as Phase 5 replay cursors.
+                let mut cursor_map = std::collections::BTreeMap::new();
+                cursor_map.insert(receipt.partition, receipt.offset);
+                let cursor = encode_replay_cursor(&cursor_map);
+                let conv_id_for_bump = conv.conversation_id.clone();
+                let resp = (
+                    StatusCode::OK,
+                    Json(ToolEnvelopeReceipt {
+                        events_topic: receipt.topic,
+                        conversation_id: conv.conversation_id,
+                        call_id: envelope.call_id,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                        cursor,
+                    }),
+                );
+                // Bump conversation `updated_at` so list/sort by
+                // activity sees tool-driven traffic. Best-effort: if
+                // the CAS contends out, the message is already on
+                // Kafka; we log and return success rather than fail
+                // the produce.
+                let bump_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id_for_bump,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &bump_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if bump.is_err() {
+                    tracing::warn!(
+                        conversation_id = %conv_id_for_bump,
+                        "tool-envelope produced but conversation updated_at bump failed (CAS contention exhausted or backend error); list/sort will see a stale timestamp",
+                    );
+                }
+                resp.into_response()
+            }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -5649,7 +5803,7 @@ pub async fn post_tool_result(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
             return resp;
         }
-        let mut envelope = acteon_core::ToolResult {
+        let envelope = acteon_core::ToolResult {
             call_id: req.call_id.clone(),
             status: req.status,
             output: req.output.clone(),
@@ -5716,11 +5870,11 @@ pub async fn post_tool_result(
                 }
             }
         }
-        // Re-stamp `created_at` here so the response carries the
-        // server-anchored time rather than whatever the client put in
-        // the envelope (clients can't be trusted to be honest about
-        // when a tool ran).
-        envelope.created_at = Utc::now();
+        // `created_at` was server-stamped at construction (see the
+        // `Utc::now()` in the struct literal above). The previous
+        // version re-stamped it here as well — a copy-paste artifact
+        // from when the request type briefly carried a client-
+        // supplied timestamp. Removed.
         let payload = match serde_json::to_value(&envelope) {
             Ok(v) => v,
             Err(e) => {
@@ -5734,6 +5888,19 @@ pub async fn post_tool_result(
             }
         };
         let events_topic = conv.effective_events_topic();
+        // Same Phase 3 schema-validation gate as `post_tool_call`;
+        // see the matching comment there.
+        if let Err(resp) = validate_payload_against_topic_schema(
+            &state,
+            &conv.namespace,
+            &conv.tenant,
+            &events_topic,
+            &payload,
+        )
+        .await
+        {
+            return resp;
+        }
         let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
             .with_key(&conv.conversation_id);
         msg.headers.insert(
@@ -5752,18 +5919,57 @@ pub async fn post_tool_result(
             None, // results don't carry a reply_to
         );
         match backend.produce(msg).await {
-            Ok(receipt) => (
-                StatusCode::OK,
-                Json(ToolEnvelopeReceipt {
-                    events_topic: receipt.topic,
-                    conversation_id: conv.conversation_id,
-                    call_id: envelope.call_id,
-                    partition: receipt.partition,
-                    offset: receipt.offset,
-                    produced_at: receipt.timestamp,
-                }),
-            )
-                .into_response(),
+            Ok(receipt) => {
+                // Include a cursor pointing at this envelope's
+                // partition+offset so the caller can scan
+                // strictly-newer messages on a follow-up
+                // `lookup_tool_result` without re-reading topic
+                // history. Same encoding as Phase 5 replay cursors.
+                let mut cursor_map = std::collections::BTreeMap::new();
+                cursor_map.insert(receipt.partition, receipt.offset);
+                let cursor = encode_replay_cursor(&cursor_map);
+                let conv_id_for_bump = conv.conversation_id.clone();
+                let resp = (
+                    StatusCode::OK,
+                    Json(ToolEnvelopeReceipt {
+                        events_topic: receipt.topic,
+                        conversation_id: conv.conversation_id,
+                        call_id: envelope.call_id,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                        cursor,
+                    }),
+                );
+                // Bump conversation `updated_at` so list/sort by
+                // activity sees tool-driven traffic. Best-effort: if
+                // the CAS contends out, the message is already on
+                // Kafka; we log and return success rather than fail
+                // the produce.
+                let bump_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id_for_bump,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &bump_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if bump.is_err() {
+                    tracing::warn!(
+                        conversation_id = %conv_id_for_bump,
+                        "tool-envelope produced but conversation updated_at bump failed (CAS contention exhausted or backend error); list/sort will see a stale timestamp",
+                    );
+                }
+                resp.into_response()
+            }
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -5823,31 +6029,42 @@ pub async fn lookup_tool_result(
             )
                 .into_response();
         }
-        // Resolve which conversation's events topic to scan. By
-        // default we use the tenant's shared events topic; callers
-        // who routed `reply_to` to a different thread point at it
-        // explicitly via `?conversation_id=`.
-        let events_topic = if let Some(conv_id) = &params.conversation_id {
-            match load_conversation(&state, &namespace, &tenant, conv_id).await {
+        // Resolve the conversation's events topic from its actual
+        // record. `conversation_id` is required (rather than
+        // defaulting to the tenant's shared events topic) because a
+        // conversation registered with a custom `events_topic`
+        // (Phase 5) would otherwise silently look at the wrong
+        // place — the scan would never find a matching record and
+        // every lookup would 408.
+        let events_topic =
+            match load_conversation(&state, &namespace, &tenant, &params.conversation_id).await {
                 Ok(c) => c.effective_events_topic(),
                 Err(resp) => return resp,
-            }
-        } else {
-            format!(
-                "{}.{}.{}",
-                namespace,
-                tenant,
-                acteon_core::DEFAULT_CONVERSATIONS_EVENTS_SUFFIX
-            )
-        };
+            };
         let timeout_ms = params.timeout_ms.unwrap_or(5_000).min(30_000);
-        // Scan from earliest using the same `assign()`-based
-        // primitive replay uses. No consumer-group leak; bounded
-        // by the timeout budget.
-        let mut stream = match backend
-            .scan_topic(&events_topic, acteon_bus::ScanFrom::Earliest)
-            .await
-        {
+        // Resolve scan position. With a cursor (the typical flow:
+        // caller passes back the receipt's `cursor`), scan strictly
+        // *after* the call was produced. Without one, default to
+        // `Latest` — cheap on a busy cluster, but races with the
+        // result landing. Earlier the default was `Earliest`, which
+        // turned every lookup into a full-history scan and was a
+        // straightforward DoS vector.
+        let scan_from = match &params.cursor {
+            Some(c) => match decode_replay_cursor(c) {
+                Ok(offsets) => acteon_bus::ScanFrom::FromOffsets(offsets),
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("invalid lookup cursor: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            None => acteon_bus::ScanFrom::Latest,
+        };
+        let mut stream = match backend.scan_topic(&events_topic, scan_from).await {
             Ok(s) => s,
             Err(acteon_bus::BusError::TopicNotFound(_)) => {
                 return (
@@ -5907,21 +6124,24 @@ pub async fn lookup_tool_result(
                                 match serde_json::from_value(msg.payload.clone()) {
                                     Ok(r) => r,
                                     Err(e) => {
-                                        // Header said it was a tool
-                                        // result for our call_id, but
-                                        // the payload doesn't
-                                        // deserialize. Surface the
-                                        // corruption rather than time
-                                        // out silently.
-                                        return (
-                                            StatusCode::INTERNAL_SERVER_ERROR,
-                                            Json(ErrorResponse {
-                                                error: format!(
-                                                    "matched tool-result envelope for call_id '{call_id}' but payload is not a ToolResult: {e}"
-                                                ),
-                                            }),
-                                        )
-                                            .into_response();
+                                        // Poison-pill: header said this
+                                        // is a tool-result for our
+                                        // `call_id`, but the payload
+                                        // doesn't parse. Treat as
+                                        // garbage and keep scanning —
+                                        // a duplicate or malformed
+                                        // record must not permanently
+                                        // break lookups for that
+                                        // `call_id`. Log loudly so
+                                        // operators notice.
+                                        tracing::warn!(
+                                            call_id = %call_id,
+                                            partition = ?msg.partition,
+                                            offset = ?msg.offset,
+                                            error = %e,
+                                            "skipping malformed tool-result envelope; payload failed to deserialize",
+                                        );
+                                        continue;
                                     }
                                 };
                             // The scan key carries the conversation

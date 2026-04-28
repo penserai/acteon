@@ -42,14 +42,25 @@ impl Error {
     /// Returns `true` if this error is retryable.
     ///
     /// Connection errors and API errors marked as retryable return `true`.
-    /// HTTP 5xx errors also return `true`.
+    /// HTTP 5xx errors retry. HTTP 408 (Request Timeout) also retries —
+    /// callers waiting for an async outcome (e.g. a bus
+    /// `lookup_bus_tool_result` that hasn't seen the matching result
+    /// yet) typically just want to issue another request.
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Connection(_) => true,
-            Self::Http { status, .. } => *status >= 500,
+            Self::Http { status, .. } => *status >= 500 || *status == 408,
             Self::Api { retryable, .. } => *retryable,
             Self::Deserialization(_) | Self::Configuration(_) => false,
         }
+    }
+
+    /// Returns `true` if this is an HTTP 408 Request Timeout. Used by
+    /// callers of long-poll-style endpoints (e.g.
+    /// `lookup_bus_tool_result`) to distinguish "no result yet,
+    /// retry" from a real failure without string-matching the body.
+    pub fn is_timeout(&self) -> bool {
+        matches!(self, Self::Http { status: 408, .. })
     }
 
     /// Returns `true` if this is a connection error.
@@ -135,5 +146,32 @@ mod tests {
     fn deserialization_error_not_retryable() {
         let err = Error::Deserialization("invalid JSON".to_string());
         assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn http_408_is_typed_timeout_and_retryable() {
+        let err = Error::Http {
+            status: 408,
+            message: "Request Timeout".to_string(),
+        };
+        assert!(err.is_timeout());
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn other_http_codes_are_not_timeout() {
+        let err = Error::Http {
+            status: 400,
+            message: "Bad Request".to_string(),
+        };
+        assert!(!err.is_timeout());
+        let err = Error::Http {
+            status: 504,
+            message: "Gateway Timeout".to_string(),
+        };
+        // 504 is *retryable* (5xx) but not specifically `is_timeout`,
+        // which is reserved for the long-poll 408 contract.
+        assert!(!err.is_timeout());
+        assert!(err.is_retryable());
     }
 }
