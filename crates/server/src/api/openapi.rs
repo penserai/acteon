@@ -191,6 +191,9 @@ use acteon_core::{
         super::bus::transition_conversation,
         super::bus::append_conversation_message,
         super::bus::replay_conversation_messages,
+        super::bus::post_tool_call,
+        super::bus::post_tool_result,
+        super::bus::lookup_tool_result,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -270,6 +273,10 @@ use acteon_core::{
         super::bus::ReplayMessageEntry, super::bus::ReplayConversationResponse,
         super::bus::ReplayExitReason,
         acteon_core::ConversationState, acteon_core::ConversationTransition,
+        super::bus::PostToolCallRequest, super::bus::PostToolResultRequest,
+        super::bus::ToolEnvelopeReceipt, super::bus::ToolResultLookupResponse,
+        acteon_core::ToolCall, acteon_core::ToolResult,
+        acteon_core::ToolResultStatus,
     ))
 )]
 pub struct ApiDoc;

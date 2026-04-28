@@ -1044,6 +1044,95 @@ impl ActeonClient {
             None => format!("{}/v1/bus/conversations/{ns}/{t}/{c}", self.base_url),
         }
     }
+
+    // ----- Phase 6a: tool-call envelopes -----
+
+    /// Append a tool-call envelope to a conversation. The bus stamps
+    /// `acteon.envelope.kind = tool_call`, `acteon.tool.call_id`,
+    /// `acteon.correlation_id`, and `acteon.reply_to` headers so
+    /// subscribers can route on the call without parsing the payload.
+    pub async fn post_bus_tool_call(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        req: &PostBusToolCall,
+    ) -> Result<BusToolEnvelopeReceipt, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, Some("tool-calls"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusToolEnvelopeReceipt>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Append a tool-result envelope. Carries the originating
+    /// `call_id` so consumers (and `lookup_bus_tool_result`) can match
+    /// it to the call.
+    pub async fn post_bus_tool_result(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        req: &PostBusToolResult,
+    ) -> Result<BusToolEnvelopeReceipt, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, Some("tool-results"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusToolEnvelopeReceipt>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Wait for a tool result matching `call_id`. The server scans
+    /// the events topic with a `timeout_ms` budget (default 5000ms,
+    /// max 30000ms). Use `params.conversation_id` if the result is
+    /// expected to land in a different conversation than the call
+    /// (`reply_to` pattern).
+    pub async fn lookup_bus_tool_result(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        call_id: &str,
+        params: &BusToolResultLookupParams,
+    ) -> Result<BusToolResultLookup, Error> {
+        let url = format!(
+            "{}/v1/bus/tool-calls/{}/{}/{}/result",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(call_id),
+        );
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .query(params)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusToolResultLookup>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
 }
 
 // ----- Phase 3: DTOs -----
@@ -1358,6 +1447,97 @@ pub struct BusConversationReplay {
     /// `ReplayBusConversationParams.cursor` to continue.
     #[serde(default)]
     pub cursor: Option<String>,
+}
+
+// ----- Phase 6a: tool-envelope DTOs -----
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct PostBusToolCall {
+    pub call_id: String,
+    pub tool: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BusToolResultStatus {
+    Ok,
+    Error,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostBusToolResult {
+    pub call_id: String,
+    pub status: BusToolResultStatus,
+    #[serde(default)]
+    pub output: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusToolEnvelopeReceipt {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub call_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct BusToolResultLookupParams {
+    /// Specific conversation to scan. Omit to scan the tenant's
+    /// default conversation events topic.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    /// How long to wait for a matching result. Default 5000ms; max 30000ms.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusToolResult {
+    pub call_id: String,
+    pub status: BusToolResultStatus,
+    #[serde(default)]
+    pub output: serde_json::Value,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusToolResultLookup {
+    pub call_id: String,
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: String,
+    pub result: BusToolResult,
 }
 
 async fn map_error(resp: reqwest::Response) -> Error {

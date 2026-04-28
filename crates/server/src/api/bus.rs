@@ -5314,3 +5314,666 @@ async fn load_conversation(
             .into_response()),
     }
 }
+
+// =============================================================================
+// Phase 6a: tool-call envelopes layered on conversation messages
+// =============================================================================
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/tool-calls`.
+/// Wraps a [`acteon_core::ToolCall`] and produces a conversation
+/// message with envelope kind `"tool_call"`. The bus stamps routing
+/// headers (`acteon.envelope.kind`, `acteon.tool.call_id`,
+/// `acteon.correlation_id`, `acteon.reply_to`) so subscribers can
+/// filter without parsing the payload.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PostToolCallRequest {
+    pub call_id: String,
+    pub tool: String,
+    /// Tool arguments. Free-form JSON; if the events topic is
+    /// schema-bound (Phase 3), validation runs at the underlying
+    /// publish edge.
+    #[schema(value_type = Object)]
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    /// Optional correlation token, propagated to the eventual
+    /// [`PostToolResultRequest`]. Stamped as `acteon.correlation_id`.
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    /// Override the conversation the matching result should land in.
+    /// Empty / null = "same conversation" (the reply lands here).
+    /// Stamped as `acteon.reply_to`.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    /// Sender agent id. Stamped as both
+    /// `acteon.conversation.sender` and on the envelope.
+    #[serde(default)]
+    pub sender: Option<String>,
+    /// Free-form tool metadata. Bounded by the publish path's label
+    /// caps (max 32 entries / 256B keys / 4KB values).
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/tool-results`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PostToolResultRequest {
+    pub call_id: String,
+    pub status: acteon_core::ToolResultStatus,
+    #[schema(value_type = Object)]
+    #[serde(default)]
+    pub output: serde_json::Value,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ToolEnvelopeReceipt {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub call_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+}
+
+/// Result of a `GET /v1/bus/tool-calls/{ns}/{t}/{call_id}/result` —
+/// either the matching [`acteon_core::ToolResult`] envelope plus a
+/// few bus coordinates, or a 408 if the timeout elapsed without a
+/// match.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ToolResultLookupResponse {
+    pub call_id: String,
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+    pub result: acteon_core::ToolResult,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ToolResultLookupParams {
+    /// Specific conversation to scan. When omitted, the bus scans
+    /// the tenant's default conversation events topic
+    /// (`{ns}.{tenant}.conversations-events`). For `reply_to`
+    /// patterns that route results to a different thread, set this
+    /// to that conversation id.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// How long to wait for a matching result. Default 5s; max 30s.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+/// Envelope-kind header values. Server-stamped so subscribers can
+/// route on a single header lookup.
+#[cfg(feature = "bus")]
+const ENVELOPE_KIND_TOOL_CALL: &str = "tool_call";
+#[cfg(feature = "bus")]
+const ENVELOPE_KIND_TOOL_RESULT: &str = "tool_result";
+
+/// Helper: stamp the standard envelope routing headers on a
+/// `BusMessage`. Reserved `acteon.*` keys are inserted directly
+/// (`with_header` strips them on user input by design).
+#[cfg(feature = "bus")]
+fn stamp_tool_envelope_headers(
+    msg: &mut acteon_bus::BusMessage,
+    kind: &'static str,
+    call_id: &str,
+    correlation_id: Option<&str>,
+    reply_to: Option<&str>,
+) {
+    msg.headers
+        .insert("acteon.envelope.kind".into(), kind.to_string());
+    msg.headers
+        .insert("acteon.tool.call_id".into(), call_id.to_string());
+    if let Some(c) = correlation_id {
+        msg.headers
+            .insert("acteon.correlation_id".into(), c.to_string());
+    }
+    if let Some(r) = reply_to {
+        msg.headers.insert("acteon.reply_to".into(), r.to_string());
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-calls",
+    tag = "bus",
+    request_body = PostToolCallRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Tool-call envelope appended", body = ToolEnvelopeReceipt),
+        (status = 400, description = "Invalid envelope, sender ACL, or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn post_tool_call(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<PostToolCallRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        // Same two-level auth as `append_conversation_message`: must
+        // be allowed to manage conversations *and* publish on the
+        // tenant. A registry-only role can't quietly inject tool
+        // traffic onto the events topic.
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        // Construct the typed envelope first so validation runs
+        // before we do any bus or state I/O.
+        let mut envelope =
+            acteon_core::ToolCall::new(&req.call_id, &req.tool, req.arguments.clone());
+        envelope.correlation_id = req.correlation_id.clone();
+        envelope.reply_to = req.reply_to.clone();
+        envelope.sender = req.sender.clone();
+        envelope.metadata = req.metadata.clone();
+        if let Err(e) = envelope.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(resp) = validate_user_labels(&envelope.metadata) {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {} is archived; reopen via /transition before posting tool calls",
+                        conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        // Same participant ACL as plain conversation messages: a
+        // sender outside the participant list is rejected; if the
+        // ACL is set and `sender` is omitted, reject explicitly.
+        if !conv.participants.is_empty() {
+            match envelope.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; tool-call sender is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let payload = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let events_topic = conv.effective_events_topic();
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
+            .with_key(&conv.conversation_id);
+        // Conversation-level routing headers, mirroring
+        // `append_conversation_message`.
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(s) = &envelope.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), s.clone());
+        }
+        stamp_tool_envelope_headers(
+            &mut msg,
+            ENVELOPE_KIND_TOOL_CALL,
+            &envelope.call_id,
+            envelope.correlation_id.as_deref(),
+            envelope.reply_to.as_deref(),
+        );
+        match backend.produce(msg).await {
+            Ok(receipt) => (
+                StatusCode::OK,
+                Json(ToolEnvelopeReceipt {
+                    events_topic: receipt.topic,
+                    conversation_id: conv.conversation_id,
+                    call_id: envelope.call_id,
+                    partition: receipt.partition,
+                    offset: receipt.offset,
+                    produced_at: receipt.timestamp,
+                }),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-results",
+    tag = "bus",
+    request_body = PostToolResultRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Tool-result envelope appended", body = ToolEnvelopeReceipt),
+        (status = 400, description = "Invalid envelope or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn post_tool_result(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<PostToolResultRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        let mut envelope = acteon_core::ToolResult {
+            call_id: req.call_id.clone(),
+            status: req.status,
+            output: req.output.clone(),
+            error_message: req.error_message.clone(),
+            correlation_id: req.correlation_id.clone(),
+            sender: req.sender.clone(),
+            metadata: req.metadata.clone(),
+            created_at: Utc::now(),
+        };
+        if let Err(e) = envelope.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(resp) = validate_user_labels(&envelope.metadata) {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {} is archived; reopen via /transition before posting tool results",
+                        conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if !conv.participants.is_empty() {
+            match envelope.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; tool-result sender is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        // Re-stamp `created_at` here so the response carries the
+        // server-anchored time rather than whatever the client put in
+        // the envelope (clients can't be trusted to be honest about
+        // when a tool ran).
+        envelope.created_at = Utc::now();
+        let payload = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let events_topic = conv.effective_events_topic();
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
+            .with_key(&conv.conversation_id);
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(s) = &envelope.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), s.clone());
+        }
+        stamp_tool_envelope_headers(
+            &mut msg,
+            ENVELOPE_KIND_TOOL_RESULT,
+            &envelope.call_id,
+            envelope.correlation_id.as_deref(),
+            None, // results don't carry a reply_to
+        );
+        match backend.produce(msg).await {
+            Ok(receipt) => (
+                StatusCode::OK,
+                Json(ToolEnvelopeReceipt {
+                    events_topic: receipt.topic,
+                    conversation_id: conv.conversation_id,
+                    call_id: envelope.call_id,
+                    partition: receipt.partition,
+                    offset: receipt.offset,
+                    produced_at: receipt.timestamp,
+                }),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("call_id" = String, Path),
+        ToolResultLookupParams,
+    ),
+    responses(
+        (status = 200, description = "Matching tool result", body = ToolResultLookupResponse),
+        (status = 408, description = "Timed out before a matching result arrived", body = ErrorResponse),
+        (status = 404, description = "Events topic not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn lookup_tool_result(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, call_id)): Path<(String, String, String)>,
+    Query(params): Query<ToolResultLookupParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(e) = acteon_core::ToolCall::validate_id_field("call_id", &call_id) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        // Resolve which conversation's events topic to scan. By
+        // default we use the tenant's shared events topic; callers
+        // who routed `reply_to` to a different thread point at it
+        // explicitly via `?conversation_id=`.
+        let events_topic = if let Some(conv_id) = &params.conversation_id {
+            match load_conversation(&state, &namespace, &tenant, conv_id).await {
+                Ok(c) => c.effective_events_topic(),
+                Err(resp) => return resp,
+            }
+        } else {
+            format!(
+                "{}.{}.{}",
+                namespace,
+                tenant,
+                acteon_core::DEFAULT_CONVERSATIONS_EVENTS_SUFFIX
+            )
+        };
+        let timeout_ms = params.timeout_ms.unwrap_or(5_000).min(30_000);
+        // Scan from earliest using the same `assign()`-based
+        // primitive replay uses. No consumer-group leak; bounded
+        // by the timeout budget.
+        let mut stream = match backend
+            .scan_topic(&events_topic, acteon_bus::ScanFrom::Earliest)
+            .await
+        {
+            Ok(s) => s,
+            Err(acteon_bus::BusError::TopicNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("events topic {events_topic} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return (
+                    StatusCode::REQUEST_TIMEOUT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "no tool result for call_id '{call_id}' arrived within {timeout_ms}ms"
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            let remaining = deadline - now;
+            tokio::select! {
+                next = stream.next() => {
+                    match next {
+                        Some(Ok(msg)) => {
+                            // Header-only filter: only inspect the
+                            // payload when this is *the* tool result
+                            // we're waiting for. Saves
+                            // serde-deserializing every record on a
+                            // busy topic.
+                            let is_result = msg
+                                .headers
+                                .get("acteon.envelope.kind")
+                                .is_some_and(|v| v == ENVELOPE_KIND_TOOL_RESULT);
+                            let matches_call = msg
+                                .headers
+                                .get("acteon.tool.call_id")
+                                .is_some_and(|v| v == &call_id);
+                            if !is_result || !matches_call {
+                                continue;
+                            }
+                            let result: acteon_core::ToolResult =
+                                match serde_json::from_value(msg.payload.clone()) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        // Header said it was a tool
+                                        // result for our call_id, but
+                                        // the payload doesn't
+                                        // deserialize. Surface the
+                                        // corruption rather than time
+                                        // out silently.
+                                        return (
+                                            StatusCode::INTERNAL_SERVER_ERROR,
+                                            Json(ErrorResponse {
+                                                error: format!(
+                                                    "matched tool-result envelope for call_id '{call_id}' but payload is not a ToolResult: {e}"
+                                                ),
+                                            }),
+                                        )
+                                            .into_response();
+                                    }
+                                };
+                            // The scan key carries the conversation
+                            // id; surface it on the response so the
+                            // caller doesn't have to re-derive it.
+                            let conv_id = msg.key.clone().unwrap_or_default();
+                            return (
+                                StatusCode::OK,
+                                Json(ToolResultLookupResponse {
+                                    call_id: result.call_id.clone(),
+                                    events_topic,
+                                    conversation_id: conv_id,
+                                    partition: msg.partition.unwrap_or(0),
+                                    offset: msg.offset.unwrap_or(0),
+                                    produced_at: msg.timestamp.unwrap_or_else(Utc::now),
+                                    result,
+                                }),
+                            )
+                                .into_response();
+                        }
+                        Some(Err(_)) | None => {
+                            // Stream ended without a match. Treat as
+                            // timeout — clients retry.
+                            return (
+                                StatusCode::REQUEST_TIMEOUT,
+                                Json(ErrorResponse {
+                                    error: format!(
+                                        "stream ended without a tool result for call_id '{call_id}'"
+                                    ),
+                                }),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+                () = tokio::time::sleep(remaining) => {
+                    return (
+                        StatusCode::REQUEST_TIMEOUT,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "no tool result for call_id '{call_id}' arrived within {timeout_ms}ms"
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, call_id, params);
+        service_unavailable("bus feature not compiled")
+    }
+}

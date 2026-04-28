@@ -393,6 +393,22 @@ pub fn router(state: AppState) -> Router {
             "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
             get(bus::replay_conversation_messages).post(bus::append_conversation_message),
         )
+        // Phase 6a: tool-call envelopes (ride on top of conversation
+        // events; server stamps `acteon.envelope.kind`,
+        // `acteon.tool.call_id`, `acteon.correlation_id`,
+        // `acteon.reply_to`).
+        .route(
+            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-calls",
+            post(bus::post_tool_call),
+        )
+        .route(
+            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-results",
+            post(bus::post_tool_result),
+        )
+        .route(
+            "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
+            get(bus::lookup_tool_result),
+        )
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
         .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))
