@@ -2,6 +2,7 @@ pub mod action;
 pub mod analytics;
 pub mod attachment;
 pub mod bus_agent;
+pub mod bus_conversation;
 pub mod bus_schema;
 pub mod bus_subscription;
 pub mod bus_topic;
@@ -37,6 +38,10 @@ pub use analytics::{
 pub use attachment::{Attachment, ResolvedAttachment};
 pub use bus_agent::{
     Agent, AgentStatus, AgentValidationError, DEFAULT_AGENT_INBOX_SUFFIX, DEFAULT_HEARTBEAT_TTL_MS,
+};
+pub use bus_conversation::{
+    Conversation, ConversationState, ConversationTransition, ConversationValidationError,
+    DEFAULT_CONVERSATIONS_EVENTS_SUFFIX,
 };
 pub use bus_schema::{Schema, SchemaFormat, SchemaValidationError};
 pub use bus_subscription::{

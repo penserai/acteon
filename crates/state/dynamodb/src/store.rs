@@ -179,6 +179,39 @@ impl StateStore for DynamoStateStore {
         }
     }
 
+    async fn get_versioned(&self, key: &StateKey) -> Result<Option<(String, u64)>, StateError> {
+        let pk = build_pk(&self.prefix, key);
+        let sk = build_sk(key);
+        let result = self
+            .client
+            .get_item()
+            .table_name(&self.table_name)
+            .key("pk", AttributeValue::S(pk))
+            .key("sk", AttributeValue::S(sk))
+            .send()
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+        let Some(item) = result.item() else {
+            return Ok(None);
+        };
+        if Self::is_expired(item) {
+            return Ok(None);
+        }
+        let value = match item.get("value") {
+            Some(AttributeValue::S(v)) => v.clone(),
+            _ => return Ok(None),
+        };
+        // `version` is stored as a numeric attribute. Items written by
+        // `check_and_set` carry version=1 already; items without a
+        // version field (legacy inserts) report version 0 so the
+        // first CAS migrates them safely.
+        let version = match item.get("version") {
+            Some(AttributeValue::N(s)) => s.parse::<u64>().unwrap_or(0),
+            _ => 0,
+        };
+        Ok(Some((value, version)))
+    }
+
     async fn set(
         &self,
         key: &StateKey,

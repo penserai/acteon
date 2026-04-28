@@ -7,6 +7,14 @@
 //! reference is a plain code span rather than a rustdoc link because
 //! `acteon_bus` is only in scope when built with `--features bus`, and
 //! CI's `cargo doc` runs with default features.
+//
+// The handlers all use `Result<_, axum::response::Response>` for early-
+// return error paths so each error path can shape its own status +
+// body without a custom error enum and `IntoResponse` impl. The Err
+// variant is large because `Response` carries a body buffer, but it's
+// constructed only on errors and consumed immediately, so the size is
+// not a real cost — silence the lint module-wide.
+#![allow(clippy::result_large_err)]
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -70,6 +78,7 @@ fn authorize_bus_op(
         BusOp::Subscribe => (Permission::StreamSubscribe, "subscribe"),
         BusOp::ManageSchema => (Permission::Dispatch, "schema"),
         BusOp::ManageAgent => (Permission::Dispatch, "agent"),
+        BusOp::ManageConversation => (Permission::Dispatch, "conversation"),
     };
     if !identity.role.has_permission(permission) {
         return Err((
@@ -112,6 +121,10 @@ enum BusOp {
     /// operators can restrict *inbox writes* independently of *agent
     /// registry ops*.
     ManageAgent,
+    /// Conversation CRUD + transitions + thread reads (Phase 5).
+    /// Appending a message also flows through [`BusOp::Publish`] so
+    /// operators can split read/write ACLs.
+    ManageConversation,
 }
 
 /// Parse a `namespace.tenant.name` Kafka topic string.
@@ -127,6 +140,289 @@ fn parse_kafka_name(topic: &str) -> Result<(&str, &str, &str), String> {
         ));
     }
     Ok((parts[0], parts[1], parts[2]))
+}
+
+/// Caps on user-supplied headers across every publish-style handler.
+/// Sized to fit comfortably within typical Kafka `message.max.bytes`
+/// budgets while leaving room for the payload, so a misbehaving
+/// caller can't blow up the producer's memory or wedge the broker
+/// connection with oversized records.
+#[cfg(feature = "bus")]
+const MAX_USER_HEADER_COUNT: usize = 20;
+#[cfg(feature = "bus")]
+const MAX_USER_HEADER_KEY_BYTES: usize = 256;
+#[cfg(feature = "bus")]
+const MAX_USER_HEADER_VALUE_BYTES: usize = 4096;
+
+/// Bound on how many times a CAS-update loop retries on conflict.
+/// The expected per-record contention is low (operator + agent
+/// concurrent edit on the same conversation), so 8 attempts is well
+/// past the realistic worst case before declaring a 409.
+#[cfg(feature = "bus")]
+const MAX_CAS_RETRY_ATTEMPTS: u32 = 8;
+
+/// Read-modify-write a JSON-serialized state row atomically via
+/// `compare_and_swap`. The mutator closure runs on a freshly-loaded
+/// copy each iteration; if the underlying row changed mid-loop, the
+/// CAS fails and we re-read and re-apply. Returns the mutated value
+/// after a successful commit, or a typed `Response` for missing key,
+/// mutator rejection, contention exhaustion, or a backend error.
+///
+/// Used by `update_*` and `transition_*` handlers to close the
+/// load-then-set TOCTOU window the second adversarial review
+/// flagged.
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+async fn cas_update<T, F>(
+    state: &AppState,
+    key: &StateKey,
+    missing_msg: &str,
+    mut mutate: F,
+) -> Result<T, axum::response::Response>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+    F: FnMut(&mut T) -> Result<(), axum::response::Response>,
+{
+    // Clone the `Arc<dyn StateStore>` once outside the loop and drop
+    // the gateway read guard before any `.await` on the state store.
+    // Holding `gw` across DB roundtrips — and worse, across all 8
+    // retry iterations — would block any pending gateway writer
+    // (config reloader, etc.) and cascade into queue-head-blocking
+    // for every other incoming request, since tokio's `RwLock` is
+    // fair. This was the third-pass review's HIGH finding.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+        let (raw, version) = match store.get_versioned(key).await {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: missing_msg.to_string(),
+                    }),
+                )
+                    .into_response());
+            }
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response());
+            }
+        };
+        let mut current: T = serde_json::from_str(&raw).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("corrupt state record at {}: {e}", key.canonical()),
+                }),
+            )
+                .into_response()
+        })?;
+        mutate(&mut current)?;
+        let payload = serde_json::to_string(&current).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response()
+        })?;
+        match store.compare_and_swap(key, version, &payload, None).await {
+            Ok(acteon_state::CasResult::Ok) => return Ok(current),
+            // Lost the race; reload and reapply on the next loop iteration.
+            Ok(acteon_state::CasResult::Conflict { .. }) => {}
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response());
+            }
+        }
+    }
+    Err((
+        StatusCode::CONFLICT,
+        Json(ErrorResponse {
+            error: format!("state at {} is changing too fast; retry", key.canonical()),
+        }),
+    )
+        .into_response())
+}
+
+/// Caps on operator-supplied `labels` maps across all create/update
+/// DTOs. Labels are persisted in the state store and replayed via
+/// `list_*` handlers — without bounds, a single registration could
+/// bloat the row and OOM the gateway during a list scan.
+#[cfg(feature = "bus")]
+const MAX_LABELS_COUNT: usize = 32;
+#[cfg(feature = "bus")]
+const MAX_LABEL_KEY_BYTES: usize = 256;
+#[cfg(feature = "bus")]
+const MAX_LABEL_VALUE_BYTES: usize = 4096;
+
+/// Validate a caller-supplied labels map. Same rationale as
+/// [`validate_user_headers`] but applied to the persisted-state path
+/// rather than the publish path.
+#[cfg(feature = "bus")]
+fn validate_user_labels(
+    labels: &std::collections::HashMap<String, String>,
+) -> Result<(), axum::response::Response> {
+    if labels.len() > MAX_LABELS_COUNT {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "too many labels: {}; max is {MAX_LABELS_COUNT}",
+                    labels.len()
+                ),
+            }),
+        )
+            .into_response());
+    }
+    for (k, v) in labels {
+        if k.len() > MAX_LABEL_KEY_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "label key length {} exceeds {MAX_LABEL_KEY_BYTES} bytes",
+                        k.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+        if v.len() > MAX_LABEL_VALUE_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "label '{k}' value length {} exceeds {MAX_LABEL_VALUE_BYTES} bytes",
+                        v.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
+}
+
+/// Encode a per-partition offset map as an opaque resume token.
+/// URL-safe base64 of a JSON object so clients can pass it back
+/// through query strings without manual escaping. Cheap to decode and
+/// debug-readable when base64-decoded.
+#[cfg(feature = "bus")]
+fn encode_replay_cursor(offsets: &std::collections::BTreeMap<i32, i64>) -> String {
+    use base64::Engine;
+    // Render as `{"P": O, "P": O}`; serde_json keeps key order via
+    // the BTreeMap, so the cursor is stable for a given offset map.
+    let json = serde_json::to_string(offsets).unwrap_or_else(|_| "{}".to_string());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json.as_bytes())
+}
+
+/// Hard cap on a decoded replay cursor's length, in bytes. A cursor
+/// is a JSON object of `{partition: offset}` — at JSON cost of ~20
+/// bytes per entry, 8 KB comfortably fits ~400 partitions, well past
+/// any realistic Kafka topic. Capping here keeps a malicious client
+/// from forcing the server to allocate megabytes for `serde_json` to
+/// chew through before any business logic runs.
+#[cfg(feature = "bus")]
+const MAX_REPLAY_CURSOR_BYTES: usize = 8 * 1024;
+
+/// Decode a cursor produced by [`encode_replay_cursor`]. Tolerates a
+/// missing or malformed token with a structured error so the handler
+/// can surface a 400. Caps the decoded payload at
+/// [`MAX_REPLAY_CURSOR_BYTES`] *before* the JSON parse so a hostile
+/// client can't trigger a CPU/memory denial-of-service by sending a megabyte of
+/// nested JSON in the query string.
+#[cfg(feature = "bus")]
+fn decode_replay_cursor(s: &str) -> Result<std::collections::BTreeMap<i32, i64>, String> {
+    use base64::Engine;
+    // Reject the encoded form first to skip the base64 work entirely
+    // when the input is already too big. Base64 expands ~33%, so
+    // anything past `MAX * 4 / 3 + a few` bytes can't possibly decode
+    // to ≤ MAX bytes.
+    if s.len() > MAX_REPLAY_CURSOR_BYTES * 4 / 3 + 4 {
+        return Err(format!(
+            "cursor too large: {} encoded bytes (max ~{} encoded)",
+            s.len(),
+            MAX_REPLAY_CURSOR_BYTES * 4 / 3
+        ));
+    }
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(s.as_bytes())
+        .map_err(|e| format!("base64: {e}"))?;
+    if raw.len() > MAX_REPLAY_CURSOR_BYTES {
+        return Err(format!(
+            "cursor too large: {} decoded bytes (max {MAX_REPLAY_CURSOR_BYTES})",
+            raw.len()
+        ));
+    }
+    let json = std::str::from_utf8(&raw).map_err(|e| format!("utf8: {e}"))?;
+    serde_json::from_str::<std::collections::BTreeMap<i32, i64>>(json)
+        .map_err(|e| format!("json: {e}"))
+}
+
+/// Validate a caller-supplied header map. Rejects anything that looks
+/// like an attempt to oversize the publish path. The reserved
+/// `acteon.*` prefix is checked separately by each handler so the
+/// error message can describe which path the prefix conflict came
+/// from.
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+fn validate_user_headers(
+    headers: &std::collections::BTreeMap<String, String>,
+) -> Result<(), axum::response::Response> {
+    if headers.len() > MAX_USER_HEADER_COUNT {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "too many headers: {}; max is {MAX_USER_HEADER_COUNT}",
+                    headers.len()
+                ),
+            }),
+        )
+            .into_response());
+    }
+    for (k, v) in headers {
+        if k.len() > MAX_USER_HEADER_KEY_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "header key length {} exceeds {MAX_USER_HEADER_KEY_BYTES} bytes",
+                        k.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+        if v.len() > MAX_USER_HEADER_VALUE_BYTES {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "header '{k}' value length {} exceeds {MAX_USER_HEADER_VALUE_BYTES} bytes",
+                        v.len()
+                    ),
+                }),
+            )
+                .into_response());
+        }
+    }
+    Ok(())
 }
 
 // =============================================================================
@@ -283,6 +579,9 @@ pub async fn create_topic(
         }
         topic.retention_ms = req.retention_ms;
         topic.description = req.description.clone();
+        if let Err(resp) = validate_user_labels(&req.labels) {
+            return resp;
+        }
         topic.labels = req.labels.clone();
         if let Err(e) = topic.validate() {
             return (
@@ -566,6 +865,12 @@ pub async fn publish(
                     .into_response();
             }
         };
+        // Reject oversized header sets before doing anything else; a
+        // misbehaving caller could otherwise saturate the producer's
+        // memory or trip Kafka's `message.max.bytes` ceiling.
+        if let Err(resp) = validate_user_headers(&req.headers) {
+            return resp;
+        }
         // Reject reserved `acteon.*` headers explicitly so callers see a
         // 400 instead of having the header silently dropped by
         // `BusMessage::with_header`. Silent stripping caused a
@@ -1122,6 +1427,9 @@ pub async fn create_subscription(
             sub.ack_timeout_ms = t;
         }
         sub.description = req.description.clone();
+        if let Err(resp) = validate_user_labels(&req.labels) {
+            return resp;
+        }
         sub.labels = req.labels.clone();
         if let Err(e) = sub.validate() {
             return (
@@ -1536,6 +1844,9 @@ pub async fn deadletter_subscription(
             )
                 .into_response();
         };
+        if let Err(resp) = validate_user_headers(&req.headers) {
+            return resp;
+        }
         // Governance: confirm the DLQ topic is still registered in
         // state. Normally guaranteed by create_subscription but the
         // topic could have been deleted since then — we don't want to
@@ -1899,6 +2210,9 @@ pub async fn create_schema(
         if let Err(resp) =
             authorize_bus_op(&identity, &req.tenant, &req.namespace, BusOp::ManageSchema)
         {
+            return resp;
+        }
+        if let Err(resp) = validate_user_labels(&req.labels) {
             return resp;
         }
         if let Err(e) = acteon_core::Schema::validate_subject(&req.subject) {
@@ -2766,16 +3080,17 @@ pub struct RegisterAgentRequest {
 }
 
 /// Body of `PUT /v1/bus/agents/{ns}/{t}/{id}`. Only the mutable fields
-/// appear here — `agent_id`, `namespace`, `tenant`, and `created_at`
-/// are immutable after registration.
+/// appear here — `agent_id`, `namespace`, `tenant`, `created_at`, and
+/// `inbox_topic` are immutable after registration. (Migrating an
+/// agent to a new inbox topic mid-flight would orphan in-flight
+/// messages on the old topic; delete and re-register if you need a
+/// different inbox.)
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateAgentRequest {
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
     pub capabilities: Option<Vec<String>>,
-    #[serde(default)]
-    pub inbox_topic: Option<String>,
     #[serde(default)]
     pub heartbeat_ttl_ms: Option<i64>,
     #[serde(default)]
@@ -2893,6 +3208,34 @@ async fn ensure_agent_inbox_topic(
     tenant: &str,
     inbox_topic_name: &str,
 ) -> Result<(), axum::response::Response> {
+    // Defense in depth: every caller-facing handler validates
+    // `parse_kafka_name` upstream, but if a future caller forgot,
+    // the previous `splitn(3,'.').nth(2).unwrap_or(_)` fallback would
+    // silently provision a topic under `{ns}.{tenant}.{full-bad-name}`
+    // while the producer side used the bad name unchanged — split
+    // brain. Reject unparseable names here too so the contract is
+    // enforced at the boundary.
+    let (parsed_ns, parsed_tenant, leaf_name) =
+        parse_kafka_name(inbox_topic_name).map_err(|msg| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("invalid inbox topic name '{inbox_topic_name}': {msg}"),
+                }),
+            )
+                .into_response()
+        })?;
+    if parsed_ns != namespace || parsed_tenant != tenant {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "inbox topic '{inbox_topic_name}' crosses tenants: must be under {namespace}.{tenant}"
+                ),
+            }),
+        )
+            .into_response());
+    }
     let key = StateKey::new(
         namespace.to_string(),
         tenant.to_string(),
@@ -2902,18 +3245,17 @@ async fn ensure_agent_inbox_topic(
     let Some(backend) = state.bus_backend.as_ref() else {
         return Err(service_unavailable("bus feature not enabled"));
     };
-    let gw = state.gateway.read().await;
-    let store = gw.state_store();
+    // Same lock-amplification fix as `cas_update`: clone the
+    // `Arc<dyn StateStore>` once and drop the gateway read guard
+    // before any `.await`, so DB roundtrips don't queue-head-block
+    // pending gateway writers.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
     if matches!(store.get(&key).await, Ok(Some(_))) {
         return Ok(());
     }
-    // Derive the leaf name from the Kafka-form topic. Our naming
-    // convention is `{ns}.{tenant}.{leaf}`; the leaf is everything
-    // after the second dot.
-    let leaf_name = inbox_topic_name
-        .splitn(3, '.')
-        .nth(2)
-        .unwrap_or(inbox_topic_name);
     let topic = Topic::new(leaf_name, namespace, tenant);
     if let Err(e) = topic.validate() {
         return Err((
@@ -2945,7 +3287,6 @@ async fn ensure_agent_inbox_topic(
         )
             .into_response());
     }
-    drop(gw);
     if let Err(e) = backend.create_topic(&topic).await {
         // The shared inbox is a tenant-scoped, agent-shared resource.
         // `TopicAlreadyExists` here means another concurrent
@@ -3002,6 +3343,9 @@ pub async fn register_agent(
         if let Some(ttl) = req.heartbeat_ttl_ms {
             agent.heartbeat_ttl_ms = ttl;
         }
+        if let Err(resp) = validate_user_labels(&req.labels) {
+            return resp;
+        }
         agent.labels = req.labels.clone();
         if let Err(e) = agent.validate() {
             return (
@@ -3015,20 +3359,36 @@ pub async fn register_agent(
         let inbox = agent.effective_inbox_topic();
         // Require that a custom inbox belongs to the same tenant. Same
         // check we enforce on subscriptions so an agent can't hijack
-        // another tenant's topic.
-        if let Ok((topic_ns, topic_t, _)) = parse_kafka_name(&inbox)
-            && (topic_ns != agent.namespace || topic_t != agent.tenant)
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: format!(
-                        "inbox topic {inbox} crosses tenants: must be under {}.{}",
-                        agent.namespace, agent.tenant
-                    ),
-                }),
-            )
-                .into_response();
+        // another tenant's topic. Fail-closed: an unparseable
+        // override is rejected — the previous `if let Ok && ...` form
+        // silently accepted malformed names that bypassed the tenant
+        // check entirely (Phase 5 review found the same shape there).
+        if let Some(override_topic) = req.inbox_topic.as_deref() {
+            match parse_kafka_name(override_topic) {
+                Ok((topic_ns, topic_t, _)) => {
+                    if topic_ns != agent.namespace || topic_t != agent.tenant {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: format!(
+                                    "inbox topic {override_topic} crosses tenants: must be under {}.{}",
+                                    agent.namespace, agent.tenant
+                                ),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("inbox topic '{override_topic}' is invalid: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
         }
         let key = StateKey::new(
             agent.namespace.clone(),
@@ -3234,64 +3594,51 @@ pub async fn update_agent(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
             return resp;
         }
-        let mut agent = match load_agent(&state, &namespace, &tenant, &agent_id).await {
-            Ok(a) => a,
-            Err(resp) => return resp,
-        };
-        if let Some(d) = req.display_name.clone() {
-            agent.display_name = Some(d);
-        }
-        if let Some(c) = req.capabilities.clone() {
-            agent.capabilities = c;
-        }
-        if let Some(i) = req.inbox_topic.clone() {
-            agent.inbox_topic = Some(i);
-        }
-        if let Some(ttl) = req.heartbeat_ttl_ms {
-            agent.heartbeat_ttl_ms = ttl;
-        }
-        if let Some(l) = req.labels.clone() {
-            agent.labels = l;
-        }
-        agent.updated_at = Utc::now();
-        if let Err(e) = agent.validate() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
-        }
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
             KeyKind::BusAgent,
-            agent.id(),
+            &agent_id,
         );
-        let payload = match serde_json::to_string(&agent) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+        let missing = format!("agent {namespace}.{tenant}.{agent_id} not found");
+        if let Some(labels) = &req.labels
+            && let Err(resp) = validate_user_labels(labels)
+        {
+            return resp;
+        }
+        let req_display = req.display_name.clone();
+        let req_caps = req.capabilities.clone();
+        let req_ttl = req.heartbeat_ttl_ms;
+        let req_labels = req.labels.clone();
+        let result = cas_update::<acteon_core::Agent, _>(&state, &key, &missing, |agent| {
+            if let Some(d) = req_display.clone() {
+                agent.display_name = Some(d);
+            }
+            if let Some(c) = req_caps.clone() {
+                agent.capabilities = c;
+            }
+            if let Some(ttl) = req_ttl {
+                agent.heartbeat_ttl_ms = ttl;
+            }
+            if let Some(l) = req_labels.clone() {
+                agent.labels = l;
+            }
+            agent.updated_at = Utc::now();
+            agent.validate().map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
                         error: e.to_string(),
                     }),
                 )
-                    .into_response();
-            }
-        };
-        let gw = state.gateway.read().await;
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
+                    .into_response()
+            })
+        })
+        .await;
+        match result {
+            Ok(agent) => (StatusCode::OK, Json(agent_to_response(&agent))).into_response(),
+            Err(resp) => resp,
         }
-        (StatusCode::OK, Json(agent_to_response(&agent))).into_response()
     }
     #[cfg(not(feature = "bus"))]
     {
@@ -3402,50 +3749,35 @@ pub async fn heartbeat_agent(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageAgent) {
             return resp;
         }
-        let mut agent = match load_agent(&state, &namespace, &tenant, &agent_id).await {
-            Ok(a) => a,
-            Err(resp) => return resp,
-        };
-        let now = Utc::now();
-        agent.last_heartbeat_at = Some(now);
-        agent.updated_at = now;
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
             KeyKind::BusAgent,
-            agent.id(),
+            &agent_id,
         );
-        let payload = match serde_json::to_string(&agent) {
-            Ok(s) => s,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
+        let missing = format!("agent {namespace}.{tenant}.{agent_id} not found");
+        let result = cas_update::<acteon_core::Agent, _>(&state, &key, &missing, |agent| {
+            let now = Utc::now();
+            agent.last_heartbeat_at = Some(now);
+            agent.updated_at = now;
+            Ok(())
+        })
+        .await;
+        match result {
+            Ok(agent) => {
+                let now = agent.last_heartbeat_at.unwrap_or_else(Utc::now);
+                (
+                    StatusCode::OK,
+                    Json(HeartbeatResponse {
+                        agent_id: agent.agent_id.clone(),
+                        last_heartbeat_at: now,
+                        status: agent_status_str(agent.status_at(now)),
                     }),
                 )
-                    .into_response();
+                    .into_response()
             }
-        };
-        let gw = state.gateway.read().await;
-        if let Err(e) = gw.state_store().set(&key, &payload, None).await {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response();
+            Err(resp) => resp,
         }
-        (
-            StatusCode::OK,
-            Json(HeartbeatResponse {
-                agent_id: agent.agent_id.clone(),
-                last_heartbeat_at: now,
-                status: agent_status_str(agent.status_at(now)),
-            }),
-        )
-            .into_response()
     }
     #[cfg(not(feature = "bus"))]
     {
@@ -3490,6 +3822,9 @@ pub async fn send_to_agent(
             return resp;
         }
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        if let Err(resp) = validate_user_headers(&req.headers) {
             return resp;
         }
         if let Some(reserved) = req.headers.keys().find(|k| k.starts_with("acteon.")) {
@@ -3609,6 +3944,1364 @@ async fn load_agent(
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: format!("agent {namespace}.{tenant}.{agent_id} not found"),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+// =============================================================================
+// Phase 5: Conversations — multi-agent threads on a shared events topic
+// =============================================================================
+
+/// Body of `POST /v1/bus/conversations`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateConversationRequest {
+    pub conversation_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub participants: Vec<String>,
+    /// Override the events topic this conversation produces to.
+    /// Defaults to `{ns}.{tenant}.conversations-events`.
+    #[serde(default)]
+    pub events_topic: Option<String>,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+}
+
+/// Body of `PUT /v1/bus/conversations/{ns}/{t}/{id}`. Mutable fields
+/// only. `id`, `namespace`, `tenant`, `created_at`, `events_topic`,
+/// and `state` are immutable from this endpoint — state changes go
+/// through `/transition`, and the events topic is set once at
+/// registration time. Mid-flight events-topic swaps would orphan
+/// in-flight messages on the old topic and have been a topic-
+/// injection vector when the validation was incomplete; closed by
+/// removing the field.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateConversationRequest {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub participants: Option<Vec<String>>,
+    #[serde(default)]
+    pub labels: Option<HashMap<String, String>>,
+}
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/transition`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ConversationTransitionRequest {
+    pub transition: acteon_core::ConversationTransition,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConversationResponse {
+    pub conversation_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub state: acteon_core::ConversationState,
+    pub participants: Vec<String>,
+    pub events_topic: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListConversationsResponse {
+    pub conversations: Vec<ConversationResponse>,
+    pub count: usize,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListConversationsParams {
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Filter conversations whose participant list contains this `agent_id`.
+    #[serde(default)]
+    pub participant: Option<String>,
+    /// Hard cap on returned rows. Default 100, max 500. The current
+    /// implementation scans every row of `KeyKind::BusConversation`
+    /// and filters in memory, so this bounds the response payload
+    /// while a future state-store cursor primitive is added for true
+    /// pagination at scale.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AppendConversationMessageRequest {
+    /// Free-form payload — the same shape as `/v1/bus/publish`.
+    #[schema(value_type = Object)]
+    pub payload: serde_json::Value,
+    /// Optional sender (an `agent_id`). Stamped as
+    /// `acteon.conversation.sender` header so subscribers can route
+    /// locally without parsing the payload. Server-validated against
+    /// the conversation's participant list when one is configured.
+    #[serde(default)]
+    pub sender: Option<String>,
+    /// Operator-supplied headers; `acteon.*` prefix is reserved.
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AppendConversationMessageResponse {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ReplayConversationParams {
+    /// `earliest` (default — full thread) or `latest` (only new
+    /// messages, useful as a probe). Ignored when `cursor` is set.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Hard cap on returned messages. Default 200, max 1000.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// How long to wait for messages before returning a partial result.
+    /// Default 1500ms; bounds replay latency on quiet topics.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Resume token from a previous response's `cursor`. When set,
+    /// `from` is ignored and the scan picks up at the per-partition
+    /// offsets the previous call left off at.
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReplayMessageEntry {
+    pub partition: i32,
+    pub offset: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[schema(value_type = Object)]
+    pub payload: serde_json::Value,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Why the replay loop terminated. Distinguishes end-of-stream
+/// (operator caller is done) from a partial result (operator must
+/// paginate via `cursor`). The previous `limit_reached: bool` shape
+/// silently lied on timeout: a timeout-bounded scan that didn't hit
+/// the count limit reported `false`, suggesting the thread was
+/// drained when in fact the server just gave up early. Now every
+/// non-`Complete` reason carries an explicit cursor.
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayExitReason {
+    /// The scan reached or surpassed every partition's high-water
+    /// mark **as snapshotted at the moment the request started**.
+    /// The caller has every message that existed when they asked.
+    ///
+    /// **Snapshot semantics**: new messages produced *after* the
+    /// scan began are *not* part of this response. For chat-style
+    /// usage where the client wants to keep tailing, treat
+    /// `Complete` as "I've drained the snapshot — call me again
+    /// (with the returned `cursor`, which still encodes the per-
+    /// partition tail) for any new messages." Without this caveat,
+    /// a high-volume conversation can race ahead of the scan and
+    /// produce messages that the next replay starting fresh would
+    /// have to re-discover.
+    Complete,
+    /// Hit the per-request `limit` before scanning the whole topic.
+    /// More messages may exist; resume with `cursor`.
+    Limit,
+    /// Hit the `timeout_ms` budget before exhausting partitions or
+    /// the limit. More messages may exist; resume with `cursor`.
+    Timeout,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReplayConversationResponse {
+    pub conversation_id: String,
+    pub events_topic: String,
+    pub messages: Vec<ReplayMessageEntry>,
+    pub exit_reason: ReplayExitReason,
+    /// Opaque resume token, always present. On `Limit` and
+    /// `Timeout`, pass it back as `cursor` to keep paginating the
+    /// remainder of the snapshot. On `Complete`, the cursor encodes
+    /// the per-partition tail position at scan end — tailing clients
+    /// pass it back to a follow-up request to pick up messages
+    /// produced after this snapshot. Clients doing a one-shot
+    /// drain ignore the cursor when `exit_reason == Complete`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[cfg(feature = "bus")]
+fn conversation_to_response(c: &acteon_core::Conversation) -> ConversationResponse {
+    ConversationResponse {
+        conversation_id: c.conversation_id.clone(),
+        namespace: c.namespace.clone(),
+        tenant: c.tenant.clone(),
+        title: c.title.clone(),
+        state: c.state,
+        participants: c.participants.clone(),
+        events_topic: c.effective_events_topic(),
+        labels: c.labels.clone(),
+        created_at: c.created_at,
+        updated_at: c.updated_at,
+    }
+}
+
+#[cfg(feature = "bus")]
+fn conversation_state_str(s: acteon_core::ConversationState) -> String {
+    match s {
+        acteon_core::ConversationState::Active => "active",
+        acteon_core::ConversationState::Resolved => "resolved",
+        acteon_core::ConversationState::Archived => "archived",
+    }
+    .to_string()
+}
+
+/// Ensure the shared events topic exists in state + Kafka. Same idea
+/// as `ensure_agent_inbox_topic` — first conversation in a tenant
+/// provisions the topic, subsequent registrations are no-ops.
+#[cfg(feature = "bus")]
+async fn ensure_conversation_events_topic(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    events_topic_name: &str,
+) -> Result<(), axum::response::Response> {
+    // Defense in depth: parse_kafka_name first so an unparseable name
+    // can never reach Kafka. Mirrors the agent-inbox check.
+    let (parsed_ns, parsed_tenant, leaf_name) =
+        parse_kafka_name(events_topic_name).map_err(|msg| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("invalid events topic name '{events_topic_name}': {msg}"),
+                }),
+            )
+                .into_response()
+        })?;
+    if parsed_ns != namespace || parsed_tenant != tenant {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "events topic '{events_topic_name}' crosses tenants: must be under {namespace}.{tenant}"
+                ),
+            }),
+        )
+            .into_response());
+    }
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusTopic,
+        events_topic_name,
+    );
+    let Some(backend) = state.bus_backend.as_ref() else {
+        return Err(service_unavailable("bus feature not enabled"));
+    };
+    // Same lock-amplification fix as `cas_update`: clone the
+    // `Arc<dyn StateStore>` once and drop the gateway read guard
+    // before any `.await`, so DB roundtrips don't queue-head-block
+    // pending gateway writers.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    if matches!(store.get(&key).await, Ok(Some(_))) {
+        return Ok(());
+    }
+    let topic = Topic::new(leaf_name, namespace, tenant);
+    if let Err(e) = topic.validate() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("invalid events topic name '{events_topic_name}': {e}"),
+            }),
+        )
+            .into_response());
+    }
+    let body = match serde_json::to_string(&topic) {
+        Ok(b) => b,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response());
+        }
+    };
+    // Use check_and_set so two concurrent provision attempts can't
+    // both write the topic row. The loser silently no-ops.
+    if let Err(e) = store.check_and_set(&key, &body, None).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response());
+    }
+    if let Err(e) = backend.create_topic(&topic).await
+        && !matches!(&e, acteon_bus::BusError::TopicAlreadyExists(_))
+    {
+        tracing::warn!(error = %e, topic = %events_topic_name, "auto-create of conversation events topic returned a non-AlreadyExists error; continuing with state row as canonical");
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations",
+    tag = "bus",
+    request_body = CreateConversationRequest,
+    responses(
+        (status = 201, description = "Conversation registered", body = ConversationResponse),
+        (status = 400, description = "Invalid conversation definition", body = ErrorResponse),
+        (status = 409, description = "Conversation already exists", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn register_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Json(req): Json<CreateConversationRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) = authorize_bus_op(
+            &identity,
+            &req.tenant,
+            &req.namespace,
+            BusOp::ManageConversation,
+        ) {
+            return resp;
+        }
+        if let Err(resp) = validate_user_labels(&req.labels) {
+            return resp;
+        }
+        let mut conv =
+            acteon_core::Conversation::new(&req.conversation_id, &req.namespace, &req.tenant);
+        conv.title = req.title.clone();
+        conv.participants = req.participants.clone();
+        conv.events_topic = req.events_topic.clone();
+        conv.labels = req.labels.clone();
+        if let Err(e) = conv.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        // Validate any caller-supplied `events_topic` override before
+        // we touch state or Kafka. Fail-closed: an unparseable name
+        // (zero or too many dots, no namespace.tenant prefix) MUST
+        // be rejected. The earlier `if let Ok(...) && ...` form
+        // silently *accepted* unparseable names, which let a tenant
+        // produce to arbitrary topics — fixed here.
+        if let Some(override_topic) = req.events_topic.as_deref() {
+            match parse_kafka_name(override_topic) {
+                Ok((topic_ns, topic_t, _)) => {
+                    if topic_ns != conv.namespace || topic_t != conv.tenant {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse {
+                                error: format!(
+                                    "events topic {override_topic} crosses tenants: must be under {}.{}",
+                                    conv.namespace, conv.tenant
+                                ),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("events topic '{override_topic}' is invalid: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let events_topic = conv.effective_events_topic();
+        if let Err(resp) =
+            ensure_conversation_events_topic(&state, &conv.namespace, &conv.tenant, &events_topic)
+                .await
+        {
+            return resp;
+        }
+        let key = StateKey::new(
+            conv.namespace.clone(),
+            conv.tenant.clone(),
+            KeyKind::BusConversation,
+            conv.id(),
+        );
+        let payload = match serde_json::to_string(&conv) {
+            Ok(s) => s,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let gw = state.gateway.read().await;
+        match gw.state_store().check_and_set(&key, &payload, None).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "conversation {}.{}.{} already registered",
+                            conv.namespace, conv.tenant, conv.conversation_id
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        (StatusCode::CREATED, Json(conversation_to_response(&conv))).into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/conversations",
+    tag = "bus",
+    params(ListConversationsParams),
+    responses(
+        (status = 200, description = "Conversation list", body = ListConversationsResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn list_conversations(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Query(params): Query<ListConversationsParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        let gw = state.gateway.read().await;
+        let rows = match gw
+            .state_store()
+            .scan_keys_by_kind(KeyKind::BusConversation)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        // Bound the response. `scan_keys_by_kind` still pulls every
+        // row from the state store for filtering; a future
+        // state-store cursor primitive will let us push the bound
+        // down to the backend. Until then, the `take(limit)` here
+        // protects the response payload and serialization cost from
+        // OOM at scale.
+        let limit = params.limit.unwrap_or(100).min(500);
+        let convs: Vec<acteon_core::Conversation> = rows
+            .into_iter()
+            .filter_map(|(_, v)| serde_json::from_str::<acteon_core::Conversation>(&v).ok())
+            .filter(|c| params.namespace.as_deref().is_none_or(|n| c.namespace == n))
+            .filter(|c| params.tenant.as_deref().is_none_or(|t| c.tenant == t))
+            .filter(|c| {
+                params
+                    .state
+                    .as_deref()
+                    .is_none_or(|s| conversation_state_str(c.state).eq_ignore_ascii_case(s))
+            })
+            .filter(|c| {
+                params
+                    .participant
+                    .as_deref()
+                    .is_none_or(|p| c.participants.iter().any(|x| x == p))
+            })
+            .filter(|c| identity.is_authorized(&c.tenant, &c.namespace, "bus", "conversation"))
+            .take(limit)
+            .collect();
+        let responses: Vec<ConversationResponse> =
+            convs.iter().map(conversation_to_response).collect();
+        let count = responses.len();
+        (
+            StatusCode::OK,
+            Json(ListConversationsResponse {
+                conversations: responses,
+                count,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Conversation detail", body = ConversationResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn get_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => (StatusCode::OK, Json(conversation_to_response(&c))).into_response(),
+            Err(resp) => resp,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    tag = "bus",
+    request_body = UpdateConversationRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Conversation updated", body = ConversationResponse),
+        (status = 400, description = "Invalid update", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn update_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<UpdateConversationRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusConversation,
+            &conversation_id,
+        );
+        let missing = format!("conversation {namespace}.{tenant}.{conversation_id} not found");
+        if let Some(labels) = &req.labels
+            && let Err(resp) = validate_user_labels(labels)
+        {
+            return resp;
+        }
+        let req_title = req.title.clone();
+        let req_participants = req.participants.clone();
+        let req_labels = req.labels.clone();
+        let result = cas_update::<acteon_core::Conversation, _>(&state, &key, &missing, |conv| {
+            // Archived threads are immutable. Allowing edits to title /
+            // participants / labels after archive would undermine the
+            // audit trail (the participant list is the ACL gate at
+            // append time; rewriting it post-archive would let an
+            // operator silently change who *appeared* to have access
+            // to a closed thread). Operators who need a different
+            // shape should reopen via /transition first.
+            if !conv.accepts_messages() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "conversation {} is archived; reopen via /transition before updating",
+                            conv.conversation_id
+                        ),
+                    }),
+                )
+                    .into_response());
+            }
+            if let Some(t) = req_title.clone() {
+                conv.title = Some(t);
+            }
+            if let Some(p) = req_participants.clone() {
+                conv.participants = p;
+            }
+            if let Some(l) = req_labels.clone() {
+                conv.labels = l;
+            }
+            conv.updated_at = Utc::now();
+            conv.validate().map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response()
+            })
+        })
+        .await;
+        match result {
+            Ok(conv) => (StatusCode::OK, Json(conversation_to_response(&conv))).into_response(),
+            Err(resp) => resp,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 204, description = "Conversation deleted"),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn delete_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusConversation,
+            &conversation_id,
+        );
+        let gw = state.gateway.read().await;
+        match gw.state_store().get(&key).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "conversation {namespace}.{tenant}.{conversation_id} not found"
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+        if let Err(e) = gw.state_store().delete(&key).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        StatusCode::NO_CONTENT.into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/transition",
+    tag = "bus",
+    request_body = ConversationTransitionRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Transition applied", body = ConversationResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 409, description = "Illegal transition for current state", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn transition_conversation(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<ConversationTransitionRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusConversation,
+            &conversation_id,
+        );
+        let missing = format!("conversation {namespace}.{tenant}.{conversation_id} not found");
+        let transition = req.transition;
+        let result = cas_update::<acteon_core::Conversation, _>(&state, &key, &missing, |conv| {
+            conv.apply_transition(transition).map(|_| ()).map_err(|e| {
+                (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response()
+            })
+        })
+        .await;
+        match result {
+            Ok(conv) => (StatusCode::OK, Json(conversation_to_response(&conv))).into_response(),
+            Err(resp) => resp,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    tag = "bus",
+    request_body = AppendConversationMessageRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Message appended", body = AppendConversationMessageResponse),
+        (status = 400, description = "Reserved header, invalid sender, or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn append_conversation_message(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<AppendConversationMessageRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        if let Err(resp) = validate_user_headers(&req.headers) {
+            return resp;
+        }
+        if let Some(reserved) = req.headers.keys().find(|k| k.starts_with("acteon.")) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "header '{reserved}' uses the reserved 'acteon.' prefix; those are set by the server"
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {}.{}.{} is archived; reopen via /transition to post",
+                        conv.namespace, conv.tenant, conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        // Participant ACL: when participants is non-empty, the sender
+        // must be present and listed. The earlier `if let Some(sender)`
+        // form silently allowed anonymous posts (sender = None) on
+        // restricted threads, defeating the gate entirely.
+        if !conv.participants.is_empty() {
+            match req.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; `sender` is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let events_topic = conv.effective_events_topic();
+        let topic_key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusTopic,
+            &events_topic,
+        );
+        {
+            let gw = state.gateway.read().await;
+            match gw.state_store().get(&topic_key).await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "events topic {events_topic} is not registered; re-register the conversation or create the topic"
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), req.payload.clone())
+            .with_key(&conv.conversation_id);
+        for (k, v) in &req.headers {
+            msg = msg.with_header(k.clone(), v.clone());
+        }
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(sender) = &req.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), sender.clone());
+        }
+        match backend.produce(msg).await {
+            Ok(receipt) => {
+                // Bump `updated_at` so list APIs and UI sorts by
+                // activity reflect that the thread is alive. Uses CAS
+                // so a concurrent transition can't be silently dropped
+                // here. Best-effort: a CAS contention failure leaves
+                // the timestamp stale but the message itself is
+                // already on Kafka, so we don't fail the append.
+                let conv_id = conv.conversation_id.clone();
+                let conv_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &conv_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if let Err(_resp) = bump {
+                    // Fail-open: the message is already on Kafka so we
+                    // don't fail the response, but the state row is now
+                    // stale relative to thread activity (UI sort by
+                    // `updated_at` will misrank). `warn!` so operators
+                    // notice if this becomes chronic — it usually
+                    // means either the state store is unreachable or
+                    // a single conversation is taking sustained CAS
+                    // contention beyond `MAX_CAS_RETRY_ATTEMPTS`.
+                    tracing::warn!(
+                        conversation_id = %conv_id,
+                        "conversation updated_at bump failed (CAS contention exhausted or backend error); message was produced successfully but list/sort will see a stale timestamp",
+                    );
+                }
+                (
+                    StatusCode::OK,
+                    Json(AppendConversationMessageResponse {
+                        events_topic: receipt.topic,
+                        conversation_id: conv_id,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                    }),
+                )
+                    .into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+        ReplayConversationParams,
+    ),
+    responses(
+        (status = 200, description = "Thread replay", body = ReplayConversationResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn replay_conversation_messages(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Query(params): Query<ReplayConversationParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        let limit = params.limit.unwrap_or(200).min(1000);
+        let timeout_ms = params.timeout_ms.unwrap_or(1500);
+        let events_topic = conv.effective_events_topic();
+        // Capture per-partition high-water marks at scan start so we
+        // can report `Complete` when the tracked offsets reach them.
+        // Without this, an `assign()`-based scan never naturally
+        // ends — Kafka holds the stream open waiting for new records,
+        // and we'd have no way to distinguish "drained" from "took a
+        // 1.5s nap on a quiet topic."
+        let watermarks = match backend.scan_topic_watermarks(&events_topic).await {
+            Ok(w) => w,
+            Err(acteon_bus::BusError::TopicNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("events topic {events_topic} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        // Resume from the cursor if one was provided; otherwise start
+        // at earliest/latest per `from`. `from` is ignored when
+        // `cursor` is set so a paginating client doesn't accidentally
+        // restart the scan.
+        let scan_from = match (&params.cursor, params.from.as_deref()) {
+            (Some(cursor_str), _) => match decode_replay_cursor(cursor_str) {
+                Ok(offsets) => acteon_bus::ScanFrom::FromOffsets(offsets),
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("invalid replay cursor: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            (None, Some("latest")) => acteon_bus::ScanFrom::Latest,
+            (None, Some("earliest") | None) => acteon_bus::ScanFrom::Earliest,
+            (None, Some(other)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("unknown 'from' value '{other}' (expected earliest|latest)"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        // Pre-seed the per-partition offset tracker so that *if* the
+        // scan exits without consuming any record on a given
+        // partition (timeout, or no matches), the cursor still
+        // points at a sensible resume position. Without this, an
+        // empty `Latest` scan returned `cursor = "{}"`, which
+        // decoded back to `ScanFrom::FromOffsets({})` — an empty TPL
+        // — and the caller's polling loop would never see a new
+        // message. We use `start - 1` because the kafka backend
+        // resumes at `last_seen + 1`.
+        //
+        // For `Earliest`, seed all known partitions with `-1` →
+        // resume at offset 0.
+        // For `Latest`, seed each partition with `hwm - 1` → resume
+        // at `hwm` (next-to-be-produced).
+        // For `FromOffsets(map)`, copy the caller's positions and
+        // fill any partitions absent from the map with `hwm - 1`
+        // (the contract is "caller has already drained them").
+        let mut last_offsets: std::collections::BTreeMap<i32, i64> =
+            std::collections::BTreeMap::new();
+        match &scan_from {
+            acteon_bus::ScanFrom::Earliest => {
+                for &p in watermarks.high_water_marks.keys() {
+                    last_offsets.insert(p, -1);
+                }
+            }
+            acteon_bus::ScanFrom::Latest => {
+                for (&p, &hwm) in &watermarks.high_water_marks {
+                    last_offsets.insert(p, hwm - 1);
+                }
+            }
+            acteon_bus::ScanFrom::FromOffsets(map) => {
+                for (&p, &off) in map {
+                    last_offsets.insert(p, off);
+                }
+                for (&p, &hwm) in &watermarks.high_water_marks {
+                    last_offsets.entry(p).or_insert(hwm - 1);
+                }
+            }
+        }
+        // `scan_topic` uses Kafka's `assign()` rather than dynamic
+        // consumer-group subscribe — no `__consumer_offsets` rows are
+        // created so repeated replays don't accumulate dead groups in
+        // the cluster.
+        let mut stream = match backend.scan_topic(&events_topic, scan_from).await {
+            Ok(s) => s,
+            Err(acteon_bus::BusError::TopicNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("events topic {events_topic} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let mut messages: Vec<ReplayMessageEntry> = Vec::new();
+        // `last_offsets` was pre-seeded above. The loop bumps each
+        // partition's entry on every record physically read so the
+        // cursor reflects scan position rather than per-conversation
+        // position.
+        // Each branch terminates the loop with an explicit reason;
+        // `loop { break <value>; }` lets the compiler prove
+        // exhaustiveness without an unread initial value.
+        // Fetch `limit + 1` so we can distinguish "exactly `limit`
+        // messages exist" from "more exist" (the latter yields
+        // `Limit`).
+        let exit_reason: ReplayExitReason = loop {
+            if messages.len() > limit {
+                messages.truncate(limit);
+                break ReplayExitReason::Limit;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break ReplayExitReason::Timeout;
+            }
+            // Detect end-of-stream by comparing every partition's
+            // tracked offset against its captured high-water mark.
+            // `hwm - 1` is "last produced offset" (Kafka's `hwm` is
+            // "next-to-be-produced"), so the partition is drained
+            // when `last_offset >= hwm - 1`. Empty partitions
+            // (hwm == 0) are trivially drained.
+            let drained =
+                watermarks
+                    .high_water_marks
+                    .iter()
+                    .all(|(p, hwm)| match last_offsets.get(p) {
+                        _ if *hwm == 0 => true,
+                        Some(seen) => *seen >= *hwm - 1,
+                        None => false,
+                    });
+            if drained {
+                break ReplayExitReason::Complete;
+            }
+            let remaining = deadline - now;
+            tokio::select! {
+                next = stream.next() => {
+                    match next {
+                        Some(Ok(msg)) => {
+                            let p = msg.partition.unwrap_or(0);
+                            let off = msg.offset.unwrap_or(0);
+                            // Always advance the per-partition cursor,
+                            // even when the message belongs to a
+                            // different conversation; a future
+                            // pagination must skip past every record
+                            // we've physically read.
+                            last_offsets
+                                .entry(p)
+                                .and_modify(|e| {
+                                    if off > *e {
+                                        *e = off;
+                                    }
+                                })
+                                .or_insert(off);
+                            let belongs = msg
+                                .headers
+                                .get("acteon.conversation.id")
+                                .is_some_and(|v| v == &conv.conversation_id);
+                            if !belongs {
+                                continue;
+                            }
+                            messages.push(ReplayMessageEntry {
+                                partition: p,
+                                offset: off,
+                                key: msg.key.clone(),
+                                payload: msg.payload.clone(),
+                                headers: msg.headers.clone(),
+                                timestamp: msg.timestamp.unwrap_or_else(Utc::now),
+                            });
+                        }
+                        Some(Err(_)) | None => {
+                            // Stream ended unexpectedly — not at the
+                            // high-water mark, but no more messages
+                            // from the backend. Treat as a partial
+                            // result so the client paginates; safer
+                            // than silently lying about completeness.
+                            break ReplayExitReason::Timeout;
+                        }
+                    }
+                }
+                () = tokio::time::sleep(remaining) => {
+                    break ReplayExitReason::Timeout;
+                }
+            }
+        };
+        // Always emit a cursor — even on `Complete`. The
+        // `Complete` cursor encodes the per-partition tail at scan
+        // end, so a tailing client can immediately re-poll to pick
+        // up messages produced after this snapshot. Clients that
+        // genuinely just want a one-shot drain ignore the cursor
+        // when `exit_reason == Complete`.
+        let cursor = Some(encode_replay_cursor(&last_offsets));
+        (
+            StatusCode::OK,
+            Json(ReplayConversationResponse {
+                conversation_id: conv.conversation_id,
+                events_topic,
+                messages,
+                exit_reason,
+                cursor,
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+/// Direct `StateKey` lookup of a conversation record.
+#[cfg(feature = "bus")]
+async fn load_conversation(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    conversation_id: &str,
+) -> Result<acteon_core::Conversation, axum::response::Response> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusConversation,
+        conversation_id.to_string(),
+    );
+    let gw = state.gateway.read().await;
+    match gw.state_store().get(&key).await {
+        Ok(Some(raw)) => serde_json::from_str::<acteon_core::Conversation>(&raw).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!(
+                        "corrupt conversation record for {namespace}.{tenant}.{conversation_id}: {e}"
+                    ),
+                }),
+            )
+                .into_response()
+        }),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("conversation {namespace}.{tenant}.{conversation_id} not found"),
             }),
         )
             .into_response()),

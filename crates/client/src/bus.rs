@@ -836,6 +836,214 @@ impl ActeonClient {
             None => format!("{}/v1/bus/agents/{ns}/{t}/{a}", self.base_url),
         }
     }
+
+    // ----- Phase 5: conversations -----
+
+    /// Register a conversation. First conversation in a `(namespace,
+    /// tenant)` causes the shared events topic
+    /// `{ns}.{tenant}.conversations-events` to be auto-created.
+    pub async fn register_bus_conversation(
+        &self,
+        req: &RegisterBusConversation,
+    ) -> Result<BusConversation, Error> {
+        let url = format!("{}/v1/bus/conversations", self.base_url);
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusConversation>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// List conversations, optionally filtered by namespace/tenant/state/participant.
+    pub async fn list_bus_conversations(
+        &self,
+        filter: &BusConversationFilter,
+    ) -> Result<ListBusConversationsResponse, Error> {
+        let url = format!("{}/v1/bus/conversations", self.base_url);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .query(filter)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<ListBusConversationsResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Fetch a single conversation record.
+    pub async fn get_bus_conversation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+    ) -> Result<BusConversation, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, None);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusConversation>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Patch-style update of mutable fields. State transitions go
+    /// through [`Self::transition_bus_conversation`] instead.
+    pub async fn update_bus_conversation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        req: &UpdateBusConversation,
+    ) -> Result<BusConversation, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, None);
+        let resp = self
+            .add_auth(self.client.put(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusConversation>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Delete a conversation record. The shared events topic is
+    /// preserved — other conversations in the tenant share it.
+    pub async fn delete_bus_conversation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+    ) -> Result<(), Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, None);
+        let resp = self
+            .add_auth(self.client.delete(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Drive the conversation through its state machine. Server
+    /// returns 409 if the requested transition is illegal for the
+    /// current state.
+    pub async fn transition_bus_conversation(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        transition: BusConversationTransition,
+    ) -> Result<BusConversation, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, Some("transition"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(&serde_json::json!({ "transition": transition }))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusConversation>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Append a message to the conversation thread. Keyed by
+    /// `conversation_id` so Kafka routes all messages for this thread
+    /// to a stable partition (per-thread FIFO).
+    pub async fn append_bus_conversation_message(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        req: &AppendBusConversationMessage,
+    ) -> Result<BusConversationAppendReceipt, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, Some("messages"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusConversationAppendReceipt>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Replay the message history for a conversation. The server
+    /// reads from the shared events topic and filters on the
+    /// server-stamped `acteon.conversation.id` header.
+    pub async fn replay_bus_conversation_messages(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        params: &ReplayBusConversationParams,
+    ) -> Result<BusConversationReplay, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, Some("messages"));
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .query(params)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusConversationReplay>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    fn conversation_url(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        suffix: Option<&str>,
+    ) -> String {
+        let ns = encode_segment(namespace);
+        let t = encode_segment(tenant);
+        let c = encode_segment(conversation_id);
+        match suffix {
+            Some(s) => format!("{}/v1/bus/conversations/{ns}/{t}/{c}/{s}", self.base_url),
+            None => format!("{}/v1/bus/conversations/{ns}/{t}/{c}", self.base_url),
+        }
+    }
 }
 
 // ----- Phase 3: DTOs -----
@@ -926,14 +1134,16 @@ pub struct RegisterBusAgent {
     pub labels: HashMap<String, String>,
 }
 
+/// `inbox_topic` is intentionally absent — once an agent is
+/// registered, its inbox is fixed. Migrating to a different topic
+/// would orphan in-flight messages; delete and re-register if you
+/// need a different inbox.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct UpdateBusAgent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inbox_topic: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heartbeat_ttl_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -999,6 +1209,155 @@ pub struct BusAgentSendReceipt {
     pub partition: i32,
     pub offset: i64,
     pub produced_at: String,
+}
+
+// ----- Phase 5: conversation DTOs -----
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct RegisterBusConversation {
+    pub conversation_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participants: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub events_topic: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+}
+
+/// `events_topic` is intentionally absent — once a conversation is
+/// registered, the topic it produces to is fixed. Migrating mid-thread
+/// would split the message log across two topics; delete and
+/// re-register if you need a different topic.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct UpdateBusConversation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participants: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BusConversationState {
+    Active,
+    Resolved,
+    Archived,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BusConversationTransition {
+    Resolve,
+    Reopen,
+    Archive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusConversation {
+    pub conversation_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub state: BusConversationState,
+    #[serde(default)]
+    pub participants: Vec<String>,
+    pub events_topic: String,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListBusConversationsResponse {
+    pub conversations: Vec<BusConversation>,
+    pub count: usize,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct BusConversationFilter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub participant: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct AppendBusConversationMessage {
+    pub payload: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusConversationAppendReceipt {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ReplayBusConversationParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// Resume token from a previous response's `cursor`. When set,
+    /// `from` is ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusConversationReplayMessage {
+    pub partition: i32,
+    pub offset: i64,
+    #[serde(default)]
+    pub key: Option<String>,
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    pub timestamp: String,
+}
+
+/// Why the server-side replay loop terminated. `Complete` = thread
+/// fully drained at scan time; `Limit` and `Timeout` = partial,
+/// follow-up needed via `cursor`.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BusReplayExitReason {
+    Complete,
+    Limit,
+    Timeout,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusConversationReplay {
+    pub conversation_id: String,
+    pub events_topic: String,
+    pub messages: Vec<BusConversationReplayMessage>,
+    pub exit_reason: BusReplayExitReason,
+    /// `Some` when the scan is incomplete. Pass back as
+    /// `ReplayBusConversationParams.cursor` to continue.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 async fn map_error(resp: reqwest::Response) -> Error {

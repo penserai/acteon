@@ -183,6 +183,14 @@ use acteon_core::{
         super::bus::delete_agent,
         super::bus::heartbeat_agent,
         super::bus::send_to_agent,
+        super::bus::register_conversation,
+        super::bus::list_conversations,
+        super::bus::get_conversation,
+        super::bus::update_conversation,
+        super::bus::delete_conversation,
+        super::bus::transition_conversation,
+        super::bus::append_conversation_message,
+        super::bus::replay_conversation_messages,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -254,6 +262,14 @@ use acteon_core::{
         super::bus::AgentResponse, super::bus::ListAgentsResponse,
         super::bus::HeartbeatResponse, super::bus::SendToAgentRequest,
         super::bus::SendToAgentResponse,
+        super::bus::CreateConversationRequest, super::bus::UpdateConversationRequest,
+        super::bus::ConversationResponse, super::bus::ListConversationsResponse,
+        super::bus::ConversationTransitionRequest,
+        super::bus::AppendConversationMessageRequest,
+        super::bus::AppendConversationMessageResponse,
+        super::bus::ReplayMessageEntry, super::bus::ReplayConversationResponse,
+        super::bus::ReplayExitReason,
+        acteon_core::ConversationState, acteon_core::ConversationTransition,
     ))
 )]
 pub struct ApiDoc;

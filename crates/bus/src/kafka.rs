@@ -25,7 +25,7 @@ use rdkafka::TopicPartitionList;
 
 use acteon_core::{PartitionLag, Topic};
 
-use crate::backend::{BusBackend, SubscribeStream};
+use crate::backend::{BusBackend, ScanFrom, ScanWatermarks, SubscribeStream};
 use crate::config::KafkaBusConfig;
 use crate::error::BusError;
 use crate::message::{BusMessage, DeliveryReceipt, OffsetPosition, StartOffset};
@@ -401,5 +401,152 @@ impl BusBackend for KafkaBackend {
             });
         }
         Ok(out)
+    }
+
+    async fn scan_topic(
+        &self,
+        kafka_topic: &str,
+        from: ScanFrom,
+    ) -> Result<SubscribeStream, BusError> {
+        // `assign()` (manual partition placement) bypasses the consumer
+        // group coordinator entirely — no JoinGroup, no
+        // `__consumer_offsets` row, no metadata leak when the consumer
+        // is dropped. We use a unique throwaway `group.id` defensively
+        // because rdkafka still requires the field; without an explicit
+        // commit it never reaches the broker.
+        let group_id = format!("acteon-scan-{}", uuid::Uuid::new_v4());
+        let consumer_start = match from {
+            ScanFrom::Earliest => StartOffset::Earliest,
+            // Latest and FromOffsets both ignore `auto.offset.reset`
+            // because we always set explicit offsets via `assign`.
+            ScanFrom::Latest | ScanFrom::FromOffsets(_) => StartOffset::Latest,
+        };
+        let cfg = self.consumer_config(&group_id, consumer_start);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("scan consumer: {e}")))?;
+        // Discover partitions, then `assign` each at the requested
+        // start offset. `Beginning` / `End` map cleanly to our
+        // `ScanFrom::Earliest`/`Latest` variants. `FromOffsets` uses
+        // `Offset::Offset(n)` per partition so clients can paginate
+        // a long scan across multiple requests.
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut tpl = TopicPartitionList::new();
+        match &from {
+            ScanFrom::Earliest => {
+                for p in topic_meta.partitions() {
+                    tpl.add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::Beginning)
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                }
+            }
+            ScanFrom::Latest => {
+                for p in topic_meta.partitions() {
+                    tpl.add_partition_offset(kafka_topic, p.id(), rdkafka::Offset::End)
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                }
+            }
+            ScanFrom::FromOffsets(offsets) => {
+                // Resume each partition from the next-after-last
+                // offset the caller saw. Partitions absent from the
+                // map are skipped — the contract is "the caller has
+                // already drained them" (e.g. a single-partition
+                // conversation that lives entirely on partition 0).
+                for p in topic_meta.partitions() {
+                    if let Some(&last_seen) = offsets.get(&p.id()) {
+                        tpl.add_partition_offset(
+                            kafka_topic,
+                            p.id(),
+                            rdkafka::Offset::Offset(last_seen + 1),
+                        )
+                        .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
+                    }
+                }
+            }
+        }
+        consumer
+            .assign(&tpl)
+            .map_err(|e| BusError::Transport(format!("assign: {e}")))?;
+
+        let topic_owned = kafka_topic.to_string();
+        let stream = async_stream::stream! {
+            let mut stream = consumer.stream();
+            while let Some(res) = stream.next().await {
+                match res {
+                    Ok(msg) => {
+                        let payload = msg.payload().map_or(serde_json::Value::Null, |b| {
+                            serde_json::from_slice::<serde_json::Value>(b)
+                                .unwrap_or(serde_json::Value::Null)
+                        });
+                        let key = msg
+                            .key()
+                            .and_then(|b| std::str::from_utf8(b).ok())
+                            .map(str::to_string);
+                        let mut headers = std::collections::BTreeMap::new();
+                        if let Some(h) = msg.headers() {
+                            for i in 0..h.count() {
+                                let rec = h.get(i);
+                                let name = rec.key.to_string();
+                                if let Some(v) = rec.value
+                                    && let Ok(s) = std::str::from_utf8(v)
+                                {
+                                    headers.insert(name, s.to_string());
+                                }
+                            }
+                        }
+                        let timestamp = msg
+                            .timestamp()
+                            .to_millis()
+                            .and_then(|ms| Utc.timestamp_millis_opt(ms).single());
+                        yield Ok(BusMessage {
+                            topic: topic_owned.clone(),
+                            key,
+                            payload,
+                            headers,
+                            partition: Some(msg.partition()),
+                            offset: Some(msg.offset()),
+                            timestamp,
+                        });
+                    }
+                    Err(e) => {
+                        yield Err(BusError::Transport(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        };
+        Ok(Box::pin(stream))
+    }
+
+    async fn scan_topic_watermarks(&self, kafka_topic: &str) -> Result<ScanWatermarks, BusError> {
+        // We need a consumer to call `fetch_watermarks`; throwaway
+        // group.id matching `scan_topic`'s pattern.
+        let group_id = format!("acteon-watermark-{}", uuid::Uuid::new_v4());
+        let cfg = self.consumer_config(&group_id, StartOffset::Latest);
+        let consumer: StreamConsumer = cfg
+            .create()
+            .map_err(|e| BusError::Transport(format!("watermark consumer: {e}")))?;
+        let metadata = consumer
+            .fetch_metadata(Some(kafka_topic), Duration::from_secs(10))
+            .map_err(map_kafka_error)?;
+        let topic_meta = metadata
+            .topics()
+            .iter()
+            .find(|t| t.name() == kafka_topic)
+            .ok_or_else(|| BusError::TopicNotFound(kafka_topic.into()))?;
+        let mut high_water_marks = std::collections::BTreeMap::new();
+        for p in topic_meta.partitions() {
+            let (_low, high) = consumer
+                .fetch_watermarks(kafka_topic, p.id(), Duration::from_secs(10))
+                .map_err(map_kafka_error)?;
+            high_water_marks.insert(p.id(), high);
+        }
+        Ok(ScanWatermarks { high_water_marks })
     }
 }

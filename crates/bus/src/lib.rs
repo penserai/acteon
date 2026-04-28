@@ -23,7 +23,7 @@ pub mod memory;
 pub mod message;
 pub mod schema;
 
-pub use backend::{BusBackend, SharedBackend, SubscribeStream};
+pub use backend::{BusBackend, ScanFrom, ScanWatermarks, SharedBackend, SubscribeStream};
 pub use config::{BusConfig, KafkaBusConfig};
 pub use error::BusError;
 pub use kafka::KafkaBackend;

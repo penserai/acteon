@@ -371,6 +371,28 @@ pub fn router(state: AppState) -> Router {
             "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
             post(bus::send_to_agent),
         )
+        // Phase 5: Conversations — multi-agent threads on a shared
+        // events topic. Messages are keyed by conversation_id for
+        // per-thread Kafka FIFO; replay filters on the
+        // `acteon.conversation.id` header.
+        .route(
+            "/v1/bus/conversations",
+            get(bus::list_conversations).post(bus::register_conversation),
+        )
+        .route(
+            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}",
+            get(bus::get_conversation)
+                .put(bus::update_conversation)
+                .delete(bus::delete_conversation),
+        )
+        .route(
+            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/transition",
+            post(bus::transition_conversation),
+        )
+        .route(
+            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/messages",
+            get(bus::replay_conversation_messages).post(bus::append_conversation_message),
+        )
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
         .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))

@@ -171,6 +171,21 @@ impl StateStore for PostgresStateStore {
         Ok(row.map(|(v,)| v))
     }
 
+    async fn get_versioned(&self, key: &StateKey) -> Result<Option<(String, u64)>, StateError> {
+        let canonical = key.canonical();
+        let table = self.config.state_table();
+        let query = format!(
+            "SELECT value, version FROM {table} \
+             WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())"
+        );
+        let row: Option<(String, i64)> = sqlx::query_as(&query)
+            .bind(&canonical)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StateError::Backend(e.to_string()))?;
+        Ok(row.map(|(v, ver)| (v, u64::try_from(ver).unwrap_or(0))))
+    }
+
     async fn set(
         &self,
         key: &StateKey,
