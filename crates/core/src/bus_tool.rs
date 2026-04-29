@@ -126,10 +126,13 @@ impl ToolCall {
         if let Some(s) = &self.sender {
             Self::validate_id_field("sender", s)?;
         }
-        if let Some(r) = &self.reply_to
-            && r.is_empty()
-        {
-            return Err(ToolEnvelopeValidationError::EmptyReplyTo);
+        // `reply_to` shares the same alphabet as the other id
+        // fields. The previous emptiness-only check let an agent
+        // sneak path-traversal characters or oversized strings into
+        // the field, which the server later stamps as a header and
+        // could derive `StateKey`s from in future code.
+        if let Some(r) = &self.reply_to {
+            Self::validate_id_field("reply_to", r)?;
         }
         Ok(())
     }
@@ -257,8 +260,6 @@ pub enum ToolEnvelopeValidationError {
     EmptyTool,
     #[error("tool name exceeds 200 characters")]
     ToolTooLong,
-    #[error("reply_to must not be empty when set")]
-    EmptyReplyTo,
     #[error("error_message exceeds 4096 characters")]
     ErrorMessageTooLong,
 }
@@ -295,6 +296,33 @@ mod tests {
         assert!(matches!(
             c.validate(),
             Err(ToolEnvelopeValidationError::InvalidIdChar { .. })
+        ));
+    }
+
+    #[test]
+    fn tool_call_validates_reply_to_alphabet() {
+        // `reply_to` runs through the same id-field validator as
+        // `call_id` / `correlation_id` — path-traversal characters
+        // and oversize strings are rejected.
+        let mut c = ToolCall::new("c", "tool", json!({}));
+        c.reply_to = Some("../escape".into());
+        assert!(matches!(
+            c.validate(),
+            Err(ToolEnvelopeValidationError::InvalidIdChar { .. })
+        ));
+
+        let mut c = ToolCall::new("c", "tool", json!({}));
+        c.reply_to = Some(String::new());
+        assert!(matches!(
+            c.validate(),
+            Err(ToolEnvelopeValidationError::EmptyId(field)) if field == "reply_to"
+        ));
+
+        let mut c = ToolCall::new("c", "tool", json!({}));
+        c.reply_to = Some("a".repeat(200));
+        assert!(matches!(
+            c.validate(),
+            Err(ToolEnvelopeValidationError::IdTooLong(field)) if field == "reply_to"
         ));
     }
 
