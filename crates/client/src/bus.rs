@@ -1165,6 +1165,12 @@ impl ActeonClient {
                 conversation_id: receipt.conversation_id,
                 cursor: Some(receipt.cursor),
                 timeout_ms,
+                // Carry the call's `sender` through as `as_agent` so
+                // the read-side participant ACL accepts us when the
+                // conversation is private. Mirrors the natural
+                // request/response flow: an agent that posted the
+                // call is also the one waiting for the result.
+                as_agent: req.sender.clone(),
             },
         )
         .await
@@ -1448,6 +1454,11 @@ pub struct ReplayBusConversationParams {
     /// `from` is ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// `agent_id` the caller is acting as. Required when the target
+    /// conversation has a non-empty `participants` ACL — the server
+    /// rejects with 403 if the agent isn't on the list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1560,6 +1571,13 @@ pub struct BusToolResultLookupParams {
     /// How long to wait for a matching result. Default 5000ms; max 30000ms.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// `agent_id` the caller is acting as. Required when the target
+    /// conversation has a non-empty `participants` ACL — the server
+    /// rejects with 403 if the agent isn't on the list. Open
+    /// conversations (empty participants) accept any caller with the
+    /// tenant grant; this field is then ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub as_agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

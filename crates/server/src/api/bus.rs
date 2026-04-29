@@ -161,6 +161,15 @@ const MAX_USER_HEADER_VALUE_BYTES: usize = 4096;
 #[cfg(feature = "bus")]
 const MAX_CAS_RETRY_ATTEMPTS: u32 = 8;
 
+/// How often the busy scan loops in `lookup_tool_result` and
+/// `replay_conversation_messages` yield back to the tokio executor
+/// while skipping non-matching records. `stream.next()` may return
+/// `Poll::Ready` repeatedly when the consumer has buffered data, so
+/// without an explicit yield a long lookup on a busy topic could
+/// monopolize a single-threaded executor and starve other tasks.
+#[cfg(feature = "bus")]
+const SCAN_YIELD_EVERY: u32 = 256;
+
 /// Read-modify-write a JSON-serialized state row atomically via
 /// `compare_and_swap`. The mutator closure runs on a freshly-loaded
 /// copy each iteration; if the underlying row changed mid-loop, the
@@ -2185,6 +2194,56 @@ async fn ensure_schema_in_validator(
     }
 }
 
+/// Enforce read-side participant ACL. The write-side handlers
+/// (`append_conversation_message`, `post_tool_call`,
+/// `post_tool_result`) already gate on the envelope's `sender`; the
+/// read paths used to skip the equivalent check, so any caller with
+/// the tenant-level `ManageConversation` grant could read a
+/// "private" conversation just by knowing its id. This helper
+/// closes that gap.
+///
+/// Contract:
+/// - Empty participants list → ACL is open; no `as_agent` required.
+/// - Non-empty list → caller must supply `as_agent`, and it must be
+///   on the list. Otherwise 403.
+///
+/// V1 read-isolation: the asserted `as_agent` is taken at face value
+/// once the caller has the tenant grant. A future iteration can
+/// derive the agent identity from the API-key grant directly so
+/// callers can't claim arbitrary agent identities.
+#[cfg(feature = "bus")]
+fn enforce_conversation_read_acl(
+    conv: &acteon_core::Conversation,
+    as_agent: Option<&str>,
+) -> Result<(), axum::response::Response> {
+    if conv.participants.is_empty() {
+        return Ok(());
+    }
+    match as_agent {
+        Some(a) if conv.participants.iter().any(|p| p == a) => Ok(()),
+        Some(a) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "as_agent '{a}' is not a participant of conversation {}; cannot read",
+                    conv.conversation_id
+                ),
+            }),
+        )
+            .into_response()),
+        None => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "conversation {} has a participant ACL; pass `as_agent` matching one of the participants",
+                    conv.conversation_id
+                ),
+            }),
+        )
+            .into_response()),
+    }
+}
+
 /// Apply Phase 3 schema validation to a payload destined for
 /// `kafka_topic`. Used by every publish-style handler that doesn't
 /// already inline the validation block (the original `/v1/bus/publish`
@@ -4171,6 +4230,12 @@ pub struct ReplayConversationParams {
     /// offsets the previous call left off at.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// `agent_id` the caller is acting as. Required when the
+    /// conversation has a non-empty `participants` ACL — must be
+    /// on the list. Same V1 read-isolation model as
+    /// [`ToolResultLookupParams::as_agent`].
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -5115,6 +5180,11 @@ pub async fn replay_conversation_messages(
             Ok(c) => c,
             Err(resp) => return resp,
         };
+        // Read-side participant ACL. Without this, any caller with
+        // the tenant grant could replay a private thread by id.
+        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+            return resp;
+        }
         let limit = params.limit.unwrap_or(200).min(1000);
         let timeout_ms = params.timeout_ms.unwrap_or(1500);
         let events_topic = conv.effective_events_topic();
@@ -5249,7 +5319,11 @@ pub async fn replay_conversation_messages(
         // exhaustiveness without an unread initial value.
         // Fetch `limit + 1` so we can distinguish "exactly `limit`
         // messages exist" from "more exist" (the latter yields
-        // `Limit`).
+        // `Limit`). Yield to the scheduler every `SCAN_YIELD_EVERY`
+        // skipped records (those that belong to other conversations
+        // on the shared events topic) so a busy tenant can't starve
+        // other tasks on a single-threaded executor.
+        let mut replay_skipped: u32 = 0;
         let exit_reason: ReplayExitReason = loop {
             if messages.len() > limit {
                 messages.truncate(limit);
@@ -5302,6 +5376,10 @@ pub async fn replay_conversation_messages(
                                 .get("acteon.conversation.id")
                                 .is_some_and(|v| v == &conv.conversation_id);
                             if !belongs {
+                                replay_skipped = replay_skipped.wrapping_add(1);
+                                if replay_skipped.is_multiple_of(SCAN_YIELD_EVERY) {
+                                    tokio::task::yield_now().await;
+                                }
                                 continue;
                             }
                             messages.push(ReplayMessageEntry {
@@ -5509,6 +5587,16 @@ pub struct ToolResultLookupParams {
     /// How long to wait for a matching result. Default 5s; max 30s.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// `agent_id` the caller is acting as. Required when the target
+    /// conversation has a non-empty `participants` ACL — must be on
+    /// the list, otherwise the request is rejected. Without it (or
+    /// when the conversation is open), any caller with the
+    /// tenant-level grant can read; this is the V1 read-isolation
+    /// model. Future work: derive the agent identity from the
+    /// caller's API-key grant rather than a self-asserted query
+    /// param.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Envelope-kind header values. Server-stamped so subscribers can
@@ -6036,11 +6124,17 @@ pub async fn lookup_tool_result(
         // (Phase 5) would otherwise silently look at the wrong
         // place — the scan would never find a matching record and
         // every lookup would 408.
-        let events_topic =
+        let conv =
             match load_conversation(&state, &namespace, &tenant, &params.conversation_id).await {
-                Ok(c) => c.effective_events_topic(),
+                Ok(c) => c,
                 Err(resp) => return resp,
             };
+        // Read-side participant ACL — match the gate the write-side
+        // tool handlers already enforce.
+        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+            return resp;
+        }
+        let events_topic = conv.effective_events_topic();
         let timeout_ms = params.timeout_ms.unwrap_or(5_000).min(30_000);
         // Resolve scan position. With a cursor (the typical flow:
         // caller passes back the receipt's `cursor`), scan strictly
@@ -6086,6 +6180,13 @@ pub async fn lookup_tool_result(
             }
         };
         let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        // Yield to the scheduler every `SCAN_YIELD_EVERY` skipped
+        // messages so a busy topic with no matches doesn't starve
+        // other tasks on a single-threaded executor. `stream.next()`
+        // may return `Poll::Ready` repeatedly when the consumer has
+        // buffered data; without a manual yield, the loop body has
+        // no other `.await` points that surrender the worker.
+        let mut skipped: u32 = 0;
         loop {
             let now = tokio::time::Instant::now();
             if now >= deadline {
@@ -6118,6 +6219,10 @@ pub async fn lookup_tool_result(
                                 .get("acteon.tool.call_id")
                                 .is_some_and(|v| v == &call_id);
                             if !is_result || !matches_call {
+                                skipped = skipped.wrapping_add(1);
+                                if skipped.is_multiple_of(SCAN_YIELD_EVERY) {
+                                    tokio::task::yield_now().await;
+                                }
                                 continue;
                             }
                             let result: acteon_core::ToolResult =

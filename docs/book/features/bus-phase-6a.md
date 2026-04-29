@@ -202,9 +202,58 @@ conversation has a non-empty `participants` list, the envelope's
 - **Result fetch returns 408 on timeout, not 404.** The result may
   arrive any moment; 408 is the honest signal "not yet, retry."
 
+## Trust model and limits
+
+The bus does not maintain a state-store record of in-flight tool
+calls (the layered design keeps the call/result envelopes on Kafka,
+not in Acteon state). That has two consequences operators should
+plan around:
+
+### `call_id` is not a uniqueness gate
+
+`lookup_tool_result` returns the **first** record on the topic that
+matches `(envelope.kind=tool_result, tool.call_id=<id>)`. Acteon
+does not verify that only one responder produced a result for that
+call. If two participants race to post results for the same
+`call_id`, the lookup returns whichever the broker stored first.
+
+In practice the participant ACL bounds the threat: only conversation
+participants can post tool results, and operators control who's on
+the list. A mutually-untrusting set of participants in the same
+thread is unusual; if you have one, sign your tool-result payloads
+end-to-end and verify on the consumer side.
+
+### `correlation_id` is operator-asserted
+
+The bus does not verify that a `ToolResult.correlation_id` matches
+the originating `ToolCall.correlation_id`. The server stamps
+whatever the responder claims as `acteon.correlation_id`. This is
+fine for tracing — the field is informational and audited — but
+treat it as the responder's claim, not as an authenticated link.
+
+If you need an authenticated request/response link, sign payloads
+or use a mutually-trusted ID generator and verify on the consumer.
+
+### Read-side participant ACL
+
+The write-side handlers gate on `sender ∈ participants`. The
+read-side (`lookup_tool_result`, `replay_conversation_messages`)
+gates on `as_agent ∈ participants` when the conversation has a
+non-empty list. Pass `as_agent` to identify which participant
+you're acting as. Without `as_agent` on a private thread, the
+server returns 403.
+
+`as_agent` is operator-asserted under the tenant grant — anyone with
+the tenant grant can claim any agent identity in the tenant. A
+future iteration will derive the agent identity from the API-key
+grant directly so this can't be spoofed.
+
 ## What comes next
 
 - **Phase 6b** — Streaming chunks (per-chunk Kafka records with a
   terminal marker) for LLM token streams and partial tool results.
 - **Phase 6c** — HITL pre-publish approvals: park a tool-call in
   state, await operator approval, then commit to Kafka.
+- **Future** — derive agent identity from API-key grant (replaces
+  the `as_agent` self-assertion); state-store-tracked `call_id`
+  uniqueness for environments where participant ACL isn't enough.
