@@ -192,14 +192,18 @@ impl BusBackend for MemoryBackend {
         let (start_offset, skip_until_offset) = match from {
             ScanFrom::Earliest => (StartOffset::Earliest, None),
             ScanFrom::Latest => (StartOffset::Latest, None),
-            // Memory backend has only one partition (id 0); honor the
-            // partition-0 entry if present, otherwise replay from
-            // earliest. We materialize the skip-until offset and let
-            // the caller filter inline.
-            ScanFrom::FromOffsets(map) => {
-                let skip = map.get(&0).copied();
-                (StartOffset::Earliest, skip)
-            }
+            // Memory backend has only one partition (id 0). When
+            // the caller's map covers it, honor the explicit offset.
+            // When it doesn't (e.g. a tool-call cursor whose call
+            // landed on a Kafka partition that the in-memory
+            // backend doesn't model), default to `Latest` — same
+            // shape the kafka backend now uses for unlisted
+            // partitions, so single-backend tests can exercise
+            // both branches.
+            ScanFrom::FromOffsets(map) => match map.get(&0).copied() {
+                Some(offset) => (StartOffset::Earliest, Some(offset)),
+                None => (StartOffset::Latest, None),
+            },
         };
         let stream = self
             .subscribe(kafka_topic, "memory-scan", start_offset)
@@ -397,5 +401,36 @@ mod tests {
             }
             other => panic!("expected TopicAlreadyExists, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn scan_from_offsets_with_missing_partition_defaults_to_latest() {
+        // `ScanFrom::FromOffsets` no longer skips partitions absent
+        // from the map — they default to Latest. Verify the memory
+        // backend honors this contract by passing an offsets map
+        // that doesn't cover partition 0 and confirming the scan
+        // does *not* yield the existing backlog (Latest = no backlog).
+        let backend = MemoryBackend::new();
+        let topic = Topic::new("scan-default", "ns", "tn");
+        backend.create_topic(&topic).await.unwrap();
+        backend
+            .produce(BusMessage::new(
+                topic.kafka_topic_name(),
+                serde_json::json!({"n": 0}),
+            ))
+            .await
+            .unwrap();
+        // Empty FromOffsets map → all partitions default to Latest.
+        // Memory backend's lone partition is 0; the produced record
+        // is *backlog*, so a Latest scan must not return it.
+        let mut stream = backend
+            .scan_topic(
+                &topic.kafka_topic_name(),
+                crate::backend::ScanFrom::FromOffsets(std::collections::BTreeMap::new()),
+            )
+            .await
+            .unwrap();
+        let next = tokio::time::timeout(std::time::Duration::from_millis(50), stream.next()).await;
+        assert!(next.is_err(), "Latest-default scan must not yield backlog");
     }
 }

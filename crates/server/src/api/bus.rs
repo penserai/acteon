@@ -6136,71 +6136,33 @@ pub async fn lookup_tool_result(
         }
         let events_topic = conv.effective_events_topic();
         let timeout_ms = params.timeout_ms.unwrap_or(5_000).min(30_000);
-        // Resolve scan position. With a cursor (the typical flow:
-        // caller passes back the receipt's `cursor`), scan strictly
-        // *after* the call was produced. Without one, default to
-        // `Latest` — cheap on a busy cluster, but races with the
-        // result landing. Earlier the default was `Earliest`, which
-        // turned every lookup into a full-history scan and was a
-        // straightforward DoS vector.
+        // Resolve scan position.
         //
-        // **Cursor + reply_to caveat**: the cursor from a `ToolCall`
-        // receipt only covers the partition the call landed on. If
-        // the result is routed via `reply_to` to a different
-        // conversation, it lands on a partition the cursor doesn't
-        // cover, and a strict `FromOffsets(cursor)` scan would
-        // exclude that partition entirely (its contract is "skip
-        // partitions absent from the map"). To make cursor-based
-        // lookups work across the reply_to flow, we fill the
-        // partitions the cursor doesn't cover with the topic's
-        // current high-water mark — i.e. "scan the call's
-        // partition from the recorded offset onward, and every
-        // other partition from the moment the lookup began." This
-        // makes the cursor a "starting hint" for the call's
-        // partition and `Latest` for the rest.
+        // With a cursor (the typical flow: caller passes back the
+        // receipt's `cursor`), the call's partition resumes from
+        // the recorded offset; partitions the cursor doesn't cover
+        // default to `Latest` *inside the backend* (see the
+        // `ScanFrom::FromOffsets` doc). That keeps single-partition
+        // cursors valid for `reply_to` flows where the result
+        // lands on a different partition.
+        //
+        // Without a cursor, default to `Latest` — cheap on a busy
+        // cluster, but races with the result landing. Earlier the
+        // default was `Earliest`, which turned every lookup into a
+        // full-history scan and was a straightforward DoS vector.
         let scan_from = match &params.cursor {
-            Some(c) => {
-                let mut offsets = match decode_replay_cursor(c) {
-                    Ok(m) => m,
-                    Err(msg) => {
-                        return (
-                            StatusCode::BAD_REQUEST,
-                            Json(ErrorResponse {
-                                error: format!("invalid lookup cursor: {msg}"),
-                            }),
-                        )
-                            .into_response();
-                    }
-                };
-                let watermarks = match backend.scan_topic_watermarks(&events_topic).await {
-                    Ok(w) => w,
-                    Err(acteon_bus::BusError::TopicNotFound(_)) => {
-                        return (
-                            StatusCode::NOT_FOUND,
-                            Json(ErrorResponse {
-                                error: format!("events topic {events_topic} not found"),
-                            }),
-                        )
-                            .into_response();
-                    }
-                    Err(e) => {
-                        return (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse {
-                                error: e.to_string(),
-                            }),
-                        )
-                            .into_response();
-                    }
-                };
-                for (&p, &hwm) in &watermarks.high_water_marks {
-                    // `hwm - 1` → kafka backend resumes at `hwm`
-                    // (next-to-be-produced), the same logic the
-                    // replay handler uses for unseeded partitions.
-                    offsets.entry(p).or_insert(hwm - 1);
+            Some(c) => match decode_replay_cursor(c) {
+                Ok(offsets) => acteon_bus::ScanFrom::FromOffsets(offsets),
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("invalid lookup cursor: {msg}"),
+                        }),
+                    )
+                        .into_response();
                 }
-                acteon_bus::ScanFrom::FromOffsets(offsets)
-            }
+            },
             None => acteon_bus::ScanFrom::Latest,
         };
         let mut stream = match backend.scan_topic(&events_topic, scan_from).await {
