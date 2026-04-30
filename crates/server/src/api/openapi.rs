@@ -197,6 +197,10 @@ use acteon_core::{
         super::bus::post_stream_chunk,
         super::bus::post_stream_end,
         super::bus::consume_stream,
+        super::bus::list_bus_approvals,
+        super::bus::get_bus_approval,
+        super::bus::approve_bus_approval,
+        super::bus::reject_bus_approval,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -283,6 +287,11 @@ use acteon_core::{
         super::bus::PostStreamChunkRequest, super::bus::PostStreamEndRequest,
         super::bus::StreamEnvelopeReceipt,
         acteon_core::StreamChunk, acteon_core::StreamEnd, acteon_core::StreamEndStatus,
+        super::bus::BusApprovalParkedReceipt, super::bus::BusApprovalView,
+        super::bus::ListBusApprovalsResponse,
+        super::bus::BusApprovalDecisionRequest, super::bus::BusApprovalDecisionResponse,
+        acteon_core::BusApproval, acteon_core::BusApprovalEnvelope,
+        acteon_core::BusApprovalStatus,
     ))
 )]
 pub struct ApiDoc;
