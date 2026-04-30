@@ -55,6 +55,8 @@ async fn ui_serves_index_html() {
         swarm_registry: None,
         #[cfg(feature = "bus")]
         bus_backend: None,
+        #[cfg(feature = "bus")]
+        bus_schema_validator: acteon_bus::SchemaValidator::new(),
     };
 
     let app = acteon_server::api::router(state);
