@@ -409,6 +409,21 @@ pub fn router(state: AppState) -> Router {
             "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
             get(bus::lookup_tool_result),
         )
+        // Phase 6b: streaming chunks (server stamps
+        // `acteon.envelope.kind ∈ stream_chunk|stream_end`,
+        // `acteon.stream.id`, `acteon.stream.seq`).
+        .route(
+            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-chunks",
+            post(bus::post_stream_chunk),
+        )
+        .route(
+            "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-end",
+            post(bus::post_stream_end),
+        )
+        .route(
+            "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
+            get(bus::consume_stream),
+        )
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
         .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))

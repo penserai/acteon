@@ -6309,3 +6309,746 @@ pub async fn lookup_tool_result(
         service_unavailable("bus feature not compiled")
     }
 }
+
+// =============================================================================
+// Phase 6b: streaming chunks layered on conversation messages
+// =============================================================================
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/stream-chunks`.
+/// Wraps a [`acteon_core::StreamChunk`] and produces a conversation
+/// message with envelope kind `"stream_chunk"`. The bus stamps routing
+/// headers (`acteon.envelope.kind`, `acteon.stream.id`,
+/// `acteon.stream.seq`) so subscribers can header-filter without
+/// parsing the payload.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PostStreamChunkRequest {
+    pub stream_id: String,
+    pub chunk_seq: i64,
+    /// Chunk payload — opaque to the bus. Token, partial JSON, raw
+    /// bytes encoded as a string, whatever the producer and consumer
+    /// agree on.
+    #[schema(value_type = Object)]
+    #[serde(default)]
+    pub body: serde_json::Value,
+    #[serde(default)]
+    pub sender: Option<String>,
+    /// Free-form metadata. Bounded by the publish path's label caps.
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/stream-end`.
+/// Marks the stream complete (or not) and carries an optional error
+/// message. Consumers stop reading once they observe this for their
+/// `stream_id`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PostStreamEndRequest {
+    pub stream_id: String,
+    pub chunk_seq: i64,
+    pub status: acteon_core::StreamEndStatus,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StreamEnvelopeReceipt {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub stream_id: String,
+    pub chunk_seq: i64,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+    /// Opaque resume cursor encoding `{partition: offset}`. Pass it
+    /// back to `GET /v1/bus/streams/...` as `?cursor=` to scan only
+    /// records produced *after* this envelope. Without a cursor, the
+    /// SSE consume defaults to `Latest` (cheap, but may miss earlier
+    /// chunks of a long-lived stream).
+    pub cursor: String,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct StreamConsumeParams {
+    /// Resume cursor from a `POST /stream-chunks` receipt — encodes
+    /// the per-partition offset where the chunk was produced.
+    /// Strongly recommended for production flows: a producer should
+    /// pass the receipt's `cursor` from chunk 0 to consumers so they
+    /// see the full stream. Without it, the scan defaults to `Latest`
+    /// (cheap, races with chunks landing). Earlier the default would
+    /// have been `Earliest`, which is a full-history scan and a clear
+    /// `DoS` vector — same trade-off as the tool-result lookup.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Override `cursor`-driven scan position. `earliest` scans from
+    /// topic head — only useful for short-lived test topics or
+    /// recovering a known-old stream. `latest` is the default.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// `agent_id` the caller is acting as — required when the
+    /// conversation has a non-empty `participants` ACL. Mirrors the
+    /// `as_agent` semantics used elsewhere in Phase 5/6a.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+#[cfg(feature = "bus")]
+const ENVELOPE_KIND_STREAM_CHUNK: &str = "stream_chunk";
+#[cfg(feature = "bus")]
+const ENVELOPE_KIND_STREAM_END: &str = "stream_end";
+
+/// Stamp the standard streaming routing headers on a `BusMessage`.
+/// Reserved `acteon.*` keys are inserted directly (`with_header`
+/// strips them on user input by design).
+#[cfg(feature = "bus")]
+fn stamp_stream_envelope_headers(
+    msg: &mut acteon_bus::BusMessage,
+    kind: &'static str,
+    stream_id: &str,
+    chunk_seq: i64,
+) {
+    msg.headers
+        .insert("acteon.envelope.kind".into(), kind.to_string());
+    msg.headers
+        .insert("acteon.stream.id".into(), stream_id.to_string());
+    msg.headers
+        .insert("acteon.stream.seq".into(), chunk_seq.to_string());
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-chunks",
+    tag = "bus",
+    request_body = PostStreamChunkRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Stream chunk appended", body = StreamEnvelopeReceipt),
+        (status = 400, description = "Invalid envelope, sender ACL, or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn post_stream_chunk(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<PostStreamChunkRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        let mut envelope =
+            acteon_core::StreamChunk::new(&req.stream_id, req.chunk_seq, req.body.clone());
+        envelope.sender = req.sender.clone();
+        envelope.metadata = req.metadata.clone();
+        if let Err(e) = envelope.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(resp) = validate_user_labels(&envelope.metadata) {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {} is archived; reopen via /transition before posting stream chunks",
+                        conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if !conv.participants.is_empty() {
+            match envelope.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; stream-chunk sender is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let payload = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let events_topic = conv.effective_events_topic();
+        if let Err(resp) = validate_payload_against_topic_schema(
+            &state,
+            &conv.namespace,
+            &conv.tenant,
+            &events_topic,
+            &payload,
+        )
+        .await
+        {
+            return resp;
+        }
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
+            .with_key(&conv.conversation_id);
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(s) = &envelope.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), s.clone());
+        }
+        stamp_stream_envelope_headers(
+            &mut msg,
+            ENVELOPE_KIND_STREAM_CHUNK,
+            &envelope.stream_id,
+            envelope.chunk_seq,
+        );
+        match backend.produce(msg).await {
+            Ok(receipt) => {
+                let mut cursor_map = std::collections::BTreeMap::new();
+                cursor_map.insert(receipt.partition, receipt.offset);
+                let cursor = encode_replay_cursor(&cursor_map);
+                let conv_id_for_bump = conv.conversation_id.clone();
+                let resp = (
+                    StatusCode::OK,
+                    Json(StreamEnvelopeReceipt {
+                        events_topic: receipt.topic,
+                        conversation_id: conv.conversation_id,
+                        stream_id: envelope.stream_id,
+                        chunk_seq: envelope.chunk_seq,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                        cursor,
+                    }),
+                );
+                let bump_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id_for_bump,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &bump_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if bump.is_err() {
+                    tracing::warn!(
+                        conversation_id = %conv_id_for_bump,
+                        "stream-chunk produced but conversation updated_at bump failed",
+                    );
+                }
+                resp.into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/stream-end",
+    tag = "bus",
+    request_body = PostStreamEndRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Stream terminator appended", body = StreamEnvelopeReceipt),
+        (status = 400, description = "Invalid envelope or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn post_stream_end(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<PostStreamEndRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        let envelope = acteon_core::StreamEnd {
+            stream_id: req.stream_id.clone(),
+            chunk_seq: req.chunk_seq,
+            status: req.status,
+            error_message: req.error_message.clone(),
+            sender: req.sender.clone(),
+            metadata: req.metadata.clone(),
+            created_at: Utc::now(),
+        };
+        if let Err(e) = envelope.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(resp) = validate_user_labels(&envelope.metadata) {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {} is archived; reopen via /transition before posting stream-end",
+                        conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if !conv.participants.is_empty() {
+            match envelope.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; stream-end sender is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let payload = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let events_topic = conv.effective_events_topic();
+        if let Err(resp) = validate_payload_against_topic_schema(
+            &state,
+            &conv.namespace,
+            &conv.tenant,
+            &events_topic,
+            &payload,
+        )
+        .await
+        {
+            return resp;
+        }
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
+            .with_key(&conv.conversation_id);
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(s) = &envelope.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), s.clone());
+        }
+        stamp_stream_envelope_headers(
+            &mut msg,
+            ENVELOPE_KIND_STREAM_END,
+            &envelope.stream_id,
+            envelope.chunk_seq,
+        );
+        match backend.produce(msg).await {
+            Ok(receipt) => {
+                let mut cursor_map = std::collections::BTreeMap::new();
+                cursor_map.insert(receipt.partition, receipt.offset);
+                let cursor = encode_replay_cursor(&cursor_map);
+                let conv_id_for_bump = conv.conversation_id.clone();
+                let resp = (
+                    StatusCode::OK,
+                    Json(StreamEnvelopeReceipt {
+                        events_topic: receipt.topic,
+                        conversation_id: conv.conversation_id,
+                        stream_id: envelope.stream_id,
+                        chunk_seq: envelope.chunk_seq,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                        cursor,
+                    }),
+                );
+                let bump_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id_for_bump,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &bump_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if bump.is_err() {
+                    tracing::warn!(
+                        conversation_id = %conv_id_for_bump,
+                        "stream-end produced but conversation updated_at bump failed",
+                    );
+                }
+                resp.into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+/// SSE consume of a single stream — header-filters the conversation
+/// events topic for `(envelope.kind ∈ {stream_chunk, stream_end},
+/// conversation.id == conversation_id, stream.id == stream_id)`.
+/// Emits one SSE event per matching record (`event: bus.stream.chunk`
+/// or `bus.stream.end`) and closes the stream when a terminal
+/// `stream_end` is observed. Reuses `BusBackend::scan_topic` (Kafka
+/// `assign()`, no consumer-group leak) — same primitive
+/// `lookup_tool_result` uses. Plain code span rather than an
+/// intra-doc link because `acteon_bus` is only in scope with the
+/// `bus` feature, and CI's `cargo doc` builds without it.
+#[utoipa::path(
+    get,
+    path = "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+        ("stream_id" = String, Path),
+        StreamConsumeParams,
+    ),
+    responses(
+        (status = 200, description = "SSE stream of stream_chunk/stream_end envelopes"),
+        (status = 400, description = "Invalid stream_id or cursor", body = ErrorResponse),
+        (status = 403, description = "as_agent not permitted on private conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation or events topic not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn consume_stream(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id, stream_id)): Path<(String, String, String, String)>,
+    Query(params): Query<StreamConsumeParams>,
+) -> axum::response::Response {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        // Streaming consume is a read; gate on Subscribe + the
+        // conversation-management grant (matches replay/lookup).
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Subscribe) {
+            return resp;
+        }
+        if let Err(e) = acteon_core::bus_stream::validate_id_field("stream_id", &stream_id) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+            return resp;
+        }
+        let events_topic = conv.effective_events_topic();
+        // Resolve scan position. Cursor wins; otherwise honor `from`;
+        // default `Latest`. Same DoS reasoning as `lookup_tool_result`.
+        let scan_from = match (&params.cursor, params.from.as_deref()) {
+            (Some(c), _) => match decode_replay_cursor(c) {
+                Ok(offsets) => acteon_bus::ScanFrom::FromOffsets(offsets),
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("invalid stream cursor: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            (None, Some("earliest")) => acteon_bus::ScanFrom::Earliest,
+            (None, Some("latest") | None) => acteon_bus::ScanFrom::Latest,
+            (None, Some(other)) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("unknown 'from' value '{other}' (expected earliest|latest)"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let inner = match backend.scan_topic(&events_topic, scan_from).await {
+            Ok(s) => s,
+            Err(acteon_bus::BusError::TopicNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("events topic {events_topic} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let stream = sse_stream_for_stream_id(inner, conv.conversation_id.clone(), stream_id);
+        Sse::new(stream)
+            .keep_alive(
+                // `KeepAlive::text` is implemented in axum as
+                // `Event::default().comment(text)`, so this serializes
+                // as the comment-style heartbeat (`: keep-alive\n\n`)
+                // that strict SSE consumers and intermediate proxies
+                // prefer over a `data: ...` line that would fire a
+                // no-op event handler.
+                KeepAlive::new()
+                    .interval(Duration::from_secs(15))
+                    .text("keep-alive"),
+            )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, stream_id, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+/// Build the SSE event stream for `consume_stream`. Filters the raw
+/// scan to `(envelope.kind ∈ stream_chunk|stream_end, conversation.id
+/// == target_conv, stream.id == target_stream)`, emits a typed SSE
+/// event per match, and closes after a terminal `stream_end`.
+/// Header-only filter — payload deserialization happens *after* the
+/// triple match, so unrelated traffic on the shared events topic
+/// costs only a few hashmap lookups.
+///
+/// The `acteon.conversation.id` check is load-bearing for tenant
+/// isolation: by default every conversation in a tenant rides the
+/// same Kafka events topic, so two conversations using the same
+/// `stream_id` (`current-llm-run`, etc.) would otherwise leak each
+/// other's chunks to a consumer authorized only for one of them.
+#[cfg(feature = "bus")]
+fn sse_stream_for_stream_id(
+    inner: acteon_bus::SubscribeStream,
+    target_conversation_id: String,
+    target_stream_id: String,
+) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
+    use futures::stream::StreamExt as _;
+    futures::stream::unfold(
+        (inner, target_conversation_id, target_stream_id, false, 0u32),
+        |(mut inner, target_conv, target_stream, mut terminated, mut skipped)| async move {
+            if terminated {
+                return None;
+            }
+            loop {
+                match inner.next().await {
+                    Some(Ok(msg)) => {
+                        let kind = msg
+                            .headers
+                            .get("acteon.envelope.kind")
+                            .map(String::as_str)
+                            .unwrap_or_default();
+                        let is_chunk = kind == ENVELOPE_KIND_STREAM_CHUNK;
+                        let is_end = kind == ENVELOPE_KIND_STREAM_END;
+                        let matches_conv = msg
+                            .headers
+                            .get("acteon.conversation.id")
+                            .is_some_and(|v| v == &target_conv);
+                        let matches_stream = msg
+                            .headers
+                            .get("acteon.stream.id")
+                            .is_some_and(|v| v == &target_stream);
+                        if !(is_chunk || is_end) || !matches_conv || !matches_stream {
+                            // Yield to the executor every
+                            // `SCAN_YIELD_EVERY` non-matching records
+                            // so a busy events topic with traffic for
+                            // other streams doesn't starve other
+                            // tasks on a single-threaded runtime.
+                            // Same rationale as `lookup_tool_result`
+                            // / `replay_conversation_messages`.
+                            skipped = skipped.wrapping_add(1);
+                            if skipped.is_multiple_of(SCAN_YIELD_EVERY) {
+                                tokio::task::yield_now().await;
+                            }
+                            continue;
+                        }
+                        let id = msg.offset.unwrap_or_default().to_string();
+                        let event_name = if is_end {
+                            "bus.stream.end"
+                        } else {
+                            "bus.stream.chunk"
+                        };
+                        let data =
+                            serde_json::to_string(&msg.payload).unwrap_or_else(|_| "{}".into());
+                        if is_end {
+                            terminated = true;
+                        }
+                        let ev = Event::default().event(event_name).id(id).data(data);
+                        return Some((
+                            Ok::<_, Infallible>(ev),
+                            (inner, target_conv, target_stream, terminated, skipped),
+                        ));
+                    }
+                    Some(Err(e)) => {
+                        // `serde_json::to_string` on a `{"error": str}`
+                        // map handles all the JSON escaping (quotes,
+                        // backslashes, control chars). Hand-rolled
+                        // `format!("{{\"error\":\"{e}\"}}")` would
+                        // emit invalid JSON for any error message
+                        // containing those characters, breaking
+                        // EventSource parsers downstream.
+                        let body = serde_json::json!({"error": e.to_string()});
+                        let data = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+                        let ev = Event::default().event("bus.stream.error").data(data);
+                        return Some((
+                            Ok::<_, Infallible>(ev),
+                            (inner, target_conv, target_stream, true, skipped),
+                        ));
+                    }
+                    None => return None,
+                }
+            }
+        },
+    )
+}

@@ -194,6 +194,9 @@ use acteon_core::{
         super::bus::post_tool_call,
         super::bus::post_tool_result,
         super::bus::lookup_tool_result,
+        super::bus::post_stream_chunk,
+        super::bus::post_stream_end,
+        super::bus::consume_stream,
     ),
     components(schemas(
         Action, ActionOutcome, ProviderResponse, ResponseStatus, ActionError,
@@ -277,6 +280,9 @@ use acteon_core::{
         super::bus::ToolEnvelopeReceipt, super::bus::ToolResultLookupResponse,
         acteon_core::ToolCall, acteon_core::ToolResult,
         acteon_core::ToolResultStatus,
+        super::bus::PostStreamChunkRequest, super::bus::PostStreamEndRequest,
+        super::bus::StreamEnvelopeReceipt,
+        acteon_core::StreamChunk, acteon_core::StreamEnd, acteon_core::StreamEndStatus,
     ))
 )]
 pub struct ApiDoc;

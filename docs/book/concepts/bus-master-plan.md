@@ -105,7 +105,11 @@ Migration will be opt-in, per-feature, never forced.
 
 ## Phase status
 
-- **Phase 1** — in progress (PR #1)
-- Phase 2–9 — not started
-
-See [phase-1 feature doc](../features/bus-phase-1.md) for current-state details.
+- **Phase 1** — shipped — see [phase-1 feature doc](../features/bus-phase-1.md)
+- **Phase 2** — shipped — see [phase-2 feature doc](../features/bus-phase-2.md)
+- **Phase 3** — shipped — see [phase-3 feature doc](../features/bus-phase-3.md)
+- **Phase 4** — shipped — see [phase-4 feature doc](../features/bus-phase-4.md)
+- **Phase 5** — shipped — see [phase-5 feature doc](../features/bus-phase-5.md)
+- **Phase 6a** (typed tool envelopes) — shipped — see [phase-6a feature doc](../features/bus-phase-6a.md)
+- **Phase 6b** (streaming chunks) — shipped — see [phase-6b feature doc](../features/bus-phase-6b.md)
+- Phases 6c, 7, 8, 9 — not started
