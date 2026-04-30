@@ -1175,6 +1175,83 @@ impl ActeonClient {
         )
         .await
     }
+
+    // ----- Phase 6b: streaming envelopes -----
+
+    /// Append a stream-chunk envelope to a conversation. The bus
+    /// stamps `acteon.envelope.kind = stream_chunk`, `acteon.stream.id`,
+    /// and `acteon.stream.seq` headers so subscribers can header-filter
+    /// without parsing the chunk body.
+    pub async fn post_bus_stream_chunk(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        req: &PostBusStreamChunk,
+    ) -> Result<BusStreamEnvelopeReceipt, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, Some("stream-chunks"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusStreamEnvelopeReceipt>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Append the terminal `stream_end` marker. Once produced, SSE
+    /// consumers of `GET /v1/bus/streams/.../{stream_id}` close their
+    /// connection on observing this record.
+    pub async fn post_bus_stream_end(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        req: &PostBusStreamEnd,
+    ) -> Result<BusStreamEnvelopeReceipt, Error> {
+        let url = self.conversation_url(namespace, tenant, conversation_id, Some("stream-end"));
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusStreamEnvelopeReceipt>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Build the SSE consume URL for a stream. Useful when the caller
+    /// wants to plug it into a browser `EventSource`, `curl
+    /// -N --header 'accept: text/event-stream'`, or any other
+    /// SSE-aware client. Encodes path segments per the bus URL rules.
+    #[must_use]
+    pub fn bus_stream_consume_url(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        stream_id: &str,
+    ) -> String {
+        format!(
+            "{}/v1/bus/streams/{}/{}/{}/{}",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(conversation_id),
+            encode_segment(stream_id),
+        )
+    }
 }
 
 // ----- Phase 3: DTOs -----
@@ -1606,6 +1683,56 @@ pub struct BusToolResultLookup {
     pub offset: i64,
     pub produced_at: String,
     pub result: BusToolResult,
+}
+
+// ----- Phase 6b: streaming-envelope DTOs -----
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct PostBusStreamChunk {
+    pub stream_id: String,
+    pub chunk_seq: i64,
+    #[serde(default)]
+    pub body: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BusStreamEndStatus {
+    Complete,
+    Aborted,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostBusStreamEnd {
+    pub stream_id: String,
+    pub chunk_seq: i64,
+    pub status: BusStreamEndStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusStreamEnvelopeReceipt {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub stream_id: String,
+    pub chunk_seq: i64,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: String,
+    /// Opaque resume cursor encoding `{partition: offset}`. Pass it
+    /// to the SSE consumer as `?cursor=` to scan from strictly after
+    /// this envelope.
+    pub cursor: String,
 }
 
 async fn map_error(resp: reqwest::Response) -> Error {

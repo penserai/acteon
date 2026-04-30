@@ -228,5 +228,9 @@ required-features = ["bus"]
 name = "bus_tool_call_simulation"
 required-features = ["bus"]
 
+[[example]]
+name = "bus_stream_simulation"
+required-features = ["bus"]
+
 [lints]
 workspace = true

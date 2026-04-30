@@ -4,6 +4,7 @@ pub mod attachment;
 pub mod bus_agent;
 pub mod bus_conversation;
 pub mod bus_schema;
+pub mod bus_stream;
 pub mod bus_subscription;
 pub mod bus_tool;
 pub mod bus_topic;
@@ -45,6 +46,7 @@ pub use bus_conversation::{
     DEFAULT_CONVERSATIONS_EVENTS_SUFFIX,
 };
 pub use bus_schema::{Schema, SchemaFormat, SchemaValidationError};
+pub use bus_stream::{StreamChunk, StreamEnd, StreamEndStatus, StreamEnvelopeValidationError};
 pub use bus_subscription::{
     AckMode, PartitionLag, StartOffset as SubscriptionStartOffset, Subscription,
     SubscriptionStatus, SubscriptionValidationError,
