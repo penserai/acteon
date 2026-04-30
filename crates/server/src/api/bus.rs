@@ -6930,7 +6930,7 @@ pub async fn consume_stream(
                     .into_response();
             }
         };
-        let stream = sse_stream_for_stream_id(inner, stream_id);
+        let stream = sse_stream_for_stream_id(inner, conv.conversation_id.clone(), stream_id);
         Sse::new(stream)
             .keep_alive(
                 // `KeepAlive::text` is implemented in axum as
@@ -6953,20 +6953,28 @@ pub async fn consume_stream(
 }
 
 /// Build the SSE event stream for `consume_stream`. Filters the raw
-/// scan to `(envelope.kind ∈ stream_chunk|stream_end, stream.id ==
-/// target)`, emits a typed SSE event per match, and closes after a
-/// terminal `stream_end`. Header-only filter — payload deserialization
-/// happens *after* the kind/id match, so unrelated traffic on the
-/// conversation events topic costs only a hashmap lookup.
+/// scan to `(envelope.kind ∈ stream_chunk|stream_end, conversation.id
+/// == target_conv, stream.id == target_stream)`, emits a typed SSE
+/// event per match, and closes after a terminal `stream_end`.
+/// Header-only filter — payload deserialization happens *after* the
+/// triple match, so unrelated traffic on the shared events topic
+/// costs only a few hashmap lookups.
+///
+/// The `acteon.conversation.id` check is load-bearing for tenant
+/// isolation: by default every conversation in a tenant rides the
+/// same Kafka events topic, so two conversations using the same
+/// `stream_id` (`current-llm-run`, etc.) would otherwise leak each
+/// other's chunks to a consumer authorized only for one of them.
 #[cfg(feature = "bus")]
 fn sse_stream_for_stream_id(
     inner: acteon_bus::SubscribeStream,
+    target_conversation_id: String,
     target_stream_id: String,
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     use futures::stream::StreamExt as _;
     futures::stream::unfold(
-        (inner, target_stream_id, false, 0u32),
-        |(mut inner, target, mut terminated, mut skipped)| async move {
+        (inner, target_conversation_id, target_stream_id, false, 0u32),
+        |(mut inner, target_conv, target_stream, mut terminated, mut skipped)| async move {
             if terminated {
                 return None;
             }
@@ -6980,11 +6988,15 @@ fn sse_stream_for_stream_id(
                             .unwrap_or_default();
                         let is_chunk = kind == ENVELOPE_KIND_STREAM_CHUNK;
                         let is_end = kind == ENVELOPE_KIND_STREAM_END;
-                        let matches = msg
+                        let matches_conv = msg
+                            .headers
+                            .get("acteon.conversation.id")
+                            .is_some_and(|v| v == &target_conv);
+                        let matches_stream = msg
                             .headers
                             .get("acteon.stream.id")
-                            .is_some_and(|v| v == &target);
-                        if !(is_chunk || is_end) || !matches {
+                            .is_some_and(|v| v == &target_stream);
+                        if !(is_chunk || is_end) || !matches_conv || !matches_stream {
                             // Yield to the executor every
                             // `SCAN_YIELD_EVERY` non-matching records
                             // so a busy events topic with traffic for
@@ -7012,7 +7024,7 @@ fn sse_stream_for_stream_id(
                         let ev = Event::default().event(event_name).id(id).data(data);
                         return Some((
                             Ok::<_, Infallible>(ev),
-                            (inner, target, terminated, skipped),
+                            (inner, target_conv, target_stream, terminated, skipped),
                         ));
                     }
                     Some(Err(e)) => {
@@ -7029,7 +7041,7 @@ fn sse_stream_for_stream_id(
                         let ev = Event::default().event("bus.stream.error").data(data);
                         return Some((
                             Ok::<_, Infallible>(ev),
-                            (inner, target, true, skipped),
+                            (inner, target_conv, target_stream, true, skipped),
                         ));
                     }
                     None => return None,

@@ -82,8 +82,14 @@ connection. The handler:
 2. Reads the events topic via `BusBackend::scan_topic` (Kafka
    `assign()`, no consumer-group leak).
 3. Header-filters on `acteon.envelope.kind ∈ {stream_chunk, stream_end}`
-   AND `acteon.stream.id == stream_id`. Payload deserialization
-   doesn't run on records that fail the filter.
+   AND `acteon.conversation.id == conversation_id` AND
+   `acteon.stream.id == stream_id`. Payload deserialization
+   doesn't run on records that fail the filter. The
+   conversation-id check is load-bearing: by default every
+   conversation in a tenant rides the same Kafka events topic, so
+   two conversations using the same `stream_id`
+   (`current-llm-run`, etc.) would otherwise leak each other's
+   chunks to a consumer authorized only for one of them.
 4. Emits an SSE event per match: `event: bus.stream.chunk` for chunks,
    `event: bus.stream.end` for the terminal record.
 5. Closes the connection cleanly when a `stream_end` for the target

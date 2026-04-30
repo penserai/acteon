@@ -14,11 +14,20 @@
 //!
 //! 1. Producer emits five `StreamChunk` envelopes (`chunk_seq` 0..=4)
 //!    plus a terminal `StreamEnd { status: Complete }`.
-//! 2. Consumer scans the events topic, header-filters on
-//!    `acteon.envelope.kind ∈ {stream_chunk, stream_end}` and
+//! 2. A *second* conversation produces a chunk with the *same*
+//!    `stream_id`. This is the cross-conversation isolation
+//!    regression: by default every conversation in a tenant rides
+//!    the same Kafka events topic, so two conversations using the
+//!    same `stream_id` (`current-llm-run`, etc.) would otherwise
+//!    leak each other's chunks to a consumer authorized only for
+//!    one of them. The SSE filter must check both
+//!    `acteon.conversation.id` and `acteon.stream.id`.
+//! 3. Consumer scans the events topic, header-filters on
+//!    `acteon.envelope.kind ∈ {stream_chunk, stream_end}`,
+//!    `acteon.conversation.id == storytelling-thread`, and
 //!    `acteon.stream.id == story-1`, and reassembles the chunks in
-//!    order.
-//! 3. Stream stops cleanly when `stream_end` is observed.
+//!    order. The other conversation's chunk is silently skipped.
+//! 4. Stream stops cleanly when `stream_end` is observed.
 //!
 //! Run with:
 //! ```text
@@ -114,13 +123,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(stream_id = %end.stream_id, status = ?end.status, "stream_end produced");
 
     // -----------------------------------------------------------------
+    // 1b. Decoy: a *different* conversation produces a chunk with the
+    //     *same* stream_id. The consumer below must not see it. This
+    //     exercises the cross-conversation isolation gate added in
+    //     review pass 2.
+    // -----------------------------------------------------------------
+
+    let other_conv = Conversation::new("other-thread", "agents", "demo");
+    let mut decoy = StreamChunk::new(stream_id, 0, json!({"token": "LEAK_FROM_OTHER_CONV"}));
+    decoy.sender = Some("storyteller-2".into());
+    decoy.validate()?;
+    let decoy_payload = serde_json::to_value(&decoy)?;
+    let mut decoy_msg =
+        BusMessage::new(topic.clone(), decoy_payload).with_key(&other_conv.conversation_id);
+    decoy_msg.headers.insert(
+        "acteon.conversation.id".into(),
+        other_conv.conversation_id.clone(),
+    );
+    decoy_msg.headers.insert(
+        "acteon.conversation.sender".into(),
+        decoy.sender.clone().unwrap_or_default(),
+    );
+    decoy_msg
+        .headers
+        .insert("acteon.envelope.kind".into(), "stream_chunk".into());
+    decoy_msg
+        .headers
+        .insert("acteon.stream.id".into(), decoy.stream_id.clone());
+    decoy_msg
+        .headers
+        .insert("acteon.stream.seq".into(), decoy.chunk_seq.to_string());
+    backend.produce(decoy_msg).await?;
+    info!(stream_id = %decoy.stream_id, conversation = %other_conv.conversation_id, "decoy chunk in different conversation produced");
+
+    // -----------------------------------------------------------------
     // 2. Consumer reassembles by scanning + header-filtering
     // -----------------------------------------------------------------
 
     // Same primitive the `consume_stream` SSE handler uses internally:
     // `scan_topic` (Kafka `assign()`, no consumer-group leak), then
-    // we filter on `acteon.envelope.kind` and `acteon.stream.id`
-    // before deserializing each payload.
+    // we filter on `acteon.envelope.kind`, `acteon.conversation.id`
+    // (cross-conversation isolation — see scenario 1b above), and
+    // `acteon.stream.id` before deserializing each payload.
     let mut scan = backend.scan_topic(&topic, ScanFrom::Earliest).await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let mut chunks: Vec<StreamChunk> = Vec::new();
@@ -139,11 +183,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .get("acteon.envelope.kind")
                             .map(String::as_str)
                             .unwrap_or_default();
-                        let matches = msg
+                        let matches_conv = msg
+                            .headers
+                            .get("acteon.conversation.id")
+                            .is_some_and(|v| v == &conv.conversation_id);
+                        let matches_stream = msg
                             .headers
                             .get("acteon.stream.id")
                             .is_some_and(|v| v == stream_id);
-                        if !matches {
+                        if !matches_conv || !matches_stream {
                             continue;
                         }
                         match kind {
@@ -181,6 +229,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
     info!(reassembled = %reassembled, chunk_count = chunks.len(), "stream reassembled");
     assert_eq!(reassembled, "Once upon a time in a far-off land.");
+    // Cross-conversation isolation regression: the decoy chunk
+    // produced under `other-thread` carried the same `stream_id`,
+    // but the conversation-id header check kept it out of our
+    // reassembly.
+    assert!(
+        !reassembled.contains("LEAK_FROM_OTHER_CONV"),
+        "consumer leaked a chunk from a different conversation",
+    );
 
     info!("stream simulation complete");
     Ok(())
