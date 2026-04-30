@@ -5,6 +5,7 @@ pub mod bus_agent;
 pub mod bus_conversation;
 pub mod bus_schema;
 pub mod bus_subscription;
+pub mod bus_tool;
 pub mod bus_topic;
 pub mod caller;
 pub mod chain;
@@ -48,6 +49,7 @@ pub use bus_subscription::{
     AckMode, PartitionLag, StartOffset as SubscriptionStartOffset, Subscription,
     SubscriptionStatus, SubscriptionValidationError,
 };
+pub use bus_tool::{ToolCall, ToolEnvelopeValidationError, ToolResult, ToolResultStatus};
 pub use bus_topic::{Topic, TopicValidationError};
 pub use caller::Caller;
 pub use chain::{

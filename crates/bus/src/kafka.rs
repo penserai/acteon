@@ -453,20 +453,24 @@ impl BusBackend for KafkaBackend {
                 }
             }
             ScanFrom::FromOffsets(offsets) => {
-                // Resume each partition from the next-after-last
-                // offset the caller saw. Partitions absent from the
-                // map are skipped — the contract is "the caller has
-                // already drained them" (e.g. a single-partition
-                // conversation that lives entirely on partition 0).
+                // Listed partitions resume at `last_seen + 1`;
+                // partitions absent from the map default to `End`
+                // (the broker's high-water mark at scan start). The
+                // earlier "skip absent" contract silently locked
+                // single-partition cursors (e.g. a `ToolCall`
+                // receipt) to one partition, so reply_to flows that
+                // routed the result to a different partition would
+                // never see it. The new shape preserves the
+                // caller's resume intent on listed partitions while
+                // letting unlisted ones still observe new records.
                 for p in topic_meta.partitions() {
-                    if let Some(&last_seen) = offsets.get(&p.id()) {
-                        tpl.add_partition_offset(
-                            kafka_topic,
-                            p.id(),
-                            rdkafka::Offset::Offset(last_seen + 1),
-                        )
+                    let offset = offsets
+                        .get(&p.id())
+                        .map_or(rdkafka::Offset::End, |&last_seen| {
+                            rdkafka::Offset::Offset(last_seen + 1)
+                        });
+                    tpl.add_partition_offset(kafka_topic, p.id(), offset)
                         .map_err(|e| BusError::Transport(format!("tpl: {e}")))?;
-                    }
                 }
             }
         }

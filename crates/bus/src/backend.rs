@@ -22,8 +22,21 @@ pub enum ScanFrom {
     /// Read from the broker's high-water mark on every partition.
     Latest,
     /// Read each partition starting at the explicit offset given;
-    /// partitions absent from the map are skipped (the caller has
-    /// already drained them).
+    /// partitions absent from the map default to `Latest` (the
+    /// broker's high-water mark at scan start). This shape
+    /// preserves "resume here" intent for partitions the caller has
+    /// tracked while still catching new records on partitions the
+    /// caller doesn't have an offset for — important for flows like
+    /// tool-call lookup where a single-partition cursor (the
+    /// originating call's partition) must still observe results
+    /// that land on other partitions via `reply_to`.
+    ///
+    /// Earlier the contract was "absent partitions are skipped"
+    /// (intent: the caller had drained them). That made
+    /// `FromOffsets` a footgun for any caller that didn't fully
+    /// pre-populate the map; the safer contract is to scan
+    /// everything by default and let the explicit entries narrow
+    /// the start point per partition.
     FromOffsets(BTreeMap<i32, i64>),
 }
 

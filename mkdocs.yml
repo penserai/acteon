@@ -188,6 +188,7 @@ nav:
     - Phase 3 (Schemas + Publish Validation): features/bus-phase-3.md
     - Phase 4 (Agents + Shared Inbox + Heartbeat): features/bus-phase-4.md
     - Phase 5 (Conversations + Threads): features/bus-phase-5.md
+    - Phase 6a (Tool-call envelopes): features/bus-phase-6a.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md

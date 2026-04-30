@@ -161,6 +161,15 @@ const MAX_USER_HEADER_VALUE_BYTES: usize = 4096;
 #[cfg(feature = "bus")]
 const MAX_CAS_RETRY_ATTEMPTS: u32 = 8;
 
+/// How often the busy scan loops in `lookup_tool_result` and
+/// `replay_conversation_messages` yield back to the tokio executor
+/// while skipping non-matching records. `stream.next()` may return
+/// `Poll::Ready` repeatedly when the consumer has buffered data, so
+/// without an explicit yield a long lookup on a busy topic could
+/// monopolize a single-threaded executor and starve other tasks.
+#[cfg(feature = "bus")]
+const SCAN_YIELD_EVERY: u32 = 256;
+
 /// Read-modify-write a JSON-serialized state row atomically via
 /// `compare_and_swap`. The mutator closure runs on a freshly-loaded
 /// copy each iteration; if the underlying row changed mid-loop, the
@@ -2185,6 +2194,139 @@ async fn ensure_schema_in_validator(
     }
 }
 
+/// Enforce read-side participant ACL. The write-side handlers
+/// (`append_conversation_message`, `post_tool_call`,
+/// `post_tool_result`) already gate on the envelope's `sender`; the
+/// read paths used to skip the equivalent check, so any caller with
+/// the tenant-level `ManageConversation` grant could read a
+/// "private" conversation just by knowing its id. This helper
+/// closes that gap.
+///
+/// Contract:
+/// - Empty participants list → ACL is open; no `as_agent` required.
+/// - Non-empty list → caller must supply `as_agent`, and it must be
+///   on the list. Otherwise 403.
+///
+/// V1 read-isolation: the asserted `as_agent` is taken at face value
+/// once the caller has the tenant grant. A future iteration can
+/// derive the agent identity from the API-key grant directly so
+/// callers can't claim arbitrary agent identities.
+#[cfg(feature = "bus")]
+fn enforce_conversation_read_acl(
+    conv: &acteon_core::Conversation,
+    as_agent: Option<&str>,
+) -> Result<(), axum::response::Response> {
+    if conv.participants.is_empty() {
+        return Ok(());
+    }
+    match as_agent {
+        Some(a) if conv.participants.iter().any(|p| p == a) => Ok(()),
+        Some(a) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "as_agent '{a}' is not a participant of conversation {}; cannot read",
+                    conv.conversation_id
+                ),
+            }),
+        )
+            .into_response()),
+        None => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "conversation {} has a participant ACL; pass `as_agent` matching one of the participants",
+                    conv.conversation_id
+                ),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+/// Apply Phase 3 schema validation to a payload destined for
+/// `kafka_topic`. Used by every publish-style handler that doesn't
+/// already inline the validation block (the original `/v1/bus/publish`
+/// handler still does it inline; the conversation-layer handlers —
+/// tool calls, tool results — call this so a schema-bound events
+/// topic enforces uniformly).
+///
+/// No-ops cleanly when the topic record is missing or has no
+/// `(schema_subject, schema_version)` binding. On a binding mismatch,
+/// returns a 400 with the same `SchemaValidationErrorResponse` shape
+/// the publish handler uses, so SDK consumers see consistent errors.
+#[cfg(feature = "bus")]
+async fn validate_payload_against_topic_schema(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    kafka_topic: &str,
+    payload: &serde_json::Value,
+) -> Result<(), axum::response::Response> {
+    // Clone the `Arc<dyn StateStore>` and drop the gateway guard
+    // before any `.await` — same lock-amplification rule the rest of
+    // the bus handlers follow.
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusTopic,
+        kafka_topic,
+    );
+    let topic: Topic = match store.get(&key).await {
+        Ok(Some(raw)) => match serde_json::from_str(&raw) {
+            Ok(t) => t,
+            // Corrupt row — skip validation, let the underlying
+            // produce surface the issue. This mirrors the publish
+            // handler's resilience.
+            Err(_) => return Ok(()),
+        },
+        // Missing topic row (someone deleted it out of band): no
+        // binding to enforce. The underlying produce will fail
+        // separately if Kafka has lost the topic too.
+        Ok(None) | Err(_) => return Ok(()),
+    };
+    let (Some(subject), Some(version)) = (&topic.schema_subject, topic.schema_version) else {
+        return Ok(());
+    };
+    ensure_schema_in_validator(state, &topic.namespace, &topic.tenant, subject, version).await?;
+    match state.bus_schema_validator.validate(
+        &topic.namespace,
+        &topic.tenant,
+        subject,
+        version,
+        payload,
+    ) {
+        Ok(()) => Ok(()),
+        Err(acteon_bus::SchemaValidatorError::InvalidPayload(issues)) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(SchemaValidationErrorResponse {
+                error: format!("payload does not match schema '{subject}' v{version}"),
+                subject: subject.clone(),
+                version,
+                issues: issues
+                    .into_iter()
+                    .map(|i| SchemaValidationIssueDto {
+                        path: i.path,
+                        message: i.message,
+                    })
+                    .collect(),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/v1/bus/schemas",
@@ -4088,6 +4230,12 @@ pub struct ReplayConversationParams {
     /// offsets the previous call left off at.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// `agent_id` the caller is acting as. Required when the
+    /// conversation has a non-empty `participants` ACL — must be
+    /// on the list. Same V1 read-isolation model as
+    /// [`ToolResultLookupParams::as_agent`].
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -5032,6 +5180,11 @@ pub async fn replay_conversation_messages(
             Ok(c) => c,
             Err(resp) => return resp,
         };
+        // Read-side participant ACL. Without this, any caller with
+        // the tenant grant could replay a private thread by id.
+        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+            return resp;
+        }
         let limit = params.limit.unwrap_or(200).min(1000);
         let timeout_ms = params.timeout_ms.unwrap_or(1500);
         let events_topic = conv.effective_events_topic();
@@ -5166,7 +5319,11 @@ pub async fn replay_conversation_messages(
         // exhaustiveness without an unread initial value.
         // Fetch `limit + 1` so we can distinguish "exactly `limit`
         // messages exist" from "more exist" (the latter yields
-        // `Limit`).
+        // `Limit`). Yield to the scheduler every `SCAN_YIELD_EVERY`
+        // skipped records (those that belong to other conversations
+        // on the shared events topic) so a busy tenant can't starve
+        // other tasks on a single-threaded executor.
+        let mut replay_skipped: u32 = 0;
         let exit_reason: ReplayExitReason = loop {
             if messages.len() > limit {
                 messages.truncate(limit);
@@ -5219,6 +5376,10 @@ pub async fn replay_conversation_messages(
                                 .get("acteon.conversation.id")
                                 .is_some_and(|v| v == &conv.conversation_id);
                             if !belongs {
+                                replay_skipped = replay_skipped.wrapping_add(1);
+                                if replay_skipped.is_multiple_of(SCAN_YIELD_EVERY) {
+                                    tokio::task::yield_now().await;
+                                }
                                 continue;
                             }
                             messages.push(ReplayMessageEntry {
@@ -5312,5 +5473,839 @@ async fn load_conversation(
             }),
         )
             .into_response()),
+    }
+}
+
+// =============================================================================
+// Phase 6a: tool-call envelopes layered on conversation messages
+// =============================================================================
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/tool-calls`.
+/// Wraps a [`acteon_core::ToolCall`] and produces a conversation
+/// message with envelope kind `"tool_call"`. The bus stamps routing
+/// headers (`acteon.envelope.kind`, `acteon.tool.call_id`,
+/// `acteon.correlation_id`, `acteon.reply_to`) so subscribers can
+/// filter without parsing the payload.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PostToolCallRequest {
+    pub call_id: String,
+    pub tool: String,
+    /// Tool arguments. Free-form JSON; if the events topic is
+    /// schema-bound (Phase 3), validation runs at the underlying
+    /// publish edge.
+    #[schema(value_type = Object)]
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    /// Optional correlation token, propagated to the eventual
+    /// [`PostToolResultRequest`]. Stamped as `acteon.correlation_id`.
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    /// Override the conversation the matching result should land in.
+    /// Empty / null = "same conversation" (the reply lands here).
+    /// Stamped as `acteon.reply_to`.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    /// Sender agent id. Stamped as both
+    /// `acteon.conversation.sender` and on the envelope.
+    #[serde(default)]
+    pub sender: Option<String>,
+    /// Free-form tool metadata. Bounded by the publish path's label
+    /// caps (max 32 entries / 256B keys / 4KB values).
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+/// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/tool-results`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PostToolResultRequest {
+    pub call_id: String,
+    pub status: acteon_core::ToolResultStatus,
+    #[schema(value_type = Object)]
+    #[serde(default)]
+    pub output: serde_json::Value,
+    #[serde(default)]
+    pub error_message: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ToolEnvelopeReceipt {
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub call_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+    /// Opaque resume cursor encoding `{partition: offset}`. Pass it
+    /// back to `GET /v1/bus/tool-calls/{...}/result` as `?cursor=`
+    /// so the lookup scans only messages produced *after* this
+    /// envelope. Without a cursor, the lookup defaults to scanning
+    /// from the tail (which races with the result landing) or has
+    /// to do a full-history scan — neither is acceptable on a busy
+    /// cluster.
+    pub cursor: String,
+}
+
+/// Result of a `GET /v1/bus/tool-calls/{ns}/{t}/{call_id}/result` —
+/// either the matching [`acteon_core::ToolResult`] envelope plus a
+/// few bus coordinates, or a 408 if the timeout elapsed without a
+/// match.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ToolResultLookupResponse {
+    pub call_id: String,
+    pub events_topic: String,
+    pub conversation_id: String,
+    pub partition: i32,
+    pub offset: i64,
+    pub produced_at: DateTime<Utc>,
+    pub result: acteon_core::ToolResult,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ToolResultLookupParams {
+    /// **Required.** The conversation to scan for the matching
+    /// result. For `reply_to`-routed flows, set this to the
+    /// `reply_to` conversation. Required (rather than defaulting to
+    /// the tenant's shared events topic) so a conversation
+    /// registered with a custom `events_topic` is scanned at the
+    /// right Kafka topic — falling back to the default would have
+    /// silently looked at the wrong place.
+    pub conversation_id: String,
+    /// Resume cursor from the originating
+    /// `POST /tool-calls` receipt — encodes the per-partition
+    /// offset where the call was produced. Without it, the scan
+    /// defaults to `Latest` (cheap on a busy cluster, but races
+    /// with the result landing) — passing the receipt's `cursor`
+    /// is strongly recommended for production flows.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// How long to wait for a matching result. Default 5s; max 30s.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// `agent_id` the caller is acting as. Required when the target
+    /// conversation has a non-empty `participants` ACL — must be on
+    /// the list, otherwise the request is rejected. Without it (or
+    /// when the conversation is open), any caller with the
+    /// tenant-level grant can read; this is the V1 read-isolation
+    /// model. Future work: derive the agent identity from the
+    /// caller's API-key grant rather than a self-asserted query
+    /// param.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Envelope-kind header values. Server-stamped so subscribers can
+/// route on a single header lookup.
+#[cfg(feature = "bus")]
+const ENVELOPE_KIND_TOOL_CALL: &str = "tool_call";
+#[cfg(feature = "bus")]
+const ENVELOPE_KIND_TOOL_RESULT: &str = "tool_result";
+
+/// Helper: stamp the standard envelope routing headers on a
+/// `BusMessage`. Reserved `acteon.*` keys are inserted directly
+/// (`with_header` strips them on user input by design).
+#[cfg(feature = "bus")]
+fn stamp_tool_envelope_headers(
+    msg: &mut acteon_bus::BusMessage,
+    kind: &'static str,
+    call_id: &str,
+    correlation_id: Option<&str>,
+    reply_to: Option<&str>,
+) {
+    msg.headers
+        .insert("acteon.envelope.kind".into(), kind.to_string());
+    msg.headers
+        .insert("acteon.tool.call_id".into(), call_id.to_string());
+    if let Some(c) = correlation_id {
+        msg.headers
+            .insert("acteon.correlation_id".into(), c.to_string());
+    }
+    if let Some(r) = reply_to {
+        msg.headers.insert("acteon.reply_to".into(), r.to_string());
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-calls",
+    tag = "bus",
+    request_body = PostToolCallRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Tool-call envelope appended", body = ToolEnvelopeReceipt),
+        (status = 400, description = "Invalid envelope, sender ACL, or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn post_tool_call(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<PostToolCallRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        // Same two-level auth as `append_conversation_message`: must
+        // be allowed to manage conversations *and* publish on the
+        // tenant. A registry-only role can't quietly inject tool
+        // traffic onto the events topic.
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        // Construct the typed envelope first so validation runs
+        // before we do any bus or state I/O.
+        let mut envelope =
+            acteon_core::ToolCall::new(&req.call_id, &req.tool, req.arguments.clone());
+        envelope.correlation_id = req.correlation_id.clone();
+        envelope.reply_to = req.reply_to.clone();
+        envelope.sender = req.sender.clone();
+        envelope.metadata = req.metadata.clone();
+        if let Err(e) = envelope.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(resp) = validate_user_labels(&envelope.metadata) {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {} is archived; reopen via /transition before posting tool calls",
+                        conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        // Same participant ACL as plain conversation messages: a
+        // sender outside the participant list is rejected; if the
+        // ACL is set and `sender` is omitted, reject explicitly.
+        if !conv.participants.is_empty() {
+            match envelope.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; tool-call sender is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        let payload = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let events_topic = conv.effective_events_topic();
+        // Phase 3 schema validation. If the conversation events topic
+        // has a schema binding, the payload must match — otherwise
+        // tool envelopes would silently bypass the publish-edge gate
+        // that `/v1/bus/publish` enforces.
+        if let Err(resp) = validate_payload_against_topic_schema(
+            &state,
+            &conv.namespace,
+            &conv.tenant,
+            &events_topic,
+            &payload,
+        )
+        .await
+        {
+            return resp;
+        }
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
+            .with_key(&conv.conversation_id);
+        // Conversation-level routing headers, mirroring
+        // `append_conversation_message`.
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(s) = &envelope.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), s.clone());
+        }
+        stamp_tool_envelope_headers(
+            &mut msg,
+            ENVELOPE_KIND_TOOL_CALL,
+            &envelope.call_id,
+            envelope.correlation_id.as_deref(),
+            envelope.reply_to.as_deref(),
+        );
+        match backend.produce(msg).await {
+            Ok(receipt) => {
+                // Include a cursor pointing at this envelope's
+                // partition+offset so the caller can scan
+                // strictly-newer messages on a follow-up
+                // `lookup_tool_result` without re-reading topic
+                // history. Same encoding as Phase 5 replay cursors.
+                let mut cursor_map = std::collections::BTreeMap::new();
+                cursor_map.insert(receipt.partition, receipt.offset);
+                let cursor = encode_replay_cursor(&cursor_map);
+                let conv_id_for_bump = conv.conversation_id.clone();
+                let resp = (
+                    StatusCode::OK,
+                    Json(ToolEnvelopeReceipt {
+                        events_topic: receipt.topic,
+                        conversation_id: conv.conversation_id,
+                        call_id: envelope.call_id,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                        cursor,
+                    }),
+                );
+                // Bump conversation `updated_at` so list/sort by
+                // activity sees tool-driven traffic. Best-effort: if
+                // the CAS contends out, the message is already on
+                // Kafka; we log and return success rather than fail
+                // the produce.
+                let bump_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id_for_bump,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &bump_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if bump.is_err() {
+                    tracing::warn!(
+                        conversation_id = %conv_id_for_bump,
+                        "tool-envelope produced but conversation updated_at bump failed (CAS contention exhausted or backend error); list/sort will see a stale timestamp",
+                    );
+                }
+                resp.into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/conversations/{namespace}/{tenant}/{conversation_id}/tool-results",
+    tag = "bus",
+    request_body = PostToolResultRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("conversation_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Tool-result envelope appended", body = ToolEnvelopeReceipt),
+        (status = 400, description = "Invalid envelope or archived conversation", body = ErrorResponse),
+        (status = 404, description = "Conversation not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn post_tool_result(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, conversation_id)): Path<(String, String, String)>,
+    Json(req): Json<PostToolResultRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.as_ref() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        let envelope = acteon_core::ToolResult {
+            call_id: req.call_id.clone(),
+            status: req.status,
+            output: req.output.clone(),
+            error_message: req.error_message.clone(),
+            correlation_id: req.correlation_id.clone(),
+            sender: req.sender.clone(),
+            metadata: req.metadata.clone(),
+            created_at: Utc::now(),
+        };
+        if let Err(e) = envelope.validate() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        if let Err(resp) = validate_user_labels(&envelope.metadata) {
+            return resp;
+        }
+        let conv = match load_conversation(&state, &namespace, &tenant, &conversation_id).await {
+            Ok(c) => c,
+            Err(resp) => return resp,
+        };
+        if !conv.accepts_messages() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "conversation {} is archived; reopen via /transition before posting tool results",
+                        conv.conversation_id
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if !conv.participants.is_empty() {
+            match envelope.sender.as_deref() {
+                Some(s) if conv.participants.iter().any(|p| p == s) => {}
+                Some(s) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "sender '{s}' is not a participant of conversation {}",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "conversation {} has a participant ACL; tool-result sender is required",
+                                conv.conversation_id
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+        // `created_at` was server-stamped at construction (see the
+        // `Utc::now()` in the struct literal above). The previous
+        // version re-stamped it here as well — a copy-paste artifact
+        // from when the request type briefly carried a client-
+        // supplied timestamp. Removed.
+        let payload = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let events_topic = conv.effective_events_topic();
+        // Same Phase 3 schema-validation gate as `post_tool_call`;
+        // see the matching comment there.
+        if let Err(resp) = validate_payload_against_topic_schema(
+            &state,
+            &conv.namespace,
+            &conv.tenant,
+            &events_topic,
+            &payload,
+        )
+        .await
+        {
+            return resp;
+        }
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
+            .with_key(&conv.conversation_id);
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(s) = &envelope.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), s.clone());
+        }
+        stamp_tool_envelope_headers(
+            &mut msg,
+            ENVELOPE_KIND_TOOL_RESULT,
+            &envelope.call_id,
+            envelope.correlation_id.as_deref(),
+            None, // results don't carry a reply_to
+        );
+        match backend.produce(msg).await {
+            Ok(receipt) => {
+                // Include a cursor pointing at this envelope's
+                // partition+offset so the caller can scan
+                // strictly-newer messages on a follow-up
+                // `lookup_tool_result` without re-reading topic
+                // history. Same encoding as Phase 5 replay cursors.
+                let mut cursor_map = std::collections::BTreeMap::new();
+                cursor_map.insert(receipt.partition, receipt.offset);
+                let cursor = encode_replay_cursor(&cursor_map);
+                let conv_id_for_bump = conv.conversation_id.clone();
+                let resp = (
+                    StatusCode::OK,
+                    Json(ToolEnvelopeReceipt {
+                        events_topic: receipt.topic,
+                        conversation_id: conv.conversation_id,
+                        call_id: envelope.call_id,
+                        partition: receipt.partition,
+                        offset: receipt.offset,
+                        produced_at: receipt.timestamp,
+                        cursor,
+                    }),
+                );
+                // Bump conversation `updated_at` so list/sort by
+                // activity sees tool-driven traffic. Best-effort: if
+                // the CAS contends out, the message is already on
+                // Kafka; we log and return success rather than fail
+                // the produce.
+                let bump_key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusConversation,
+                    &conv_id_for_bump,
+                );
+                let bump = cas_update::<acteon_core::Conversation, _>(
+                    &state,
+                    &bump_key,
+                    "conversation gone",
+                    |c| {
+                        c.updated_at = Utc::now();
+                        Ok(())
+                    },
+                )
+                .await;
+                if bump.is_err() {
+                    tracing::warn!(
+                        conversation_id = %conv_id_for_bump,
+                        "tool-envelope produced but conversation updated_at bump failed (CAS contention exhausted or backend error); list/sort will see a stale timestamp",
+                    );
+                }
+                resp.into_response()
+            }
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, conversation_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/tool-calls/{namespace}/{tenant}/{call_id}/result",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("call_id" = String, Path),
+        ToolResultLookupParams,
+    ),
+    responses(
+        (status = 200, description = "Matching tool result", body = ToolResultLookupResponse),
+        (status = 408, description = "Timed out before a matching result arrived", body = ErrorResponse),
+        (status = 404, description = "Events topic not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn lookup_tool_result(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, call_id)): Path<(String, String, String)>,
+    Query(params): Query<ToolResultLookupParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(e) = acteon_core::ToolCall::validate_id_field("call_id", &call_id) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+        // Resolve the conversation's events topic from its actual
+        // record. `conversation_id` is required (rather than
+        // defaulting to the tenant's shared events topic) because a
+        // conversation registered with a custom `events_topic`
+        // (Phase 5) would otherwise silently look at the wrong
+        // place — the scan would never find a matching record and
+        // every lookup would 408.
+        let conv =
+            match load_conversation(&state, &namespace, &tenant, &params.conversation_id).await {
+                Ok(c) => c,
+                Err(resp) => return resp,
+            };
+        // Read-side participant ACL — match the gate the write-side
+        // tool handlers already enforce.
+        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+            return resp;
+        }
+        let events_topic = conv.effective_events_topic();
+        let timeout_ms = params.timeout_ms.unwrap_or(5_000).min(30_000);
+        // Resolve scan position.
+        //
+        // With a cursor (the typical flow: caller passes back the
+        // receipt's `cursor`), the call's partition resumes from
+        // the recorded offset; partitions the cursor doesn't cover
+        // default to `Latest` *inside the backend* (see the
+        // `ScanFrom::FromOffsets` doc). That keeps single-partition
+        // cursors valid for `reply_to` flows where the result
+        // lands on a different partition.
+        //
+        // Without a cursor, default to `Latest` — cheap on a busy
+        // cluster, but races with the result landing. Earlier the
+        // default was `Earliest`, which turned every lookup into a
+        // full-history scan and was a straightforward DoS vector.
+        let scan_from = match &params.cursor {
+            Some(c) => match decode_replay_cursor(c) {
+                Ok(offsets) => acteon_bus::ScanFrom::FromOffsets(offsets),
+                Err(msg) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!("invalid lookup cursor: {msg}"),
+                        }),
+                    )
+                        .into_response();
+                }
+            },
+            None => acteon_bus::ScanFrom::Latest,
+        };
+        let mut stream = match backend.scan_topic(&events_topic, scan_from).await {
+            Ok(s) => s,
+            Err(acteon_bus::BusError::TopicNotFound(_)) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: format!("events topic {events_topic} not found"),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        // Yield to the scheduler every `SCAN_YIELD_EVERY` skipped
+        // messages so a busy topic with no matches doesn't starve
+        // other tasks on a single-threaded executor. `stream.next()`
+        // may return `Poll::Ready` repeatedly when the consumer has
+        // buffered data; without a manual yield, the loop body has
+        // no other `.await` points that surrender the worker.
+        let mut skipped: u32 = 0;
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                return (
+                    StatusCode::REQUEST_TIMEOUT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "no tool result for call_id '{call_id}' arrived within {timeout_ms}ms"
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            let remaining = deadline - now;
+            tokio::select! {
+                next = stream.next() => {
+                    match next {
+                        Some(Ok(msg)) => {
+                            // Header-only filter: only inspect the
+                            // payload when this is *the* tool result
+                            // we're waiting for. Saves
+                            // serde-deserializing every record on a
+                            // busy topic.
+                            let is_result = msg
+                                .headers
+                                .get("acteon.envelope.kind")
+                                .is_some_and(|v| v == ENVELOPE_KIND_TOOL_RESULT);
+                            let matches_call = msg
+                                .headers
+                                .get("acteon.tool.call_id")
+                                .is_some_and(|v| v == &call_id);
+                            if !is_result || !matches_call {
+                                skipped = skipped.wrapping_add(1);
+                                if skipped.is_multiple_of(SCAN_YIELD_EVERY) {
+                                    tokio::task::yield_now().await;
+                                }
+                                continue;
+                            }
+                            let result: acteon_core::ToolResult =
+                                match serde_json::from_value(msg.payload.clone()) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        // Poison-pill: header said this
+                                        // is a tool-result for our
+                                        // `call_id`, but the payload
+                                        // doesn't parse. Treat as
+                                        // garbage and keep scanning —
+                                        // a duplicate or malformed
+                                        // record must not permanently
+                                        // break lookups for that
+                                        // `call_id`. Log loudly so
+                                        // operators notice.
+                                        tracing::warn!(
+                                            call_id = %call_id,
+                                            partition = ?msg.partition,
+                                            offset = ?msg.offset,
+                                            error = %e,
+                                            "skipping malformed tool-result envelope; payload failed to deserialize",
+                                        );
+                                        continue;
+                                    }
+                                };
+                            // The scan key carries the conversation
+                            // id; surface it on the response so the
+                            // caller doesn't have to re-derive it.
+                            let conv_id = msg.key.clone().unwrap_or_default();
+                            return (
+                                StatusCode::OK,
+                                Json(ToolResultLookupResponse {
+                                    call_id: result.call_id.clone(),
+                                    events_topic,
+                                    conversation_id: conv_id,
+                                    partition: msg.partition.unwrap_or(0),
+                                    offset: msg.offset.unwrap_or(0),
+                                    produced_at: msg.timestamp.unwrap_or_else(Utc::now),
+                                    result,
+                                }),
+                            )
+                                .into_response();
+                        }
+                        Some(Err(_)) | None => {
+                            // Stream ended without a match. Treat as
+                            // timeout — clients retry.
+                            return (
+                                StatusCode::REQUEST_TIMEOUT,
+                                Json(ErrorResponse {
+                                    error: format!(
+                                        "stream ended without a tool result for call_id '{call_id}'"
+                                    ),
+                                }),
+                            )
+                                .into_response();
+                        }
+                    }
+                }
+                () = tokio::time::sleep(remaining) => {
+                    return (
+                        StatusCode::REQUEST_TIMEOUT,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "no tool result for call_id '{call_id}' arrived within {timeout_ms}ms"
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, call_id, params);
+        service_unavailable("bus feature not compiled")
     }
 }
