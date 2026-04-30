@@ -6819,11 +6819,14 @@ pub async fn post_stream_end(
 
 /// SSE consume of a single stream — header-filters the conversation
 /// events topic for `(envelope.kind ∈ {stream_chunk, stream_end},
-/// stream.id == stream_id)`. Emits one SSE event per matching record
-/// (`event: bus.stream.chunk` or `bus.stream.end`) and closes the
-/// stream when a terminal `stream_end` is observed. Reuses
-/// [`BusBackend::scan_topic`] (Kafka `assign()`, no consumer-group
-/// leak) — same primitive `lookup_tool_result` uses.
+/// conversation.id == conversation_id, stream.id == stream_id)`.
+/// Emits one SSE event per matching record (`event: bus.stream.chunk`
+/// or `bus.stream.end`) and closes the stream when a terminal
+/// `stream_end` is observed. Reuses `BusBackend::scan_topic` (Kafka
+/// `assign()`, no consumer-group leak) — same primitive
+/// `lookup_tool_result` uses. Plain code span rather than an
+/// intra-doc link because `acteon_bus` is only in scope with the
+/// `bus` feature, and CI's `cargo doc` builds without it.
 #[utoipa::path(
     get,
     path = "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
@@ -7036,8 +7039,7 @@ fn sse_stream_for_stream_id(
                         // containing those characters, breaking
                         // EventSource parsers downstream.
                         let body = serde_json::json!({"error": e.to_string()});
-                        let data =
-                            serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+                        let data = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
                         let ev = Event::default().event("bus.stream.error").data(data);
                         return Some((
                             Ok::<_, Infallible>(ev),
