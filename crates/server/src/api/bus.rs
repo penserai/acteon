@@ -6933,6 +6933,12 @@ pub async fn consume_stream(
         let stream = sse_stream_for_stream_id(inner, stream_id);
         Sse::new(stream)
             .keep_alive(
+                // `KeepAlive::text` is implemented in axum as
+                // `Event::default().comment(text)`, so this serializes
+                // as the comment-style heartbeat (`: keep-alive\n\n`)
+                // that strict SSE consumers and intermediate proxies
+                // prefer over a `data: ...` line that would fire a
+                // no-op event handler.
                 KeepAlive::new()
                     .interval(Duration::from_secs(15))
                     .text("keep-alive"),
@@ -6959,8 +6965,8 @@ fn sse_stream_for_stream_id(
 ) -> impl Stream<Item = Result<Event, Infallible>> + Send + 'static {
     use futures::stream::StreamExt as _;
     futures::stream::unfold(
-        (inner, target_stream_id, false),
-        |(mut inner, target, mut terminated)| async move {
+        (inner, target_stream_id, false, 0u32),
+        |(mut inner, target, mut terminated, mut skipped)| async move {
             if terminated {
                 return None;
             }
@@ -6974,14 +6980,22 @@ fn sse_stream_for_stream_id(
                             .unwrap_or_default();
                         let is_chunk = kind == ENVELOPE_KIND_STREAM_CHUNK;
                         let is_end = kind == ENVELOPE_KIND_STREAM_END;
-                        if !is_chunk && !is_end {
-                            continue;
-                        }
                         let matches = msg
                             .headers
                             .get("acteon.stream.id")
                             .is_some_and(|v| v == &target);
-                        if !matches {
+                        if !(is_chunk || is_end) || !matches {
+                            // Yield to the executor every
+                            // `SCAN_YIELD_EVERY` non-matching records
+                            // so a busy events topic with traffic for
+                            // other streams doesn't starve other
+                            // tasks on a single-threaded runtime.
+                            // Same rationale as `lookup_tool_result`
+                            // / `replay_conversation_messages`.
+                            skipped = skipped.wrapping_add(1);
+                            if skipped.is_multiple_of(SCAN_YIELD_EVERY) {
+                                tokio::task::yield_now().await;
+                            }
                             continue;
                         }
                         let id = msg.offset.unwrap_or_default().to_string();
@@ -6996,13 +7010,27 @@ fn sse_stream_for_stream_id(
                             terminated = true;
                         }
                         let ev = Event::default().event(event_name).id(id).data(data);
-                        return Some((Ok::<_, Infallible>(ev), (inner, target, terminated)));
+                        return Some((
+                            Ok::<_, Infallible>(ev),
+                            (inner, target, terminated, skipped),
+                        ));
                     }
                     Some(Err(e)) => {
-                        let ev = Event::default()
-                            .event("bus.stream.error")
-                            .data(format!("{{\"error\":\"{e}\"}}"));
-                        return Some((Ok::<_, Infallible>(ev), (inner, target, true)));
+                        // `serde_json::to_string` on a `{"error": str}`
+                        // map handles all the JSON escaping (quotes,
+                        // backslashes, control chars). Hand-rolled
+                        // `format!("{{\"error\":\"{e}\"}}")` would
+                        // emit invalid JSON for any error message
+                        // containing those characters, breaking
+                        // EventSource parsers downstream.
+                        let body = serde_json::json!({"error": e.to_string()});
+                        let data =
+                            serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+                        let ev = Event::default().event("bus.stream.error").data(data);
+                        return Some((
+                            Ok::<_, Infallible>(ev),
+                            (inner, target, true, skipped),
+                        ));
                     }
                     None => return None,
                 }
