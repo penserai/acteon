@@ -8,8 +8,7 @@
  * cleanly, and path segments are properly percent-encoded.
  */
 
-import { describe, it } from "node:test";
-import assert from "node:assert/strict";
+import { describe, it, expect, assert } from "vitest";
 import {
   createBusTopicBody,
   publishBusMessageBody,
