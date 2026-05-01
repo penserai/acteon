@@ -48,6 +48,7 @@ fn pg_configs(prefix: &str) -> (PostgresConfig, PostgresAuditConfig) {
         pool_size: 10,
         schema: "public".to_string(),
         table_prefix: prefix.to_string(),
+        ..Default::default()
     };
 
     let audit_config = PostgresAuditConfig::new(&database_url).with_prefix(prefix);
