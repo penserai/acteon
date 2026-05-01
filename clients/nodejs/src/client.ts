@@ -165,6 +165,63 @@ import {
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
 import { readFileSync } from "node:fs";
 import { Agent as HttpsAgent } from "node:https";
+import {
+  type AppendBusConversationMessage,
+  type BusAgent,
+  type BusApprovalDecision,
+  type BusApprovalDecisionResponse,
+  type BusApprovalStatus,
+  type BusApprovalView,
+  type BusConversation,
+  type BusLag,
+  type BusReplayResponse,
+  type BusSchema,
+  type BusStreamEnvelopeReceipt,
+  type BusSubscription,
+  type BusToolEnvelopeReceipt,
+  type BusToolResultLookup,
+  type BusToolResultLookupParams,
+  type BusTopic,
+  type CreateBusConversation,
+  type CreateBusSubscription,
+  type CreateBusTopic,
+  type PostBusStreamChunk,
+  type PostBusStreamEnd,
+  type PostBusToolCall,
+  type PostBusToolCallOutcome,
+  type PostBusToolResult,
+  type PublishBusMessage,
+  type PublishReceipt,
+  type RegisterBusAgent,
+  type RegisterBusSchema,
+  appendBusConversationMessageBody,
+  busApprovalDecisionBody,
+  busToolResultLookupParams,
+  createBusConversationBody,
+  createBusSubscriptionBody,
+  createBusTopicBody,
+  parseBusAgent,
+  parseBusApprovalDecisionResponse,
+  parseBusApprovalParkedReceipt,
+  parseBusApprovalView,
+  parseBusConversation,
+  parseBusLag,
+  parseBusReplayResponse,
+  parseBusSchema,
+  parseBusStreamEnvelopeReceipt,
+  parseBusSubscription,
+  parseBusToolEnvelopeReceipt,
+  parseBusToolResultLookup,
+  parseBusTopic,
+  parsePublishReceipt,
+  postBusStreamChunkBody,
+  postBusStreamEndBody,
+  postBusToolCallBody,
+  postBusToolResultBody,
+  publishBusMessageBody,
+  registerBusAgentBody,
+  registerBusSchemaBody,
+} from "./bus_models.js";
 
 /**
  * Configuration options for the Acteon client.
@@ -2173,5 +2230,516 @@ export class ActeonClient {
     } finally {
       reader.releaseLock();
     }
+  }
+
+  // ===========================================================================
+  // Phase 8b: Agentic bus surface (Phases 1-6c)
+  // ===========================================================================
+
+  /** Helper: percent-encode a single path segment. The bus REST
+   *  surface treats namespace / tenant / name slots as opaque
+   *  strings, so reserved characters like `/` need encoding rather
+   *  than slipping through into the URL grammar.
+   */
+  private busSeg(s: string): string {
+    return encodeURIComponent(s);
+  }
+
+  /** Helper: read an Acteon-shaped error body, fall back to a plain
+   *  HttpError if the body isn't structured.
+   */
+  private async busThrowFromResponse(response: Response): Promise<never> {
+    try {
+      const data = (await response.json()) as Record<string, unknown>;
+      throw new ApiError(
+        (data.code as string) ?? "BUS",
+        (data.error as string) ?? (data.message as string) ?? "bus error",
+        false,
+      );
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new HttpError(response.status, response.statusText || "bus error");
+    }
+  }
+
+  // --------------- Phase 1: Topics + publish ---------------
+
+  async createBusTopic(req: CreateBusTopic): Promise<BusTopic> {
+    const response = await this.request("POST", "/v1/bus/topics", {
+      body: createBusTopicBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusTopic((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusTopics(filter: { namespace?: string; tenant?: string } = {}): Promise<BusTopic[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    const response = await this.request("GET", "/v1/bus/topics", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { topics?: Record<string, unknown>[] };
+    return (body.topics ?? []).map(parseBusTopic);
+  }
+
+  async getBusTopic(namespace: string, tenant: string, name: string): Promise<BusTopic> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/topics/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(name)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusTopic((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusTopic(namespace: string, tenant: string, name: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/topics/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(name)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async publishBusMessage(req: PublishBusMessage): Promise<PublishReceipt> {
+    const response = await this.request("POST", "/v1/bus/publish", {
+      body: publishBusMessageBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parsePublishReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 2: Subscriptions + lag ---------------
+
+  async createBusSubscription(req: CreateBusSubscription): Promise<BusSubscription> {
+    const response = await this.request("POST", "/v1/bus/subscriptions", {
+      body: createBusSubscriptionBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSubscription((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusSubscriptions(
+    filter: { namespace?: string; tenant?: string; topic?: string } = {},
+  ): Promise<BusSubscription[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    if (filter.topic) params.set("topic", filter.topic);
+    const response = await this.request("GET", "/v1/bus/subscriptions", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { subscriptions?: Record<string, unknown>[] };
+    return (body.subscriptions ?? []).map(parseBusSubscription);
+  }
+
+  async getBusSubscription(subId: string): Promise<BusSubscription> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/subscriptions/${this.busSeg(subId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSubscription((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusSubscription(subId: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/subscriptions/${this.busSeg(subId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async getBusSubscriptionLag(subId: string): Promise<BusLag> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/subscriptions/${this.busSeg(subId)}/lag`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusLag((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 3: Schemas ---------------
+
+  async registerBusSchema(req: RegisterBusSchema): Promise<BusSchema> {
+    const response = await this.request("POST", "/v1/bus/schemas", {
+      body: registerBusSchemaBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSchema((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusSchemas(
+    filter: {
+      namespace?: string;
+      tenant?: string;
+      subject?: string;
+      latestOnly?: boolean;
+    } = {},
+  ): Promise<BusSchema[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    if (filter.subject) params.set("subject", filter.subject);
+    if (filter.latestOnly) params.set("latest_only", "true");
+    const response = await this.request("GET", "/v1/bus/schemas", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { schemas?: Record<string, unknown>[] };
+    return (body.schemas ?? []).map(parseBusSchema);
+  }
+
+  async getBusSchema(
+    namespace: string,
+    tenant: string,
+    subject: string,
+    version: number,
+  ): Promise<BusSchema> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/schemas/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subject)}/${version}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusSchema((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusSchema(
+    namespace: string,
+    tenant: string,
+    subject: string,
+    version: number,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/schemas/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(subject)}/${version}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  // --------------- Phase 4: Agents + heartbeat ---------------
+
+  async registerBusAgent(req: RegisterBusAgent): Promise<BusAgent> {
+    const response = await this.request("POST", "/v1/bus/agents", {
+      body: registerBusAgentBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusAgents(filter: { namespace?: string; tenant?: string } = {}): Promise<BusAgent[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    const response = await this.request("GET", "/v1/bus/agents", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { agents?: Record<string, unknown>[] };
+    return (body.agents ?? []).map(parseBusAgent);
+  }
+
+  async getBusAgent(namespace: string, tenant: string, agentId: string): Promise<BusAgent> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusAgent(namespace: string, tenant: string, agentId: string): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async heartbeatBusAgent(
+    namespace: string,
+    tenant: string,
+    agentId: string,
+  ): Promise<BusAgent> {
+    const response = await this.request(
+      "PATCH",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}/heartbeat`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 5: Conversations ---------------
+
+  async createBusConversation(req: CreateBusConversation): Promise<BusConversation> {
+    const response = await this.request("POST", "/v1/bus/conversations", {
+      body: createBusConversationBody(req),
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusConversation((await response.json()) as Record<string, unknown>);
+  }
+
+  async listBusConversations(
+    filter: { namespace?: string; tenant?: string; state?: string; participant?: string } = {},
+  ): Promise<BusConversation[]> {
+    const params = new URLSearchParams();
+    if (filter.namespace) params.set("namespace", filter.namespace);
+    if (filter.tenant) params.set("tenant", filter.tenant);
+    if (filter.state) params.set("state", filter.state);
+    if (filter.participant) params.set("participant", filter.participant);
+    const response = await this.request("GET", "/v1/bus/conversations", {
+      params: params.toString() ? params : undefined,
+    });
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { conversations?: Record<string, unknown>[] };
+    return (body.conversations ?? []).map(parseBusConversation);
+  }
+
+  async getBusConversation(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+  ): Promise<BusConversation> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusConversation((await response.json()) as Record<string, unknown>);
+  }
+
+  async deleteBusConversation(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+  }
+
+  async transitionBusConversation(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    targetState: string,
+  ): Promise<BusConversation> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/transition`,
+      { body: { target_state: targetState } },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusConversation((await response.json()) as Record<string, unknown>);
+  }
+
+  async appendBusConversationMessage(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: AppendBusConversationMessage,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/messages`,
+      { body: appendBusConversationMessageBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  async replayBusConversationMessages(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    options: { limit?: number; cursor?: string; asAgent?: string } = {},
+  ): Promise<BusReplayResponse> {
+    const params = new URLSearchParams();
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.asAgent) params.set("as_agent", options.asAgent);
+    const response = await this.request(
+      "GET",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/messages`,
+      { params: params.toString() ? params : undefined },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusReplayResponse((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 6a: Tool envelopes ---------------
+
+  /**
+   * Append a tool-call envelope.
+   *
+   * Returns a discriminated union: `kind === "produced"` when the
+   * call landed on Kafka, `kind === "parked"` when the server
+   * parked it under a Phase 6c HITL approval (driven by
+   * `req.requireApproval`).
+   */
+  async postBusToolCall(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusToolCall,
+  ): Promise<PostBusToolCallOutcome> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/tool-calls`,
+      { body: postBusToolCallBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as Record<string, unknown>;
+    if (response.status === 202) {
+      return { kind: "parked", receipt: parseBusApprovalParkedReceipt(body) };
+    }
+    return { kind: "produced", receipt: parseBusToolEnvelopeReceipt(body) };
+  }
+
+  async postBusToolResult(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusToolResult,
+  ): Promise<BusToolEnvelopeReceipt> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/tool-results`,
+      { body: postBusToolResultBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusToolEnvelopeReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  async lookupBusToolResult(
+    namespace: string,
+    tenant: string,
+    callId: string,
+    params: BusToolResultLookupParams,
+  ): Promise<BusToolResultLookup> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/tool-calls/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(callId)}/result`,
+      { params: busToolResultLookupParams(params) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusToolResultLookup((await response.json()) as Record<string, unknown>);
+  }
+
+  // --------------- Phase 6b: Stream envelopes ---------------
+
+  async postBusStreamChunk(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusStreamChunk,
+  ): Promise<BusStreamEnvelopeReceipt> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/stream-chunks`,
+      { body: postBusStreamChunkBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusStreamEnvelopeReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  async postBusStreamEnd(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    req: PostBusStreamEnd,
+  ): Promise<BusStreamEnvelopeReceipt> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/stream-end`,
+      { body: postBusStreamEndBody(req) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusStreamEnvelopeReceipt((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * Build the SSE consume URL for a stream. Plug it into your
+   * preferred SSE client (`EventSource` in the browser, `eventsource`
+   * package on the server, etc.). Path segments are encoded the
+   * same way the Rust + Python SDKs encode them.
+   */
+  busStreamConsumeUrl(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    streamId: string,
+  ): string {
+    return (
+      `${this.baseUrl}/v1/bus/streams/` +
+      `${this.busSeg(namespace)}/${this.busSeg(tenant)}/` +
+      `${this.busSeg(conversationId)}/${this.busSeg(streamId)}`
+    );
+  }
+
+  // --------------- Phase 6c: HITL approvals ---------------
+
+  async listBusApprovals(
+    namespace: string,
+    tenant: string,
+    filter: { status?: BusApprovalStatus; conversationId?: string } = {},
+  ): Promise<BusApprovalView[]> {
+    const params = new URLSearchParams();
+    if (filter.status) params.set("status", filter.status);
+    if (filter.conversationId) params.set("conversation_id", filter.conversationId);
+    const response = await this.request(
+      "GET",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}`,
+      { params: params.toString() ? params : undefined },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    const body = (await response.json()) as { approvals?: Record<string, unknown>[] };
+    return (body.approvals ?? []).map(parseBusApprovalView);
+  }
+
+  async getBusApproval(
+    namespace: string,
+    tenant: string,
+    approvalId: string,
+  ): Promise<BusApprovalView> {
+    const response = await this.request(
+      "GET",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusApprovalView((await response.json()) as Record<string, unknown>);
+  }
+
+  async approveBusApproval(
+    namespace: string,
+    tenant: string,
+    approvalId: string,
+    decision: BusApprovalDecision,
+  ): Promise<BusApprovalDecisionResponse> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}/approve`,
+      { body: busApprovalDecisionBody(decision) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusApprovalDecisionResponse((await response.json()) as Record<string, unknown>);
+  }
+
+  async rejectBusApproval(
+    namespace: string,
+    tenant: string,
+    approvalId: string,
+    decision: BusApprovalDecision,
+  ): Promise<BusApprovalDecisionResponse> {
+    const response = await this.request(
+      "POST",
+      `/v1/bus/approvals/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(approvalId)}/reject`,
+      { body: busApprovalDecisionBody(decision) },
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusApprovalDecisionResponse((await response.json()) as Record<string, unknown>);
   }
 }

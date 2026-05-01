@@ -116,7 +116,7 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 7** (Admin UI) — shipped — see [phase-7 feature doc](../features/bus-phase-7.md)
 - **Phase 8** — in progress — see [phase-8 feature doc](../features/bus-phase-8.md)
   - 8a (Python) — shipped
-  - 8b (Node) — not started
+  - 8b (Node) — shipped
   - 8c (Go) — not started
   - 8d (Java) — not started
 - Phase 9 — not started
