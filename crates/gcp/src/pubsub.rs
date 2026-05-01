@@ -64,6 +64,15 @@ impl PubSubConfig {
         self.gcp.credentials_path = Some(path.into());
         self
     }
+
+    /// Set inline service account JSON credentials. Mutually
+    /// exclusive with `with_credentials_path` — whichever was set
+    /// last wins, mirroring `GcpBaseConfig::with_credentials_json`.
+    #[must_use]
+    pub fn with_credentials_json(mut self, json: impl Into<String>) -> Self {
+        self.gcp = self.gcp.with_credentials_json(json);
+        self
+    }
 }
 
 /// Payload for the `publish` action type.
