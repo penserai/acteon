@@ -115,4 +115,10 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 6c** (HITL pre-publish approvals) — shipped — see [phase-6c feature doc](../features/bus-phase-6c.md)
 - **Phase 7** (Admin UI) — shipped — see [phase-7 feature doc](../features/bus-phase-7.md)
 - **Phase 8** (5-SDK polyglot parity) — shipped — see [phase-8 feature doc](../features/bus-phase-8.md)
-- Phase 9 — not started
+- **Phase 9** (docs, migration guide, multi-agent demo, benchmarks) — shipped — see [phase-9 feature doc](../features/bus-phase-9.md)
+
+**The master plan is complete.** All nine phases shipped. New
+operators should start with the [agentic bus user guide](agentic-bus.md);
+existing dispatch + chain users should consult the
+[migration guide](../guides/agentic-bus-migration.md) for the
+cases where moving onto the bus is the right call.
