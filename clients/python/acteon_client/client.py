@@ -102,7 +102,10 @@ from .models import (
 )
 
 
-class ActeonClient:
+from .bus import _BusClientMixin
+
+
+class ActeonClient(_BusClientMixin):
     """HTTP client for the Acteon action gateway.
 
     Example:
