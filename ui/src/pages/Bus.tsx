@@ -21,6 +21,7 @@ import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Tabs } from '../components/ui/Tabs'
 import { EmptyState } from '../components/ui/EmptyState'
+import { DeleteConfirmModal } from '../components/ui/DeleteConfirmModal'
 import { useToast } from '../components/ui/useToast'
 import { relativeTime, formatCountdown } from '../lib/format'
 import {
@@ -111,6 +112,7 @@ function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   const { data, isLoading } = useBusTopics({ namespace: ns || undefined, tenant: tenant || undefined })
   const del = useDeleteBusTopic()
   const { toast } = useToast()
+  const [pending, setPending] = useState<BusTopic | null>(null)
 
   const columns = [
     topicCol.accessor('kafka_name', { header: 'Kafka topic', cell: (i) => <span className={styles.idCell}>{i.getValue()}</span> }),
@@ -140,15 +142,7 @@ function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
           size="sm"
           onClick={(e) => {
             e.stopPropagation()
-            const t = i.row.original
-            if (!confirm(`Delete topic ${t.kafka_name}? Kafka data is removed too.`)) return
-            del.mutate(
-              { namespace: t.namespace, tenant: t.tenant, name: t.name },
-              {
-                onSuccess: () => toast('success', 'Topic deleted'),
-                onError: (err) => toast('error', 'Delete failed', (err as Error).message),
-              },
-            )
+            setPending(i.row.original)
           }}
         >
           <Trash2 className="h-4 w-4" />
@@ -158,13 +152,36 @@ function TopicsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   ]
 
   return (
-    <DataTable
-      data={data ?? []}
-      columns={columns}
-      loading={isLoading}
-      emptyTitle="No bus topics"
-      emptyDescription="Create a topic via POST /v1/bus/topics or by deploying an agent that registers an inbox."
-    />
+    <>
+      <DataTable
+        data={data ?? []}
+        columns={columns}
+        loading={isLoading}
+        emptyTitle="No bus topics"
+        emptyDescription="Create a topic via POST /v1/bus/topics or by deploying an agent that registers an inbox."
+      />
+      <DeleteConfirmModal
+        open={!!pending}
+        onClose={() => setPending(null)}
+        loading={del.isPending}
+        title="Delete bus topic"
+        name={pending?.kafka_name ?? ''}
+        warning="The backing Kafka topic and all its data are removed too. This cannot be undone."
+        onConfirm={() => {
+          if (!pending) return
+          del.mutate(
+            { namespace: pending.namespace, tenant: pending.tenant, name: pending.name },
+            {
+              onSuccess: () => {
+                toast('success', 'Topic deleted')
+                setPending(null)
+              },
+              onError: (err) => toast('error', 'Delete failed', (err as Error).message),
+            },
+          )
+        }}
+      />
+    </>
   )
 }
 
@@ -180,6 +197,7 @@ function SubscriptionsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   const del = useDeleteBusSubscription()
   const { toast } = useToast()
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [pending, setPending] = useState<BusSubscription | null>(null)
 
   const columns = [
     subCol.accessor('id', { header: 'ID', cell: (i) => <span className={styles.idCell}>{i.getValue()}</span> }),
@@ -210,12 +228,7 @@ function SubscriptionsPanel({ ns, tenant }: { ns: string; tenant: string }) {
             size="sm"
             onClick={(e) => {
               e.stopPropagation()
-              const s = i.row.original
-              if (!confirm(`Delete subscription ${s.id}?`)) return
-              del.mutate(s.id, {
-                onSuccess: () => toast('success', 'Subscription deleted'),
-                onError: (err) => toast('error', 'Delete failed', (err as Error).message),
-              })
+              setPending(i.row.original)
             }}
           >
             <Trash2 className="h-4 w-4" />
@@ -235,6 +248,24 @@ function SubscriptionsPanel({ ns, tenant }: { ns: string; tenant: string }) {
         emptyDescription="A subscription is the consumer-group identity for a bus consumer. Create one via POST /v1/bus/subscriptions."
       />
       {expandedId && <SubscriptionLagPanel id={expandedId} />}
+      <DeleteConfirmModal
+        open={!!pending}
+        onClose={() => setPending(null)}
+        loading={del.isPending}
+        title="Delete subscription"
+        name={pending?.id ?? ''}
+        warning="The consumer group is removed; in-flight offsets are lost."
+        onConfirm={() => {
+          if (!pending) return
+          del.mutate(pending.id, {
+            onSuccess: () => {
+              toast('success', 'Subscription deleted')
+              setPending(null)
+            },
+            onError: (err) => toast('error', 'Delete failed', (err as Error).message),
+          })
+        }}
+      />
     </>
   )
 }
@@ -287,6 +318,7 @@ function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   const { data, isLoading } = useBusAgents({ namespace: ns || undefined, tenant: tenant || undefined })
   const del = useDeleteBusAgent()
   const { toast } = useToast()
+  const [pending, setPending] = useState<BusAgent | null>(null)
 
   const columns = [
     agentCol.accessor('agent_id', { header: 'Agent', cell: (i) => <span className={styles.idCell}>{i.getValue()}</span> }),
@@ -312,15 +344,7 @@ function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
           size="sm"
           onClick={(e) => {
             e.stopPropagation()
-            const a = i.row.original
-            if (!confirm(`Delete agent ${a.agent_id}?`)) return
-            del.mutate(
-              { namespace: a.namespace, tenant: a.tenant, agentId: a.agent_id },
-              {
-                onSuccess: () => toast('success', 'Agent deleted'),
-                onError: (err) => toast('error', 'Delete failed', (err as Error).message),
-              },
-            )
+            setPending(i.row.original)
           }}
         >
           <Trash2 className="h-4 w-4" />
@@ -330,13 +354,36 @@ function AgentsPanel({ ns, tenant }: { ns: string; tenant: string }) {
   ]
 
   return (
-    <DataTable
-      data={data ?? []}
-      columns={columns}
-      loading={isLoading}
-      emptyTitle="No agents"
-      emptyDescription="Agents register themselves via POST /v1/bus/agents and renew via PATCH /heartbeat."
-    />
+    <>
+      <DataTable
+        data={data ?? []}
+        columns={columns}
+        loading={isLoading}
+        emptyTitle="No agents"
+        emptyDescription="Agents register themselves via POST /v1/bus/agents and renew via PATCH /heartbeat."
+      />
+      <DeleteConfirmModal
+        open={!!pending}
+        onClose={() => setPending(null)}
+        loading={del.isPending}
+        title="Delete agent"
+        name={pending?.agent_id ?? ''}
+        warning="The agent's identity row and inbox binding are removed; an agent re-registering with the same id is a fresh identity."
+        onConfirm={() => {
+          if (!pending) return
+          del.mutate(
+            { namespace: pending.namespace, tenant: pending.tenant, agentId: pending.agent_id },
+            {
+              onSuccess: () => {
+                toast('success', 'Agent deleted')
+                setPending(null)
+              },
+              onError: (err) => toast('error', 'Delete failed', (err as Error).message),
+            },
+          )
+        }}
+      />
+    </>
   )
 }
 
