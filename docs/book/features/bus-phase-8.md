@@ -157,11 +157,64 @@ if (outcome.kind === "parked") {
 fully percent-encoded URL the caller plugs into their preferred SSE
 client (browser `EventSource`, the `eventsource` npm package, etc.).
 
-## What's deferred to Phase 8c/d
+## Phase 8c — Go
 
-Go and Java parity ship in follow-up PRs — same methodology, same
-flat method names, same DTO shapes. The Python and Node surfaces
-serve as the reference.
+Go parity uses the SDK's existing convention: methods on
+`*acteon.Client`, exported PascalCase
+(`CreateBusTopic`, `PostBusToolCall`, `ApproveBusApproval`, …),
+`context.Context` first parameter, `(*T, error)` return. DTOs
+live in `clients/go/acteon/bus_models.go`; the methods themselves
+live in `bus.go`. JSON tags use the snake-case server names; Go
+struct fields stay PascalCase.
+
+The Phase 6c "parked vs produced" branch surfaces as a struct
+with two pointer fields:
+
+```go
+import (
+    "context"
+    "github.com/penserai/acteon/clients/go/acteon"
+)
+
+client := acteon.NewClient("http://localhost:3000")
+ctx := context.Background()
+reason := "paid action"
+ttl := uint64(600_000)
+
+outcome, err := client.PostBusToolCall(ctx, "agents", "demo", "thread-1",
+    &acteon.PostBusToolCall{
+        CallID:          "call-1",
+        Tool:            "billing.charge",
+        Arguments:       map[string]any{"usd": 42},
+        Sender:          ptr("planner-1"),
+        RequireApproval: true,
+        ApprovalReason:  &reason,
+        ApprovalTtlMs:   &ttl,
+    })
+if err != nil { /* ... */ }
+
+if outcome.WasParked() {
+    fmt.Printf("awaiting approval: %s\n", outcome.Parked.ApprovalID)
+} else {
+    fmt.Printf("on Kafka at %d:%d\n", outcome.Produced.Partition, outcome.Produced.Offset)
+}
+```
+
+Optional fields use pointer types (`*string`, `*int`, `*uint64`,
+…) so callers can distinguish "unset" from the zero value — the
+right ergonomics for matching the server's
+`#[serde(default, skip_serializing_if = "Option::is_none")]`.
+Slices and maps use `omitempty` instead since the server treats
+absent and empty equivalently.
+
+`BusStreamConsumeURL(...)` mirrors the Python and Node helpers —
+returns the percent-encoded URL the caller plugs into a Go SSE
+client (`r3labs/sse`, the stdlib HTTP streaming reader, etc.).
+
+## What's deferred to Phase 8d
+
+Java parity ships next as a separate PR using the Rust + Python +
+Node + Go surfaces as the joint reference.
 
 ## Trust model carries through
 

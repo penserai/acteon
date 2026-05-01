@@ -117,6 +117,6 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 8** — in progress — see [phase-8 feature doc](../features/bus-phase-8.md)
   - 8a (Python) — shipped
   - 8b (Node) — shipped
-  - 8c (Go) — not started
+  - 8c (Go) — shipped
   - 8d (Java) — not started
 - Phase 9 — not started
