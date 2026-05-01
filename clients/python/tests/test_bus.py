@@ -369,5 +369,50 @@ class TestStreamConsumeUrl(unittest.TestCase):
         )
 
 
+class TestAsyncSurface(unittest.TestCase):
+    """Smoke test that the async client carries an async bus surface.
+
+    The runtime contract: every bus method on `AsyncActeonClient`
+    must be a coroutine function so callers in asyncio runtimes
+    don't accidentally block their event loop on a sync HTTP call.
+    """
+
+    def test_async_client_has_coroutine_bus_methods(self):
+        import inspect
+
+        from acteon_client import AsyncActeonClient
+
+        # Sample of representative methods across phases — full
+        # enumeration would be redundant once one fails.
+        sentinels = [
+            "create_bus_topic",
+            "post_bus_tool_call",
+            "post_bus_tool_result",
+            "lookup_bus_tool_result",
+            "post_bus_stream_chunk",
+            "approve_bus_approval",
+            "reject_bus_approval",
+        ]
+        for name in sentinels:
+            method = getattr(AsyncActeonClient, name, None)
+            self.assertIsNotNone(method, f"AsyncActeonClient.{name} missing")
+            self.assertTrue(
+                inspect.iscoroutinefunction(method),
+                f"AsyncActeonClient.{name} must be `async def` to avoid "
+                f"blocking the event loop",
+            )
+
+    def test_async_consume_url_is_sync(self):
+        # Pure URL builder — explicitly sync on the async client too,
+        # since there's no I/O. Callers don't need to `await` a
+        # string-format helper.
+        import inspect
+
+        from acteon_client import AsyncActeonClient
+
+        method = AsyncActeonClient.bus_stream_consume_url
+        self.assertFalse(inspect.iscoroutinefunction(method))
+
+
 if __name__ == "__main__":
     unittest.main()

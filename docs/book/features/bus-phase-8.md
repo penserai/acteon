@@ -25,11 +25,24 @@ SDK.
 | Streams (Phase 6b) | `post_bus_stream_chunk`, `post_bus_stream_end`, `bus_stream_consume_url` |
 | Approvals (Phase 6c) | `list_bus_approvals`, `get_bus_approval`, `approve_bus_approval`, `reject_bus_approval` |
 
-36 bus methods total, mounted onto :class:`acteon_client.ActeonClient`
-via a thin `_BusClientMixin`. DTOs live in `acteon_client.bus_models`
-as plain `@dataclass` types with explicit `to_dict` / `from_dict`,
-matching the existing model style. Every dataclass is re-exported
-from the package root.
+36 bus methods total, mounted onto both :class:`acteon_client.ActeonClient`
+(sync, via `_BusClientMixin`) and :class:`acteon_client.AsyncActeonClient`
+(async, via `_AsyncBusClientMixin`). The async surface uses `await
+self._request(...)` throughout so callers in asyncio runtimes —
+FastAPI handlers, agent loops, anything driven off `asyncio.run` —
+don't accidentally block their event loop on bus traffic. The
+two mixins are separate (rather than a single duck-typed mixin
+that "auto-awaits") because Python's blocking and non-blocking
+call sites are syntactically distinct; explicit two-mixin code is
+shorter and easier to reason about than a clever shim.
+
+`bus_stream_consume_url` is intentionally synchronous on both
+clients — it's a pure URL builder with no I/O, and forcing
+callers to `await` a string-format helper would be noise.
+
+DTOs live in `acteon_client.bus_models` as plain `@dataclass` types
+with explicit `to_dict` / `from_dict`, matching the existing model
+style. Every dataclass is re-exported from the package root.
 
 ## Method-name parity
 
