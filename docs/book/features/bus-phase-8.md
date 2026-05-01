@@ -119,12 +119,49 @@ A future iteration can land a small SSE iterator on the SDK if
 operator demand pushes that way, but V1 keeps the dependency
 surface minimal.
 
-## What's deferred to Phase 8b/c/d
+## Phase 8b — Node.js / TypeScript
 
-Node.js, Go, and Java parity ship in follow-up PRs — same
-methodology (mixin / package / package), same flat method names,
-same DTO shapes. The Python surface here is the reference; the
-other languages translate from it.
+Node parity ships next: 36 methods on `ActeonClient` covering the
+same Phases 1–6c surface. Method names are camelCase
+(`createBusTopic`, `postBusToolCall`, `approveBusApproval`, …) —
+the established convention for the Node SDK; payload shape on the
+wire is identical. DTOs live in `clients/nodejs/src/bus_models.ts`
+as TypeScript interfaces with explicit `*Body` builders that drop
+undefined fields and snake-case field names to match the server's
+JSON. Response parsers (`parseBusTopic`, …) take server JSON and
+return camelCase TypeScript objects.
+
+The Phase 6c "parked vs produced" branch surfaces as a discriminated
+union:
+
+```typescript
+import { ActeonClient } from "@acteon/client";
+
+const client = new ActeonClient("http://localhost:3000");
+const outcome = await client.postBusToolCall("agents", "demo", "thread-1", {
+  callId: "call-1",
+  tool: "billing.charge",
+  arguments: { usd: 42 },
+  sender: "planner-1",
+  requireApproval: true,
+  approvalReason: "paid action",
+});
+if (outcome.kind === "parked") {
+  console.log(`awaiting approval: ${outcome.receipt.approvalId}`);
+} else {
+  console.log(`on Kafka at ${outcome.receipt.partition}:${outcome.receipt.offset}`);
+}
+```
+
+`busStreamConsumeUrl(...)` mirrors the Python helper — returns a
+fully percent-encoded URL the caller plugs into their preferred SSE
+client (browser `EventSource`, the `eventsource` npm package, etc.).
+
+## What's deferred to Phase 8c/d
+
+Go and Java parity ship in follow-up PRs — same methodology, same
+flat method names, same DTO shapes. The Python and Node surfaces
+serve as the reference.
 
 ## Trust model carries through
 
