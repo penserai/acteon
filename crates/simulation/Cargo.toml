@@ -76,6 +76,11 @@ harness = false
 name = "latency"
 harness = false
 
+[[bench]]
+name = "bus_overhead"
+harness = false
+required-features = ["bus"]
+
 [[example]]
 name = "redis_simulation"
 required-features = ["redis"]
@@ -234,6 +239,10 @@ required-features = ["bus"]
 
 [[example]]
 name = "bus_approval_simulation"
+required-features = ["bus"]
+
+[[example]]
+name = "multi_agent_demo"
 required-features = ["bus"]
 
 [lints]

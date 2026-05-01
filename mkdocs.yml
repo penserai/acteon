@@ -182,6 +182,7 @@ nav:
     - Orchestrator: features/agent-swarm.md
     - Ambient Swarm Provider: features/swarm-provider.md
   - Agentic Bus:
+    - User Guide: concepts/agentic-bus.md
     - Master Plan: concepts/bus-master-plan.md
     - Phase 1 (Topics + Publish + Subscribe): features/bus-phase-1.md
     - Phase 2 (Subscriptions + Ack + Lag + DLQ): features/bus-phase-2.md
@@ -193,6 +194,7 @@ nav:
     - Phase 6c (HITL approvals): features/bus-phase-6c.md
     - Phase 7 (Admin UI): features/bus-phase-7.md
     - Phase 8 (Polyglot SDKs): features/bus-phase-8.md
+    - Phase 9 (Docs, migration, demo, benchmarks): features/bus-phase-9.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md
@@ -201,6 +203,7 @@ nav:
     - E-Commerce Order Pipeline: guides/ecommerce-order-pipeline.md
     - Healthcare Notification Pipeline: guides/healthcare-notification-pipeline.md
     - Migrating from Alertmanager: guides/migrating-from-alertmanager.md
+    - Migrating to the Agentic Bus: guides/agentic-bus-migration.md
   - Reference:
     - reference/index.md
     - Type Reference: reference/types.md
@@ -208,4 +211,5 @@ nav:
     - ClickHouse State Migration: reference/migration-clickhouse-state.md
     - Performance Guide: reference/performance.md
     - Deployment: reference/deployment.md
+    - Bus Benchmarks: reference/bus-benchmarks.md
     - Roadmap: reference/roadmap.md
