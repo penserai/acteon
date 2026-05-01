@@ -102,7 +102,10 @@ from .models import (
 )
 
 
-class ActeonClient:
+from .bus import _AsyncBusClientMixin, _BusClientMixin
+
+
+class ActeonClient(_BusClientMixin):
     """HTTP client for the Acteon action gateway.
 
     Example:
@@ -2593,7 +2596,7 @@ class ActeonClient:
         raise HttpError(response.status_code, "Failed to cancel swarm run")
 
 
-class AsyncActeonClient:
+class AsyncActeonClient(_AsyncBusClientMixin):
     """Async HTTP client for the Acteon action gateway.
 
     Example:
