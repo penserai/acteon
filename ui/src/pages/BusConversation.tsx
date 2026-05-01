@@ -98,7 +98,7 @@ export function BusConversation() {
                     )}
                     {approvalId && (
                       <Link
-                        to={`/bus?tab=approvals&ns=${namespace}&tenant=${tenant}`}
+                        to={`/bus?tab=approvals&ns=${namespace}&tenant=${tenant}&approval_id=${encodeURIComponent(approvalId)}`}
                         className={styles.headerLine}
                       >
                         approval: {approvalId.slice(0, 8)}…

@@ -77,3 +77,23 @@
 .timestamp {
   @apply text-xs text-gray-500;
 }
+
+/* Pulse ring for the approval card the operator deep-linked into
+ * from a conversation thread. Animation runs once and decays so
+ * the highlight fades after the operator has located the row. */
+.approvalCardHighlighted {
+  animation: approvalPulse 2.4s ease-out 1;
+  outline: 2px solid var(--text-warning, #d97706);
+  outline-offset: 2px;
+}
+
+@keyframes approvalPulse {
+  0% {
+    outline-color: var(--text-warning, #d97706);
+    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.25);
+  }
+  100% {
+    outline-color: transparent;
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+}

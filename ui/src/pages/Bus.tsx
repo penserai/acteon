@@ -8,7 +8,7 @@
 // operators jump between, say, the conversation thread and the
 // matching approval row without losing namespace/tenant filters.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { createColumnHelper } from '@tanstack/react-table'
 import { ShieldCheck, Trash2 } from 'lucide-react'
@@ -460,7 +460,15 @@ function ConversationsPanel({ ns, tenant }: { ns: string; tenant: string }) {
 // --------------- Approvals ---------------
 
 function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
-  const [statusFilter, setStatusFilter] = useState<BusApprovalStatus | ''>('pending')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const focusId = searchParams.get('approval_id') ?? ''
+  // Default the status filter to "all" when deep-linked so the
+  // target row is visible regardless of its current state — a
+  // conversation thread frequently links to an already-approved
+  // record for audit, not a still-pending one.
+  const [statusFilter, setStatusFilter] = useState<BusApprovalStatus | ''>(
+    focusId ? '' : 'pending',
+  )
   const { data, isLoading } = useBusApprovals(ns || undefined, tenant || undefined, {
     status: statusFilter || undefined,
   })
@@ -512,6 +520,16 @@ function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
             <BusApprovalCard
               key={a.approval_id}
               approval={a}
+              focused={a.approval_id === focusId}
+              onFocusConsumed={() => {
+                // Clear the deep-link param after the card has
+                // mounted + scrolled. Operators can refresh without
+                // re-pulsing the same row, and the URL stays clean
+                // for sharing.
+                const next = new URLSearchParams(searchParams)
+                next.delete('approval_id')
+                setSearchParams(next, { replace: true })
+              }}
               onApprove={(decided_by, decision_note) =>
                 approve.mutate(
                   { namespace: ns, tenant, id: a.approval_id, decision: { decided_by, decision_note } },
@@ -540,25 +558,42 @@ function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
 
 function BusApprovalCard({
   approval,
+  focused,
+  onFocusConsumed,
   onApprove,
   onReject,
 }: {
   approval: BusApprovalView
+  focused?: boolean
+  onFocusConsumed?: () => void
   onApprove: (decided_by: string, decision_note?: string) => void
   onReject: (decided_by: string, decision_note?: string) => void
 }) {
   const [decidedBy, setDecidedBy] = useState('')
   const [note, setNote] = useState('')
   const [countdown, setCountdown] = useState(formatCountdown(approval.expires_at))
+  const cardRef = useRef<HTMLElement>(null)
   useEffect(() => {
     const t = setInterval(() => setCountdown(formatCountdown(approval.expires_at)), 1000)
     return () => clearInterval(t)
   }, [approval.expires_at])
+  // Scroll the deep-linked card into view on mount and let the
+  // parent clear the URL param so the highlight only fires once.
+  useEffect(() => {
+    if (focused && cardRef.current) {
+      cardRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      onFocusConsumed?.()
+    }
+  }, [focused, onFocusConsumed])
   const envelopeStr = useMemo(() => JSON.stringify(approval.envelope, null, 2), [approval.envelope])
   const terminal = approval.status !== 'pending'
 
   return (
-    <article aria-label={`Approval ${approval.approval_id.slice(0, 8)}`} className={styles.approvalCard}>
+    <article
+      ref={cardRef}
+      aria-label={`Approval ${approval.approval_id.slice(0, 8)}`}
+      className={`${styles.approvalCard} ${focused ? styles.approvalCardHighlighted : ''}`}
+    >
       <div className={styles.cardHeader}>
         <Badge variant={approval.status === 'pending' ? 'warning' : approval.status === 'approved' ? 'success' : 'neutral'}>
           {approval.status}
