@@ -191,6 +191,7 @@ nav:
     - Phase 6a (Tool-call envelopes): features/bus-phase-6a.md
     - Phase 6b (Streaming chunks): features/bus-phase-6b.md
     - Phase 6c (HITL approvals): features/bus-phase-6c.md
+    - Phase 7 (Admin UI): features/bus-phase-7.md
   - Guides:
     - guides/index.md
     - AI Agent Swarm Coordination: guides/agent-swarm-coordination.md

@@ -113,4 +113,5 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 6a** (typed tool envelopes) — shipped — see [phase-6a feature doc](../features/bus-phase-6a.md)
 - **Phase 6b** (streaming chunks) — shipped — see [phase-6b feature doc](../features/bus-phase-6b.md)
 - **Phase 6c** (HITL pre-publish approvals) — shipped — see [phase-6c feature doc](../features/bus-phase-6c.md)
-- Phases 7, 8, 9 — not started
+- **Phase 7** (Admin UI) — shipped — see [phase-7 feature doc](../features/bus-phase-7.md)
+- Phases 8, 9 — not started

@@ -2,7 +2,7 @@ import {
   LayoutDashboard, Send, BookOpen, FlaskConical, ScrollText, Radio, Layers, Link2, ShieldCheck,
   Zap, AlertTriangle, Rss, Brain, Gauge, Users, Server, Cpu, Eye, Settings,
   RefreshCw, PieChart, Database, HeartPulse, Puzzle, ShieldAlert, FileText, BarChart3,
-  ExternalLink, GitBranch, BellRing, BellOff, Clock, Bot,
+  ExternalLink, GitBranch, BellRing, BellOff, Clock, Bot, Network,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -42,6 +42,7 @@ export const MAIN_NAV_ITEMS: NavItem[] = [
   { to: '/templates', icon: FileText, label: 'Templates' },
   { to: '/compliance', icon: ShieldAlert, label: 'Compliance' },
   { to: '/swarm', icon: Bot, label: 'Swarm Runs' },
+  { to: '/bus', icon: Network, label: 'Agentic Bus' },
   {
     to: 'https://penserai.github.io/acteon',
     icon: ExternalLink,
