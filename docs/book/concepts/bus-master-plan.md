@@ -114,9 +114,5 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 6b** (streaming chunks) — shipped — see [phase-6b feature doc](../features/bus-phase-6b.md)
 - **Phase 6c** (HITL pre-publish approvals) — shipped — see [phase-6c feature doc](../features/bus-phase-6c.md)
 - **Phase 7** (Admin UI) — shipped — see [phase-7 feature doc](../features/bus-phase-7.md)
-- **Phase 8** — in progress — see [phase-8 feature doc](../features/bus-phase-8.md)
-  - 8a (Python) — shipped
-  - 8b (Node) — shipped
-  - 8c (Go) — shipped
-  - 8d (Java) — not started
+- **Phase 8** (5-SDK polyglot parity) — shipped — see [phase-8 feature doc](../features/bus-phase-8.md)
 - Phase 9 — not started

@@ -3126,4 +3126,424 @@ public class ActeonClient implements AutoCloseable {
         sslContext.init(keyManagers, trustManagers, null);
         return sslContext;
     }
+
+    // =========================================================================
+    // Phase 8d: Agentic bus surface (Phases 1-6c)
+    // =========================================================================
+
+    /**
+     * Percent-encode a single path segment so reserved characters
+     * like {@code /} don't slip into the URL grammar. Acteon's bus
+     * REST surface treats namespace / tenant / name slots as opaque
+     * strings.
+     */
+    private static String busSeg(String s) {
+        return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Send a bus request, parse the response into {@code clazz}, or
+     * throw a typed {@link ApiException} when the server returns a
+     * structured Acteon-shaped error body.
+     */
+    private <T> T busSend(String method, String path, Object body, Class<T> clazz) throws ActeonException {
+        HttpResponse<String> response = busExecute(method, path, body);
+        return busDecode(response, clazz);
+    }
+
+    private <T> T busSend(String method, String path, Object body, TypeReference<T> typeRef) throws ActeonException {
+        HttpResponse<String> response = busExecute(method, path, body);
+        try {
+            return objectMapper.readValue(response.body(), typeRef);
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        }
+    }
+
+    private void busSendVoid(String method, String path, Object body) throws ActeonException {
+        busExecute(method, path, body);
+    }
+
+    private HttpResponse<String> busExecute(String method, String path, Object body) throws ActeonException {
+        try {
+            String requestBody = body == null ? null : objectMapper.writeValueAsString(body);
+            HttpRequest.Builder builder = requestBuilder(path);
+            HttpRequest request = switch (method) {
+                case "POST" -> builder.POST(requestBody == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(requestBody)).build();
+                case "PATCH" -> builder.method("PATCH", requestBody == null
+                    ? HttpRequest.BodyPublishers.noBody()
+                    : HttpRequest.BodyPublishers.ofString(requestBody)).build();
+                case "DELETE" -> builder.DELETE().build();
+                case "GET" -> builder.GET().build();
+                default -> throw new IllegalArgumentException("unsupported method: " + method);
+            };
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw busError(response);
+            }
+            return response;
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    private <T> T busDecode(HttpResponse<String> response, Class<T> clazz) throws ActeonException {
+        try {
+            return objectMapper.readValue(response.body(), clazz);
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Map an Acteon-shaped error body to a typed exception. The bus
+     * handlers emit either {@code {"code":..., "message":...}} (the
+     * generic shape) or {@code {"error":"..."}} (the bus-specific
+     * shape); accept both.
+     */
+    private ActeonException busError(HttpResponse<String> response) {
+        try {
+            Map<String, Object> errorBody = objectMapper.readValue(response.body(),
+                new TypeReference<Map<String, Object>>() {});
+            String message = (String) errorBody.getOrDefault("error",
+                errorBody.getOrDefault("message", "bus error"));
+            String code = (String) errorBody.getOrDefault("code", "BUS");
+            return new ApiException(code, message, false);
+        } catch (IOException e) {
+            return new HttpException(response.statusCode(), response.body());
+        }
+    }
+
+    private static String appendQuery(String path, Map<String, String> params) {
+        if (params == null || params.isEmpty()) {
+            return path;
+        }
+        StringBuilder sb = new StringBuilder(path);
+        sb.append('?');
+        boolean first = true;
+        for (var e : params.entrySet()) {
+            if (!first) sb.append('&');
+            first = false;
+            sb.append(URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8))
+              .append('=')
+              .append(URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8));
+        }
+        return sb.toString();
+    }
+
+    // --------------- Phase 1: Topics + publish ---------------
+
+    public Bus.BusTopic createBusTopic(Bus.CreateBusTopic req) throws ActeonException {
+        return busSend("POST", "/v1/bus/topics", req, Bus.BusTopic.class);
+    }
+
+    public List<Bus.BusTopic> listBusTopics(String namespace, String tenant) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        Bus.ListBusTopicsResponse resp = busSend("GET", appendQuery("/v1/bus/topics", params),
+            null, Bus.ListBusTopicsResponse.class);
+        return resp.topics() == null ? List.of() : resp.topics();
+    }
+
+    public Bus.BusTopic getBusTopic(String namespace, String tenant, String name) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/topics/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(name),
+            null, Bus.BusTopic.class);
+    }
+
+    public void deleteBusTopic(String namespace, String tenant, String name) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/topics/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(name),
+            null);
+    }
+
+    public Bus.PublishReceipt publishBusMessage(Bus.PublishBusMessage req) throws ActeonException {
+        return busSend("POST", "/v1/bus/publish", req, Bus.PublishReceipt.class);
+    }
+
+    // --------------- Phase 2: Subscriptions + lag ---------------
+
+    public Bus.BusSubscription createBusSubscription(Bus.CreateBusSubscription req) throws ActeonException {
+        return busSend("POST", "/v1/bus/subscriptions", req, Bus.BusSubscription.class);
+    }
+
+    public List<Bus.BusSubscription> listBusSubscriptions(String namespace, String tenant, String topic) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        if (topic != null) params.put("topic", topic);
+        Bus.ListBusSubscriptionsResponse resp = busSend("GET", appendQuery("/v1/bus/subscriptions", params),
+            null, Bus.ListBusSubscriptionsResponse.class);
+        return resp.subscriptions() == null ? List.of() : resp.subscriptions();
+    }
+
+    public Bus.BusSubscription getBusSubscription(String subId) throws ActeonException {
+        return busSend("GET", "/v1/bus/subscriptions/" + busSeg(subId), null, Bus.BusSubscription.class);
+    }
+
+    public void deleteBusSubscription(String subId) throws ActeonException {
+        busSendVoid("DELETE", "/v1/bus/subscriptions/" + busSeg(subId), null);
+    }
+
+    public Bus.BusLag getBusSubscriptionLag(String subId) throws ActeonException {
+        return busSend("GET", "/v1/bus/subscriptions/" + busSeg(subId) + "/lag", null, Bus.BusLag.class);
+    }
+
+    // --------------- Phase 3: Schemas ---------------
+
+    public Bus.BusSchema registerBusSchema(Bus.RegisterBusSchema req) throws ActeonException {
+        return busSend("POST", "/v1/bus/schemas", req, Bus.BusSchema.class);
+    }
+
+    public List<Bus.BusSchema> listBusSchemas(String namespace, String tenant, String subject, boolean latestOnly) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        if (subject != null) params.put("subject", subject);
+        if (latestOnly) params.put("latest_only", "true");
+        Bus.ListBusSchemasResponse resp = busSend("GET", appendQuery("/v1/bus/schemas", params),
+            null, Bus.ListBusSchemasResponse.class);
+        return resp.schemas() == null ? List.of() : resp.schemas();
+    }
+
+    public Bus.BusSchema getBusSchema(String namespace, String tenant, String subject, int version) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/schemas/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subject) + "/" + version,
+            null, Bus.BusSchema.class);
+    }
+
+    public void deleteBusSchema(String namespace, String tenant, String subject, int version) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/schemas/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(subject) + "/" + version,
+            null);
+    }
+
+    // --------------- Phase 4: Agents + heartbeat ---------------
+
+    public Bus.BusAgent registerBusAgent(Bus.RegisterBusAgent req) throws ActeonException {
+        return busSend("POST", "/v1/bus/agents", req, Bus.BusAgent.class);
+    }
+
+    public List<Bus.BusAgent> listBusAgents(String namespace, String tenant) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        Bus.ListBusAgentsResponse resp = busSend("GET", appendQuery("/v1/bus/agents", params),
+            null, Bus.ListBusAgentsResponse.class);
+        return resp.agents() == null ? List.of() : resp.agents();
+    }
+
+    public Bus.BusAgent getBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId),
+            null, Bus.BusAgent.class);
+    }
+
+    public void deleteBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId),
+            null);
+    }
+
+    public Bus.BusAgent heartbeatBusAgent(String namespace, String tenant, String agentId) throws ActeonException {
+        return busSend("PATCH",
+            "/v1/bus/agents/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(agentId) + "/heartbeat",
+            null, Bus.BusAgent.class);
+    }
+
+    // --------------- Phase 5: Conversations ---------------
+
+    public Bus.BusConversation createBusConversation(Bus.CreateBusConversation req) throws ActeonException {
+        return busSend("POST", "/v1/bus/conversations", req, Bus.BusConversation.class);
+    }
+
+    public List<Bus.BusConversation> listBusConversations(String namespace, String tenant, String state, String participant) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (namespace != null) params.put("namespace", namespace);
+        if (tenant != null) params.put("tenant", tenant);
+        if (state != null) params.put("state", state);
+        if (participant != null) params.put("participant", participant);
+        Bus.ListBusConversationsResponse resp = busSend("GET", appendQuery("/v1/bus/conversations", params),
+            null, Bus.ListBusConversationsResponse.class);
+        return resp.conversations() == null ? List.of() : resp.conversations();
+    }
+
+    public Bus.BusConversation getBusConversation(String namespace, String tenant, String conversationId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId),
+            null, Bus.BusConversation.class);
+    }
+
+    public void deleteBusConversation(String namespace, String tenant, String conversationId) throws ActeonException {
+        busSendVoid("DELETE",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId),
+            null);
+    }
+
+    public Bus.BusConversation transitionBusConversation(String namespace, String tenant, String conversationId, String targetState) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/transition",
+            new Bus.TransitionBusConversationRequest(targetState),
+            Bus.BusConversation.class);
+    }
+
+    public Map<String, Object> appendBusConversationMessage(
+        String namespace, String tenant, String conversationId,
+        Bus.AppendBusConversationMessage req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/messages",
+            req, new TypeReference<Map<String, Object>>() {});
+    }
+
+    public Bus.BusReplayResponse replayBusConversationMessages(
+        String namespace, String tenant, String conversationId,
+        Integer limit, String cursor, String asAgent
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (limit != null) params.put("limit", limit.toString());
+        if (cursor != null) params.put("cursor", cursor);
+        if (asAgent != null) params.put("as_agent", asAgent);
+        String path = appendQuery(
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/messages",
+            params);
+        return busSend("GET", path, null, Bus.BusReplayResponse.class);
+    }
+
+    // --------------- Phase 6a: Tool envelopes ---------------
+
+    /**
+     * Append a tool-call envelope.
+     *
+     * <p>Returns a sealed {@link Bus.PostBusToolCallOutcome}: a
+     * {@code Produced} record when the call landed on Kafka, a
+     * {@code Parked} record when the server parked it under a
+     * Phase 6c HITL approval (driven by
+     * {@code req.requireApproval()}). Pattern-match with
+     * {@code switch} to handle both branches.
+     */
+    public Bus.PostBusToolCallOutcome postBusToolCall(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusToolCall req
+    ) throws ActeonException {
+        try {
+            String body = objectMapper.writeValueAsString(req);
+            HttpRequest request = requestBuilder(
+                "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/tool-calls"
+            ).POST(HttpRequest.BodyPublishers.ofString(body)).build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw busError(response);
+            }
+            if (response.statusCode() == 202) {
+                return new Bus.PostBusToolCallOutcome.Parked(
+                    objectMapper.readValue(response.body(), Bus.BusApprovalParkedReceipt.class));
+            }
+            return new Bus.PostBusToolCallOutcome.Produced(
+                objectMapper.readValue(response.body(), Bus.BusToolEnvelopeReceipt.class));
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    public Bus.BusToolEnvelopeReceipt postBusToolResult(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusToolResult req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/tool-results",
+            req, Bus.BusToolEnvelopeReceipt.class);
+    }
+
+    public Bus.BusToolResultLookup lookupBusToolResult(
+        String namespace, String tenant, String callId,
+        Bus.BusToolResultLookupParams params
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> q = new java.util.LinkedHashMap<>();
+        q.put("conversation_id", params.conversationId());
+        if (params.cursor() != null) q.put("cursor", params.cursor());
+        if (params.timeoutMs() != null) q.put("timeout_ms", params.timeoutMs().toString());
+        if (params.asAgent() != null) q.put("as_agent", params.asAgent());
+        String path = appendQuery(
+            "/v1/bus/tool-calls/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(callId) + "/result",
+            q);
+        return busSend("GET", path, null, Bus.BusToolResultLookup.class);
+    }
+
+    // --------------- Phase 6b: Stream envelopes ---------------
+
+    public Bus.BusStreamEnvelopeReceipt postBusStreamChunk(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusStreamChunk req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/stream-chunks",
+            req, Bus.BusStreamEnvelopeReceipt.class);
+    }
+
+    public Bus.BusStreamEnvelopeReceipt postBusStreamEnd(
+        String namespace, String tenant, String conversationId,
+        Bus.PostBusStreamEnd req
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/stream-end",
+            req, Bus.BusStreamEnvelopeReceipt.class);
+    }
+
+    /**
+     * Build the SSE consume URL for a stream. Plug it into your
+     * preferred SSE client. Path segments are encoded the same way
+     * the Rust + Python + Node + Go SDKs encode them.
+     */
+    public String busStreamConsumeUrl(String namespace, String tenant, String conversationId, String streamId) {
+        return baseUrl + "/v1/bus/streams/"
+            + busSeg(namespace) + "/" + busSeg(tenant) + "/"
+            + busSeg(conversationId) + "/" + busSeg(streamId);
+    }
+
+    // --------------- Phase 6c: HITL approvals ---------------
+
+    public List<Bus.BusApprovalView> listBusApprovals(
+        String namespace, String tenant, String status, String conversationId
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        if (status != null) params.put("status", status);
+        if (conversationId != null) params.put("conversation_id", conversationId);
+        String path = appendQuery(
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant),
+            params);
+        Bus.ListBusApprovalsResponse resp = busSend("GET", path, null, Bus.ListBusApprovalsResponse.class);
+        return resp.approvals() == null ? List.of() : resp.approvals();
+    }
+
+    public Bus.BusApprovalView getBusApproval(String namespace, String tenant, String approvalId) throws ActeonException {
+        return busSend("GET",
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId),
+            null, Bus.BusApprovalView.class);
+    }
+
+    public Bus.BusApprovalDecisionResponse approveBusApproval(
+        String namespace, String tenant, String approvalId, Bus.BusApprovalDecision decision
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId) + "/approve",
+            decision, Bus.BusApprovalDecisionResponse.class);
+    }
+
+    public Bus.BusApprovalDecisionResponse rejectBusApproval(
+        String namespace, String tenant, String approvalId, Bus.BusApprovalDecision decision
+    ) throws ActeonException {
+        return busSend("POST",
+            "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId) + "/reject",
+            decision, Bus.BusApprovalDecisionResponse.class);
+    }
 }

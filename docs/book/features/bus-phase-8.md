@@ -211,10 +211,73 @@ absent and empty equivalently.
 returns the percent-encoded URL the caller plugs into a Go SSE
 client (`r3labs/sse`, the stdlib HTTP streaming reader, etc.).
 
-## What's deferred to Phase 8d
+## Phase 8d — Java
 
-Java parity ships next as a separate PR using the Rust + Python +
-Node + Go surfaces as the joint reference.
+Java parity rounds out Phase 8. 36 methods on
+`com.acteon.client.ActeonClient` covering the full Phases 1–6c
+surface. Method names are camelCase
+(`createBusTopic`, `postBusToolCall`, `approveBusApproval`, …) —
+matching the Java SDK's existing convention; wire payloads stay
+identical.
+
+Bus DTOs live as nested **records** inside a single
+`com.acteon.client.Bus` container class. Nesting them rather than
+spraying 40 separate files keeps the bus types together (mirroring
+how the Rust + Python + Node + Go SDKs organize them) and gives
+callers a familiar `Bus.CreateBusTopic`, `Bus.BusToolEnvelopeReceipt`,
+`Bus.BusApprovalView` namespace. Records pair with Jackson's
+`@JsonProperty` snake-case annotations and `@JsonInclude(NON_NULL)`
+to drop optional fields from the wire form.
+
+The Phase 6c "parked vs produced" branch is a Java 21 **sealed
+interface**, the right primitive for discriminated unions:
+
+```java
+import com.acteon.client.ActeonClient;
+import com.acteon.client.Bus;
+
+try (ActeonClient client = new ActeonClient("http://localhost:3000")) {
+    Bus.PostBusToolCall req = new Bus.PostBusToolCall(
+        "call-1", "billing.charge", Map.of("usd", 42),
+        null, null, "planner-1", null,
+        true, "paid action", 600_000L);
+    Bus.PostBusToolCallOutcome outcome = client.postBusToolCall(
+        "agents", "demo", "thread-1", req);
+    switch (outcome) {
+        case Bus.PostBusToolCallOutcome.Produced p ->
+            System.out.println("on Kafka at " + p.receipt().offset());
+        case Bus.PostBusToolCallOutcome.Parked pk ->
+            System.out.println("awaiting approval " + pk.receipt().approvalId());
+    }
+}
+```
+
+Pattern-matching `switch` on a sealed interface is exhaustive at
+compile time — Java will refuse to compile a switch that misses a
+permitted variant. That's the closest Java gets to Rust's `match`,
+and it gives the same compile-time guarantee that downstream code
+handles both branches.
+
+`busStreamConsumeUrl(...)` mirrors the other SDKs — returns the
+percent-encoded URL the caller plugs into a Java SSE client (the
+JDK's `HttpClient` streaming response, OkHttp, the `okhttp-eventsource`
+artifact, etc.).
+
+## Phase 8 complete
+
+| SDK | Status | PR |
+|---|---|---|
+| Rust | shipped (Phases 1–6c) | — |
+| Python (8a) | shipped | #138 |
+| Node (8b) | shipped | #139 |
+| Go (8c) | shipped | #140 |
+| Java (8d) | shipped | this PR |
+
+All five SDKs expose the same 36 bus methods with identical wire
+shapes. A polyglot agent fleet can mix-and-match runtimes and
+trust that a Python orchestrator can post a tool-call that an
+async Java tool service handles without any cross-language
+adapter glue.
 
 ## Trust model carries through
 
