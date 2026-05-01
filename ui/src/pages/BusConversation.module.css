@@ -1,0 +1,36 @@
+@reference "../index.css";
+
+.header {
+  @apply flex items-baseline gap-3 mb-2 flex-wrap;
+}
+
+.idCell {
+  @apply font-mono text-xs;
+}
+
+.threadList {
+  @apply space-y-3 mt-4;
+}
+
+.message {
+  @apply border rounded-lg p-3;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.messageHeader {
+  @apply flex items-baseline justify-between gap-2 mb-2 flex-wrap;
+}
+
+.payload {
+  @apply rounded p-2 text-xs font-mono whitespace-pre-wrap max-h-64 overflow-auto;
+  background: var(--bg-surface-secondary);
+}
+
+.timestamp {
+  @apply text-xs text-gray-500;
+}
+
+.headerLine {
+  @apply text-xs text-gray-500 break-all;
+}

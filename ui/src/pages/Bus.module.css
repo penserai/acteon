@@ -1,0 +1,99 @@
+@reference "../index.css";
+
+.filterBar {
+  @apply flex gap-3 mb-4 flex-wrap;
+}
+
+.idCell {
+  @apply font-mono text-xs;
+}
+
+.timestampCell {
+  @apply text-xs text-gray-500;
+}
+
+.lagPill {
+  @apply inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium;
+}
+
+.lagOk {
+  background: var(--bg-success-soft, rgba(16, 185, 129, 0.1));
+  color: var(--text-success, #059669);
+}
+
+.lagWarn {
+  background: var(--bg-warning-soft, rgba(245, 158, 11, 0.1));
+  color: var(--text-warning, #d97706);
+}
+
+.lagError {
+  background: var(--bg-danger-soft, rgba(239, 68, 68, 0.1));
+  color: var(--text-danger, #dc2626);
+}
+
+.heartbeatStale {
+  color: var(--text-warning, #d97706);
+}
+
+.heartbeatHealthy {
+  color: var(--text-success, #059669);
+}
+
+.actionButtons {
+  @apply flex gap-2;
+}
+
+.cardHeader {
+  @apply flex items-start justify-between mb-3;
+}
+
+.approvalCard {
+  @apply border rounded-lg p-4;
+  background: var(--bg-surface);
+  border-color: var(--border-default);
+}
+
+.approvalsList {
+  @apply space-y-4;
+}
+
+.detailsContainer {
+  @apply space-y-1 text-sm mb-3;
+}
+
+.metadataRow {
+  @apply flex gap-4 text-xs text-gray-500 mb-3 flex-wrap;
+}
+
+.envelopePreview {
+  @apply rounded p-3 text-xs font-mono whitespace-pre-wrap mb-3 max-h-48 overflow-auto;
+  background: var(--bg-surface-secondary);
+}
+
+.decisionForm {
+  @apply flex flex-col gap-2 mb-3;
+}
+
+.timestamp {
+  @apply text-xs text-gray-500;
+}
+
+/* Pulse ring for the approval card the operator deep-linked into
+ * from a conversation thread. Animation runs once and decays so
+ * the highlight fades after the operator has located the row. */
+.approvalCardHighlighted {
+  animation: approvalPulse 2.4s ease-out 1;
+  outline: 2px solid var(--text-warning, #d97706);
+  outline-offset: 2px;
+}
+
+@keyframes approvalPulse {
+  0% {
+    outline-color: var(--text-warning, #d97706);
+    box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.25);
+  }
+  100% {
+    outline-color: transparent;
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0);
+  }
+}

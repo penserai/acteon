@@ -70,6 +70,8 @@ const Analytics = lazyPage(() => import('./pages/Analytics'), 'Analytics')
 const ComplianceStatus = lazyPage(() => import('./pages/ComplianceStatus'), 'ComplianceStatus')
 const Settings = lazyPage(() => import('./pages/Settings'), 'Settings')
 const SwarmRuns = lazyPage(() => import('./pages/SwarmRuns'), 'SwarmRuns')
+const Bus = lazyPage(() => import('./pages/Bus'), 'Bus')
+const BusConversation = lazyPage(() => import('./pages/BusConversation'), 'BusConversation')
 
 function App() {
   useEffect(() => {
@@ -117,6 +119,11 @@ function App() {
           <Route path="analytics" element={<Analytics />} />
           <Route path="compliance" element={<ComplianceStatus />} />
           <Route path="swarm" element={<SwarmRuns />} />
+          <Route path="bus" element={<Bus />} />
+          <Route
+            path="bus/conversations/:namespace/:tenant/:id"
+            element={<BusConversation />}
+          />
           <Route path="settings/*" element={<Settings />} />
         </Route>
       </Routes>
