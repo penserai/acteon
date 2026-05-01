@@ -1057,7 +1057,7 @@ impl ActeonClient {
         tenant: &str,
         conversation_id: &str,
         req: &PostBusToolCall,
-    ) -> Result<BusToolEnvelopeReceipt, Error> {
+    ) -> Result<PostBusToolCallOutcome, Error> {
         let url = self.conversation_url(namespace, tenant, conversation_id, Some("tool-calls"));
         let resp = self
             .add_auth(self.client.post(&url))
@@ -1065,12 +1065,23 @@ impl ActeonClient {
             .send()
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;
-        if resp.status().is_success() {
-            resp.json::<BusToolEnvelopeReceipt>()
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(map_error(resp).await);
+        }
+        // 202 → parked approval; 200 → produced. The server uses the
+        // `require_approval` flag on the request to choose; the
+        // status code is the load-bearing distinction here.
+        if status == reqwest::StatusCode::ACCEPTED {
+            resp.json::<BusApprovalParkedReceipt>()
                 .await
+                .map(PostBusToolCallOutcome::Parked)
                 .map_err(|e| Error::Deserialization(e.to_string()))
         } else {
-            Err(map_error(resp).await)
+            resp.json::<BusToolEnvelopeReceipt>()
+                .await
+                .map(PostBusToolCallOutcome::Produced)
+                .map_err(|e| Error::Deserialization(e.to_string()))
         }
     }
 
@@ -1154,9 +1165,23 @@ impl ActeonClient {
         req: &PostBusToolCall,
         timeout_ms: Option<u64>,
     ) -> Result<BusToolResultLookup, Error> {
-        let receipt = self
+        let outcome = self
             .post_bus_tool_call(namespace, tenant, conversation_id, req)
             .await?;
+        let receipt = match outcome {
+            PostBusToolCallOutcome::Produced(r) => r,
+            // A parked approval means no Kafka record exists yet.
+            // The natural request/response wait would never resolve.
+            // Surface a typed error so callers don't time out
+            // mysteriously.
+            PostBusToolCallOutcome::Parked(p) => {
+                return Err(Error::Configuration(format!(
+                    "tool-call parked for approval (id {}); cannot wait for result \
+                     until an operator calls approve",
+                    p.approval_id,
+                )));
+            }
+        };
         self.lookup_bus_tool_result(
             namespace,
             tenant,
@@ -1224,6 +1249,122 @@ impl ActeonClient {
             .map_err(|e| Error::Connection(e.to_string()))?;
         if resp.status().is_success() {
             resp.json::<BusStreamEnvelopeReceipt>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    // ----- Phase 6c: pre-publish HITL approvals -----
+
+    /// List parked approvals for a tenant. Filter by status or
+    /// conversation via `params`.
+    pub async fn list_bus_approvals(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        params: &ListBusApprovalsParams,
+    ) -> Result<ListBusApprovalsResponse, Error> {
+        let url = format!(
+            "{}/v1/bus/approvals/{}/{}",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+        );
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .query(params)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<ListBusApprovalsResponse>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Fetch a single approval by id.
+    pub async fn get_bus_approval(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        approval_id: &str,
+    ) -> Result<BusApprovalView, Error> {
+        let url = format!(
+            "{}/v1/bus/approvals/{}/{}/{}",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(approval_id),
+        );
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusApprovalView>()
+                .await
+                .map_err(|e| Error::Deserialization(e.to_string()))
+        } else {
+            Err(map_error(resp).await)
+        }
+    }
+
+    /// Approve a parked tool-call. The server produces the original
+    /// envelope to Kafka with the same headers it would have stamped
+    /// on a non-gated post, plus an `acteon.approval.id` audit
+    /// header.
+    pub async fn approve_bus_approval(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        approval_id: &str,
+        req: &BusApprovalDecisionRequest,
+    ) -> Result<BusApprovalDecisionResponse, Error> {
+        self.post_bus_approval_decision(namespace, tenant, approval_id, "approve", req)
+            .await
+    }
+
+    /// Reject a parked tool-call. No Kafka record is produced.
+    pub async fn reject_bus_approval(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        approval_id: &str,
+        req: &BusApprovalDecisionRequest,
+    ) -> Result<BusApprovalDecisionResponse, Error> {
+        self.post_bus_approval_decision(namespace, tenant, approval_id, "reject", req)
+            .await
+    }
+
+    async fn post_bus_approval_decision(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        approval_id: &str,
+        verb: &str,
+        req: &BusApprovalDecisionRequest,
+    ) -> Result<BusApprovalDecisionResponse, Error> {
+        let url = format!(
+            "{}/v1/bus/approvals/{}/{}/{}/{verb}",
+            self.base_url,
+            encode_segment(namespace),
+            encode_segment(tenant),
+            encode_segment(approval_id),
+        );
+        let resp = self
+            .add_auth(self.client.post(&url))
+            .json(req)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if resp.status().is_success() {
+            resp.json::<BusApprovalDecisionResponse>()
                 .await
                 .map_err(|e| Error::Deserialization(e.to_string()))
         } else {
@@ -1589,6 +1730,21 @@ pub struct PostBusToolCall {
     pub sender: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
+    /// Phase 6c: gate this tool-call behind a human-in-the-loop
+    /// approval. When true, the server parks the envelope under a
+    /// `BusApproval` row and responds with `202 Accepted` plus the
+    /// approval id; nothing reaches Kafka until an operator
+    /// approves via [`ActeonClient::approve_bus_approval`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_approval: bool,
+    /// Free-form rationale for the approval request. Persisted on
+    /// the row for the operator UX. Capped at 4 KB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_reason: Option<String>,
+    /// Override the default approval TTL (24h). Capped at 7d. Ignored
+    /// when `require_approval` is false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1718,6 +1874,94 @@ pub struct PostBusStreamEnd {
     pub sender: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
+}
+
+// ----- Phase 6c: HITL approval DTOs -----
+
+#[derive(Debug, Clone)]
+pub enum PostBusToolCallOutcome {
+    /// Posted directly: tool-call landed on Kafka.
+    Produced(BusToolEnvelopeReceipt),
+    /// Parked under a `BusApproval` row pending a human decision.
+    Parked(BusApprovalParkedReceipt),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BusApprovalStatus {
+    Pending,
+    Approved,
+    Rejected,
+    Expired,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusApprovalParkedReceipt {
+    pub approval_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    pub conversation_id: String,
+    pub correlation_token: String,
+    pub status: BusApprovalStatus,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusApprovalView {
+    pub approval_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    pub conversation_id: String,
+    pub correlation_token: String,
+    pub envelope_kind: String,
+    pub status: BusApprovalStatus,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub created_at: String,
+    pub expires_at: String,
+    #[serde(default)]
+    pub decided_by: Option<String>,
+    #[serde(default)]
+    pub decided_at: Option<String>,
+    #[serde(default)]
+    pub decision_note: Option<String>,
+    #[serde(default)]
+    pub produced_partition: Option<i32>,
+    #[serde(default)]
+    pub produced_offset: Option<i64>,
+    #[serde(default)]
+    pub produced_at: Option<String>,
+    #[serde(default)]
+    pub envelope: serde_json::Value,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ListBusApprovalsParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<BusApprovalStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListBusApprovalsResponse {
+    pub approvals: Vec<BusApprovalView>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusApprovalDecisionRequest {
+    pub decided_by: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BusApprovalDecisionResponse {
+    pub approval: BusApprovalView,
+    #[serde(default)]
+    pub receipt: Option<BusToolEnvelopeReceipt>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

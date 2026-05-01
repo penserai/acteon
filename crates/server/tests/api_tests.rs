@@ -122,6 +122,8 @@ fn build_test_state_with_audit_and_analytics(
         swarm_registry: None,
         #[cfg(feature = "bus")]
         bus_backend: None,
+        #[cfg(feature = "bus")]
+        bus_schema_validator: acteon_bus::SchemaValidator::new(),
     }
 }
 
@@ -1192,6 +1194,8 @@ fn build_approval_state_with_providers(
         swarm_registry: None,
         #[cfg(feature = "bus")]
         bus_backend: None,
+        #[cfg(feature = "bus")]
+        bus_schema_validator: acteon_bus::SchemaValidator::new(),
     }
 }
 

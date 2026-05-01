@@ -75,6 +75,12 @@ impl TestServer {
             cors_allowed_origins: Vec::new(),
             signature_verifier: None,
             replay_protection: None,
+            #[cfg(feature = "swarm")]
+            swarm_registry: None,
+            #[cfg(feature = "bus")]
+            bus_backend: None,
+            #[cfg(feature = "bus")]
+            bus_schema_validator: acteon_bus::SchemaValidator::new(),
         };
 
         // Build router

@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         prefix: "acteon-sim".to_string(),
         pool_size: 10,
         connection_timeout: Duration::from_secs(5),
+        ..Default::default()
     };
 
     info!("→ Connecting to Redis at {}...", redis_config.url);

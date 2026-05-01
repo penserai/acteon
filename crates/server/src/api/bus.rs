@@ -5513,6 +5513,23 @@ pub struct PostToolCallRequest {
     /// caps (max 32 entries / 256B keys / 4KB values).
     #[serde(default)]
     pub metadata: HashMap<String, String>,
+    /// Phase 6c: gate this tool-call behind a human-in-the-loop
+    /// approval. When true, the envelope is parked in state under a
+    /// `BusApproval` row and the response is `202 Accepted` with the
+    /// approval id; the matching Kafka record only lands after a
+    /// `POST /v1/bus/approvals/{ns}/{t}/{id}/approve`. Default false.
+    #[serde(default)]
+    pub require_approval: bool,
+    /// Free-form rationale for the approval request. Required by
+    /// some operator UX, optional in the API. Capped at
+    /// `MAX_APPROVAL_NOTE_BYTES` (4 KB). Ignored when
+    /// `require_approval` is false.
+    #[serde(default)]
+    pub approval_reason: Option<String>,
+    /// Override the default approval TTL (24h). Capped at 7d. Ignored
+    /// when `require_approval` is false.
+    #[serde(default)]
+    pub approval_ttl_ms: Option<u64>,
 }
 
 /// Body of `POST /v1/bus/conversations/{ns}/{t}/{id}/tool-results`.
@@ -5766,6 +5783,24 @@ pub async fn post_tool_call(
         .await
         {
             return resp;
+        }
+        // Phase 6c HITL fork: when the requester sets
+        // `require_approval`, park the envelope under a `BusApproval`
+        // row instead of producing to Kafka. The parked row carries
+        // the *validated* envelope (so the approval handler doesn't
+        // re-run validation rules that may have drifted since
+        // parking) plus the original conversation context.
+        if req.require_approval {
+            return park_tool_call_for_approval(
+                &state,
+                &namespace,
+                &tenant,
+                &conv,
+                envelope,
+                req.approval_reason.clone(),
+                req.approval_ttl_ms,
+            )
+            .await;
         }
         let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
             .with_key(&conv.conversation_id);
@@ -7051,4 +7086,734 @@ fn sse_stream_for_stream_id(
             }
         },
     )
+}
+
+// =============================================================================
+// Phase 6c: pre-publish HITL approvals for tool-calls
+// =============================================================================
+
+/// Receipt for a parked tool-call awaiting approval (`202 Accepted`
+/// shape). The envelope is in state, not on Kafka — `partition` /
+/// `offset` are only populated after `approve` commits the row.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BusApprovalParkedReceipt {
+    pub approval_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    pub conversation_id: String,
+    /// `call_id` (or future-variant correlation token) on the
+    /// parked envelope, surfaced for log correlation.
+    pub correlation_token: String,
+    pub status: acteon_core::BusApprovalStatus,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Public-facing view of an approval row. Separate from the on-disk
+/// representation so the response shape doesn't leak whatever
+/// internal fields the row gains over time.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BusApprovalView {
+    pub approval_id: String,
+    pub namespace: String,
+    pub tenant: String,
+    pub conversation_id: String,
+    pub correlation_token: String,
+    pub envelope_kind: String,
+    pub status: acteon_core::BusApprovalStatus,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub decision_note: Option<String>,
+    pub produced_partition: Option<i32>,
+    pub produced_offset: Option<i64>,
+    pub produced_at: Option<DateTime<Utc>>,
+    /// Full envelope payload for operator review. Returned as
+    /// free-form JSON (the underlying tool-call shape is already in
+    /// the `OpenAPI` schema via `BusApprovalEnvelope`).
+    #[schema(value_type = Object)]
+    pub envelope: serde_json::Value,
+}
+
+#[cfg(feature = "bus")]
+fn approval_to_view(a: &acteon_core::BusApproval) -> BusApprovalView {
+    let envelope_kind = match &a.envelope {
+        acteon_core::BusApprovalEnvelope::ToolCall(_) => "tool_call".to_string(),
+    };
+    BusApprovalView {
+        approval_id: a.approval_id.clone(),
+        namespace: a.namespace.clone(),
+        tenant: a.tenant.clone(),
+        conversation_id: a.conversation_id.clone(),
+        correlation_token: a.envelope.correlation_token().to_string(),
+        envelope_kind,
+        status: a.status,
+        reason: a.reason.clone(),
+        created_at: a.created_at,
+        expires_at: a.expires_at,
+        decided_by: a.decided_by.clone(),
+        decided_at: a.decided_at,
+        decision_note: a.decision_note.clone(),
+        produced_partition: a.produced_partition,
+        produced_offset: a.produced_offset,
+        produced_at: a.produced_at,
+        envelope: serde_json::to_value(&a.envelope).unwrap_or(serde_json::Value::Null),
+    }
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ListBusApprovalsParams {
+    /// Filter by lifecycle status. Omit to list all.
+    #[serde(default)]
+    pub status: Option<acteon_core::BusApprovalStatus>,
+    /// Filter by conversation id.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListBusApprovalsResponse {
+    pub approvals: Vec<BusApprovalView>,
+    pub count: usize,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct BusApprovalDecisionRequest {
+    /// Operator id making the decision. Persisted on the row for
+    /// audit. Required: a decision without an actor would defeat
+    /// HITL.
+    pub decided_by: String,
+    /// Free-form note attached to the decision. Capped at 4 KB.
+    #[serde(default)]
+    pub decision_note: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BusApprovalDecisionResponse {
+    pub approval: BusApprovalView,
+    /// Receipt from the resulting Kafka produce. Populated only on
+    /// `approve`; `None` for `reject`.
+    pub receipt: Option<ToolEnvelopeReceipt>,
+}
+
+/// Park a validated `ToolCall` envelope under a `BusApproval` row.
+/// The eventual approve handler picks up the row, re-stamps the
+/// envelope headers, and produces to Kafka.
+#[cfg(feature = "bus")]
+async fn park_tool_call_for_approval(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    conv: &acteon_core::Conversation,
+    envelope: acteon_core::ToolCall,
+    reason: Option<String>,
+    ttl_ms: Option<u64>,
+) -> axum::response::Response {
+    let ttl_ms = ttl_ms.unwrap_or(acteon_core::DEFAULT_APPROVAL_TTL_MS);
+    if let Err(e) = acteon_core::validate_approval_ttl(ttl_ms) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let approval_id = uuid::Uuid::now_v7().to_string();
+    let now = Utc::now();
+    let expires_at =
+        now + chrono::Duration::milliseconds(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
+    let approval = acteon_core::BusApproval {
+        approval_id: approval_id.clone(),
+        namespace: namespace.to_string(),
+        tenant: tenant.to_string(),
+        conversation_id: conv.conversation_id.clone(),
+        reason,
+        envelope: acteon_core::BusApprovalEnvelope::ToolCall(envelope.clone()),
+        status: acteon_core::BusApprovalStatus::Pending,
+        created_at: now,
+        expires_at,
+        decided_by: None,
+        decided_at: None,
+        decision_note: None,
+        produced_partition: None,
+        produced_offset: None,
+        produced_at: None,
+        labels: HashMap::new(),
+    };
+    if let Err(e) = approval.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response();
+    }
+    let raw = match serde_json::to_string(&approval) {
+        Ok(s) => s,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusApproval,
+        &approval_id,
+    );
+    // `check_and_set` rather than `set` so a duplicate UUID (vanishingly
+    // unlikely with v7 but the contract is "do not silently
+    // overwrite") fails loudly instead of corrupting an existing
+    // pending row.
+    match store.check_and_set(&key, &raw, None).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: format!("approval id collision at {}", key.canonical()),
+                }),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: e.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+    (
+        StatusCode::ACCEPTED,
+        Json(BusApprovalParkedReceipt {
+            approval_id,
+            namespace: namespace.to_string(),
+            tenant: tenant.to_string(),
+            conversation_id: conv.conversation_id.clone(),
+            correlation_token: envelope.call_id,
+            status: acteon_core::BusApprovalStatus::Pending,
+            created_at: now,
+            expires_at,
+        }),
+    )
+        .into_response()
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/approvals/{namespace}/{tenant}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ListBusApprovalsParams,
+    ),
+    responses(
+        (status = 200, description = "Approvals for the tenant", body = ListBusApprovalsResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn list_bus_approvals(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant)): Path<(String, String)>,
+    Query(params): Query<ListBusApprovalsParams>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+            let gw = state.gateway.read().await;
+            gw.state_store().clone()
+        };
+        let entries = match store
+            .scan_keys(&namespace, &tenant, KeyKind::BusApproval, None)
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let mut approvals = Vec::with_capacity(entries.len());
+        for (_k, raw) in entries {
+            let Ok(a) = serde_json::from_str::<acteon_core::BusApproval>(&raw) else {
+                continue;
+            };
+            if let Some(s) = params.status
+                && a.status != s
+            {
+                continue;
+            }
+            if let Some(c) = &params.conversation_id
+                && &a.conversation_id != c
+            {
+                continue;
+            }
+            approvals.push(approval_to_view(&a));
+        }
+        let count = approvals.len();
+        (
+            StatusCode::OK,
+            Json(ListBusApprovalsResponse { approvals, count }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, params);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}",
+    tag = "bus",
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("approval_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Approval", body = BusApprovalView),
+        (status = 404, description = "Approval not found", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn get_bus_approval(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, approval_id)): Path<(String, String, String)>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        match load_approval(&state, &namespace, &tenant, &approval_id).await {
+            Ok(a) => (StatusCode::OK, Json(approval_to_view(&a))).into_response(),
+            Err(resp) => resp,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, approval_id);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[cfg(feature = "bus")]
+async fn load_approval(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+    approval_id: &str,
+) -> Result<acteon_core::BusApproval, axum::response::Response> {
+    if let Err(e) = acteon_core::validate_approval_id(approval_id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response());
+    }
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::BusApproval,
+        approval_id,
+    );
+    let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    match store.get(&key).await {
+        Ok(Some(raw)) => serde_json::from_str(&raw).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("corrupt approval record at {}: {e}", key.canonical()),
+                }),
+            )
+                .into_response()
+        }),
+        Ok(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("approval {namespace}.{tenant}.{approval_id} not found"),
+            }),
+        )
+            .into_response()),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/approve",
+    tag = "bus",
+    request_body = BusApprovalDecisionRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("approval_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Approved and produced", body = BusApprovalDecisionResponse),
+        (status = 400, description = "Invalid decision body", body = ErrorResponse),
+        (status = 404, description = "Approval not found", body = ErrorResponse),
+        (status = 409, description = "Approval already decided", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+#[allow(clippy::too_many_lines)]
+pub async fn approve_bus_approval(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, approval_id)): Path<(String, String, String)>,
+    Json(req): Json<BusApprovalDecisionRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        let Some(backend) = state.bus_backend.clone() else {
+            return service_unavailable("bus feature not enabled");
+        };
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
+            return resp;
+        }
+        if let Err(resp) = validate_decision_note(req.decision_note.as_deref()) {
+            return resp;
+        }
+        let approval = match load_approval(&state, &namespace, &tenant, &approval_id).await {
+            Ok(a) => a,
+            Err(resp) => return resp,
+        };
+        if approval.status.is_terminal() {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: format!(
+                        "approval {approval_id} already in terminal status {:?}",
+                        approval.status
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if approval.expires_at < Utc::now() {
+            // Soft-expire on read so a stale row can never be
+            // approved past its TTL. The reaper will mark it
+            // separately; this avoids racing the reaper.
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorResponse {
+                    error: format!("approval {approval_id} expired at {}", approval.expires_at),
+                }),
+            )
+                .into_response();
+        }
+        // Resolve the conversation that owns this approval — its
+        // `effective_events_topic()` is what the produce targets.
+        let conv =
+            match load_conversation(&state, &namespace, &tenant, &approval.conversation_id).await {
+                Ok(c) => c,
+                Err(resp) => return resp,
+            };
+        let envelope = match &approval.envelope {
+            acteon_core::BusApprovalEnvelope::ToolCall(c) => c.clone(),
+        };
+        let payload = match serde_json::to_value(&envelope) {
+            Ok(v) => v,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: e.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        let events_topic = conv.effective_events_topic();
+        // Re-validate against the topic schema in case the binding
+        // changed while the row was parked.
+        if let Err(resp) = validate_payload_against_topic_schema(
+            &state,
+            &conv.namespace,
+            &conv.tenant,
+            &events_topic,
+            &payload,
+        )
+        .await
+        {
+            return resp;
+        }
+        let mut msg = acteon_bus::BusMessage::new(events_topic.clone(), payload)
+            .with_key(&conv.conversation_id);
+        msg.headers.insert(
+            "acteon.conversation.id".into(),
+            conv.conversation_id.clone(),
+        );
+        if let Some(s) = &envelope.sender {
+            msg.headers
+                .insert("acteon.conversation.sender".into(), s.clone());
+        }
+        stamp_tool_envelope_headers(
+            &mut msg,
+            ENVELOPE_KIND_TOOL_CALL,
+            &envelope.call_id,
+            envelope.correlation_id.as_deref(),
+            envelope.reply_to.as_deref(),
+        );
+        // Stamp an additional approval-trace header so audit
+        // pipelines can correlate the produced record back to the
+        // approval row that gated it.
+        msg.headers
+            .insert("acteon.approval.id".into(), approval.approval_id.clone());
+        let receipt = match backend.produce(msg).await {
+            Ok(r) => r,
+            Err(e) => {
+                // V1 trust model: the row stays `pending` so an
+                // operator can retry. Don't transition the row
+                // until the produce succeeds.
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("produce failed; approval row left pending: {e}"),
+                    }),
+                )
+                    .into_response();
+            }
+        };
+        // Best-effort CAS to record the decision. If contention
+        // exhausts (an unlikely double-approve race), the message is
+        // already on Kafka — log loudly and keep the response 200.
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusApproval,
+            &approval_id,
+        );
+        let updated =
+            cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval gone", |a| {
+                if a.status.is_terminal() {
+                    return Err((
+                        StatusCode::CONFLICT,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "approval transitioned to {:?} between read and write",
+                                a.status
+                            ),
+                        }),
+                    )
+                        .into_response());
+                }
+                a.status = acteon_core::BusApprovalStatus::Approved;
+                a.decided_by = Some(req.decided_by.clone());
+                a.decided_at = Some(Utc::now());
+                a.decision_note.clone_from(&req.decision_note);
+                a.produced_partition = Some(receipt.partition);
+                a.produced_offset = Some(receipt.offset);
+                a.produced_at = Some(receipt.timestamp);
+                Ok(())
+            })
+            .await;
+        let approval_view = match updated {
+            Ok(a) => approval_to_view(&a),
+            Err(_resp) => {
+                // The Kafka record landed; the row update lost a CAS
+                // race or the row vanished. Surface the produce
+                // receipt anyway (the bus is the source of truth)
+                // and log the inconsistency.
+                tracing::warn!(
+                    approval_id = %approval_id,
+                    partition = receipt.partition,
+                    offset = receipt.offset,
+                    "approve produced to Kafka but approval row update failed; row may be stale",
+                );
+                let mut a = approval.clone();
+                a.status = acteon_core::BusApprovalStatus::Approved;
+                a.decided_by = Some(req.decided_by.clone());
+                a.decided_at = Some(Utc::now());
+                a.decision_note.clone_from(&req.decision_note);
+                a.produced_partition = Some(receipt.partition);
+                a.produced_offset = Some(receipt.offset);
+                a.produced_at = Some(receipt.timestamp);
+                approval_to_view(&a)
+            }
+        };
+        let mut cursor_map = std::collections::BTreeMap::new();
+        cursor_map.insert(receipt.partition, receipt.offset);
+        let cursor = encode_replay_cursor(&cursor_map);
+        (
+            StatusCode::OK,
+            Json(BusApprovalDecisionResponse {
+                approval: approval_view,
+                receipt: Some(ToolEnvelopeReceipt {
+                    events_topic: receipt.topic,
+                    conversation_id: conv.conversation_id,
+                    call_id: envelope.call_id,
+                    partition: receipt.partition,
+                    offset: receipt.offset,
+                    produced_at: receipt.timestamp,
+                    cursor,
+                }),
+            }),
+        )
+            .into_response()
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, approval_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/reject",
+    tag = "bus",
+    request_body = BusApprovalDecisionRequest,
+    params(
+        ("namespace" = String, Path),
+        ("tenant" = String, Path),
+        ("approval_id" = String, Path),
+    ),
+    responses(
+        (status = 200, description = "Rejected", body = BusApprovalDecisionResponse),
+        (status = 400, description = "Invalid decision body", body = ErrorResponse),
+        (status = 404, description = "Approval not found", body = ErrorResponse),
+        (status = 409, description = "Approval already decided", body = ErrorResponse),
+        (status = 503, description = "Bus feature disabled", body = ErrorResponse),
+    ),
+)]
+pub async fn reject_bus_approval(
+    State(state): State<AppState>,
+    #[cfg(feature = "bus")] axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, approval_id)): Path<(String, String, String)>,
+    Json(req): Json<BusApprovalDecisionRequest>,
+) -> impl IntoResponse {
+    #[cfg(feature = "bus")]
+    {
+        if state.bus_backend.is_none() {
+            return service_unavailable("bus feature not enabled");
+        }
+        if let Err(resp) =
+            authorize_bus_op(&identity, &tenant, &namespace, BusOp::ManageConversation)
+        {
+            return resp;
+        }
+        if let Err(resp) = validate_decision_note(req.decision_note.as_deref()) {
+            return resp;
+        }
+        let key = StateKey::new(
+            namespace.clone(),
+            tenant.clone(),
+            KeyKind::BusApproval,
+            &approval_id,
+        );
+        let updated =
+            cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval not found", |a| {
+                if a.status.is_terminal() {
+                    return Err((
+                        StatusCode::CONFLICT,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "approval {} already in terminal status {:?}",
+                                a.approval_id, a.status
+                            ),
+                        }),
+                    )
+                        .into_response());
+                }
+                a.status = acteon_core::BusApprovalStatus::Rejected;
+                a.decided_by = Some(req.decided_by.clone());
+                a.decided_at = Some(Utc::now());
+                a.decision_note.clone_from(&req.decision_note);
+                Ok(())
+            })
+            .await;
+        match updated {
+            Ok(a) => (
+                StatusCode::OK,
+                Json(BusApprovalDecisionResponse {
+                    approval: approval_to_view(&a),
+                    receipt: None,
+                }),
+            )
+                .into_response(),
+            Err(resp) => resp,
+        }
+    }
+    #[cfg(not(feature = "bus"))]
+    {
+        let _ = (state, namespace, tenant, approval_id, req);
+        service_unavailable("bus feature not compiled")
+    }
+}
+
+#[cfg(feature = "bus")]
+fn validate_decision_note(note: Option<&str>) -> Result<(), axum::response::Response> {
+    if let Some(n) = note
+        && n.len() > acteon_core::MAX_APPROVAL_NOTE_BYTES
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "decision_note exceeds {} bytes",
+                    acteon_core::MAX_APPROVAL_NOTE_BYTES
+                ),
+            }),
+        )
+            .into_response());
+    }
+    Ok(())
 }

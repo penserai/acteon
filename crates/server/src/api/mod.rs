@@ -424,6 +424,23 @@ pub fn router(state: AppState) -> Router {
             "/v1/bus/streams/{namespace}/{tenant}/{conversation_id}/{stream_id}",
             get(bus::consume_stream),
         )
+        // Phase 6c: pre-publish HITL approvals for tool-calls.
+        .route(
+            "/v1/bus/approvals/{namespace}/{tenant}",
+            get(bus::list_bus_approvals),
+        )
+        .route(
+            "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}",
+            get(bus::get_bus_approval),
+        )
+        .route(
+            "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/approve",
+            post(bus::approve_bus_approval),
+        )
+        .route(
+            "/v1/bus/approvals/{namespace}/{tenant}/{approval_id}/reject",
+            post(bus::reject_bus_approval),
+        )
         // Swarm runs
         .route("/v1/swarm/runs", get(swarm::list_swarm_runs))
         .route("/v1/swarm/runs/{run_id}", get(swarm::get_swarm_run))

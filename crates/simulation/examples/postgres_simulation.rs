@@ -69,6 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pool_size: 10,
         schema: "public".to_string(),
         table_prefix: "acteon_sim_".to_string(),
+        ..Default::default()
     };
 
     // Audit backend config

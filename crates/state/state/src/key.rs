@@ -66,6 +66,10 @@ pub enum KeyKind {
     BusAgent,
     /// Bus conversation thread (Phase 5 of the agentic bus).
     BusConversation,
+    /// Bus pre-publish HITL approval (Phase 6c of the agentic bus).
+    BusApproval,
+    /// Index of pending bus approvals for fast list/expiry scans.
+    PendingBusApprovals,
     Custom(String),
 }
 
@@ -107,6 +111,8 @@ impl KeyKind {
             Self::BusSchema => "bus_schema",
             Self::BusAgent => "bus_agent",
             Self::BusConversation => "bus_conversation",
+            Self::BusApproval => "bus_approval",
+            Self::PendingBusApprovals => "pending_bus_approvals",
             Self::Custom(s) => s.as_str(),
         }
     }

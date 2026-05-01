@@ -312,6 +312,7 @@ async fn run_simulation(config: MixedBackendConfig) -> Result<(), Box<dyn std::e
                 prefix: "acteon_mixed_".to_string(),
                 pool_size: 10,
                 connection_timeout: std::time::Duration::from_secs(5),
+                ..Default::default()
             };
             let state = Arc::new(RedisStateStore::new(&redis_config)?) as Arc<dyn StateStore>;
             let lock =

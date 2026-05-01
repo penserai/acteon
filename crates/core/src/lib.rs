@@ -2,6 +2,7 @@ pub mod action;
 pub mod analytics;
 pub mod attachment;
 pub mod bus_agent;
+pub mod bus_approval;
 pub mod bus_conversation;
 pub mod bus_schema;
 pub mod bus_stream;
@@ -40,6 +41,11 @@ pub use analytics::{
 pub use attachment::{Attachment, ResolvedAttachment};
 pub use bus_agent::{
     Agent, AgentStatus, AgentValidationError, DEFAULT_AGENT_INBOX_SUFFIX, DEFAULT_HEARTBEAT_TTL_MS,
+};
+pub use bus_approval::{
+    BusApproval, BusApprovalEnvelope, BusApprovalStatus, BusApprovalValidationError,
+    DEFAULT_APPROVAL_TTL_MS, MAX_APPROVAL_NOTE_BYTES, MAX_APPROVAL_TTL_MS, validate_approval_id,
+    validate_approval_ttl,
 };
 pub use bus_conversation::{
     Conversation, ConversationState, ConversationTransition, ConversationValidationError,
