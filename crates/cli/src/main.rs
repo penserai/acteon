@@ -53,6 +53,9 @@ enum Command {
     Events(commands::events::EventsArgs),
     /// Manage action chains.
     Chains(commands::chains::ChainsArgs),
+    /// Drive the agentic message bus (topics, subscriptions, schemas,
+    /// agents, conversations, tool-calls, streams, approvals).
+    Bus(commands::bus::BusArgs),
     /// Manage recurring actions.
     Recurring(commands::recurring::RecurringArgs),
     /// Manage tenant quotas.
@@ -104,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Rules(args) => commands::rules::run(&ops, &args, &cli.format).await,
         Command::Events(args) => commands::events::run(&ops, &args, &cli.format).await,
         Command::Chains(args) => commands::chains::run(&ops, &args, &cli.format).await,
+        Command::Bus(args) => commands::bus::run(&ops, &args, &cli.format).await,
         Command::Recurring(args) => commands::recurring::run(&ops, &args, &cli.format).await,
         Command::Quotas(args) => commands::quotas::run(&ops, &args, &cli.format).await,
         Command::Retention(args) => commands::retention::run(&ops, &args, &cli.format).await,
