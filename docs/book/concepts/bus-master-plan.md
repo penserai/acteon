@@ -70,6 +70,7 @@ it.
 | 7     | 14–15 | UI: Topics, Subscriptions, Agents, Conversations, Lag dashboards. Metrics.                     |
 | 8     | 16–17 | 5-SDK parity for bus surface (Rust, Python, Node, Go, Java).                                    |
 | 9     | 18    | Docs, migration guide, example multi-agent app, benchmarks vs raw Kafka.                       |
+| 10    | 19–22 | Atomic HITL via transactional producer + outbox. Authenticated agent identity (derive from API-key grant; replace operator-asserted `as_agent`). |
 
 ## Exactly-once edge
 
@@ -116,9 +117,30 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 7** (Admin UI) — shipped — see [phase-7 feature doc](../features/bus-phase-7.md)
 - **Phase 8** (5-SDK polyglot parity) — shipped — see [phase-8 feature doc](../features/bus-phase-8.md)
 - **Phase 9** (docs, migration guide, multi-agent demo, benchmarks) — shipped — see [phase-9 feature doc](../features/bus-phase-9.md)
+- **Phase 10** — not started. Two locked-in scope items:
+  1. **Atomic HITL via transactional producer + outbox.** The
+     [Exactly-once edge](#exactly-once-edge) section above is the
+     design starting point. Closes the V1 non-atomic
+     park-and-produce window documented in the [Phase 6c trust
+     model](../features/bus-phase-6c.md).
+  2. **Authenticated agent identity.** Replace the
+     operator-asserted `as_agent` query parameter with an identity
+     derived from the API-key grant. Each Phase 5 / 6a / 6c trust-
+     model section flags this as future work; it's a security
+     primitive, not a polish item.
 
-**The master plan is complete.** All nine phases shipped. New
-operators should start with the [agentic bus user guide](agentic-bus.md);
-existing dispatch + chain users should consult the
-[migration guide](../guides/agentic-bus-migration.md) for the
-cases where moving onto the bus is the right call.
+The bus is **functionally complete** through Phase 9 — every
+production workload the master plan promised works today. Phase 10
+hardens the two trust-model edges that V1 deliberately documented
+rather than closed. New operators should start with the
+[agentic bus user guide](agentic-bus.md); existing dispatch + chain
+users should consult the [migration guide](../guides/agentic-bus-migration.md)
+for the cases where moving onto the bus is the right call.
+
+Smaller follow-ups that are *not* Phase 10 — they fit in regular
+PRs without master-plan-grade design:
+
+- Populate the reserved `KeyKind::PendingBusApprovals` index for
+  scaled approvals queue listings.
+- `bus_kafka_e2e` Criterion bench against the real `KafkaBackend`,
+  rounding out the in-memory benches from Phase 9.

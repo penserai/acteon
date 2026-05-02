@@ -138,15 +138,24 @@ phase has shipped:
 | 8 | polyglot SDKs (Rust, Python, Node, Go, Java) | shipped |
 | 9 | docs, migration guide, multi-agent demo, benchmarks | shipped |
 
-What lives on past Phase 9 — operator-driven follow-ups, not
-new master plan phases:
+What lives on past Phase 9. Two of these were originally framed
+here as "operator follow-ups" but each has master-plan-grade
+shape — security primitive, multi-week design — and is now
+[Phase 10](../concepts/bus-master-plan.md#phase-status):
 
-- **Kafka transactional producer + outbox** for atomic HITL
-  parking. V1 documents the non-atomic trade-off; the
-  follow-up closes the window.
-- **Authenticated agent identity.** V1 takes `as_agent` as an
-  operator-asserted query parameter under the tenant grant. A
-  future iteration derives identity from the API-key grant.
+- **Kafka transactional producer + outbox** (Phase 10) for atomic
+  HITL parking. V1 documents the non-atomic trade-off; Phase 10
+  closes the window via the design sketched in the master plan's
+  *Exactly-once edge* section.
+- **Authenticated agent identity** (Phase 10). V1 takes `as_agent`
+  as an operator-asserted query parameter under the tenant grant.
+  Phase 10 derives the identity from the API-key grant directly,
+  closing the spoofing window each Phase 5 / 6a / 6c trust-model
+  section flagged.
+
+Two smaller follow-ups *aren't* Phase 10 — they fit in regular
+PRs:
+
 - **`PendingBusApprovals` index population.** The state-store
   key kind is reserved; a background reaper would populate it
   to scale the approvals queue beyond a few hundred rows.
@@ -154,5 +163,3 @@ new master plan phases:
   producer path; a `bus_kafka_e2e` bench against the
   `KafkaBackend` would round out the picture against a real
   broker.
-
-These are tracked separately and won't be Phase 10.
