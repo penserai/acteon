@@ -801,6 +801,186 @@ pub struct ListApprovalsParams {
 }
 
 // ---------------------------------------------------------------------------
+// Agentic bus parameter types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageBusTopicsParams {
+    /// Action: "list", "create", "delete", "publish".
+    pub action: String,
+    /// Namespace filter (list) or component of new topic (create).
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Tenant filter (list) or component of new topic (create).
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Full Kafka topic name (`namespace.tenant.name`) — required for delete.
+    #[serde(default)]
+    pub kafka_name: Option<String>,
+    /// JSON body — `CreateBusTopic` for create, `PublishBusMessage` for publish.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageBusSubscriptionsParams {
+    /// Action: "list", "create", "delete", "lag", "ack".
+    pub action: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Subscription id — required for delete, lag, ack.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Topic filter for list.
+    #[serde(default)]
+    pub topic: Option<String>,
+    /// Partition for ack.
+    #[serde(default)]
+    pub partition: Option<i32>,
+    /// Offset for ack.
+    #[serde(default)]
+    pub offset: Option<i64>,
+    /// JSON body — `CreateSubscription` for create.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageBusSchemasParams {
+    /// Action: "list", "versions", "get", "register", "delete", "bind", "unbind".
+    pub action: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Schema subject — required for versions, get, delete, bind.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// Schema version (numeric for delete/bind, "latest" or string for get).
+    #[serde(default)]
+    pub version: Option<serde_json::Value>,
+    /// Topic logical name — required for bind, unbind.
+    #[serde(default)]
+    pub topic: Option<String>,
+    /// `latest_only` filter for list.
+    #[serde(default)]
+    pub latest_only: Option<bool>,
+    /// JSON body — `RegisterBusSchema` for register.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageBusAgentsParams {
+    /// Action: "list", "get", "register", "update", "delete", "heartbeat", "send".
+    pub action: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Agent id — required for get, update, delete, heartbeat, send.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    /// Capability filter for list.
+    #[serde(default)]
+    pub capability: Option<String>,
+    /// Status filter for list (`online`, `idle`, `offline`).
+    #[serde(default)]
+    pub status: Option<String>,
+    /// JSON body — `RegisterBusAgent` for register, `UpdateBusAgent` for update,
+    /// `SendToBusAgent` for send.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageBusConversationsParams {
+    /// Action: "list", "get", "create", "update", "delete", "transition", "append", "replay".
+    pub action: String,
+    #[serde(default)]
+    pub namespace: Option<String>,
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Conversation id — required for get, update, delete, transition, append, replay.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// State filter for list (`active`, `resolved`, `archived`).
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Participant filter for list.
+    #[serde(default)]
+    pub participant: Option<String>,
+    /// Transition for transition action (`resolve`, `reopen`, `archive`).
+    #[serde(default)]
+    pub transition: Option<String>,
+    /// JSON body — `RegisterBusConversation` for create, `UpdateBusConversation` for
+    /// update, `AppendBusConversationMessage` for append, `ReplayBusConversationParams`
+    /// for replay.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BusToolCallParams {
+    /// Action: `post`, `post_result`, `lookup`.
+    pub action: String,
+    pub namespace: String,
+    pub tenant: String,
+    /// Conversation id — required for `post`, `post_result`, `lookup`.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// Call id — required for `lookup`; appears inside `data` for `post` and `post_result`.
+    #[serde(default)]
+    pub call_id: Option<String>,
+    /// Resume cursor from a prior post receipt — strongly recommended for `lookup`.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Lookup deadline (ms). Default 5000, max 30000.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// JSON body — `PostBusToolCall` for `post`, `PostBusToolResult` for `post_result`.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BusStreamParams {
+    /// Action: `chunk`, `end`, `consume_url`.
+    pub action: String,
+    pub namespace: String,
+    pub tenant: String,
+    pub conversation_id: String,
+    /// Stream id — required for `consume_url`; appears inside `data` for `chunk` and `end`.
+    #[serde(default)]
+    pub stream_id: Option<String>,
+    /// JSON body — `PostBusStreamChunk` for chunk, `PostBusStreamEnd` for end.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ManageBusApprovalsParams {
+    /// Action: "list", "get", "approve", "reject".
+    pub action: String,
+    pub namespace: String,
+    pub tenant: String,
+    /// Approval id — required for get, approve, reject.
+    #[serde(default)]
+    pub approval_id: Option<String>,
+    /// Status filter for list (`pending`, `approved`, `rejected`, `expired`).
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Conversation id filter for list.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// JSON body — `BusApprovalDecisionRequest` for approve, reject.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
 // Tool implementations
 // ---------------------------------------------------------------------------
 
@@ -2237,4 +2417,745 @@ impl ActeonMcpServer {
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         }
     }
+
+    // ---------------------------------------------------------------------
+    // Agentic bus tools
+    // ---------------------------------------------------------------------
+
+    /// Manage bus topics (list/create/delete/publish).
+    #[tool(
+        description = "Manage agentic bus topics. Actions: list (filter by namespace/tenant), create (data = CreateBusTopic), delete (kafka_name required), publish (data = PublishBusMessage)."
+    )]
+    async fn manage_bus_topics(
+        &self,
+        Parameters(p): Parameters<ManageBusTopicsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{BusTopicFilter, CreateBusTopic, PublishBusMessage};
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "list" => {
+                let filter = BusTopicFilter {
+                    namespace: p.namespace,
+                    tenant: p.tenant,
+                };
+                ok_or_err(client.list_bus_topics(&filter).await)
+            }
+            "create" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for create"))?;
+                let req: CreateBusTopic = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.create_bus_topic(&req).await)
+            }
+            "delete" => {
+                let name = p
+                    .kafka_name
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'kafka_name' is required for delete"))?;
+                match client.delete_bus_topic(name).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Topic '{name}' deleted."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "publish" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for publish"))?;
+                let req: PublishBusMessage = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.publish_message(&req).await)
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: list, create, delete, publish"
+            ))])),
+        }
+    }
+
+    /// Manage bus subscriptions (list/create/delete/lag/ack).
+    #[tool(
+        description = "Manage agentic bus subscriptions. Actions: list (filter by namespace/tenant/topic), create (data = CreateSubscription), delete (namespace+tenant+id), lag (namespace+tenant+id), ack (namespace+tenant+id+partition+offset). Ack performs a full broker round-trip — use for end-of-batch checkpoints, not per-record."
+    )]
+    async fn manage_bus_subscriptions(
+        &self,
+        Parameters(p): Parameters<ManageBusSubscriptionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{AckOffset, BusSubscriptionFilter, CreateSubscription};
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "list" => {
+                let filter = BusSubscriptionFilter {
+                    namespace: p.namespace,
+                    tenant: p.tenant,
+                    topic: p.topic,
+                };
+                ok_or_err(client.list_bus_subscriptions(&filter).await)
+            }
+            "create" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for create"))?;
+                let req: CreateSubscription = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.create_bus_subscription(&req).await)
+            }
+            "delete" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.id.as_ref(),
+                    "delete",
+                )?;
+                match client.delete_bus_subscription(ns, t, id).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Subscription '{id}' deleted."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "lag" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.id.as_ref(),
+                    "lag",
+                )?;
+                ok_or_err(client.get_bus_lag(ns, t, id).await)
+            }
+            "ack" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.id.as_ref(),
+                    "ack",
+                )?;
+                let partition = p
+                    .partition
+                    .ok_or_else(|| mcp_err("'partition' is required for ack"))?;
+                let offset = p
+                    .offset
+                    .ok_or_else(|| mcp_err("'offset' is required for ack"))?;
+                match client
+                    .ack_bus_subscription(ns, t, id, AckOffset { partition, offset })
+                    .await
+                {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Offset committed: subscription '{id}' partition {partition} offset {offset}"
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: list, create, delete, lag, ack"
+            ))])),
+        }
+    }
+
+    /// Manage JSON Schemas and topic-schema bindings.
+    #[tool(
+        description = "Manage agentic bus JSON Schemas. Actions: list (filter by namespace/tenant/subject + latest_only), versions (namespace+tenant+subject), get (namespace+tenant+subject+version, version may be 'latest' or a number), register (data = RegisterBusSchema), delete (namespace+tenant+subject+version numeric), bind (namespace+tenant+topic+subject+version), unbind (namespace+tenant+topic)."
+    )]
+    async fn manage_bus_schemas(
+        &self,
+        Parameters(p): Parameters<ManageBusSchemasParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{BusSchemaFilter, RegisterBusSchema};
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "list" => {
+                let filter = BusSchemaFilter {
+                    namespace: p.namespace,
+                    tenant: p.tenant,
+                    subject: p.subject,
+                    latest_only: p.latest_only.unwrap_or(false),
+                };
+                ok_or_err(client.list_bus_schemas(&filter).await)
+            }
+            "versions" => {
+                let (ns, t, subject) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.subject.as_ref(),
+                    "versions",
+                )?;
+                ok_or_err(client.get_bus_schema_versions(ns, t, subject).await)
+            }
+            "get" => {
+                let (ns, t, subject) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.subject.as_ref(),
+                    "get",
+                )?;
+                let version = match p.version.as_ref() {
+                    Some(serde_json::Value::String(s)) => s.clone(),
+                    Some(serde_json::Value::Number(n)) => n.to_string(),
+                    Some(_) | None => "latest".to_string(),
+                };
+                ok_or_err(client.get_bus_schema(ns, t, subject, &version).await)
+            }
+            "register" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for register"))?;
+                let req: RegisterBusSchema = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.register_bus_schema(&req).await)
+            }
+            "delete" => {
+                let (ns, t, subject) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.subject.as_ref(),
+                    "delete",
+                )?;
+                let version = p
+                    .version
+                    .as_ref()
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| mcp_err("numeric 'version' is required for delete"))?;
+                let v =
+                    i32::try_from(version).map_err(|_| mcp_err("'version' out of i32 range"))?;
+                match client.delete_bus_schema(ns, t, subject, v).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Schema '{subject}' v{v} deleted."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "bind" => {
+                let (ns, t, topic) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.topic.as_ref(),
+                    "bind",
+                )?;
+                let subject = p
+                    .subject
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'subject' is required for bind"))?;
+                let version = p
+                    .version
+                    .as_ref()
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| mcp_err("numeric 'version' is required for bind"))?;
+                let v =
+                    i32::try_from(version).map_err(|_| mcp_err("'version' out of i32 range"))?;
+                ok_or_err(client.bind_topic_schema(ns, t, topic, subject, v).await)
+            }
+            "unbind" => {
+                let (ns, t, topic) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.topic.as_ref(),
+                    "unbind",
+                )?;
+                match client.unbind_topic_schema(ns, t, topic).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Topic '{topic}' schema binding removed."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: list, versions, get, register, delete, bind, unbind"
+            ))])),
+        }
+    }
+
+    /// Manage agents (list/get/register/update/delete/heartbeat/send).
+    #[tool(
+        description = "Manage agentic bus agents. Actions: list (filter by namespace/tenant/capability/status), get (namespace+tenant+agent_id), register (data = RegisterBusAgent), update (namespace+tenant+agent_id, data = UpdateBusAgent), delete (namespace+tenant+agent_id), heartbeat (namespace+tenant+agent_id), send (namespace+tenant+agent_id, data = SendToBusAgent)."
+    )]
+    async fn manage_bus_agents(
+        &self,
+        Parameters(p): Parameters<ManageBusAgentsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{
+            BusAgentFilter, RegisterBusAgent, SendToBusAgent, UpdateBusAgent,
+        };
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "list" => {
+                let filter = BusAgentFilter {
+                    namespace: p.namespace,
+                    tenant: p.tenant,
+                    capability: p.capability,
+                    status: p.status,
+                };
+                ok_or_err(client.list_bus_agents(&filter).await)
+            }
+            "get" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.agent_id.as_ref(),
+                    "get",
+                )?;
+                ok_or_err(client.get_bus_agent(ns, t, id).await)
+            }
+            "register" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for register"))?;
+                let req: RegisterBusAgent = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.register_bus_agent(&req).await)
+            }
+            "update" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.agent_id.as_ref(),
+                    "update",
+                )?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for update"))?;
+                let req: UpdateBusAgent = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.update_bus_agent(ns, t, id, &req).await)
+            }
+            "delete" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.agent_id.as_ref(),
+                    "delete",
+                )?;
+                match client.delete_bus_agent(ns, t, id).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Agent '{id}' deleted."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "heartbeat" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.agent_id.as_ref(),
+                    "heartbeat",
+                )?;
+                ok_or_err(client.heartbeat_bus_agent(ns, t, id).await)
+            }
+            "send" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.agent_id.as_ref(),
+                    "send",
+                )?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for send"))?;
+                let req: SendToBusAgent = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.send_to_bus_agent(ns, t, id, &req).await)
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: list, get, register, update, delete, heartbeat, send"
+            ))])),
+        }
+    }
+
+    /// Manage conversations (list/get/create/update/delete/transition/append/replay).
+    #[tool(
+        description = "Manage agentic bus conversations. Actions: list (filter by namespace/tenant/state/participant), get/update/delete/transition/append/replay (namespace+tenant+conversation_id), create (data = RegisterBusConversation), update (data = UpdateBusConversation), transition (transition: resolve/reopen/archive), append (data = AppendBusConversationMessage), replay (data = ReplayBusConversationParams; cursor and limit recommended)."
+    )]
+    async fn manage_bus_conversations(
+        &self,
+        Parameters(p): Parameters<ManageBusConversationsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{
+            AppendBusConversationMessage, BusConversationFilter, BusConversationTransition,
+            RegisterBusConversation, ReplayBusConversationParams, UpdateBusConversation,
+        };
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "list" => {
+                let filter = BusConversationFilter {
+                    namespace: p.namespace,
+                    tenant: p.tenant,
+                    state: p.state,
+                    participant: p.participant,
+                };
+                ok_or_err(client.list_bus_conversations(&filter).await)
+            }
+            "get" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.conversation_id.as_ref(),
+                    "get",
+                )?;
+                ok_or_err(client.get_bus_conversation(ns, t, id).await)
+            }
+            "create" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for create"))?;
+                let req: RegisterBusConversation = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.register_bus_conversation(&req).await)
+            }
+            "update" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.conversation_id.as_ref(),
+                    "update",
+                )?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for update"))?;
+                let req: UpdateBusConversation = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(client.update_bus_conversation(ns, t, id, &req).await)
+            }
+            "delete" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.conversation_id.as_ref(),
+                    "delete",
+                )?;
+                match client.delete_bus_conversation(ns, t, id).await {
+                    Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Conversation '{id}' deleted."
+                    ))])),
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "transition" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.conversation_id.as_ref(),
+                    "transition",
+                )?;
+                let transition = match p.transition.as_deref() {
+                    Some("resolve") => BusConversationTransition::Resolve,
+                    Some("reopen") => BusConversationTransition::Reopen,
+                    Some("archive") => BusConversationTransition::Archive,
+                    Some(other) => {
+                        return Err(mcp_err(format!(
+                            "unknown transition '{other}'. Valid: resolve, reopen, archive"
+                        )));
+                    }
+                    None => {
+                        return Err(mcp_err("'transition' is required for transition action"));
+                    }
+                };
+                ok_or_err(
+                    client
+                        .transition_bus_conversation(ns, t, id, transition)
+                        .await,
+                )
+            }
+            "append" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.conversation_id.as_ref(),
+                    "append",
+                )?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for append"))?;
+                let req: AppendBusConversationMessage = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(
+                    client
+                        .append_bus_conversation_message(ns, t, id, &req)
+                        .await,
+                )
+            }
+            "replay" => {
+                let (ns, t, id) = bus_three_tuple(
+                    p.namespace.as_ref(),
+                    p.tenant.as_ref(),
+                    p.conversation_id.as_ref(),
+                    "replay",
+                )?;
+                let params: ReplayBusConversationParams = match p.data {
+                    Some(d) => serde_json::from_value(d)
+                        .map_err(|e| mcp_err(format!("invalid data: {e}")))?,
+                    None => ReplayBusConversationParams::default(),
+                };
+                ok_or_err(
+                    client
+                        .replay_bus_conversation_messages(ns, t, id, &params)
+                        .await,
+                )
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: list, get, create, update, delete, transition, append, replay"
+            ))])),
+        }
+    }
+
+    /// Post and look up tool-call envelopes.
+    #[tool(
+        description = "Post and look up agentic-bus tool-call envelopes. Actions: post (namespace+tenant+conversation_id, data = PostBusToolCall — set require_approval=true to gate behind HITL approval), post_result (namespace+tenant+conversation_id, data = PostBusToolResult), lookup (namespace+tenant+call_id+conversation_id; pass cursor from the post receipt and timeout_ms <= 30000 for reliable matches)."
+    )]
+    async fn bus_tool_call(
+        &self,
+        Parameters(p): Parameters<BusToolCallParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{
+            BusToolResultLookupParams, PostBusToolCall, PostBusToolCallOutcome, PostBusToolResult,
+        };
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "post" => {
+                let conversation_id = p
+                    .conversation_id
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'conversation_id' is required for post"))?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for post"))?;
+                let req: PostBusToolCall = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                match client
+                    .post_bus_tool_call(&p.namespace, &p.tenant, conversation_id, &req)
+                    .await
+                {
+                    Ok(PostBusToolCallOutcome::Produced(receipt)) => {
+                        let body = serde_json::json!({
+                            "outcome": "produced",
+                            "receipt": receipt,
+                        });
+                        ok_or_err::<_, acteon_ops::acteon_client::Error>(Ok(body))
+                    }
+                    Ok(PostBusToolCallOutcome::Parked(parked)) => {
+                        let body = serde_json::json!({
+                            "outcome": "parked",
+                            "approval": parked,
+                        });
+                        ok_or_err::<_, acteon_ops::acteon_client::Error>(Ok(body))
+                    }
+                    Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+                }
+            }
+            "post_result" => {
+                let conversation_id = p
+                    .conversation_id
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'conversation_id' is required for post_result"))?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for post_result"))?;
+                let req: PostBusToolResult = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(
+                    client
+                        .post_bus_tool_result(&p.namespace, &p.tenant, conversation_id, &req)
+                        .await,
+                )
+            }
+            "lookup" => {
+                let call_id = p
+                    .call_id
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'call_id' is required for lookup"))?;
+                let conversation_id = p
+                    .conversation_id
+                    .ok_or_else(|| mcp_err("'conversation_id' is required for lookup"))?;
+                let params = BusToolResultLookupParams {
+                    conversation_id,
+                    cursor: p.cursor,
+                    timeout_ms: p.timeout_ms,
+                };
+                ok_or_err(
+                    client
+                        .lookup_bus_tool_result(&p.namespace, &p.tenant, call_id, &params)
+                        .await,
+                )
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: post, post_result, lookup"
+            ))])),
+        }
+    }
+
+    /// Stream-chunk envelopes and SSE consume URLs.
+    #[tool(
+        description = "Drive bus streaming envelopes. Actions: chunk (data = PostBusStreamChunk), end (data = PostBusStreamEnd), consume_url (stream_id required; returns the SSE URL for tailing — pipe into curl -N --header 'accept: text/event-stream' or any EventSource client)."
+    )]
+    async fn bus_stream(
+        &self,
+        Parameters(p): Parameters<BusStreamParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{PostBusStreamChunk, PostBusStreamEnd};
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "chunk" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for chunk"))?;
+                let req: PostBusStreamChunk = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(
+                    client
+                        .post_bus_stream_chunk(&p.namespace, &p.tenant, &p.conversation_id, &req)
+                        .await,
+                )
+            }
+            "end" => {
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for end"))?;
+                let req: PostBusStreamEnd = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(
+                    client
+                        .post_bus_stream_end(&p.namespace, &p.tenant, &p.conversation_id, &req)
+                        .await,
+                )
+            }
+            "consume_url" => {
+                let stream_id = p
+                    .stream_id
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'stream_id' is required for consume_url"))?;
+                let url = client.bus_stream_consume_url(
+                    &p.namespace,
+                    &p.tenant,
+                    &p.conversation_id,
+                    stream_id,
+                );
+                Ok(CallToolResult::success(vec![Content::text(url)]))
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: chunk, end, consume_url"
+            ))])),
+        }
+    }
+
+    /// Manage HITL pre-publish approvals (list/get/approve/reject).
+    #[tool(
+        description = "Manage agentic-bus HITL approvals. Actions: list (namespace+tenant; optional status filter pending/approved/rejected/expired and conversation_id), get (namespace+tenant+approval_id), approve (namespace+tenant+approval_id, data = BusApprovalDecisionRequest with decided_by + optional decision_note), reject (namespace+tenant+approval_id, data = BusApprovalDecisionRequest)."
+    )]
+    async fn manage_bus_approvals(
+        &self,
+        Parameters(p): Parameters<ManageBusApprovalsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use acteon_ops::acteon_client::{
+            BusApprovalDecisionRequest, BusApprovalStatus, ListBusApprovalsParams,
+        };
+        let client = self.ops.client();
+        match p.action.as_str() {
+            "list" => {
+                let status = match p.status.as_deref() {
+                    None => None,
+                    Some("pending") => Some(BusApprovalStatus::Pending),
+                    Some("approved") => Some(BusApprovalStatus::Approved),
+                    Some("rejected") => Some(BusApprovalStatus::Rejected),
+                    Some("expired") => Some(BusApprovalStatus::Expired),
+                    Some(other) => {
+                        return Err(mcp_err(format!(
+                            "unknown status '{other}'. Valid: pending, approved, rejected, expired"
+                        )));
+                    }
+                };
+                let params = ListBusApprovalsParams {
+                    status,
+                    conversation_id: p.conversation_id,
+                };
+                ok_or_err(
+                    client
+                        .list_bus_approvals(&p.namespace, &p.tenant, &params)
+                        .await,
+                )
+            }
+            "get" => {
+                let id = p
+                    .approval_id
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'approval_id' is required for get"))?;
+                ok_or_err(client.get_bus_approval(&p.namespace, &p.tenant, id).await)
+            }
+            "approve" => {
+                let id = p
+                    .approval_id
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'approval_id' is required for approve"))?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for approve"))?;
+                let req: BusApprovalDecisionRequest = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(
+                    client
+                        .approve_bus_approval(&p.namespace, &p.tenant, id, &req)
+                        .await,
+                )
+            }
+            "reject" => {
+                let id = p
+                    .approval_id
+                    .as_deref()
+                    .ok_or_else(|| mcp_err("'approval_id' is required for reject"))?;
+                let data = p
+                    .data
+                    .ok_or_else(|| mcp_err("'data' is required for reject"))?;
+                let req: BusApprovalDecisionRequest = serde_json::from_value(data)
+                    .map_err(|e| mcp_err(format!("invalid data: {e}")))?;
+                ok_or_err(
+                    client
+                        .reject_bus_approval(&p.namespace, &p.tenant, id, &req)
+                        .await,
+                )
+            }
+            other => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Unknown action: {other}. Valid: list, get, approve, reject"
+            ))])),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bus tool helpers
+// ---------------------------------------------------------------------------
+
+/// Render a `Result<T, E>` from a bus client call into the MCP success/error
+/// shape, where `T: Serialize` and `E: Display`. Used by the bus tool family
+/// to keep each match arm readable.
+fn ok_or_err<T, E>(result: Result<T, E>) -> Result<CallToolResult, McpError>
+where
+    T: serde::Serialize,
+    E: std::fmt::Display,
+{
+    match result {
+        Ok(v) => {
+            let json = serde_json::to_string_pretty(&v).map_err(mcp_err)?;
+            Ok(CallToolResult::success(vec![Content::text(json)]))
+        }
+        Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+    }
+}
+
+/// Resolve `namespace`, `tenant`, and a third id-shaped field that all three
+/// must be present for. Centralises the "missing required field" error
+/// messages so individual match arms stay short.
+fn bus_three_tuple<'a>(
+    namespace: Option<&'a String>,
+    tenant: Option<&'a String>,
+    third: Option<&'a String>,
+    action: &str,
+) -> Result<(&'a str, &'a str, &'a str), McpError> {
+    let ns = namespace
+        .map(String::as_str)
+        .ok_or_else(|| mcp_err(format!("'namespace' is required for {action}")))?;
+    let t = tenant
+        .map(String::as_str)
+        .ok_or_else(|| mcp_err(format!("'tenant' is required for {action}")))?;
+    let i = third
+        .map(String::as_str)
+        .ok_or_else(|| mcp_err(format!("required id is missing for {action}")))?;
+    Ok((ns, t, i))
 }
