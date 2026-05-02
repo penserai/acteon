@@ -268,17 +268,22 @@ Trust model carry-overs:
 - **Reject only works from `Pending`.** Once `Approving`, the
   operator has already decided "approve" and the produce is in
   flight; rejecting at that point would race the retry.
-- **Background reconciliation worker** is a follow-up. V1 of
-  Phase 10 ships the state machine + manual retry surface; an
-  automatic reconciler that retries stuck `Approving` rows
-  on a periodic sweep is the natural next step. The master
-  plan tracks it as part of Phase 10.
+- **Background reconciliation worker** ships in Phase 10
+  alongside the state machine. The server spawns a periodic
+  sweep (60 s by default) that scans for `Approving` rows
+  older than 30 s, re-produces them to Kafka, and CAS-
+  transitions them to `Approved`. Operators no longer have to
+  manually retry stuck rows. The reconciler is idempotent —
+  a row already `Approved` is skipped; a row already in
+  `Approving` is left alone if a fresh `decided_at` says the
+  approve handler is still mid-flight. Tunable via
+  `BusReconcilerConfig`; see `crates/server/src/bus_reconciler.rs`.
 
-A Kafka transactional producer + true outbox pattern is *also*
-on the Phase 10 list — that closes the window completely (the
-state-row update + Kafka produce happen in one atomic
-transaction). The state-machine V1 is the foundation it builds
-on.
+A Kafka transactional producer + true outbox pattern remains a
+follow-up — that closes the *atomicity* gap (the state-row
+update + Kafka produce happen in one atomic transaction).
+Phase 10 closes the *visibility* and *liveness* gaps; the
+atomicity hardening is the next iteration.
 
 ### `require_approval` is per-call, not per-tenant policy
 

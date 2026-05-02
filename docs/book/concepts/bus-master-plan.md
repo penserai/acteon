@@ -118,15 +118,19 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 8** (5-SDK polyglot parity) — shipped — see [phase-8 feature doc](../features/bus-phase-8.md)
 - **Phase 9** (docs, migration guide, multi-agent demo, benchmarks) — shipped — see [phase-9 feature doc](../features/bus-phase-9.md)
 - **Phase 10** — shipped. Two scope items:
-  1. **Atomic HITL via outbox + state machine.**
+  1. **HITL state machine + reconciler.**
      `BusApprovalStatus::Approving` between `Pending` and
      `Approved` closes the V1 *visibility* gap — a successful
-     produce + failed CAS now leaves the row visibly mid-flight
-     with audit metadata, not stuck-pending. Operators retry
-     stuck rows by re-calling approve. Idempotent producer +
-     consumer-side `call_id` dedup keep the topic clean.
-     A Kafka transactional producer for full atomicity remains
-     a follow-up tracked under [Exactly-once edge](#exactly-once-edge).
+     produce + failed CAS leaves the row visibly mid-flight
+     with audit metadata, not stuck-pending. A background
+     reconciler (see `crates/server/src/bus_reconciler.rs`)
+     periodically retries stuck `Approving` rows so the
+     operator doesn't have to. Idempotent producer + consumer-
+     side `call_id` dedup keep the topic clean across retries.
+     A Kafka transactional producer for full *atomicity*
+     remains a follow-up tracked under
+     [Exactly-once edge](#exactly-once-edge); Phase 10 closes
+     the visibility and liveness gaps without it.
   2. **Authenticated agent identity.** The `as_agent` query
      parameter is gone. Bus agent identity is derived from the
      API-key grant: each `Grant` carries an optional `agent_id`
