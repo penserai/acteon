@@ -2205,9 +2205,7 @@ fn parse_bus_subscribe_envelope(
     }
 }
 
-fn parse_bus_stream_envelope(
-    envelope: Result<SseEnvelope, Error>,
-) -> Result<BusStreamItem, Error> {
+fn parse_bus_stream_envelope(envelope: Result<SseEnvelope, Error>) -> Result<BusStreamItem, Error> {
     match envelope? {
         SseEnvelope::Frame(frame) => {
             let event = frame.event.as_deref().unwrap_or("message");
