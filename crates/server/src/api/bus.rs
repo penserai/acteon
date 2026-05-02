@@ -7328,10 +7328,108 @@ pub struct BusApprovalDecisionResponse {
     pub receipt: Option<ToolEnvelopeReceipt>,
 }
 
+/// **Phase 10**: write the pending-approvals index entry for an
+/// approval row. The index lets listings filtered by
+/// `status=pending` scan a smaller key space than the full approval
+/// log.
+#[cfg(feature = "bus")]
+async fn write_pending_index(
+    store: &std::sync::Arc<dyn acteon_state::StateStore>,
+    namespace: &str,
+    tenant: &str,
+    approval_id: &str,
+) -> Result<(), acteon_state::StateError> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::PendingBusApprovals,
+        approval_id,
+    );
+    store.set(&key, "", None).await
+}
+
+/// **Phase 10**: scan the pending-approvals index and dereference
+/// each entry to its underlying approval row. Used by the list
+/// endpoint when filtering for `status=pending` to avoid a full
+/// scan of the approval log.
+///
+/// Index entries that point at rows that no longer exist (or have
+/// transitioned out of Pending without clearing the index) are
+/// silently skipped — the list endpoint applies the status filter
+/// after this anyway.
+#[cfg(feature = "bus")]
+async fn scan_pending_index_rows(
+    store: &std::sync::Arc<dyn acteon_state::StateStore>,
+    namespace: &str,
+    tenant: &str,
+) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+    let index = store
+        .scan_keys(namespace, tenant, KeyKind::PendingBusApprovals, None)
+        .await?;
+    let mut rows = Vec::with_capacity(index.len());
+    for (idx_key, _) in index {
+        // The scan_keys key format is `{ns}:{tenant}:{kind}:{id}`;
+        // the trailing component is the approval id.
+        let Some(approval_id) = idx_key.rsplit(':').next() else {
+            continue;
+        };
+        let approval_key = StateKey::new(
+            namespace.to_string(),
+            tenant.to_string(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        match store.get(&approval_key).await? {
+            Some(raw) => rows.push((idx_key, raw)),
+            None => {
+                // Stale index entry: the approval row is gone but
+                // the index didn't get the memo. Best-effort delete
+                // so future scans don't keep paying for it.
+                let _ = store.delete(&approval_key).await;
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// **Phase 10**: clear the pending-approvals index entry when an
+/// approval transitions out of `Pending`. Called from the approve
+/// handler (Pending → Approving) and the reject handler
+/// (Pending → Rejected).
+///
+/// Best-effort: a delete failure here just leaves a stale index
+/// entry that points at a row whose status has already changed.
+/// The list endpoint resolves index entries by reading the
+/// underlying approval row, so a stale entry shows up as a
+/// non-pending row in the response — a minor cosmetic issue, not
+/// a correctness one.
+#[cfg(feature = "bus")]
+async fn clear_pending_index(
+    store: &std::sync::Arc<dyn acteon_state::StateStore>,
+    namespace: &str,
+    tenant: &str,
+    approval_id: &str,
+) {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::PendingBusApprovals,
+        approval_id,
+    );
+    if let Err(e) = store.delete(&key).await {
+        tracing::warn!(
+            approval_id = %approval_id,
+            error = %e,
+            "failed to clear pending-approvals index entry; stale entry will resolve to non-pending row in next listing",
+        );
+    }
+}
+
 /// Park a validated `ToolCall` envelope under a `BusApproval` row.
 /// The eventual approve handler picks up the row, re-stamps the
 /// envelope headers, and produces to Kafka.
 #[cfg(feature = "bus")]
+#[allow(clippy::too_many_lines)]
 async fn park_tool_call_for_approval(
     state: &AppState,
     namespace: &str,
@@ -7429,6 +7527,18 @@ async fn park_tool_call_for_approval(
                 .into_response();
         }
     }
+    // Phase 10: write the pending-index entry so listings filtered
+    // by `status=pending` can scan a smaller key space than the full
+    // approval log. Index drift on best-effort write failure is
+    // bounded — the operator can still fall back to a `status=`-less
+    // list to find rows the index missed.
+    if let Err(e) = write_pending_index(&store, namespace, tenant, &approval_id).await {
+        tracing::warn!(
+            approval_id = %approval_id,
+            error = %e,
+            "failed to write pending-approvals index entry; row exists but won't appear in pending-only listings",
+        );
+    }
     (
         StatusCode::ACCEPTED,
         Json(BusApprovalParkedReceipt {
@@ -7479,19 +7589,43 @@ pub async fn list_bus_approvals(
             let gw = state.gateway.read().await;
             gw.state_store().clone()
         };
-        let entries = match store
-            .scan_keys(&namespace, &tenant, KeyKind::BusApproval, None)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
-                    }),
-                )
-                    .into_response();
+        // Phase 10 fast path: when filtering for pending-only —
+        // the operator-actionable subset and the admin UI's default
+        // — scan the `PendingBusApprovals` index instead of the full
+        // approval log. The index entries are typically a small
+        // fraction of the total: long-running tenants accumulate
+        // approved/rejected/expired rows but only a handful pending
+        // at any one time. The index dereferences each entry to its
+        // underlying approval row, paying a per-row `get` instead of
+        // a per-row scan-then-deserialize-then-filter.
+        let entries = if params.status == Some(acteon_core::BusApprovalStatus::Pending) {
+            match scan_pending_index_rows(&store, &namespace, &tenant).await {
+                Ok(v) => v,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            match store
+                .scan_keys(&namespace, &tenant, KeyKind::BusApproval, None)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
             }
         };
         let mut approvals = Vec::with_capacity(entries.len());
@@ -7739,6 +7873,13 @@ pub async fn approve_bus_approval(
                 if let Err(resp) = claim {
                     return resp;
                 }
+                // Pending → Approving means the row leaves the
+                // pending-listings index. Clear best-effort.
+                let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+                    let gw = state.gateway.read().await;
+                    gw.state_store().clone()
+                };
+                clear_pending_index(&store, &namespace, &tenant, &approval_id).await;
             }
             acteon_core::BusApprovalStatus::Approving => {
                 // Already claimed; the original `decided_by` stays. The
@@ -7985,14 +8126,23 @@ pub async fn reject_bus_approval(
             })
             .await;
         match updated {
-            Ok(a) => (
-                StatusCode::OK,
-                Json(BusApprovalDecisionResponse {
-                    approval: approval_to_view(&a),
-                    receipt: None,
-                }),
-            )
-                .into_response(),
+            Ok(a) => {
+                // Pending → Rejected means the row leaves the
+                // pending-listings index. Clear best-effort.
+                let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+                    let gw = state.gateway.read().await;
+                    gw.state_store().clone()
+                };
+                clear_pending_index(&store, &namespace, &tenant, &approval_id).await;
+                (
+                    StatusCode::OK,
+                    Json(BusApprovalDecisionResponse {
+                        approval: approval_to_view(&a),
+                        receipt: None,
+                    }),
+                )
+                    .into_response()
+            }
             Err(resp) => resp,
         }
     }

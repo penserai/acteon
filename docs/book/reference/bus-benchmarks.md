@@ -123,6 +123,29 @@ every PR that touches bus code is reasonable.
   Modeling that requires a Kafka instance and is out of scope
   for this in-process bench.
 
-A `bus_kafka_e2e` bench against `KafkaBackend` is on the
-roadmap; it'd run under the existing Docker `kafka` profile and
-report wall-clock numbers including broker latency.
+**Companion: `bus_kafka_e2e` bench.** Phase 10 ships a Kafka-
+backed e2e harness at
+`crates/simulation/benches/bus_kafka_e2e.rs`. Same shapes as the
+in-memory bench (raw publish, tool-call envelope, stream chunk)
+but runs against a live `KafkaBackend` and reports wall-clock
+numbers including broker round-trip.
+
+Run it against a local broker (the workspace's Docker `kafka`
+profile is the standard option):
+
+```text
+docker compose -f deploy/docker-compose.yml --profile kafka up -d
+
+ACTEON_BENCH_KAFKA=localhost:9092 \
+  cargo bench -p acteon-simulation --features bus --bench bus_kafka_e2e
+```
+
+When `ACTEON_BENCH_KAFKA` isn't set the bench skips with a clear
+warning rather than failing. The harness sits in CI; the actual
+numbers come from a developer running it locally with Kafka up.
+
+On a single-broker local cluster, expect the broker round-trip
+(milliseconds) to dominate the typed-envelope overhead
+(microseconds) by ~3 orders of magnitude — confirming the
+in-memory bench's headline that the typed layer isn't the
+bottleneck on real workloads.

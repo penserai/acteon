@@ -81,6 +81,11 @@ name = "bus_overhead"
 harness = false
 required-features = ["bus"]
 
+[[bench]]
+name = "bus_kafka_e2e"
+harness = false
+required-features = ["bus"]
+
 [[example]]
 name = "redis_simulation"
 required-features = ["redis"]

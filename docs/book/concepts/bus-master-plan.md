@@ -143,10 +143,25 @@ Migration will be opt-in, per-feature, never forced.
 users should consult the [migration guide](../guides/agentic-bus-migration.md)
 for the cases where moving onto the bus is the right call.
 
-Smaller follow-ups that are *not* Phase 10 — they fit in regular
-PRs without master-plan-grade design:
+Polish items that landed alongside Phase 10:
 
-- Populate the reserved `KeyKind::PendingBusApprovals` index for
-  scaled approvals queue listings.
-- `bus_kafka_e2e` Criterion bench against the real `KafkaBackend`,
-  rounding out the in-memory benches from Phase 9.
+- `KeyKind::PendingBusApprovals` index — populated on park,
+  cleared on Pending → Approving / Rejected transitions. The
+  list endpoint with `status=pending` (the operator-actionable
+  default) now scans the index instead of the full approval log.
+- `bus_kafka_e2e` Criterion bench against the real
+  `KafkaBackend`. Skips with a clear warning when
+  `ACTEON_BENCH_KAFKA` isn't set; reports wall-clock numbers
+  including broker round-trip when it is.
+
+Genuine follow-up not yet shipped:
+
+- **Kafka transactional producer for full atomicity.** The
+  state-machine + reconciler + idempotent producer + consumer-
+  side `call_id` dedup combine to make duplicate produces
+  invisible to consumers in practice; Kafka transactions would
+  add defensive depth (per-approval `transactional.id`
+  management, `init_transactions` plumbing across the rdkafka
+  backend) but the marginal value is low. Tracked under the
+  [Exactly-once edge](#exactly-once-edge) section as
+  deferred-not-needed.
