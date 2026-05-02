@@ -166,6 +166,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "futures",
  "hex",
  "serde",
  "serde_json",

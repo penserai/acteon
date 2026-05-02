@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use acteon_ops::OpsClient;
-use acteon_ops::acteon_client::{AckOffset, BusSubscriptionFilter, CreateSubscription};
+use acteon_ops::acteon_client::{
+    AckOffset, BusConsumeItem, BusSubscriptionFilter, ConsumeBusTopic, CreateSubscription,
+};
 use clap::{Args, Subcommand};
-use tracing::info;
+use futures::StreamExt;
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 use crate::commands::bus::parse_kv;
@@ -85,6 +88,23 @@ pub enum SubscriptionsCommand {
         partition: i32,
         #[arg(long)]
         offset: i64,
+    },
+    /// Consume a subscription via SSE. Prints each record as JSONL on
+    /// stdout (one JSON object per line). Stops on Ctrl-C or after
+    /// `--limit` records.
+    Consume {
+        /// Subscription id (Kafka consumer group).
+        #[arg(long)]
+        id: String,
+        /// Full Kafka topic name (`namespace.tenant.name`).
+        #[arg(long)]
+        topic: String,
+        /// `earliest` or `latest` (default: server default).
+        #[arg(long)]
+        from: Option<String>,
+        /// Stop after this many records. Defaults to unbounded.
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 
@@ -219,6 +239,41 @@ pub async fn run(
                 offset = *offset,
                 "Offset committed"
             );
+        }
+        SubscriptionsCommand::Consume {
+            id,
+            topic,
+            from,
+            limit,
+        } => {
+            let params = ConsumeBusTopic {
+                topic: topic.clone(),
+                from: from.clone(),
+            };
+            // JSONL on stdout regardless of `--format` — a streaming
+            // feed is awkward to surface through tracing, and JSONL is
+            // the canonical pipe-friendly shape. `info!` would
+            // interleave the prefix.
+            let _ = format;
+            let mut stream = ops.client().consume_bus_subscription(id, &params).await?;
+            let mut count = 0usize;
+            while let Some(item) = stream.next().await {
+                match item? {
+                    BusConsumeItem::Message(msg) => {
+                        println!("{}", serde_json::to_string(&msg)?);
+                        count += 1;
+                        if let Some(max) = limit
+                            && count >= *max
+                        {
+                            break;
+                        }
+                    }
+                    BusConsumeItem::Error { message } => {
+                        warn!(error = %message, "bus.error");
+                    }
+                    BusConsumeItem::KeepAlive => {}
+                }
+            }
         }
     }
     Ok(())

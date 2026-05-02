@@ -1,16 +1,21 @@
-//! Client helpers for the agentic bus surface (Phase 1).
+//! Client helpers for the agentic bus surface.
 //!
-//! Wraps `/v1/bus/topics` CRUD and `/v1/bus/publish`. The SSE
-//! subscribe stream is not wrapped here yet — Phase 2 will expose a
-//! typed streaming consumer once subscriptions become first-class on
-//! the server side.
+//! Wraps the full HTTP surface (topics, subscriptions, schemas, agents,
+//! conversations, tool-calls, streams, approvals) plus typed SSE
+//! consumers for `/v1/bus/subscribe/{id}` (consume a subscription) and
+//! `/v1/bus/streams/.../{stream_id}` (tail a single stream).
 
 use std::collections::{BTreeMap, HashMap};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
+use chrono::{DateTime, Utc};
+use futures::stream::{Stream, StreamExt};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
 use crate::dispatch::ErrorResponse;
+use crate::stream::{SseEnvelope, sse_envelope_stream};
 use crate::{ActeonClient, Error};
 
 const PATH_SEGMENT: &AsciiSet = &CONTROLS
@@ -1972,5 +1977,367 @@ async fn map_error(resp: reqwest::Response) -> Error {
     Error::Http {
         status,
         message: err.map_or_else(|| "bus API error".to_string(), |e| e.message),
+    }
+}
+
+// =============================================================================
+// SSE consumers — generic topic subscribe + typed stream-id tail
+// =============================================================================
+
+/// Query params for [`ActeonClient::consume_bus_subscription`].
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct ConsumeBusTopic {
+    /// Full Kafka topic name (`namespace.tenant.name`).
+    pub topic: String,
+    /// `earliest` or `latest` (default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// A single Kafka record observed by a bus subscription consumer.
+/// Mirrors the wire shape of `acteon_bus::BusMessage` without taking
+/// a dependency on the bus crate from the client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BusConsumedMessage {
+    pub topic: String,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default)]
+    pub partition: Option<i32>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+    #[serde(default)]
+    pub timestamp: Option<DateTime<Utc>>,
+}
+
+/// Yielded items from [`BusConsumeStream`]. The `bus.message` event
+/// becomes [`BusConsumeItem::Message`]; `bus.error` becomes
+/// [`BusConsumeItem::Error`]; SSE comments surface as [`BusConsumeItem::KeepAlive`]
+/// so consumers can use them as a liveness signal.
+#[derive(Debug)]
+pub enum BusConsumeItem {
+    /// A consumed Kafka record.
+    Message(Box<BusConsumedMessage>),
+    /// Server-side error event (`bus.error`).
+    Error { message: String },
+    /// SSE keep-alive comment.
+    KeepAlive,
+}
+
+/// Async stream of [`BusConsumeItem`]s from the SSE subscription
+/// endpoint. Created via [`ActeonClient::consume_bus_subscription`].
+pub struct BusConsumeStream {
+    inner: Pin<Box<dyn Stream<Item = Result<BusConsumeItem, Error>> + Send>>,
+}
+
+impl Stream for BusConsumeStream {
+    type Item = Result<BusConsumeItem, Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
+/// Yielded items from [`BusStreamConsumeStream`]. Closes the underlying
+/// HTTP connection after a [`BusStreamItem::End`] is observed.
+#[derive(Debug)]
+pub enum BusStreamItem {
+    /// A typed `StreamChunk` envelope.
+    Chunk(Box<acteon_core::StreamChunk>),
+    /// Terminal `StreamEnd` marker. Stream closes after this.
+    End(Box<acteon_core::StreamEnd>),
+    /// Server-side error event (`bus.stream.error`).
+    Error { message: String },
+    /// SSE keep-alive comment.
+    KeepAlive,
+}
+
+/// Async stream of [`BusStreamItem`]s from the per-stream SSE endpoint.
+/// Created via [`ActeonClient::consume_bus_stream`].
+pub struct BusStreamConsumeStream {
+    inner: Pin<Box<dyn Stream<Item = Result<BusStreamItem, Error>> + Send>>,
+}
+
+impl Stream for BusStreamConsumeStream {
+    type Item = Result<BusStreamItem, Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
+impl ActeonClient {
+    /// Consume a bus subscription via SSE
+    /// (`GET /v1/bus/subscribe/{subscription_id}`). Yields one item
+    /// per Kafka record on the underlying topic.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::{ActeonClient, BusConsumeItem, ConsumeBusTopic};
+    /// use futures::StreamExt;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let mut stream = client
+    ///     .consume_bus_subscription(
+    ///         "agent-A",
+    ///         &ConsumeBusTopic {
+    ///             topic: "agents.demo.events".into(),
+    ///             from: Some("earliest".into()),
+    ///         },
+    ///     )
+    ///     .await?;
+    /// while let Some(item) = stream.next().await {
+    ///     match item? {
+    ///         BusConsumeItem::Message(msg) => println!("offset {:?}", msg.offset),
+    ///         BusConsumeItem::Error { message } => eprintln!("server error: {message}"),
+    ///         BusConsumeItem::KeepAlive => {}
+    ///     }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub async fn consume_bus_subscription(
+        &self,
+        subscription_id: &str,
+        params: &ConsumeBusTopic,
+    ) -> Result<BusConsumeStream, Error> {
+        let url = format!(
+            "{}/v1/bus/subscribe/{}",
+            self.base_url,
+            encode_segment(subscription_id),
+        );
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .query(params)
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(map_error(resp).await);
+        }
+        let inner = sse_envelope_stream(resp).map(parse_bus_subscribe_envelope);
+        Ok(BusConsumeStream {
+            inner: Box::pin(inner),
+        })
+    }
+
+    /// Consume a typed stream via SSE
+    /// (`GET /v1/bus/streams/{ns}/{tenant}/{conversation_id}/{stream_id}`).
+    /// Server filters records by `(envelope_kind, conversation_id,
+    /// stream_id)` so this stream only emits chunks for the requested
+    /// stream id and closes after the terminal `StreamEnd`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), acteon_client::Error> {
+    /// use acteon_client::{ActeonClient, BusStreamItem};
+    /// use futures::StreamExt;
+    ///
+    /// let client = ActeonClient::new("http://localhost:8080");
+    /// let mut stream = client
+    ///     .consume_bus_stream("agents", "demo", "thread-1", "stream-42")
+    ///     .await?;
+    /// while let Some(item) = stream.next().await {
+    ///     match item? {
+    ///         BusStreamItem::Chunk(c) => println!("chunk {} len {}", c.chunk_seq, c.body.to_string().len()),
+    ///         BusStreamItem::End(e) => {
+    ///             println!("stream ended: {:?}", e.status);
+    ///             break;
+    ///         }
+    ///         BusStreamItem::Error { message } => eprintln!("server error: {message}"),
+    ///         BusStreamItem::KeepAlive => {}
+    ///     }
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub async fn consume_bus_stream(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        conversation_id: &str,
+        stream_id: &str,
+    ) -> Result<BusStreamConsumeStream, Error> {
+        let url = self.bus_stream_consume_url(namespace, tenant, conversation_id, stream_id);
+        let resp = self
+            .add_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| Error::Connection(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(map_error(resp).await);
+        }
+        let inner = sse_envelope_stream(resp).map(parse_bus_stream_envelope);
+        Ok(BusStreamConsumeStream {
+            inner: Box::pin(inner),
+        })
+    }
+}
+
+fn parse_bus_subscribe_envelope(
+    envelope: Result<SseEnvelope, Error>,
+) -> Result<BusConsumeItem, Error> {
+    match envelope? {
+        SseEnvelope::Frame(frame) => {
+            let event = frame.event.as_deref().unwrap_or("message");
+            match event {
+                "bus.message" | "message" => {
+                    let msg: BusConsumedMessage =
+                        serde_json::from_str(&frame.data).map_err(|e| {
+                            Error::Deserialization(format!("invalid bus.message payload: {e}"))
+                        })?;
+                    Ok(BusConsumeItem::Message(Box::new(msg)))
+                }
+                "bus.error" => Ok(BusConsumeItem::Error {
+                    message: extract_error_message(&frame.data),
+                }),
+                other => Err(Error::Deserialization(format!(
+                    "unexpected SSE event '{other}' on bus subscribe stream"
+                ))),
+            }
+        }
+        SseEnvelope::KeepAlive => Ok(BusConsumeItem::KeepAlive),
+    }
+}
+
+fn parse_bus_stream_envelope(envelope: Result<SseEnvelope, Error>) -> Result<BusStreamItem, Error> {
+    match envelope? {
+        SseEnvelope::Frame(frame) => {
+            let event = frame.event.as_deref().unwrap_or("message");
+            match event {
+                "bus.stream.chunk" => {
+                    let chunk: acteon_core::StreamChunk = serde_json::from_str(&frame.data)
+                        .map_err(|e| {
+                            Error::Deserialization(format!("invalid stream chunk payload: {e}"))
+                        })?;
+                    Ok(BusStreamItem::Chunk(Box::new(chunk)))
+                }
+                "bus.stream.end" => {
+                    let end: acteon_core::StreamEnd =
+                        serde_json::from_str(&frame.data).map_err(|e| {
+                            Error::Deserialization(format!("invalid stream end payload: {e}"))
+                        })?;
+                    Ok(BusStreamItem::End(Box::new(end)))
+                }
+                "bus.stream.error" => Ok(BusStreamItem::Error {
+                    message: extract_error_message(&frame.data),
+                }),
+                other => Err(Error::Deserialization(format!(
+                    "unexpected SSE event '{other}' on bus stream consumer"
+                ))),
+            }
+        }
+        SseEnvelope::KeepAlive => Ok(BusStreamItem::KeepAlive),
+    }
+}
+
+fn extract_error_message(data: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(data)
+        .ok()
+        .and_then(|v| v.get("error")?.as_str().map(ToString::to_string))
+        .unwrap_or_else(|| data.to_string())
+}
+
+#[cfg(test)]
+mod consumer_tests {
+    use super::*;
+
+    #[test]
+    fn parse_subscribe_message_event() {
+        let frame = crate::stream::SseFrame {
+            event: Some("bus.message".into()),
+            id: Some("42".into()),
+            data: r#"{"topic":"agents.demo.events","payload":{"k":"v"},"partition":0,"offset":42}"#
+                .into(),
+        };
+        let item = parse_bus_subscribe_envelope(Ok(SseEnvelope::Frame(frame))).unwrap();
+        match item {
+            BusConsumeItem::Message(m) => {
+                assert_eq!(m.topic, "agents.demo.events");
+                assert_eq!(m.offset, Some(42));
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_subscribe_error_event() {
+        let frame = crate::stream::SseFrame {
+            event: Some("bus.error".into()),
+            id: None,
+            data: r#"{"error":"broker disconnected"}"#.into(),
+        };
+        let item = parse_bus_subscribe_envelope(Ok(SseEnvelope::Frame(frame))).unwrap();
+        match item {
+            BusConsumeItem::Error { message } => assert_eq!(message, "broker disconnected"),
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_subscribe_keep_alive() {
+        let item = parse_bus_subscribe_envelope(Ok(SseEnvelope::KeepAlive)).unwrap();
+        assert!(matches!(item, BusConsumeItem::KeepAlive));
+    }
+
+    #[test]
+    fn parse_stream_chunk_and_end() {
+        let chunk_frame = crate::stream::SseFrame {
+            event: Some("bus.stream.chunk".into()),
+            id: Some("0".into()),
+            data: r#"{"stream_id":"s1","chunk_seq":3,"body":{"token":"hi"},"created_at":"2026-05-02T12:00:00Z"}"#
+                .into(),
+        };
+        let end_frame = crate::stream::SseFrame {
+            event: Some("bus.stream.end".into()),
+            id: Some("1".into()),
+            data: r#"{"stream_id":"s1","chunk_seq":4,"status":"complete","created_at":"2026-05-02T12:00:01Z"}"#
+                .into(),
+        };
+        match parse_bus_stream_envelope(Ok(SseEnvelope::Frame(chunk_frame))).unwrap() {
+            BusStreamItem::Chunk(c) => {
+                assert_eq!(c.stream_id, "s1");
+                assert_eq!(c.chunk_seq, 3);
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+        match parse_bus_stream_envelope(Ok(SseEnvelope::Frame(end_frame))).unwrap() {
+            BusStreamItem::End(e) => {
+                assert_eq!(e.stream_id, "s1");
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_stream_error_event_with_plain_data() {
+        // Server emits `{"error": "..."}`, but if the JSON is malformed
+        // for some reason we still want a useful message back.
+        let frame = crate::stream::SseFrame {
+            event: Some("bus.stream.error".into()),
+            id: None,
+            data: "broker disconnected".into(),
+        };
+        let item = parse_bus_stream_envelope(Ok(SseEnvelope::Frame(frame))).unwrap();
+        match item {
+            BusStreamItem::Error { message } => assert_eq!(message, "broker disconnected"),
+            other => panic!("unexpected item: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_stream_unknown_event_is_error() {
+        let frame = crate::stream::SseFrame {
+            event: Some("bogus".into()),
+            id: None,
+            data: "{}".into(),
+        };
+        let err = parse_bus_stream_envelope(Ok(SseEnvelope::Frame(frame))).unwrap_err();
+        assert!(matches!(err, Error::Deserialization(_)));
     }
 }

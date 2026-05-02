@@ -153,13 +153,25 @@ impl Stream for EventStream {
     }
 }
 
-/// Create an `EventStream` from a reqwest response that returns SSE data.
-pub(crate) fn event_stream_from_response(response: reqwest::Response) -> EventStream {
+/// What the line-level SSE parser hands back for each turn of the stream.
+/// Either a complete frame (`event` + `data`) or a keep-alive comment.
+pub(crate) enum SseEnvelope {
+    Frame(SseFrame),
+    KeepAlive,
+}
+
+/// Stream of raw SSE envelopes from a `reqwest::Response`. Used by the
+/// dispatch event stream below and the agentic-bus consumers in
+/// `bus.rs` — every other SSE-facing client surface should layer on
+/// top of this rather than reimplementing the line protocol.
+pub(crate) fn sse_envelope_stream(
+    response: reqwest::Response,
+) -> impl Stream<Item = Result<SseEnvelope, Error>> + Send + 'static {
     let byte_stream = response.bytes_stream();
     let reader = StreamReader::new(byte_stream.map(|result| result.map_err(std::io::Error::other)));
     let lines = tokio::io::BufReader::new(reader).lines();
 
-    let stream = futures::stream::unfold(
+    futures::stream::unfold(
         (lines, SseFrameState::default()),
         |(mut lines, mut frame_state)| async move {
             loop {
@@ -168,18 +180,15 @@ pub(crate) fn event_stream_from_response(response: reqwest::Response) -> EventSt
                         if line.is_empty() {
                             // Blank line = end of SSE frame.
                             if let Some(frame) = frame_state.take_frame() {
-                                let item = parse_sse_frame(&frame);
-                                return Some((item, (lines, frame_state)));
+                                return Some((Ok(SseEnvelope::Frame(frame)), (lines, frame_state)));
                             }
                             // Empty frame (e.g., double newline), skip.
                             continue;
                         }
 
-                        if let Some(rest) = line.strip_prefix(':') {
-                            // SSE comment (keep-alive).
-                            let _ = rest;
-                            let item = Ok(StreamItem::KeepAlive);
-                            return Some((item, (lines, frame_state)));
+                        if line.starts_with(':') {
+                            // SSE comment — server keep-alive.
+                            return Some((Ok(SseEnvelope::KeepAlive), (lines, frame_state)));
                         }
 
                         if let Some(value) = line.strip_prefix("event:") {
@@ -191,10 +200,7 @@ pub(crate) fn event_stream_from_response(response: reqwest::Response) -> EventSt
                         }
                         // Ignore unknown fields per SSE spec.
                     }
-                    Ok(None) => {
-                        // Stream ended.
-                        return None;
-                    }
+                    Ok(None) => return None,
                     Err(e) => {
                         return Some((
                             Err(Error::Connection(format!("SSE stream error: {e}"))),
@@ -204,7 +210,16 @@ pub(crate) fn event_stream_from_response(response: reqwest::Response) -> EventSt
                 }
             }
         },
-    );
+    )
+}
+
+/// Create an `EventStream` from a reqwest response that returns SSE data.
+pub(crate) fn event_stream_from_response(response: reqwest::Response) -> EventStream {
+    let stream = sse_envelope_stream(response).map(|env| match env {
+        Ok(SseEnvelope::Frame(frame)) => parse_sse_frame(&frame),
+        Ok(SseEnvelope::KeepAlive) => Ok(StreamItem::KeepAlive),
+        Err(e) => Err(e),
+    });
 
     EventStream {
         inner: Box::pin(stream),
