@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
 use acteon_ops::OpsClient;
-use acteon_ops::acteon_client::{BusStreamEndStatus, PostBusStreamChunk, PostBusStreamEnd};
+use acteon_ops::acteon_client::{
+    BusStreamEndStatus, BusStreamItem, PostBusStreamChunk, PostBusStreamEnd,
+};
 use clap::{Args, Subcommand};
-use tracing::info;
+use futures::StreamExt;
+use tracing::{info, warn};
 
 use crate::OutputFormat;
 use crate::commands::bus::{parse_json_arg, parse_kv};
@@ -70,6 +73,18 @@ pub enum StreamsCommand {
         #[arg(long)]
         stream_id: String,
     },
+    /// Tail a single stream over SSE. Prints each chunk as JSONL on
+    /// stdout and exits when the terminal `stream_end` lands.
+    Tail {
+        #[arg(long)]
+        namespace: String,
+        #[arg(long)]
+        tenant: String,
+        #[arg(long)]
+        conversation_id: String,
+        #[arg(long)]
+        stream_id: String,
+    },
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -89,6 +104,7 @@ impl From<StreamEndStatusKind> for BusStreamEndStatus {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(ops: &OpsClient, args: &StreamsArgs, format: &OutputFormat) -> anyhow::Result<()> {
     match &args.command {
         StreamsCommand::Chunk {
@@ -175,6 +191,36 @@ pub async fn run(ops: &OpsClient, args: &StreamsArgs, format: &OutputFormat) -> 
             // Print the URL to stdout so it can be piped without log
             // formatting noise.
             println!("{url}");
+        }
+        StreamsCommand::Tail {
+            namespace,
+            tenant,
+            conversation_id,
+            stream_id,
+        } => {
+            let mut stream = ops
+                .client()
+                .consume_bus_stream(namespace, tenant, conversation_id, stream_id)
+                .await?;
+            while let Some(item) = stream.next().await {
+                match item? {
+                    BusStreamItem::Chunk(chunk) => {
+                        println!("{}", serde_json::to_string(&chunk)?);
+                    }
+                    BusStreamItem::End(end) => {
+                        println!("{}", serde_json::to_string(&end)?);
+                        info!(stream_id = %end.stream_id, status = ?end.status, "Stream ended");
+                        break;
+                    }
+                    BusStreamItem::Error { message } => {
+                        warn!(error = %message, "bus.stream.error");
+                    }
+                    BusStreamItem::KeepAlive => {}
+                }
+            }
+            // Suppress unused-variable warning when the format flag is
+            // unused — the tail loop emits to stdout regardless of mode.
+            let _ = format;
         }
     }
     Ok(())
