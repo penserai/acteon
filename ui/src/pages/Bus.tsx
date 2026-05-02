@@ -497,6 +497,7 @@ function ApprovalsPanel({ ns, tenant }: { ns: string; tenant: string }) {
         <Select
           options={[
             { value: 'pending', label: 'Pending' },
+            { value: 'approving', label: 'Approving (mid-flight)' },
             { value: 'approved', label: 'Approved' },
             { value: 'rejected', label: 'Rejected' },
             { value: 'expired', label: 'Expired' },
@@ -586,7 +587,12 @@ function BusApprovalCard({
     }
   }, [focused, onFocusConsumed])
   const envelopeStr = useMemo(() => JSON.stringify(approval.envelope, null, 2), [approval.envelope])
-  const terminal = approval.status !== 'pending'
+  // Pending and Approving both expose decision controls — Pending
+  // is the first decision; Approving is the manual retry path
+  // (the produce failed mid-flight; calling approve again retries
+  // it without overwriting the original decided_by).
+  const decidable = approval.status === 'pending' || approval.status === 'approving'
+  const isRetrying = approval.status === 'approving'
 
   return (
     <article
@@ -595,7 +601,21 @@ function BusApprovalCard({
       className={`${styles.approvalCard} ${focused ? styles.approvalCardHighlighted : ''}`}
     >
       <div className={styles.cardHeader}>
-        <Badge variant={approval.status === 'pending' ? 'warning' : approval.status === 'approved' ? 'success' : 'neutral'}>
+        <Badge
+          variant={
+            approval.status === 'pending'
+              ? 'warning'
+              : approval.status === 'approving'
+                // Approving = operator decided, produce mid-flight.
+                // Surfaced as `info` so it visually distinguishes
+                // from still-pending (warning, decision-needed) and
+                // from approved (success, fully done).
+                ? 'info'
+                : approval.status === 'approved'
+                  ? 'success'
+                  : 'neutral'
+          }
+        >
           {approval.status}
         </Badge>
         <span className={styles.timestamp}>{relativeTime(approval.created_at)}</span>
@@ -638,13 +658,25 @@ function BusApprovalCard({
       <div className={styles.metadataRow}>
         <span>Expires: {countdown}</span>
       </div>
-      {!terminal && (
+      {decidable && (
         <>
+          {isRetrying && (
+            <p className="text-xs mb-2" style={{ color: 'var(--text-warning, #d97706)' }}>
+              Produce failed mid-flight. Click Approve again to retry — the
+              original decided_by is preserved; idempotent producer + consumer-
+              side dedup on call_id keep the topic clean.
+            </p>
+          )}
           <div className={styles.decisionForm}>
             <Input
-              placeholder="decided_by (operator id)"
-              value={decidedBy}
+              placeholder={
+                isRetrying
+                  ? `decided_by (locked: ${approval.decided_by})`
+                  : 'decided_by (operator id)'
+              }
+              value={isRetrying ? approval.decided_by ?? '' : decidedBy}
               onChange={(e) => setDecidedBy(e.target.value)}
+              disabled={isRetrying}
             />
             <Input
               placeholder="decision_note (optional)"
@@ -653,21 +685,32 @@ function BusApprovalCard({
             />
           </div>
           <div className={styles.actionButtons}>
-            <Button
-              variant="danger"
-              size="md"
-              disabled={!decidedBy}
-              onClick={() => onReject(decidedBy, note || undefined)}
-            >
-              Reject
-            </Button>
+            {/* Reject is only valid from Pending — Approving means
+                the operator already approved and the produce is
+                in flight. The server returns 409 if asked to
+                reject from Approving; hide the button to match. */}
+            {!isRetrying && (
+              <Button
+                variant="danger"
+                size="md"
+                disabled={!decidedBy}
+                onClick={() => onReject(decidedBy, note || undefined)}
+              >
+                Reject
+              </Button>
+            )}
             <Button
               variant="success"
               size="md"
-              disabled={!decidedBy}
-              onClick={() => onApprove(decidedBy, note || undefined)}
+              disabled={isRetrying ? false : !decidedBy}
+              onClick={() =>
+                onApprove(
+                  isRetrying ? approval.decided_by ?? '' : decidedBy,
+                  note || undefined,
+                )
+              }
             >
-              Approve
+              {isRetrying ? 'Retry produce' : 'Approve'}
             </Button>
           </div>
         </>

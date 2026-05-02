@@ -7535,29 +7535,94 @@ pub async fn approve_bus_approval(
             Ok(a) => a,
             Err(resp) => return resp,
         };
-        if approval.status.is_terminal() {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: format!(
-                        "approval {approval_id} already in terminal status {:?}",
-                        approval.status
-                    ),
-                }),
-            )
-                .into_response();
-        }
-        if approval.expires_at < Utc::now() {
-            // Soft-expire on read so a stale row can never be
-            // approved past its TTL. The reaper will mark it
-            // separately; this avoids racing the reaper.
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: format!("approval {approval_id} expired at {}", approval.expires_at),
-                }),
-            )
-                .into_response();
+        // Phase 10 atomic-HITL state machine. Three branches:
+        //   - Pending: claim the row (Pending → Approving) with the
+        //     operator's decision metadata, then produce.
+        //   - Approving: a previous approve attempt either crashed
+        //     mid-flight or had its produce fail. Don't overwrite
+        //     `decided_by` (preserves audit), just retry the produce
+        //     and transition Approving → Approved on success.
+        //   - Anything terminal: 409 Conflict.
+        match approval.status {
+            acteon_core::BusApprovalStatus::Approved
+            | acteon_core::BusApprovalStatus::Rejected
+            | acteon_core::BusApprovalStatus::Expired => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "approval {approval_id} already in terminal status {:?}",
+                            approval.status
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            acteon_core::BusApprovalStatus::Pending => {
+                if approval.expires_at < Utc::now() {
+                    // Soft-expire on read so a stale row can never be
+                    // approved past its TTL. The reaper will mark it
+                    // separately; this avoids racing the reaper.
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "approval {approval_id} expired at {}",
+                                approval.expires_at
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                // Claim the row: Pending → Approving with the
+                // operator's decision metadata. From here on, the
+                // approval is no longer eligible for `reject`, and a
+                // retry hits the Approving branch (preserving
+                // `decided_by`).
+                let key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusApproval,
+                    &approval_id,
+                );
+                let claim =
+                    cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval gone", |a| {
+                        if a.status != acteon_core::BusApprovalStatus::Pending {
+                            return Err((
+                                StatusCode::CONFLICT,
+                                Json(ErrorResponse {
+                                    error: format!(
+                                        "approval transitioned to {:?} between read and write",
+                                        a.status
+                                    ),
+                                }),
+                            )
+                                .into_response());
+                        }
+                        a.status = acteon_core::BusApprovalStatus::Approving;
+                        a.decided_by = Some(req.decided_by.clone());
+                        a.decided_at = Some(Utc::now());
+                        a.decision_note.clone_from(&req.decision_note);
+                        Ok(())
+                    })
+                    .await;
+                if let Err(resp) = claim {
+                    return resp;
+                }
+            }
+            acteon_core::BusApprovalStatus::Approving => {
+                // Already claimed; the original `decided_by` stays. The
+                // produce below is the retry. If the message did land
+                // on the previous attempt and only the
+                // Approving → Approved CAS failed, the consumer-side
+                // dedup on `call_id` keeps the topic clean (Phase 6a
+                // documents this — `lookup_tool_result` returns the
+                // first matching record).
+                tracing::info!(
+                    approval_id = %approval_id,
+                    "approve called on Approving row; treating as retry",
+                );
+            }
         }
         // Resolve the conversation that owns this approval — its
         // `effective_events_topic()` is what the produce targets.
@@ -7620,21 +7685,27 @@ pub async fn approve_bus_approval(
         let receipt = match backend.produce(msg).await {
             Ok(r) => r,
             Err(e) => {
-                // V1 trust model: the row stays `pending` so an
-                // operator can retry. Don't transition the row
-                // until the produce succeeds.
+                // The row is now in Approving (either we just put it
+                // there or it was already there from a prior attempt).
+                // The reconciler will retry until the produce
+                // succeeds. Surface 503 so the caller knows it's
+                // mid-flight, not failed-permanently.
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::SERVICE_UNAVAILABLE,
                     Json(ErrorResponse {
-                        error: format!("produce failed; approval row left pending: {e}"),
+                        error: format!(
+                            "produce failed; approval is in Approving state and will be retried by the reconciler: {e}"
+                        ),
                     }),
                 )
                     .into_response();
             }
         };
-        // Best-effort CAS to record the decision. If contention
-        // exhausts (an unlikely double-approve race), the message is
-        // already on Kafka — log loudly and keep the response 200.
+        // Step 2 of the state machine: Approving → Approved with
+        // produce coordinates. If this CAS fails the message is
+        // already on Kafka and the reconciler will see the row is
+        // still Approving and retry — but the consumer-side dedup
+        // on `call_id` (Phase 6a) keeps the eventual scan clean.
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
@@ -7643,12 +7714,12 @@ pub async fn approve_bus_approval(
         );
         let updated =
             cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval gone", |a| {
-                if a.status.is_terminal() {
+                if a.status != acteon_core::BusApprovalStatus::Approving {
                     return Err((
                         StatusCode::CONFLICT,
                         Json(ErrorResponse {
                             error: format!(
-                                "approval transitioned to {:?} between read and write",
+                                "approval transitioned out of Approving to {:?}",
                                 a.status
                             ),
                         }),
@@ -7656,9 +7727,6 @@ pub async fn approve_bus_approval(
                         .into_response());
                 }
                 a.status = acteon_core::BusApprovalStatus::Approved;
-                a.decided_by = Some(req.decided_by.clone());
-                a.decided_at = Some(Utc::now());
-                a.decision_note.clone_from(&req.decision_note);
                 a.produced_partition = Some(receipt.partition);
                 a.produced_offset = Some(receipt.offset);
                 a.produced_at = Some(receipt.timestamp);
@@ -7669,14 +7737,15 @@ pub async fn approve_bus_approval(
             Ok(a) => approval_to_view(&a),
             Err(_resp) => {
                 // The Kafka record landed; the row update lost a CAS
-                // race or the row vanished. Surface the produce
-                // receipt anyway (the bus is the source of truth)
-                // and log the inconsistency.
+                // race or the row vanished. The bus is the source of
+                // truth — surface the receipt and log loudly. The
+                // reconciler will eventually fix the row by re-
+                // producing (idempotent at the consumer-dedup layer).
                 tracing::warn!(
                     approval_id = %approval_id,
                     partition = receipt.partition,
                     offset = receipt.offset,
-                    "approve produced to Kafka but approval row update failed; row may be stale",
+                    "approve produced to Kafka but Approving → Approved CAS failed; reconciler will retry",
                 );
                 let mut a = approval.clone();
                 a.status = acteon_core::BusApprovalStatus::Approved;
@@ -7761,12 +7830,17 @@ pub async fn reject_bus_approval(
         );
         let updated =
             cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval not found", |a| {
-                if a.status.is_terminal() {
+                // Only Pending rows can be rejected. Approving means
+                // the operator has already decided "approve" and the
+                // produce is in flight — rejecting at that point
+                // would race the reconciler. Terminal rows obviously
+                // can't transition.
+                if a.status != acteon_core::BusApprovalStatus::Pending {
                     return Err((
                         StatusCode::CONFLICT,
                         Json(ErrorResponse {
                             error: format!(
-                                "approval {} already in terminal status {:?}",
+                                "approval {} cannot be rejected from status {:?} (only Pending is rejectable)",
                                 a.approval_id, a.status
                             ),
                         }),

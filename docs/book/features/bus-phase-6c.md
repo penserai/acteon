@@ -221,25 +221,64 @@ participant set when servicing the approval queue.
 
 ## Trust model and limits (V1)
 
-### Park-and-produce is not atomic
+### Park-and-produce uses a two-step state machine
 
-V1 does not use a Kafka transactional producer. The two writes
-(state-row update + Kafka produce) happen separately:
+> **Updated in Phase 10.** Originally V1 (Phase 6c as shipped) made
+> the failure modes invisible — a successful produce + failed CAS
+> looked the same as "still pending." Phase 10 added the
+> `Approving` intermediate state so the visibility gap is closed.
 
-- **If the produce fails after a successful approve decision:** the
-  state row stays `Pending` so an operator can retry. The handler
-  returns `500` with the produce error; no `Approved` transition
-  occurs.
-- **If the produce succeeds but the row update fails:** the message
-  is on Kafka; the row update is best-effort with an in-handler CAS
-  retry. We log loudly when the row update gives up, but the response
-  is still `200` because the bus is the source of truth. Idempotent
-  producer semantics + per-`call_id` uniqueness on the consumer side
-  (see Phase 6a trust model) keep the topic clean across retries.
+The flow:
 
-A future iteration can use a Kafka transactional producer + outbox
-pattern to close this window completely. The master plan calls this
-out under the *Exactly-once edge* section.
+```text
+Pending ──approve──▶ Approving ──produce ok──▶ Approved
+   │                     │
+   │                     └──produce error──▶ (stays Approving;
+   │                                          operator retries via
+   │                                          a second `approve`)
+   ├──reject────────────────────────────────▶ Rejected
+   └──ttl elapsed──────────────────────────▶ Expired
+```
+
+What each branch means:
+
+- **Pending → Approving.** The operator's first `approve` claims
+  the row. `decided_by` / `decided_at` / `decision_note` are
+  recorded. From this point the row is no longer rejectable.
+- **Approving → Approved.** Set after a successful Kafka produce
+  with the resulting `partition` / `offset` / `produced_at`.
+- **Stuck Approving.** If the produce fails or the
+  Approving → Approved CAS fails, the row stays in `Approving`.
+  An operator (or admin UI) sees the row visibly stuck with the
+  original `decided_by` recorded; calling `approve` again retries
+  the produce *without* overwriting the audit metadata.
+
+The non-atomicity isn't gone — Acteon doesn't run a Kafka
+transactional producer in V1 — but the *visibility* gap is
+closed. Operators can see exactly which rows are mid-flight, and
+retry semantics preserve audit.
+
+Trust model carry-overs:
+
+- **Idempotent producer + consumer-side `call_id` dedup** keep
+  the Kafka topic clean across retries. The lookup primitive
+  returns the *first* record matching `call_id` (Phase 6a
+  documented this), so even if the producer accidentally lands
+  two records, downstream consumers see one.
+- **Reject only works from `Pending`.** Once `Approving`, the
+  operator has already decided "approve" and the produce is in
+  flight; rejecting at that point would race the retry.
+- **Background reconciliation worker** is a follow-up. V1 of
+  Phase 10 ships the state machine + manual retry surface; an
+  automatic reconciler that retries stuck `Approving` rows
+  on a periodic sweep is the natural next step. The master
+  plan tracks it as part of Phase 10.
+
+A Kafka transactional producer + true outbox pattern is *also*
+on the Phase 10 list — that closes the window completely (the
+state-row update + Kafka produce happen in one atomic
+transaction). The state-machine V1 is the foundation it builds
+on.
 
 ### `require_approval` is per-call, not per-tenant policy
 
