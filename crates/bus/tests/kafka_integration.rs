@@ -20,7 +20,7 @@ fn make_backend(client_id: &str) -> std::sync::Arc<KafkaBackend> {
         bootstrap_servers: brokers().unwrap(),
         client_id: client_id.to_string(),
         produce_timeout_ms: 8_000,
-        extra: Vec::new(),
+        ..Default::default()
     };
     KafkaBackend::new(&cfg).expect("kafka backend")
 }

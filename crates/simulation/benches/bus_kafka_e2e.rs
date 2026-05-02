@@ -61,7 +61,7 @@ fn make_kafka_backend(rt: &Runtime, bootstrap: &str) -> Option<SharedBackend> {
         bootstrap_servers: bootstrap.to_string(),
         client_id: "acteon-bench".to_string(),
         produce_timeout_ms: 5_000,
-        extra: Default::default(),
+        ..Default::default()
     };
     let backend = match KafkaBackend::new(&cfg) {
         Ok(b) => b as SharedBackend,
