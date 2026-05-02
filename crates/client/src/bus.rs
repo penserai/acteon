@@ -2179,8 +2179,10 @@ impl ActeonClient {
     }
 }
 
-fn parse_bus_subscribe_envelope(env: Result<SseEnvelope, Error>) -> Result<BusConsumeItem, Error> {
-    match env? {
+fn parse_bus_subscribe_envelope(
+    envelope: Result<SseEnvelope, Error>,
+) -> Result<BusConsumeItem, Error> {
+    match envelope? {
         SseEnvelope::Frame(frame) => {
             let event = frame.event.as_deref().unwrap_or("message");
             match event {
@@ -2203,8 +2205,10 @@ fn parse_bus_subscribe_envelope(env: Result<SseEnvelope, Error>) -> Result<BusCo
     }
 }
 
-fn parse_bus_stream_envelope(env: Result<SseEnvelope, Error>) -> Result<BusStreamItem, Error> {
-    match env? {
+fn parse_bus_stream_envelope(
+    envelope: Result<SseEnvelope, Error>,
+) -> Result<BusStreamItem, Error> {
+    match envelope? {
         SseEnvelope::Frame(frame) => {
             let event = frame.event.as_deref().unwrap_or("message");
             match event {
