@@ -82,7 +82,7 @@ pub struct BusTopicFilter {
 }
 
 /// Envelope handed to [`ActeonClient::publish_message`].
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct PublishBusMessage {
     /// Either the full `namespace.tenant.name` form...
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1543,7 +1543,7 @@ pub struct BusAgentHeartbeat {
     pub status: String,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SendToBusAgent {
     pub payload: serde_json::Value,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -1641,7 +1641,7 @@ pub struct BusConversationFilter {
     pub participant: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct AppendBusConversationMessage {
     pub payload: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1659,7 +1659,7 @@ pub struct BusConversationAppendReceipt {
     pub produced_at: String,
 }
 
-#[derive(Debug, Default, Clone, Serialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ReplayBusConversationParams {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
