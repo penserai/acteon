@@ -154,14 +154,16 @@ Polish items that landed alongside Phase 10:
   `ACTEON_BENCH_KAFKA` isn't set; reports wall-clock numbers
   including broker round-trip when it is.
 
-Genuine follow-up not yet shipped:
+Kafka transactional producer (defensive depth) — **shipped**:
 
-- **Kafka transactional producer for full atomicity.** The
-  state-machine + reconciler + idempotent producer + consumer-
-  side `call_id` dedup combine to make duplicate produces
-  invisible to consumers in practice; Kafka transactions would
-  add defensive depth (per-approval `transactional.id`
-  management, `init_transactions` plumbing across the rdkafka
-  backend) but the marginal value is low. Tracked under the
-  [Exactly-once edge](#exactly-once-edge) section as
-  deferred-not-needed.
+- `[bus.kafka] transactional_id = "..."` opts the bus into
+  full Kafka transactions: every produce is wrapped in
+  begin/commit, with abort-on-error. The broker tracks
+  per-`transactional.id` epochs and fences zombie producers,
+  giving cross-restart guarantees that idempotent-mode-alone
+  can't provide. Off by default — consumer-side `call_id`
+  dedup makes the gap invisible in practice, so this is
+  defensive depth for workloads that need exactly-once
+  semantics independent of consumer behavior. See
+  [Phase 6c trust model](../features/bus-phase-6c.md) for
+  when to flip the knob.

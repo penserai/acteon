@@ -18,7 +18,7 @@ use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::message::{Header, Headers, Message, OwnedHeaders};
-use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::producer::{FutureProducer, FutureRecord, Producer};
 use rdkafka::util::Timeout;
 
 use rdkafka::TopicPartitionList;
@@ -38,11 +38,33 @@ pub struct KafkaBackend {
     client_id: String,
     produce_timeout: Duration,
     extra: Vec<(String, String)>,
+    /// `Some` when the operator configured `transactional_id`. Drives
+    /// the per-produce begin/commit wrap. `None` (default) keeps the
+    /// idempotent-producer-only path that the bus has always used.
+    transactional: Option<TransactionalConfig>,
+}
+
+/// Snapshot of the transactional knobs taken at backend construction.
+/// Held so each produce can use the configured timeout without the
+/// caller threading it through.
+struct TransactionalConfig {
+    transaction_timeout: Duration,
 }
 
 impl KafkaBackend {
-    /// Build a new backend from config. Does not contact the broker —
-    /// connections are lazy on first produce/subscribe/admin call.
+    /// Build a new backend from config. Does not contact the broker
+    /// in non-transactional mode — connections are lazy on first
+    /// produce/subscribe/admin call.
+    ///
+    /// **Phase 10 add-on**: when `config.transactional_id` is `Some`,
+    /// the constructor calls `init_transactions` synchronously. That
+    /// IS a broker round-trip — startup will block waiting for the
+    /// broker to acknowledge the transactional registration. If the
+    /// broker is unreachable, the constructor returns
+    /// `BusError::Transport`. This is the right behavior in
+    /// transactional mode: the operator opted into broker-side
+    /// fencing, so a server that can't talk to the broker shouldn't
+    /// pretend to provide it.
     pub fn new(config: &KafkaBusConfig) -> Result<Arc<Self>, BusError> {
         let mut cfg = ClientConfig::new();
         cfg.set("bootstrap.servers", &config.bootstrap_servers);
@@ -52,6 +74,13 @@ impl KafkaBackend {
         }
         cfg.set("message.timeout.ms", config.produce_timeout_ms.to_string());
         cfg.set("enable.idempotence", "true");
+        if let Some(txn_id) = &config.transactional_id {
+            cfg.set("transactional.id", txn_id);
+            cfg.set(
+                "transaction.timeout.ms",
+                config.transaction_timeout_ms.to_string(),
+            );
+        }
 
         let producer: FutureProducer = cfg
             .create()
@@ -60,6 +89,23 @@ impl KafkaBackend {
             .create()
             .map_err(|e| BusError::Transport(format!("admin: {e}")))?;
 
+        let transactional = if config.transactional_id.is_some() {
+            let timeout = Duration::from_millis(config.transaction_timeout_ms);
+            // Synchronously register the transactional.id with the
+            // broker. Blocks until the broker responds or the timeout
+            // elapses. After this, every produce that uses this
+            // producer can be wrapped in begin_transaction /
+            // commit_transaction.
+            producer
+                .init_transactions(Timeout::After(timeout))
+                .map_err(|e| BusError::Transport(format!("init_transactions: {e}")))?;
+            Some(TransactionalConfig {
+                transaction_timeout: timeout,
+            })
+        } else {
+            None
+        };
+
         Ok(Arc::new(Self {
             producer,
             admin,
@@ -67,6 +113,7 @@ impl KafkaBackend {
             client_id: config.client_id.clone(),
             produce_timeout: Duration::from_millis(config.produce_timeout_ms),
             extra: config.extra.clone(),
+            transactional,
         }))
     }
 
@@ -214,16 +261,50 @@ impl BusBackend for KafkaBackend {
         if let Some(ref k) = key {
             record = record.key(k.as_str());
         }
-        let (partition, offset) = self
+        // Phase 10 add-on: wrap the produce in a Kafka transaction
+        // when the operator configured `transactional.id`. The broker
+        // tracks the producer's epoch, so a restart with the same
+        // transactional.id fences any zombie that might still try to
+        // commit — the cross-restart guarantee that idempotent-mode-
+        // alone can't provide.
+        if self.transactional.is_some() {
+            self.producer
+                .begin_transaction()
+                .map_err(|e| BusError::Transport(format!("begin_transaction: {e}")))?;
+        }
+        let send_result = self
             .producer
             .send(record, Timeout::After(self.produce_timeout))
-            .await
-            .map_err(|(e, _msg)| match e {
-                KafkaError::MessageProduction(RDKafkaErrorCode::MessageTimedOut) => {
-                    BusError::Timeout
+            .await;
+        let (partition, offset) = match send_result {
+            Ok(p) => {
+                if let Some(txn) = &self.transactional
+                    && let Err(e) = self
+                        .producer
+                        .commit_transaction(Timeout::After(txn.transaction_timeout))
+                {
+                    return Err(BusError::Transport(format!("commit_transaction: {e}")));
                 }
-                other => map_kafka_error(other),
-            })?;
+                p
+            }
+            Err((e, _msg)) => {
+                if let Some(txn) = &self.transactional {
+                    // Best-effort abort. If this fails too the broker
+                    // will eventually fence the transaction by
+                    // timeout. We still propagate the original send
+                    // error rather than the abort error.
+                    let _ = self
+                        .producer
+                        .abort_transaction(Timeout::After(txn.transaction_timeout));
+                }
+                return Err(match e {
+                    KafkaError::MessageProduction(RDKafkaErrorCode::MessageTimedOut) => {
+                        BusError::Timeout
+                    }
+                    other => map_kafka_error(other),
+                });
+            }
+        };
         Ok(DeliveryReceipt {
             topic,
             partition,

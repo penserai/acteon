@@ -279,11 +279,17 @@ Trust model carry-overs:
   approve handler is still mid-flight. Tunable via
   `BusReconcilerConfig`; see `crates/server/src/bus_reconciler.rs`.
 
-A Kafka transactional producer + true outbox pattern remains a
-follow-up — that closes the *atomicity* gap (the state-row
-update + Kafka produce happen in one atomic transaction).
-Phase 10 closes the *visibility* and *liveness* gaps; the
-atomicity hardening is the next iteration.
+A Kafka transactional producer is also available as a
+configuration knob (`[bus.kafka] transactional_id = "..."`).
+Setting it wraps every bus produce in a Kafka transaction
+(begin → send → commit, abort on error), giving broker-side
+fencing across server restarts. The trade-off is two extra
+broker round-trips per produce; consumer-side `call_id` dedup
+already silently de-duplicates duplicate produces, so this is
+defensive depth rather than required correctness. Operators
+running workloads where downstream topics need exactly-once
+semantics independent of consumer behavior should turn it on;
+others can leave it off.
 
 ### `require_approval` is per-call, not per-tenant policy
 

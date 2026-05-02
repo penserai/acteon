@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bootstrap_servers: bootstrap,
         client_id: "bus-sub-sim".into(),
         produce_timeout_ms: 8_000,
-        extra: Vec::new(),
+        ..Default::default()
     };
     let backend: Arc<dyn BusBackend> = KafkaBackend::new(&cfg)?;
 

@@ -2288,6 +2288,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bootstrap_servers: config.bus.kafka.bootstrap_servers.clone(),
             client_id: config.bus.kafka.client_id.clone(),
             produce_timeout_ms: config.bus.kafka.produce_timeout_ms,
+            transactional_id: config.bus.kafka.transactional_id.clone(),
+            transaction_timeout_ms: config.bus.kafka.transaction_timeout_ms,
             extra: config.bus.kafka.extra.clone(),
         };
         match acteon_bus::KafkaBackend::new(&kcfg) {
@@ -2295,6 +2297,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!(
                     bootstrap = %kcfg.bootstrap_servers,
                     client_id = %kcfg.client_id,
+                    transactional = kcfg.transactional_id.is_some(),
+                    transactional_id = ?kcfg.transactional_id,
                     "agentic bus enabled (Kafka backend)"
                 );
                 Some(b as acteon_bus::SharedBackend)
