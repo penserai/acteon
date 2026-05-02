@@ -190,6 +190,7 @@ fn default_test_grant() -> Grant {
         namespaces: vec!["notifications".to_string()],
         providers: vec!["email".to_string()],
         actions: vec!["send_email".to_string()],
+        agent_id: None,
     }
 }
 
@@ -2727,6 +2728,7 @@ async fn silence_get_rejects_wrong_tenant() {
         namespaces: vec!["*".into()],
         providers: vec!["*".into()],
         actions: vec!["*".into()],
+        agent_id: None,
     };
     let state = build_test_state_with_auth(vec![admin_grant]);
     let app = build_app(state);
@@ -2805,6 +2807,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
             namespaces: vec!["*".into()],
             providers: vec!["*".into()],
             actions: vec!["*".into()],
+            agent_id: None,
         }],
     };
     let limited_key = ApiKeyConfig {
@@ -2816,6 +2819,7 @@ async fn silence_list_hides_silences_outside_caller_tenant_grants() {
             namespaces: vec!["*".into()],
             providers: vec!["*".into()],
             actions: vec!["*".into()],
+            agent_id: None,
         }],
     };
     let auth_config = AuthFileConfig {
@@ -3132,6 +3136,7 @@ async fn silence_on_parent_tenant_covers_child_dispatch() {
         namespaces: vec!["notifications".into()],
         providers: vec!["email".into()],
         actions: vec!["send_email".into()],
+        agent_id: None,
     };
     let state = build_test_state_with_auth(vec![grant]);
     let app = build_app(state);
@@ -3196,6 +3201,7 @@ async fn silence_on_child_tenant_does_not_cover_parent_dispatch() {
         namespaces: vec!["notifications".into()],
         providers: vec!["email".into()],
         actions: vec!["send_email".into()],
+        agent_id: None,
     };
     let state = build_test_state_with_auth(vec![grant]);
     let app = build_app(state);

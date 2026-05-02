@@ -299,7 +299,12 @@ export function useBusConversationMessages(
 
 // --------------- Approvals (Phase 6c) ---------------
 
-export type BusApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired'
+export type BusApprovalStatus =
+  | 'pending'
+  | 'approving' // Phase 10: operator approved, produce in flight
+  | 'approved'
+  | 'rejected'
+  | 'expired'
 
 export interface BusApprovalView {
   approval_id: string

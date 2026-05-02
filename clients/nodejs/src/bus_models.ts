@@ -264,7 +264,6 @@ export interface BusToolResultLookupParams {
   conversationId: string;
   cursor?: string;
   timeoutMs?: number;
-  asAgent?: string;
 }
 
 export interface BusToolResultLookup {
@@ -533,7 +532,6 @@ export function busToolResultLookupParams(p: BusToolResultLookupParams): URLSear
   const params = new URLSearchParams({ conversation_id: p.conversationId });
   if (p.cursor !== undefined) params.set("cursor", p.cursor);
   if (p.timeoutMs !== undefined) params.set("timeout_ms", String(p.timeoutMs));
-  if (p.asAgent !== undefined) params.set("as_agent", p.asAgent);
   return params;
 }
 

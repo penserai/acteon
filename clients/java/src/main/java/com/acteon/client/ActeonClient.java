@@ -3404,12 +3404,11 @@ public class ActeonClient implements AutoCloseable {
 
     public Bus.BusReplayResponse replayBusConversationMessages(
         String namespace, String tenant, String conversationId,
-        Integer limit, String cursor, String asAgent
+        Integer limit, String cursor
     ) throws ActeonException {
         java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
         if (limit != null) params.put("limit", limit.toString());
         if (cursor != null) params.put("cursor", cursor);
-        if (asAgent != null) params.put("as_agent", asAgent);
         String path = appendQuery(
             "/v1/bus/conversations/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(conversationId) + "/messages",
             params);
@@ -3472,7 +3471,6 @@ public class ActeonClient implements AutoCloseable {
         q.put("conversation_id", params.conversationId());
         if (params.cursor() != null) q.put("cursor", params.cursor());
         if (params.timeoutMs() != null) q.put("timeout_ms", params.timeoutMs().toString());
-        if (params.asAgent() != null) q.put("as_agent", params.asAgent());
         String path = appendQuery(
             "/v1/bus/tool-calls/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(callId) + "/result",
             q);

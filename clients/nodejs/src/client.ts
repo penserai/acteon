@@ -2555,12 +2555,11 @@ export class ActeonClient {
     namespace: string,
     tenant: string,
     conversationId: string,
-    options: { limit?: number; cursor?: string; asAgent?: string } = {},
+    options: { limit?: number; cursor?: string } = {},
   ): Promise<BusReplayResponse> {
     const params = new URLSearchParams();
     if (options.limit !== undefined) params.set("limit", String(options.limit));
     if (options.cursor) params.set("cursor", options.cursor);
-    if (options.asAgent) params.set("as_agent", options.asAgent);
     const response = await this.request(
       "GET",
       `/v1/bus/conversations/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(conversationId)}/messages`,

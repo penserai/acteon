@@ -2,6 +2,8 @@ pub mod analytics_factory;
 pub mod api;
 pub mod audit_factory;
 pub mod auth;
+#[cfg(feature = "bus")]
+pub mod bus_reconciler;
 pub mod config;
 pub mod error;
 pub mod ratelimit;

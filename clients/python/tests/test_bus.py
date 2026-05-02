@@ -128,15 +128,16 @@ class TestRequestSerde(unittest.TestCase):
         self.assertEqual(d["error_message"], "upstream gave up")
 
     def test_lookup_params_query(self):
+        # Phase 10 dropped `as_agent` — read-side identity comes
+        # from the API-key grant now, not a query parameter.
         p = BusToolResultLookupParams(
             conversation_id="c1", cursor="abc", timeout_ms=5_000,
-            as_agent="a1",
         )
         q = p.to_query()
         self.assertEqual(q["conversation_id"], "c1")
         self.assertEqual(q["cursor"], "abc")
         self.assertEqual(q["timeout_ms"], 5_000)
-        self.assertEqual(q["as_agent"], "a1")
+        self.assertNotIn("as_agent", q)
 
     def test_stream_chunk_serializes_body(self):
         req = PostBusStreamChunk(

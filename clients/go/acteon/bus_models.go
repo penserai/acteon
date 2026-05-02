@@ -262,9 +262,8 @@ type BusReplayResponse struct {
 }
 
 type ReplayBusConversationParams struct {
-	Limit   int
-	Cursor  string
-	AsAgent string
+	Limit  int
+	Cursor string
 }
 
 type TransitionBusConversationRequest struct {
@@ -326,7 +325,6 @@ type BusToolResultLookupParams struct {
 	ConversationID string
 	Cursor         string
 	TimeoutMs      uint64
-	AsAgent        string
 }
 
 type BusToolResultLookup struct {

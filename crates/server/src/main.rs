@@ -2308,6 +2308,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // Phase 10: spawn the bus approval reconciler before consuming
+    // `bus_backend` into AppState. The reconciler runs on its own
+    // tokio task, sweeping for stuck `Approving` rows and re-driving
+    // the produce + CAS to Approved. Idempotent producer + consumer-
+    // side `call_id` dedup keep the topic clean across retries.
+    #[cfg(feature = "bus")]
+    let _bus_reconciler_handle = if let Some(b) = bus_backend.clone() {
+        let store = gateway.read().await.state_store().clone();
+        let cfg = acteon_server::bus_reconciler::BusReconcilerConfig::default();
+        info!(
+            interval_s = cfg.interval.as_secs(),
+            min_age_s = cfg.min_age.as_secs(),
+            "spawning bus approval reconciler",
+        );
+        Some(acteon_server::bus_reconciler::spawn_bus_approval_reconciler(store, b, &cfg))
+    } else {
+        None
+    };
+
     let state = AppState {
         gateway: Arc::clone(&gateway),
         metrics: gateway_metrics,

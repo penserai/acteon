@@ -2197,35 +2197,54 @@ async fn ensure_schema_in_validator(
 /// Enforce read-side participant ACL. The write-side handlers
 /// (`append_conversation_message`, `post_tool_call`,
 /// `post_tool_result`) already gate on the envelope's `sender`; the
-/// read paths used to skip the equivalent check, so any caller with
-/// the tenant-level `ManageConversation` grant could read a
-/// "private" conversation just by knowing its id. This helper
-/// closes that gap.
+/// Resolve the bus agent identity bound to the caller for the
+/// conversation's `(namespace, tenant)` scope, then enforce the
+/// conversation's participant ACL against it.
+///
+/// **Phase 10 (Item 2)**: this replaces the V1 `as_agent` query
+/// parameter — the agent identity is now drawn from the
+/// authenticated grant, not from a caller-supplied URL parameter.
+/// A caller that wants to read a private conversation must hold
+/// an API key whose grant for the conversation's scope binds an
+/// `agent_id` that's on the participant list.
 ///
 /// Contract:
-/// - Empty participants list → ACL is open; no `as_agent` required.
-/// - Non-empty list → caller must supply `as_agent`, and it must be
-///   on the list. Otherwise 403.
-///
-/// V1 read-isolation: the asserted `as_agent` is taken at face value
-/// once the caller has the tenant grant. A future iteration can
-/// derive the agent identity from the API-key grant directly so
-/// callers can't claim arbitrary agent identities.
+/// - Empty participants list → ACL is open. The resolver still
+///   returns the bound `agent_id` (or `None` if no grant binds),
+///   so the caller's read-side code can stamp audit headers
+///   accurately.
+/// - Non-empty list → the grant-bound `agent_id` must be on the
+///   list. Otherwise 403.
+/// - Grant ambiguity (multiple matching grants bind to different
+///   `agent_id` values) → 500. Operator misconfig; we refuse to
+///   guess.
 #[cfg(feature = "bus")]
 fn enforce_conversation_read_acl(
+    identity: &CallerIdentity,
     conv: &acteon_core::Conversation,
-    as_agent: Option<&str>,
-) -> Result<(), axum::response::Response> {
+) -> Result<Option<String>, axum::response::Response> {
+    let resolved = match identity.bus_agent_id_for_scope(&conv.tenant, &conv.namespace) {
+        Ok(v) => v.map(str::to_string),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("operator misconfiguration: {e}"),
+                }),
+            )
+                .into_response());
+        }
+    };
     if conv.participants.is_empty() {
-        return Ok(());
+        return Ok(resolved);
     }
-    match as_agent {
-        Some(a) if conv.participants.iter().any(|p| p == a) => Ok(()),
+    match &resolved {
+        Some(a) if conv.participants.iter().any(|p| p == a) => Ok(resolved),
         Some(a) => Err((
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
                 error: format!(
-                    "as_agent '{a}' is not a participant of conversation {}; cannot read",
+                    "grant-bound agent '{a}' is not a participant of conversation {}; cannot read",
                     conv.conversation_id
                 ),
             }),
@@ -2235,8 +2254,89 @@ fn enforce_conversation_read_acl(
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
                 error: format!(
-                    "conversation {} has a participant ACL; pass `as_agent` matching one of the participants",
-                    conv.conversation_id
+                    "conversation {} has a participant ACL but the caller's grant for {}.{} binds no agent_id; mint an API key whose grant carries an agent_id on the participant list",
+                    conv.conversation_id, conv.namespace, conv.tenant
+                ),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+/// **Phase 10 (Item 2)**: resolve the agent identity to stamp on a
+/// bus envelope being posted.
+///
+/// Returns:
+/// - `Ok(Some(id))` — the caller's grant binds this id for the
+///   target scope. Use it as the envelope's `sender`.
+/// - `Ok(None)` — caller is authorized for the scope but no grant
+///   binds an `agent_id`. Open conversations accept this; private
+///   conversations reject below in the participant-ACL check on
+///   the write handlers.
+/// - `Err(Response)` — operator misconfig (conflicting grants).
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+fn resolve_bus_sender(
+    identity: &CallerIdentity,
+    namespace: &str,
+    tenant: &str,
+) -> Result<Option<String>, axum::response::Response> {
+    match identity.bus_agent_id_for_scope(tenant, namespace) {
+        Ok(v) => Ok(v.map(str::to_string)),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("operator misconfiguration: {e}"),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+/// **Phase 10 (Item 2)**: enforce that a caller-supplied envelope
+/// `sender` field matches the grant-derived agent identity.
+///
+/// Three valid configurations:
+/// 1. Caller's grant binds an `agent_id`, envelope's `sender` is
+///    `None`: stamp the grant's id and continue.
+/// 2. Caller's grant binds an `agent_id`, envelope's `sender` is
+///    set: must match the grant's id, otherwise 403.
+/// 3. Caller's grant binds no `agent_id`, envelope's `sender` is
+///    `None`: leave it `None` (works for open conversations; the
+///    participant-ACL check below catches private ones).
+///
+/// Caller-supplied `sender` *without* a grant binding is rejected
+/// — that was the V1 hole this phase closes.
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+fn override_envelope_sender(
+    identity: &CallerIdentity,
+    namespace: &str,
+    tenant: &str,
+    envelope_sender: &mut Option<String>,
+) -> Result<(), axum::response::Response> {
+    let bound = resolve_bus_sender(identity, namespace, tenant)?;
+    match (&bound, envelope_sender.as_deref()) {
+        (Some(id), None) => {
+            *envelope_sender = Some(id.clone());
+            Ok(())
+        }
+        (Some(id), Some(claimed)) if claimed == id => Ok(()),
+        (Some(id), Some(claimed)) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "envelope sender '{claimed}' does not match grant-bound agent '{id}' for {namespace}.{tenant}",
+                ),
+            }),
+        )
+            .into_response()),
+        (None, None) => Ok(()),
+        (None, Some(claimed)) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "envelope sender '{claimed}' was claimed but the caller's grant for {namespace}.{tenant} binds no agent_id; sender claims are no longer accepted as operator-asserted",
                 ),
             }),
         )
@@ -4230,12 +4330,6 @@ pub struct ReplayConversationParams {
     /// offsets the previous call left off at.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// `agent_id` the caller is acting as. Required when the
-    /// conversation has a non-empty `participants` ACL — must be
-    /// on the list. Same V1 read-isolation model as
-    /// [`ToolResultLookupParams::as_agent`].
-    #[serde(default)]
-    pub as_agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -4997,12 +5091,20 @@ pub async fn append_conversation_message(
             )
                 .into_response();
         }
+        // Phase 10: stamp the grant-derived agent identity onto the
+        // request's `sender`. Caller-supplied `sender` must match the
+        // bound identity, otherwise reject. The participant-ACL check
+        // below then runs against the authenticated identity.
+        let mut sender = req.sender.clone();
+        if let Err(resp) = override_envelope_sender(&identity, &namespace, &tenant, &mut sender) {
+            return resp;
+        }
         // Participant ACL: when participants is non-empty, the sender
-        // must be present and listed. The earlier `if let Some(sender)`
-        // form silently allowed anonymous posts (sender = None) on
-        // restricted threads, defeating the gate entirely.
+        // must be present and listed. With Phase 10's grant-derived
+        // sender, "absent" means the caller's grant binds no
+        // agent_id — which is a 403 on a private thread.
         if !conv.participants.is_empty() {
-            match req.sender.as_deref() {
+            match sender.as_deref() {
                 Some(s) if conv.participants.iter().any(|p| p == s) => {}
                 Some(s) => {
                     return (
@@ -5018,11 +5120,11 @@ pub async fn append_conversation_message(
                 }
                 None => {
                     return (
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::FORBIDDEN,
                         Json(ErrorResponse {
                             error: format!(
-                                "conversation {} has a participant ACL; `sender` is required",
-                                conv.conversation_id
+                                "conversation {} has a participant ACL; the caller's grant for {}.{} must bind an agent_id on the participant list",
+                                conv.conversation_id, conv.namespace, conv.tenant
                             ),
                         }),
                     )
@@ -5072,9 +5174,9 @@ pub async fn append_conversation_message(
             "acteon.conversation.id".into(),
             conv.conversation_id.clone(),
         );
-        if let Some(sender) = &req.sender {
+        if let Some(s) = &sender {
             msg.headers
-                .insert("acteon.conversation.sender".into(), sender.clone());
+                .insert("acteon.conversation.sender".into(), s.clone());
         }
         match backend.produce(msg).await {
             Ok(receipt) => {
@@ -5182,7 +5284,12 @@ pub async fn replay_conversation_messages(
         };
         // Read-side participant ACL. Without this, any caller with
         // the tenant grant could replay a private thread by id.
-        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+        // Phase 10: agent identity is grant-derived now, not from a
+        // caller-supplied URL parameter. The helper resolves the
+        // `agent_id` bound to the caller's grant for this conv's
+        // (namespace, tenant) and enforces the participant ACL
+        // against it.
+        if let Err(resp) = enforce_conversation_read_acl(&identity, &conv) {
             return resp;
         }
         let limit = params.limit.unwrap_or(200).min(1000);
@@ -5604,16 +5711,6 @@ pub struct ToolResultLookupParams {
     /// How long to wait for a matching result. Default 5s; max 30s.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    /// `agent_id` the caller is acting as. Required when the target
-    /// conversation has a non-empty `participants` ACL — must be on
-    /// the list, otherwise the request is rejected. Without it (or
-    /// when the conversation is open), any caller with the
-    /// tenant-level grant can read; this is the V1 read-isolation
-    /// model. Future work: derive the agent identity from the
-    /// caller's API-key grant rather than a self-asserted query
-    /// param.
-    #[serde(default)]
-    pub as_agent: Option<String>,
 }
 
 /// Envelope-kind header values. Server-stamped so subscribers can
@@ -5724,9 +5821,19 @@ pub async fn post_tool_call(
             )
                 .into_response();
         }
-        // Same participant ACL as plain conversation messages: a
-        // sender outside the participant list is rejected; if the
-        // ACL is set and `sender` is omitted, reject explicitly.
+        // Phase 10: stamp the grant-derived agent identity onto the
+        // envelope's `sender`. If the caller supplied a sender,
+        // it must match the bound identity (catches honest mistakes
+        // and refuses spoofing). The participant-ACL check below
+        // then runs against the authenticated identity.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
+        }
+        // Participant ACL: a sender outside the participant list is
+        // rejected; if the ACL is set and the grant binds no
+        // agent_id (so `sender` is still None), reject explicitly.
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
                 Some(s) if conv.participants.iter().any(|p| p == s) => {}
@@ -5926,7 +6033,7 @@ pub async fn post_tool_result(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
             return resp;
         }
-        let envelope = acteon_core::ToolResult {
+        let mut envelope = acteon_core::ToolResult {
             call_id: req.call_id.clone(),
             status: req.status,
             output: req.output.clone(),
@@ -5963,6 +6070,12 @@ pub async fn post_tool_result(
                 }),
             )
                 .into_response();
+        }
+        // Phase 10: stamp grant-derived agent identity onto sender.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
         }
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
@@ -6166,7 +6279,12 @@ pub async fn lookup_tool_result(
             };
         // Read-side participant ACL — match the gate the write-side
         // tool handlers already enforce.
-        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+        // Phase 10: agent identity is grant-derived now, not from a
+        // caller-supplied URL parameter. The helper resolves the
+        // `agent_id` bound to the caller's grant for this conv's
+        // (namespace, tenant) and enforces the participant ACL
+        // against it.
+        if let Err(resp) = enforce_conversation_read_acl(&identity, &conv) {
             return resp;
         }
         let events_topic = conv.effective_events_topic();
@@ -6423,11 +6541,6 @@ pub struct StreamConsumeParams {
     /// recovering a known-old stream. `latest` is the default.
     #[serde(default)]
     pub from: Option<String>,
-    /// `agent_id` the caller is acting as — required when the
-    /// conversation has a non-empty `participants` ACL. Mirrors the
-    /// `as_agent` semantics used elsewhere in Phase 5/6a.
-    #[serde(default)]
-    pub as_agent: Option<String>,
 }
 
 #[cfg(feature = "bus")]
@@ -6521,6 +6634,12 @@ pub async fn post_stream_chunk(
                 }),
             )
                 .into_response();
+        }
+        // Phase 10: stamp grant-derived agent identity onto sender.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
         }
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
@@ -6687,7 +6806,7 @@ pub async fn post_stream_end(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
             return resp;
         }
-        let envelope = acteon_core::StreamEnd {
+        let mut envelope = acteon_core::StreamEnd {
             stream_id: req.stream_id.clone(),
             chunk_seq: req.chunk_seq,
             status: req.status,
@@ -6723,6 +6842,12 @@ pub async fn post_stream_end(
                 }),
             )
                 .into_response();
+        }
+        // Phase 10: stamp grant-derived agent identity onto sender.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
         }
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
@@ -6916,7 +7041,12 @@ pub async fn consume_stream(
             Ok(c) => c,
             Err(resp) => return resp,
         };
-        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+        // Phase 10: agent identity is grant-derived now, not from a
+        // caller-supplied URL parameter. The helper resolves the
+        // `agent_id` bound to the caller's grant for this conv's
+        // (namespace, tenant) and enforces the participant ACL
+        // against it.
+        if let Err(resp) = enforce_conversation_read_acl(&identity, &conv) {
             return resp;
         }
         let events_topic = conv.effective_events_topic();
@@ -7198,10 +7328,108 @@ pub struct BusApprovalDecisionResponse {
     pub receipt: Option<ToolEnvelopeReceipt>,
 }
 
+/// **Phase 10**: write the pending-approvals index entry for an
+/// approval row. The index lets listings filtered by
+/// `status=pending` scan a smaller key space than the full approval
+/// log.
+#[cfg(feature = "bus")]
+async fn write_pending_index(
+    store: &std::sync::Arc<dyn acteon_state::StateStore>,
+    namespace: &str,
+    tenant: &str,
+    approval_id: &str,
+) -> Result<(), acteon_state::StateError> {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::PendingBusApprovals,
+        approval_id,
+    );
+    store.set(&key, "", None).await
+}
+
+/// **Phase 10**: scan the pending-approvals index and dereference
+/// each entry to its underlying approval row. Used by the list
+/// endpoint when filtering for `status=pending` to avoid a full
+/// scan of the approval log.
+///
+/// Index entries that point at rows that no longer exist (or have
+/// transitioned out of Pending without clearing the index) are
+/// silently skipped — the list endpoint applies the status filter
+/// after this anyway.
+#[cfg(feature = "bus")]
+async fn scan_pending_index_rows(
+    store: &std::sync::Arc<dyn acteon_state::StateStore>,
+    namespace: &str,
+    tenant: &str,
+) -> Result<Vec<(String, String)>, acteon_state::StateError> {
+    let index = store
+        .scan_keys(namespace, tenant, KeyKind::PendingBusApprovals, None)
+        .await?;
+    let mut rows = Vec::with_capacity(index.len());
+    for (idx_key, _) in index {
+        // The scan_keys key format is `{ns}:{tenant}:{kind}:{id}`;
+        // the trailing component is the approval id.
+        let Some(approval_id) = idx_key.rsplit(':').next() else {
+            continue;
+        };
+        let approval_key = StateKey::new(
+            namespace.to_string(),
+            tenant.to_string(),
+            KeyKind::BusApproval,
+            approval_id,
+        );
+        match store.get(&approval_key).await? {
+            Some(raw) => rows.push((idx_key, raw)),
+            None => {
+                // Stale index entry: the approval row is gone but
+                // the index didn't get the memo. Best-effort delete
+                // so future scans don't keep paying for it.
+                let _ = store.delete(&approval_key).await;
+            }
+        }
+    }
+    Ok(rows)
+}
+
+/// **Phase 10**: clear the pending-approvals index entry when an
+/// approval transitions out of `Pending`. Called from the approve
+/// handler (Pending → Approving) and the reject handler
+/// (Pending → Rejected).
+///
+/// Best-effort: a delete failure here just leaves a stale index
+/// entry that points at a row whose status has already changed.
+/// The list endpoint resolves index entries by reading the
+/// underlying approval row, so a stale entry shows up as a
+/// non-pending row in the response — a minor cosmetic issue, not
+/// a correctness one.
+#[cfg(feature = "bus")]
+async fn clear_pending_index(
+    store: &std::sync::Arc<dyn acteon_state::StateStore>,
+    namespace: &str,
+    tenant: &str,
+    approval_id: &str,
+) {
+    let key = StateKey::new(
+        namespace.to_string(),
+        tenant.to_string(),
+        KeyKind::PendingBusApprovals,
+        approval_id,
+    );
+    if let Err(e) = store.delete(&key).await {
+        tracing::warn!(
+            approval_id = %approval_id,
+            error = %e,
+            "failed to clear pending-approvals index entry; stale entry will resolve to non-pending row in next listing",
+        );
+    }
+}
+
 /// Park a validated `ToolCall` envelope under a `BusApproval` row.
 /// The eventual approve handler picks up the row, re-stamps the
 /// envelope headers, and produces to Kafka.
 #[cfg(feature = "bus")]
+#[allow(clippy::too_many_lines)]
 async fn park_tool_call_for_approval(
     state: &AppState,
     namespace: &str,
@@ -7299,6 +7527,18 @@ async fn park_tool_call_for_approval(
                 .into_response();
         }
     }
+    // Phase 10: write the pending-index entry so listings filtered
+    // by `status=pending` can scan a smaller key space than the full
+    // approval log. Index drift on best-effort write failure is
+    // bounded — the operator can still fall back to a `status=`-less
+    // list to find rows the index missed.
+    if let Err(e) = write_pending_index(&store, namespace, tenant, &approval_id).await {
+        tracing::warn!(
+            approval_id = %approval_id,
+            error = %e,
+            "failed to write pending-approvals index entry; row exists but won't appear in pending-only listings",
+        );
+    }
     (
         StatusCode::ACCEPTED,
         Json(BusApprovalParkedReceipt {
@@ -7349,19 +7589,43 @@ pub async fn list_bus_approvals(
             let gw = state.gateway.read().await;
             gw.state_store().clone()
         };
-        let entries = match store
-            .scan_keys(&namespace, &tenant, KeyKind::BusApproval, None)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
-                    }),
-                )
-                    .into_response();
+        // Phase 10 fast path: when filtering for pending-only —
+        // the operator-actionable subset and the admin UI's default
+        // — scan the `PendingBusApprovals` index instead of the full
+        // approval log. The index entries are typically a small
+        // fraction of the total: long-running tenants accumulate
+        // approved/rejected/expired rows but only a handful pending
+        // at any one time. The index dereferences each entry to its
+        // underlying approval row, paying a per-row `get` instead of
+        // a per-row scan-then-deserialize-then-filter.
+        let entries = if params.status == Some(acteon_core::BusApprovalStatus::Pending) {
+            match scan_pending_index_rows(&store, &namespace, &tenant).await {
+                Ok(v) => v,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            match store
+                .scan_keys(&namespace, &tenant, KeyKind::BusApproval, None)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: e.to_string(),
+                        }),
+                    )
+                        .into_response();
+                }
             }
         };
         let mut approvals = Vec::with_capacity(entries.len());
@@ -7535,29 +7799,101 @@ pub async fn approve_bus_approval(
             Ok(a) => a,
             Err(resp) => return resp,
         };
-        if approval.status.is_terminal() {
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: format!(
-                        "approval {approval_id} already in terminal status {:?}",
-                        approval.status
-                    ),
-                }),
-            )
-                .into_response();
-        }
-        if approval.expires_at < Utc::now() {
-            // Soft-expire on read so a stale row can never be
-            // approved past its TTL. The reaper will mark it
-            // separately; this avoids racing the reaper.
-            return (
-                StatusCode::CONFLICT,
-                Json(ErrorResponse {
-                    error: format!("approval {approval_id} expired at {}", approval.expires_at),
-                }),
-            )
-                .into_response();
+        // Phase 10 atomic-HITL state machine. Three branches:
+        //   - Pending: claim the row (Pending → Approving) with the
+        //     operator's decision metadata, then produce.
+        //   - Approving: a previous approve attempt either crashed
+        //     mid-flight or had its produce fail. Don't overwrite
+        //     `decided_by` (preserves audit), just retry the produce
+        //     and transition Approving → Approved on success.
+        //   - Anything terminal: 409 Conflict.
+        match approval.status {
+            acteon_core::BusApprovalStatus::Approved
+            | acteon_core::BusApprovalStatus::Rejected
+            | acteon_core::BusApprovalStatus::Expired => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "approval {approval_id} already in terminal status {:?}",
+                            approval.status
+                        ),
+                    }),
+                )
+                    .into_response();
+            }
+            acteon_core::BusApprovalStatus::Pending => {
+                if approval.expires_at < Utc::now() {
+                    // Soft-expire on read so a stale row can never be
+                    // approved past its TTL. The reaper will mark it
+                    // separately; this avoids racing the reaper.
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "approval {approval_id} expired at {}",
+                                approval.expires_at
+                            ),
+                        }),
+                    )
+                        .into_response();
+                }
+                // Claim the row: Pending → Approving with the
+                // operator's decision metadata. From here on, the
+                // approval is no longer eligible for `reject`, and a
+                // retry hits the Approving branch (preserving
+                // `decided_by`).
+                let key = StateKey::new(
+                    namespace.clone(),
+                    tenant.clone(),
+                    KeyKind::BusApproval,
+                    &approval_id,
+                );
+                let claim =
+                    cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval gone", |a| {
+                        if a.status != acteon_core::BusApprovalStatus::Pending {
+                            return Err((
+                                StatusCode::CONFLICT,
+                                Json(ErrorResponse {
+                                    error: format!(
+                                        "approval transitioned to {:?} between read and write",
+                                        a.status
+                                    ),
+                                }),
+                            )
+                                .into_response());
+                        }
+                        a.status = acteon_core::BusApprovalStatus::Approving;
+                        a.decided_by = Some(req.decided_by.clone());
+                        a.decided_at = Some(Utc::now());
+                        a.decision_note.clone_from(&req.decision_note);
+                        Ok(())
+                    })
+                    .await;
+                if let Err(resp) = claim {
+                    return resp;
+                }
+                // Pending → Approving means the row leaves the
+                // pending-listings index. Clear best-effort.
+                let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+                    let gw = state.gateway.read().await;
+                    gw.state_store().clone()
+                };
+                clear_pending_index(&store, &namespace, &tenant, &approval_id).await;
+            }
+            acteon_core::BusApprovalStatus::Approving => {
+                // Already claimed; the original `decided_by` stays. The
+                // produce below is the retry. If the message did land
+                // on the previous attempt and only the
+                // Approving → Approved CAS failed, the consumer-side
+                // dedup on `call_id` keeps the topic clean (Phase 6a
+                // documents this — `lookup_tool_result` returns the
+                // first matching record).
+                tracing::info!(
+                    approval_id = %approval_id,
+                    "approve called on Approving row; treating as retry",
+                );
+            }
         }
         // Resolve the conversation that owns this approval — its
         // `effective_events_topic()` is what the produce targets.
@@ -7620,21 +7956,27 @@ pub async fn approve_bus_approval(
         let receipt = match backend.produce(msg).await {
             Ok(r) => r,
             Err(e) => {
-                // V1 trust model: the row stays `pending` so an
-                // operator can retry. Don't transition the row
-                // until the produce succeeds.
+                // The row is now in Approving (either we just put it
+                // there or it was already there from a prior attempt).
+                // The reconciler will retry until the produce
+                // succeeds. Surface 503 so the caller knows it's
+                // mid-flight, not failed-permanently.
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::SERVICE_UNAVAILABLE,
                     Json(ErrorResponse {
-                        error: format!("produce failed; approval row left pending: {e}"),
+                        error: format!(
+                            "produce failed; approval is in Approving state and will be retried by the reconciler: {e}"
+                        ),
                     }),
                 )
                     .into_response();
             }
         };
-        // Best-effort CAS to record the decision. If contention
-        // exhausts (an unlikely double-approve race), the message is
-        // already on Kafka — log loudly and keep the response 200.
+        // Step 2 of the state machine: Approving → Approved with
+        // produce coordinates. If this CAS fails the message is
+        // already on Kafka and the reconciler will see the row is
+        // still Approving and retry — but the consumer-side dedup
+        // on `call_id` (Phase 6a) keeps the eventual scan clean.
         let key = StateKey::new(
             namespace.clone(),
             tenant.clone(),
@@ -7643,12 +7985,12 @@ pub async fn approve_bus_approval(
         );
         let updated =
             cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval gone", |a| {
-                if a.status.is_terminal() {
+                if a.status != acteon_core::BusApprovalStatus::Approving {
                     return Err((
                         StatusCode::CONFLICT,
                         Json(ErrorResponse {
                             error: format!(
-                                "approval transitioned to {:?} between read and write",
+                                "approval transitioned out of Approving to {:?}",
                                 a.status
                             ),
                         }),
@@ -7656,9 +7998,6 @@ pub async fn approve_bus_approval(
                         .into_response());
                 }
                 a.status = acteon_core::BusApprovalStatus::Approved;
-                a.decided_by = Some(req.decided_by.clone());
-                a.decided_at = Some(Utc::now());
-                a.decision_note.clone_from(&req.decision_note);
                 a.produced_partition = Some(receipt.partition);
                 a.produced_offset = Some(receipt.offset);
                 a.produced_at = Some(receipt.timestamp);
@@ -7669,14 +8008,15 @@ pub async fn approve_bus_approval(
             Ok(a) => approval_to_view(&a),
             Err(_resp) => {
                 // The Kafka record landed; the row update lost a CAS
-                // race or the row vanished. Surface the produce
-                // receipt anyway (the bus is the source of truth)
-                // and log the inconsistency.
+                // race or the row vanished. The bus is the source of
+                // truth — surface the receipt and log loudly. The
+                // reconciler will eventually fix the row by re-
+                // producing (idempotent at the consumer-dedup layer).
                 tracing::warn!(
                     approval_id = %approval_id,
                     partition = receipt.partition,
                     offset = receipt.offset,
-                    "approve produced to Kafka but approval row update failed; row may be stale",
+                    "approve produced to Kafka but Approving → Approved CAS failed; reconciler will retry",
                 );
                 let mut a = approval.clone();
                 a.status = acteon_core::BusApprovalStatus::Approved;
@@ -7761,12 +8101,17 @@ pub async fn reject_bus_approval(
         );
         let updated =
             cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval not found", |a| {
-                if a.status.is_terminal() {
+                // Only Pending rows can be rejected. Approving means
+                // the operator has already decided "approve" and the
+                // produce is in flight — rejecting at that point
+                // would race the reconciler. Terminal rows obviously
+                // can't transition.
+                if a.status != acteon_core::BusApprovalStatus::Pending {
                     return Err((
                         StatusCode::CONFLICT,
                         Json(ErrorResponse {
                             error: format!(
-                                "approval {} already in terminal status {:?}",
+                                "approval {} cannot be rejected from status {:?} (only Pending is rejectable)",
                                 a.approval_id, a.status
                             ),
                         }),
@@ -7781,14 +8126,23 @@ pub async fn reject_bus_approval(
             })
             .await;
         match updated {
-            Ok(a) => (
-                StatusCode::OK,
-                Json(BusApprovalDecisionResponse {
-                    approval: approval_to_view(&a),
-                    receipt: None,
-                }),
-            )
-                .into_response(),
+            Ok(a) => {
+                // Pending → Rejected means the row leaves the
+                // pending-listings index. Clear best-effort.
+                let store: std::sync::Arc<dyn acteon_state::StateStore> = {
+                    let gw = state.gateway.read().await;
+                    gw.state_store().clone()
+                };
+                clear_pending_index(&store, &namespace, &tenant, &approval_id).await;
+                (
+                    StatusCode::OK,
+                    Json(BusApprovalDecisionResponse {
+                        approval: approval_to_view(&a),
+                        receipt: None,
+                    }),
+                )
+                    .into_response()
+            }
             Err(resp) => resp,
         }
     }

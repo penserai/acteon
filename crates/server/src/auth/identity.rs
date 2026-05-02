@@ -27,6 +27,12 @@ impl CallerIdentity {
                 namespaces: vec!["*".to_owned()],
                 providers: vec!["*".to_owned()],
                 actions: vec!["*".to_owned()],
+                // Anonymous mode (auth disabled) is for local dev /
+                // single-tenant deployments where there's no
+                // multi-agent fleet. The bus handlers that need an
+                // agent identity bound to the grant will reject
+                // anonymous calls with a clear error.
+                agent_id: None,
             }],
             auth_method: "anonymous".to_owned(),
         }
@@ -126,6 +132,69 @@ impl CallerIdentity {
             auth_method: self.auth_method.clone(),
         }
     }
+
+    /// **Phase 10**: resolve the bus agent identity bound to this
+    /// caller for the given `(tenant, namespace)` scope.
+    ///
+    /// Walks the caller's grants, finds those whose tenant +
+    /// namespace match the scope, and pulls the `agent_id` from any
+    /// grant that has one set. Returns:
+    ///
+    /// - `Ok(Some(agent_id))` — exactly one matching grant has an
+    ///   `agent_id` set (or several grants agree on the same value).
+    /// - `Ok(None)` — no matching grant has an `agent_id`. The
+    ///   caller is authorized for this scope but not bound to any
+    ///   bus identity; bus operations that need a sender (post
+    ///   tool-call, append message on a private conversation, etc.)
+    ///   will reject.
+    /// - `Err(Conflict)` — multiple matching grants bind to
+    ///   different `agent_id` values. This is an operator
+    ///   misconfiguration; we refuse to guess which identity to
+    ///   stamp.
+    pub fn bus_agent_id_for_scope(
+        &self,
+        tenant: &str,
+        namespace: &str,
+    ) -> Result<Option<&str>, BusAgentIdResolutionError> {
+        let mut found: Option<&str> = None;
+        for g in &self.grants {
+            if !super::config::tenant_matches(&g.tenants, tenant) {
+                continue;
+            }
+            // Namespace dimension: wildcard or exact, mirroring the
+            // matching rules dispatch already uses.
+            let ns_match = g.namespaces.iter().any(|n| n == "*" || n == namespace);
+            if !ns_match {
+                continue;
+            }
+            if let Some(id) = g.agent_id.as_deref() {
+                match found {
+                    None => found = Some(id),
+                    Some(prev) if prev == id => {} // duplicate — fine
+                    Some(prev) => {
+                        return Err(BusAgentIdResolutionError::ConflictingGrants {
+                            first: prev.to_string(),
+                            second: id.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(found)
+    }
+}
+
+/// Error returned by [`CallerIdentity::bus_agent_id_for_scope`] when
+/// the caller's grants disagree about which agent identity to bind
+/// for a given `(tenant, namespace)`. Operators should not have
+/// overlapping grants with conflicting agent ids; the bus refuses
+/// to guess.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum BusAgentIdResolutionError {
+    #[error(
+        "ambiguous bus agent identity for caller: grants bind to both '{first}' and '{second}'"
+    )]
+    ConflictingGrants { first: String, second: String },
 }
 
 #[cfg(test)]
@@ -138,6 +207,7 @@ mod tests {
             namespaces: namespaces.iter().map(|s| (*s).to_string()).collect(),
             providers: providers.iter().map(|s| (*s).to_string()).collect(),
             actions: actions.iter().map(|s| (*s).to_string()).collect(),
+            agent_id: None,
         }
     }
 
@@ -208,5 +278,111 @@ mod tests {
     fn allowed_tenants_wildcard_returns_none() {
         let id = identity_with(vec![grant(&["*"], &["*"], &["*"], &["*"])]);
         assert_eq!(id.allowed_tenants(), None);
+    }
+
+    fn grant_with_agent(tenants: &[&str], namespaces: &[&str], agent_id: Option<&str>) -> Grant {
+        Grant {
+            tenants: tenants.iter().map(|s| (*s).to_string()).collect(),
+            namespaces: namespaces.iter().map(|s| (*s).to_string()).collect(),
+            providers: vec!["*".into()],
+            actions: vec!["*".into()],
+            agent_id: agent_id.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn bus_agent_id_none_when_no_grant_has_one() {
+        let id = identity_with(vec![grant(&["acme"], &["agents"], &["*"], &["*"])]);
+        assert_eq!(id.bus_agent_id_for_scope("acme", "agents"), Ok(None));
+    }
+
+    #[test]
+    fn bus_agent_id_resolved_from_matching_scope() {
+        let id = identity_with(vec![grant_with_agent(
+            &["acme"],
+            &["agents"],
+            Some("planner-1"),
+        )]);
+        assert_eq!(
+            id.bus_agent_id_for_scope("acme", "agents"),
+            Ok(Some("planner-1")),
+        );
+    }
+
+    #[test]
+    fn bus_agent_id_does_not_bleed_across_scopes() {
+        // Grant binds the caller to `planner-1` only under the
+        // `agents` namespace. A bus call under a different namespace
+        // should not get this identity.
+        let id = identity_with(vec![grant_with_agent(
+            &["acme"],
+            &["agents"],
+            Some("planner-1"),
+        )]);
+        assert_eq!(id.bus_agent_id_for_scope("acme", "ops"), Ok(None));
+    }
+
+    #[test]
+    fn bus_agent_id_walks_multiple_grants() {
+        // Same caller acts as `planner-1` under `agents` and as
+        // `ops-bot` under `ops`. Each scope resolves to its own
+        // identity; no cross-contamination.
+        let id = identity_with(vec![
+            grant_with_agent(&["acme"], &["agents"], Some("planner-1")),
+            grant_with_agent(&["acme"], &["ops"], Some("ops-bot")),
+        ]);
+        assert_eq!(
+            id.bus_agent_id_for_scope("acme", "agents"),
+            Ok(Some("planner-1")),
+        );
+        assert_eq!(
+            id.bus_agent_id_for_scope("acme", "ops"),
+            Ok(Some("ops-bot")),
+        );
+    }
+
+    #[test]
+    fn bus_agent_id_duplicate_across_grants_resolves_cleanly() {
+        // Two grants both bind to the same agent_id under the same
+        // scope. That's redundant but not ambiguous — accept it
+        // rather than reject.
+        let id = identity_with(vec![
+            grant_with_agent(&["acme"], &["agents"], Some("planner-1")),
+            grant_with_agent(&["acme"], &["*"], Some("planner-1")),
+        ]);
+        assert_eq!(
+            id.bus_agent_id_for_scope("acme", "agents"),
+            Ok(Some("planner-1")),
+        );
+    }
+
+    #[test]
+    fn bus_agent_id_conflicting_grants_rejected() {
+        // Two grants match the same scope but bind to *different*
+        // agent ids. We refuse to guess which one to stamp.
+        let id = identity_with(vec![
+            grant_with_agent(&["acme"], &["agents"], Some("planner-1")),
+            grant_with_agent(&["acme"], &["*"], Some("ops-bot")),
+        ]);
+        assert!(matches!(
+            id.bus_agent_id_for_scope("acme", "agents"),
+            Err(BusAgentIdResolutionError::ConflictingGrants { .. })
+        ));
+    }
+
+    #[test]
+    fn bus_agent_id_hierarchical_tenant_match() {
+        // Tenant matching is hierarchical (a grant on `acme`
+        // covers `acme.us-east`). The agent-id resolver should
+        // honor that.
+        let id = identity_with(vec![grant_with_agent(
+            &["acme"],
+            &["agents"],
+            Some("planner-1"),
+        )]);
+        assert_eq!(
+            id.bus_agent_id_for_scope("acme.us-east", "agents"),
+            Ok(Some("planner-1")),
+        );
     }
 }

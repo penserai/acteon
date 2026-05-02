@@ -70,6 +70,7 @@ it.
 | 7     | 14–15 | UI: Topics, Subscriptions, Agents, Conversations, Lag dashboards. Metrics.                     |
 | 8     | 16–17 | 5-SDK parity for bus surface (Rust, Python, Node, Go, Java).                                    |
 | 9     | 18    | Docs, migration guide, example multi-agent app, benchmarks vs raw Kafka.                       |
+| 10    | 19–22 | Atomic HITL via transactional producer + outbox. Authenticated agent identity (derive from API-key grant; replace operator-asserted `as_agent`). |
 
 ## Exactly-once edge
 
@@ -116,9 +117,51 @@ Migration will be opt-in, per-feature, never forced.
 - **Phase 7** (Admin UI) — shipped — see [phase-7 feature doc](../features/bus-phase-7.md)
 - **Phase 8** (5-SDK polyglot parity) — shipped — see [phase-8 feature doc](../features/bus-phase-8.md)
 - **Phase 9** (docs, migration guide, multi-agent demo, benchmarks) — shipped — see [phase-9 feature doc](../features/bus-phase-9.md)
+- **Phase 10** — shipped. Two scope items:
+  1. **HITL state machine + reconciler.**
+     `BusApprovalStatus::Approving` between `Pending` and
+     `Approved` closes the V1 *visibility* gap — a successful
+     produce + failed CAS leaves the row visibly mid-flight
+     with audit metadata, not stuck-pending. A background
+     reconciler (see `crates/server/src/bus_reconciler.rs`)
+     periodically retries stuck `Approving` rows so the
+     operator doesn't have to. Idempotent producer + consumer-
+     side `call_id` dedup keep the topic clean across retries.
+     A Kafka transactional producer for full *atomicity*
+     remains a follow-up tracked under
+     [Exactly-once edge](#exactly-once-edge); Phase 10 closes
+     the visibility and liveness gaps without it.
+  2. **Authenticated agent identity.** The `as_agent` query
+     parameter is gone. Bus agent identity is derived from the
+     API-key grant: each `Grant` carries an optional `agent_id`
+     that's stamped on envelopes posted under that grant's
+     `(tenant, namespace)` scope. Multiple grants can bind the
+     same caller to different identities under different scopes;
+     conflicting bindings on the same scope are rejected as
+     operator misconfig. New operators should start with the
+[agentic bus user guide](agentic-bus.md); existing dispatch + chain
+users should consult the [migration guide](../guides/agentic-bus-migration.md)
+for the cases where moving onto the bus is the right call.
 
-**The master plan is complete.** All nine phases shipped. New
-operators should start with the [agentic bus user guide](agentic-bus.md);
-existing dispatch + chain users should consult the
-[migration guide](../guides/agentic-bus-migration.md) for the
-cases where moving onto the bus is the right call.
+Polish items that landed alongside Phase 10:
+
+- `KeyKind::PendingBusApprovals` index — populated on park,
+  cleared on Pending → Approving / Rejected transitions. The
+  list endpoint with `status=pending` (the operator-actionable
+  default) now scans the index instead of the full approval log.
+- `bus_kafka_e2e` Criterion bench against the real
+  `KafkaBackend`. Skips with a clear warning when
+  `ACTEON_BENCH_KAFKA` isn't set; reports wall-clock numbers
+  including broker round-trip when it is.
+
+Genuine follow-up not yet shipped:
+
+- **Kafka transactional producer for full atomicity.** The
+  state-machine + reconciler + idempotent producer + consumer-
+  side `call_id` dedup combine to make duplicate produces
+  invisible to consumers in practice; Kafka transactions would
+  add defensive depth (per-approval `transactional.id`
+  management, `init_transactions` plumbing across the rdkafka
+  backend) but the marginal value is low. Tracked under the
+  [Exactly-once edge](#exactly-once-edge) section as
+  deferred-not-needed.

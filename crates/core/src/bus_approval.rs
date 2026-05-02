@@ -28,16 +28,38 @@ use serde::{Deserialize, Serialize};
 use crate::bus_tool::ToolCall;
 
 /// Lifecycle status for a pre-publish approval. Transitions:
-/// `Pending` → `Approved` (commits to Kafka) | `Rejected` (no Kafka)
-/// | `Expired` (TTL elapsed, treated as a soft reject).
+///
+/// ```text
+/// Pending ──approve──▶ Approving ──produce ok──▶ Approved
+///    │                     │
+///    │                     └──produce error──▶ (stays Approving;
+///    │                                          reconciler retries)
+///    ├──reject────────────────────────────────▶ Rejected
+///    └──ttl elapsed──────────────────────────▶ Expired
+/// ```
+///
+/// Phase 10 introduced the `Approving` intermediate state.
+///
+/// V1 (Phase 6c) transitioned Pending → Approved in one step *after*
+/// the Kafka produce, leaving a gap where a successful produce + failed
+/// CAS looked like the row was still pending. The two-step state
+/// machine, idempotent producer, and a reconciler that retries stuck
+/// Approving rows close the gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum BusApprovalStatus {
     /// Awaiting an operator decision.
     Pending,
-    /// Approved; the parked envelope has been (or is being) produced
-    /// to Kafka.
+    /// Operator decided "approve"; produce to Kafka is in flight or
+    /// has been retried but not yet observed succeeded. The envelope
+    /// is no longer eligible for `reject`. The reconciler retries the
+    /// produce until it succeeds (idempotent producer prevents
+    /// duplicate Kafka records on retry) and then transitions the
+    /// row to `Approved`.
+    Approving,
+    /// Approved; the parked envelope landed on Kafka and the
+    /// produced offset is recorded on the row.
     Approved,
     /// Rejected; the parked envelope will never reach Kafka.
     Rejected,
@@ -47,9 +69,16 @@ pub enum BusApprovalStatus {
 }
 
 impl BusApprovalStatus {
+    /// True iff the row has reached a final state: `Approved`,
+    /// `Rejected`, or `Expired`. `Pending` and `Approving` are both
+    /// non-terminal — `Pending` awaits a decision, `Approving` awaits
+    /// produce confirmation.
     #[must_use]
     pub fn is_terminal(self) -> bool {
-        !matches!(self, BusApprovalStatus::Pending)
+        matches!(
+            self,
+            BusApprovalStatus::Approved | BusApprovalStatus::Rejected | BusApprovalStatus::Expired,
+        )
     }
 }
 
@@ -305,6 +334,10 @@ mod tests {
     #[test]
     fn status_terminal_helpers() {
         assert!(!BusApprovalStatus::Pending.is_terminal());
+        // Approving is mid-flight — not terminal even though the
+        // operator has decided. The reconciler is still allowed to
+        // retry the produce.
+        assert!(!BusApprovalStatus::Approving.is_terminal());
         assert!(BusApprovalStatus::Approved.is_terminal());
         assert!(BusApprovalStatus::Rejected.is_terminal());
         assert!(BusApprovalStatus::Expired.is_terminal());
