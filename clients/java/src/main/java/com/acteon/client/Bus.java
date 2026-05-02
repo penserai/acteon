@@ -345,11 +345,10 @@ public final class Bus {
     public record BusToolResultLookupParams(
         String conversationId,
         String cursor,
-        Long timeoutMs,
-        String asAgent
+        Long timeoutMs
     ) {
         public BusToolResultLookupParams(String conversationId) {
-            this(conversationId, null, null, null);
+            this(conversationId, null, null);
         }
     }
 

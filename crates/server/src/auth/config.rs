@@ -67,6 +67,21 @@ pub struct Grant {
     pub providers: Vec<String>,
     /// Action type identifiers, or `["*"]` for all.
     pub actions: Vec<String>,
+    /// **Phase 10**: bus agent identity scoped to this grant.
+    ///
+    /// When set, bus operations from this caller, in scopes that
+    /// match this grant's `(tenant, namespace)`, post envelopes
+    /// stamped with this `agent_id`. The same caller can act as
+    /// different agents under different scopes by adding multiple
+    /// grants. The `as_agent` query parameter is rejected outright
+    /// — the grant is the only source of truth.
+    ///
+    /// `None` means this grant authorizes the caller for general
+    /// dispatch / management operations but does not bind a bus
+    /// identity. Bus operations rejected with 403 if no grant in
+    /// the matching scope has `agent_id` set.
+    #[serde(default)]
+    pub agent_id: Option<String>,
 }
 
 fn wildcard_vec() -> Vec<String> {
@@ -130,6 +145,7 @@ mod tests {
             namespaces: namespaces.iter().map(|s| (*s).to_string()).collect(),
             providers: providers.iter().map(|s| (*s).to_string()).collect(),
             actions: actions.iter().map(|s| (*s).to_string()).collect(),
+            agent_id: None,
         }
     }
 

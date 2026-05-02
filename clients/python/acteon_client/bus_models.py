@@ -616,7 +616,6 @@ class BusToolResultLookupParams:
     conversation_id: str
     cursor: Optional[str] = None
     timeout_ms: Optional[int] = None
-    as_agent: Optional[str] = None
 
     def to_query(self) -> dict[str, Any]:
         q: dict[str, Any] = {"conversation_id": self.conversation_id}
@@ -624,8 +623,6 @@ class BusToolResultLookupParams:
             q["cursor"] = self.cursor
         if self.timeout_ms is not None:
             q["timeout_ms"] = self.timeout_ms
-        if self.as_agent is not None:
-            q["as_agent"] = self.as_agent
         return q
 
 

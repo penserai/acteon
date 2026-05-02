@@ -195,16 +195,17 @@ describe("bus request body builders", () => {
   });
 
   it("tool-result lookup query string", () => {
+    // Phase 10 dropped `asAgent` — read-side identity is grant-
+    // derived now, not a query parameter.
     const params = busToolResultLookupParams({
       conversationId: "c1",
       cursor: "abc",
       timeoutMs: 5_000,
-      asAgent: "a1",
     });
     assert.equal(params.get("conversation_id"), "c1");
     assert.equal(params.get("cursor"), "abc");
     assert.equal(params.get("timeout_ms"), "5000");
-    assert.equal(params.get("as_agent"), "a1");
+    assert.equal(params.get("as_agent"), null);
   });
 });
 

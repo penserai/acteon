@@ -402,9 +402,6 @@ func (c *Client) ReplayBusConversationMessages(
 		if params.Cursor != "" {
 			q.Set("cursor", params.Cursor)
 		}
-		if params.AsAgent != "" {
-			q.Set("as_agent", params.AsAgent)
-		}
 		if len(q) > 0 {
 			path += "?" + q.Encode()
 		}
@@ -486,9 +483,6 @@ func (c *Client) LookupBusToolResult(
 		}
 		if params.TimeoutMs > 0 {
 			q.Set("timeout_ms", strconv.FormatUint(params.TimeoutMs, 10))
-		}
-		if params.AsAgent != "" {
-			q.Set("as_agent", params.AsAgent)
 		}
 		path += "?" + q.Encode()
 	}

@@ -355,15 +355,12 @@ class _BusClientMixin:
         *,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
-        as_agent: Optional[str] = None,
     ) -> BusReplayResponse:
         params: dict[str, Any] = {}
         if limit is not None:
             params["limit"] = limit
         if cursor is not None:
             params["cursor"] = cursor
-        if as_agent is not None:
-            params["as_agent"] = as_agent
         resp = self._request(
             "GET",
             f"/v1/bus/conversations/{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/messages",

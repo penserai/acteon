@@ -2197,35 +2197,54 @@ async fn ensure_schema_in_validator(
 /// Enforce read-side participant ACL. The write-side handlers
 /// (`append_conversation_message`, `post_tool_call`,
 /// `post_tool_result`) already gate on the envelope's `sender`; the
-/// read paths used to skip the equivalent check, so any caller with
-/// the tenant-level `ManageConversation` grant could read a
-/// "private" conversation just by knowing its id. This helper
-/// closes that gap.
+/// Resolve the bus agent identity bound to the caller for the
+/// conversation's `(namespace, tenant)` scope, then enforce the
+/// conversation's participant ACL against it.
+///
+/// **Phase 10 (Item 2)**: this replaces the V1 `as_agent` query
+/// parameter — the agent identity is now drawn from the
+/// authenticated grant, not from a caller-supplied URL parameter.
+/// A caller that wants to read a private conversation must hold
+/// an API key whose grant for the conversation's scope binds an
+/// `agent_id` that's on the participant list.
 ///
 /// Contract:
-/// - Empty participants list → ACL is open; no `as_agent` required.
-/// - Non-empty list → caller must supply `as_agent`, and it must be
-///   on the list. Otherwise 403.
-///
-/// V1 read-isolation: the asserted `as_agent` is taken at face value
-/// once the caller has the tenant grant. A future iteration can
-/// derive the agent identity from the API-key grant directly so
-/// callers can't claim arbitrary agent identities.
+/// - Empty participants list → ACL is open. The resolver still
+///   returns the bound `agent_id` (or `None` if no grant binds),
+///   so the caller's read-side code can stamp audit headers
+///   accurately.
+/// - Non-empty list → the grant-bound `agent_id` must be on the
+///   list. Otherwise 403.
+/// - Grant ambiguity (multiple matching grants bind to different
+///   `agent_id` values) → 500. Operator misconfig; we refuse to
+///   guess.
 #[cfg(feature = "bus")]
 fn enforce_conversation_read_acl(
+    identity: &CallerIdentity,
     conv: &acteon_core::Conversation,
-    as_agent: Option<&str>,
-) -> Result<(), axum::response::Response> {
+) -> Result<Option<String>, axum::response::Response> {
+    let resolved = match identity.bus_agent_id_for_scope(&conv.tenant, &conv.namespace) {
+        Ok(v) => v.map(str::to_string),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("operator misconfiguration: {e}"),
+                }),
+            )
+                .into_response());
+        }
+    };
     if conv.participants.is_empty() {
-        return Ok(());
+        return Ok(resolved);
     }
-    match as_agent {
-        Some(a) if conv.participants.iter().any(|p| p == a) => Ok(()),
+    match &resolved {
+        Some(a) if conv.participants.iter().any(|p| p == a) => Ok(resolved),
         Some(a) => Err((
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
                 error: format!(
-                    "as_agent '{a}' is not a participant of conversation {}; cannot read",
+                    "grant-bound agent '{a}' is not a participant of conversation {}; cannot read",
                     conv.conversation_id
                 ),
             }),
@@ -2235,8 +2254,89 @@ fn enforce_conversation_read_acl(
             StatusCode::FORBIDDEN,
             Json(ErrorResponse {
                 error: format!(
-                    "conversation {} has a participant ACL; pass `as_agent` matching one of the participants",
-                    conv.conversation_id
+                    "conversation {} has a participant ACL but the caller's grant for {}.{} binds no agent_id; mint an API key whose grant carries an agent_id on the participant list",
+                    conv.conversation_id, conv.namespace, conv.tenant
+                ),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+/// **Phase 10 (Item 2)**: resolve the agent identity to stamp on a
+/// bus envelope being posted.
+///
+/// Returns:
+/// - `Ok(Some(id))` — the caller's grant binds this id for the
+///   target scope. Use it as the envelope's `sender`.
+/// - `Ok(None)` — caller is authorized for the scope but no grant
+///   binds an `agent_id`. Open conversations accept this; private
+///   conversations reject below in the participant-ACL check on
+///   the write handlers.
+/// - `Err(Response)` — operator misconfig (conflicting grants).
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+fn resolve_bus_sender(
+    identity: &CallerIdentity,
+    namespace: &str,
+    tenant: &str,
+) -> Result<Option<String>, axum::response::Response> {
+    match identity.bus_agent_id_for_scope(tenant, namespace) {
+        Ok(v) => Ok(v.map(str::to_string)),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("operator misconfiguration: {e}"),
+            }),
+        )
+            .into_response()),
+    }
+}
+
+/// **Phase 10 (Item 2)**: enforce that a caller-supplied envelope
+/// `sender` field matches the grant-derived agent identity.
+///
+/// Three valid configurations:
+/// 1. Caller's grant binds an `agent_id`, envelope's `sender` is
+///    `None`: stamp the grant's id and continue.
+/// 2. Caller's grant binds an `agent_id`, envelope's `sender` is
+///    set: must match the grant's id, otherwise 403.
+/// 3. Caller's grant binds no `agent_id`, envelope's `sender` is
+///    `None`: leave it `None` (works for open conversations; the
+///    participant-ACL check below catches private ones).
+///
+/// Caller-supplied `sender` *without* a grant binding is rejected
+/// — that was the V1 hole this phase closes.
+#[cfg(feature = "bus")]
+#[allow(clippy::result_large_err)]
+fn override_envelope_sender(
+    identity: &CallerIdentity,
+    namespace: &str,
+    tenant: &str,
+    envelope_sender: &mut Option<String>,
+) -> Result<(), axum::response::Response> {
+    let bound = resolve_bus_sender(identity, namespace, tenant)?;
+    match (&bound, envelope_sender.as_deref()) {
+        (Some(id), None) => {
+            *envelope_sender = Some(id.clone());
+            Ok(())
+        }
+        (Some(id), Some(claimed)) if claimed == id => Ok(()),
+        (Some(id), Some(claimed)) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "envelope sender '{claimed}' does not match grant-bound agent '{id}' for {namespace}.{tenant}",
+                ),
+            }),
+        )
+            .into_response()),
+        (None, None) => Ok(()),
+        (None, Some(claimed)) => Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: format!(
+                    "envelope sender '{claimed}' was claimed but the caller's grant for {namespace}.{tenant} binds no agent_id; sender claims are no longer accepted as operator-asserted",
                 ),
             }),
         )
@@ -4230,12 +4330,6 @@ pub struct ReplayConversationParams {
     /// offsets the previous call left off at.
     #[serde(default)]
     pub cursor: Option<String>,
-    /// `agent_id` the caller is acting as. Required when the
-    /// conversation has a non-empty `participants` ACL — must be
-    /// on the list. Same V1 read-isolation model as
-    /// [`ToolResultLookupParams::as_agent`].
-    #[serde(default)]
-    pub as_agent: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -4997,12 +5091,20 @@ pub async fn append_conversation_message(
             )
                 .into_response();
         }
+        // Phase 10: stamp the grant-derived agent identity onto the
+        // request's `sender`. Caller-supplied `sender` must match the
+        // bound identity, otherwise reject. The participant-ACL check
+        // below then runs against the authenticated identity.
+        let mut sender = req.sender.clone();
+        if let Err(resp) = override_envelope_sender(&identity, &namespace, &tenant, &mut sender) {
+            return resp;
+        }
         // Participant ACL: when participants is non-empty, the sender
-        // must be present and listed. The earlier `if let Some(sender)`
-        // form silently allowed anonymous posts (sender = None) on
-        // restricted threads, defeating the gate entirely.
+        // must be present and listed. With Phase 10's grant-derived
+        // sender, "absent" means the caller's grant binds no
+        // agent_id — which is a 403 on a private thread.
         if !conv.participants.is_empty() {
-            match req.sender.as_deref() {
+            match sender.as_deref() {
                 Some(s) if conv.participants.iter().any(|p| p == s) => {}
                 Some(s) => {
                     return (
@@ -5018,11 +5120,11 @@ pub async fn append_conversation_message(
                 }
                 None => {
                     return (
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::FORBIDDEN,
                         Json(ErrorResponse {
                             error: format!(
-                                "conversation {} has a participant ACL; `sender` is required",
-                                conv.conversation_id
+                                "conversation {} has a participant ACL; the caller's grant for {}.{} must bind an agent_id on the participant list",
+                                conv.conversation_id, conv.namespace, conv.tenant
                             ),
                         }),
                     )
@@ -5072,9 +5174,9 @@ pub async fn append_conversation_message(
             "acteon.conversation.id".into(),
             conv.conversation_id.clone(),
         );
-        if let Some(sender) = &req.sender {
+        if let Some(s) = &sender {
             msg.headers
-                .insert("acteon.conversation.sender".into(), sender.clone());
+                .insert("acteon.conversation.sender".into(), s.clone());
         }
         match backend.produce(msg).await {
             Ok(receipt) => {
@@ -5182,7 +5284,12 @@ pub async fn replay_conversation_messages(
         };
         // Read-side participant ACL. Without this, any caller with
         // the tenant grant could replay a private thread by id.
-        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+        // Phase 10: agent identity is grant-derived now, not from a
+        // caller-supplied URL parameter. The helper resolves the
+        // `agent_id` bound to the caller's grant for this conv's
+        // (namespace, tenant) and enforces the participant ACL
+        // against it.
+        if let Err(resp) = enforce_conversation_read_acl(&identity, &conv) {
             return resp;
         }
         let limit = params.limit.unwrap_or(200).min(1000);
@@ -5604,16 +5711,6 @@ pub struct ToolResultLookupParams {
     /// How long to wait for a matching result. Default 5s; max 30s.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    /// `agent_id` the caller is acting as. Required when the target
-    /// conversation has a non-empty `participants` ACL — must be on
-    /// the list, otherwise the request is rejected. Without it (or
-    /// when the conversation is open), any caller with the
-    /// tenant-level grant can read; this is the V1 read-isolation
-    /// model. Future work: derive the agent identity from the
-    /// caller's API-key grant rather than a self-asserted query
-    /// param.
-    #[serde(default)]
-    pub as_agent: Option<String>,
 }
 
 /// Envelope-kind header values. Server-stamped so subscribers can
@@ -5724,9 +5821,19 @@ pub async fn post_tool_call(
             )
                 .into_response();
         }
-        // Same participant ACL as plain conversation messages: a
-        // sender outside the participant list is rejected; if the
-        // ACL is set and `sender` is omitted, reject explicitly.
+        // Phase 10: stamp the grant-derived agent identity onto the
+        // envelope's `sender`. If the caller supplied a sender,
+        // it must match the bound identity (catches honest mistakes
+        // and refuses spoofing). The participant-ACL check below
+        // then runs against the authenticated identity.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
+        }
+        // Participant ACL: a sender outside the participant list is
+        // rejected; if the ACL is set and the grant binds no
+        // agent_id (so `sender` is still None), reject explicitly.
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
                 Some(s) if conv.participants.iter().any(|p| p == s) => {}
@@ -5926,7 +6033,7 @@ pub async fn post_tool_result(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
             return resp;
         }
-        let envelope = acteon_core::ToolResult {
+        let mut envelope = acteon_core::ToolResult {
             call_id: req.call_id.clone(),
             status: req.status,
             output: req.output.clone(),
@@ -5963,6 +6070,12 @@ pub async fn post_tool_result(
                 }),
             )
                 .into_response();
+        }
+        // Phase 10: stamp grant-derived agent identity onto sender.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
         }
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
@@ -6166,7 +6279,12 @@ pub async fn lookup_tool_result(
             };
         // Read-side participant ACL — match the gate the write-side
         // tool handlers already enforce.
-        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+        // Phase 10: agent identity is grant-derived now, not from a
+        // caller-supplied URL parameter. The helper resolves the
+        // `agent_id` bound to the caller's grant for this conv's
+        // (namespace, tenant) and enforces the participant ACL
+        // against it.
+        if let Err(resp) = enforce_conversation_read_acl(&identity, &conv) {
             return resp;
         }
         let events_topic = conv.effective_events_topic();
@@ -6423,11 +6541,6 @@ pub struct StreamConsumeParams {
     /// recovering a known-old stream. `latest` is the default.
     #[serde(default)]
     pub from: Option<String>,
-    /// `agent_id` the caller is acting as — required when the
-    /// conversation has a non-empty `participants` ACL. Mirrors the
-    /// `as_agent` semantics used elsewhere in Phase 5/6a.
-    #[serde(default)]
-    pub as_agent: Option<String>,
 }
 
 #[cfg(feature = "bus")]
@@ -6521,6 +6634,12 @@ pub async fn post_stream_chunk(
                 }),
             )
                 .into_response();
+        }
+        // Phase 10: stamp grant-derived agent identity onto sender.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
         }
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
@@ -6687,7 +6806,7 @@ pub async fn post_stream_end(
         if let Err(resp) = authorize_bus_op(&identity, &tenant, &namespace, BusOp::Publish) {
             return resp;
         }
-        let envelope = acteon_core::StreamEnd {
+        let mut envelope = acteon_core::StreamEnd {
             stream_id: req.stream_id.clone(),
             chunk_seq: req.chunk_seq,
             status: req.status,
@@ -6723,6 +6842,12 @@ pub async fn post_stream_end(
                 }),
             )
                 .into_response();
+        }
+        // Phase 10: stamp grant-derived agent identity onto sender.
+        if let Err(resp) =
+            override_envelope_sender(&identity, &namespace, &tenant, &mut envelope.sender)
+        {
+            return resp;
         }
         if !conv.participants.is_empty() {
             match envelope.sender.as_deref() {
@@ -6916,7 +7041,12 @@ pub async fn consume_stream(
             Ok(c) => c,
             Err(resp) => return resp,
         };
-        if let Err(resp) = enforce_conversation_read_acl(&conv, params.as_agent.as_deref()) {
+        // Phase 10: agent identity is grant-derived now, not from a
+        // caller-supplied URL parameter. The helper resolves the
+        // `agent_id` bound to the caller's grant for this conv's
+        // (namespace, tenant) and enforces the participant ACL
+        // against it.
+        if let Err(resp) = enforce_conversation_read_acl(&identity, &conv) {
             return resp;
         }
         let events_topic = conv.effective_events_topic();
