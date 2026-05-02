@@ -1,5 +1,6 @@
 pub mod approvals;
 pub mod audit;
+pub mod bus;
 pub mod chains;
 pub mod compliance;
 pub mod dispatch;

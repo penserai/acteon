@@ -67,7 +67,7 @@ pub struct BusTopic {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListBusTopicsResponse {
     pub topics: Vec<BusTopic>,
     pub count: usize,
@@ -101,7 +101,7 @@ pub struct PublishBusMessage {
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublishReceipt {
     pub topic: String,
     pub partition: i32,
@@ -150,7 +150,7 @@ pub struct BusSubscription {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListBusSubscriptionsResponse {
     pub subscriptions: Vec<BusSubscription>,
     pub count: usize,
@@ -172,7 +172,7 @@ pub struct AckOffset {
     pub offset: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LagPartition {
     pub partition: i32,
     pub committed: i64,
@@ -180,7 +180,7 @@ pub struct LagPartition {
     pub lag: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusLag {
     pub subscription_id: String,
     pub topic: String,
@@ -201,7 +201,7 @@ pub struct DeadLetterRequest {
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeadLetterReceipt {
     pub dlq_topic: String,
     pub partition: i32,
@@ -1418,7 +1418,7 @@ pub struct BusSchema {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListBusSchemasResponse {
     pub schemas: Vec<BusSchema>,
     pub count: usize,
@@ -1442,7 +1442,7 @@ struct BindTopicSchemaRequest {
     version: i32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BindTopicSchemaResponse {
     pub topic: String,
     pub subject: String,
@@ -1518,7 +1518,7 @@ pub struct BusAgent {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListBusAgentsResponse {
     pub agents: Vec<BusAgent>,
     pub count: usize,
@@ -1536,7 +1536,7 @@ pub struct BusAgentFilter {
     pub status: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusAgentHeartbeat {
     pub agent_id: String,
     pub last_heartbeat_at: String,
@@ -1550,7 +1550,7 @@ pub struct SendToBusAgent {
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusAgentSendReceipt {
     pub inbox_topic: String,
     pub agent_id: String,
@@ -1623,7 +1623,7 @@ pub struct BusConversation {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListBusConversationsResponse {
     pub conversations: Vec<BusConversation>,
     pub count: usize,
@@ -1650,7 +1650,7 @@ pub struct AppendBusConversationMessage {
     pub headers: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusConversationAppendReceipt {
     pub events_topic: String,
     pub conversation_id: String,
@@ -1673,7 +1673,7 @@ pub struct ReplayBusConversationParams {
     pub cursor: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusConversationReplayMessage {
     pub partition: i32,
     pub offset: i64,
@@ -1688,7 +1688,7 @@ pub struct BusConversationReplayMessage {
 /// Why the server-side replay loop terminated. `Complete` = thread
 /// fully drained at scan time; `Limit` and `Timeout` = partial,
 /// follow-up needed via `cursor`.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BusReplayExitReason {
     Complete,
@@ -1696,7 +1696,7 @@ pub enum BusReplayExitReason {
     Timeout,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusConversationReplay {
     pub conversation_id: String,
     pub events_topic: String,
@@ -1765,7 +1765,7 @@ pub struct PostBusToolResult {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusToolEnvelopeReceipt {
     pub events_topic: String,
     pub conversation_id: String,
@@ -1800,7 +1800,7 @@ pub struct BusToolResultLookupParams {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusToolResult {
     pub call_id: String,
     pub status: BusToolResultStatus,
@@ -1817,7 +1817,7 @@ pub struct BusToolResult {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusToolResultLookup {
     pub call_id: String,
     pub events_topic: String,
@@ -1882,7 +1882,7 @@ pub enum BusApprovalStatus {
     Expired,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusApprovalParkedReceipt {
     pub approval_id: String,
     pub namespace: String,
@@ -1894,7 +1894,7 @@ pub struct BusApprovalParkedReceipt {
     pub expires_at: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusApprovalView {
     pub approval_id: String,
     pub namespace: String,
@@ -1931,7 +1931,7 @@ pub struct ListBusApprovalsParams {
     pub conversation_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListBusApprovalsResponse {
     pub approvals: Vec<BusApprovalView>,
     pub count: usize,
@@ -1944,14 +1944,14 @@ pub struct BusApprovalDecisionRequest {
     pub decision_note: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusApprovalDecisionResponse {
     pub approval: BusApprovalView,
     #[serde(default)]
     pub receipt: Option<BusToolEnvelopeReceipt>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusStreamEnvelopeReceipt {
     pub events_topic: String,
     pub conversation_id: String,
