@@ -273,7 +273,10 @@ pub async fn run(
                         warn!(error = %message, "bus.error");
                     }
                     BusConsumeItem::KeepAlive => {}
-                    BusConsumeItem::Reconnected { backoff_ms, attempt } => {
+                    BusConsumeItem::Reconnected {
+                        backoff_ms,
+                        attempt,
+                    } => {
                         warn!(
                             backoff_ms,
                             attempt,

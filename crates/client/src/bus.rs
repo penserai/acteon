@@ -2134,6 +2134,7 @@ impl ActeonClient {
     ///         &ConsumeBusTopic {
     ///             topic: "agents.demo.events".into(),
     ///             from: Some("earliest".into()),
+    ///             reconnect: None,
     ///         },
     ///     )
     ///     .await?;
@@ -2142,6 +2143,10 @@ impl ActeonClient {
     ///         BusConsumeItem::Message(msg) => println!("offset {:?}", msg.offset),
     ///         BusConsumeItem::Error { message } => eprintln!("server error: {message}"),
     ///         BusConsumeItem::KeepAlive => {}
+    ///         // `BusConsumeItem` is `#[non_exhaustive]` — newer SDK
+    ///         // versions may add variants like `Reconnected` (see
+    ///         // `ConsumeBusTopic::reconnect`).
+    ///         _ => {}
     ///     }
     /// }
     /// # Ok(()) }
@@ -2384,11 +2389,13 @@ async fn step_state(
                 resume_params,
                 config,
                 attempt,
-            } => match client.open_bus_subscribe(&subscription_id, &first_params).await {
+            } => match client
+                .open_bus_subscribe(&subscription_id, &first_params)
+                .await
+            {
                 Ok(resp) => {
-                    let inner: ConsumeInner = Box::pin(
-                        sse_envelope_stream(resp).map(parse_bus_subscribe_envelope),
-                    );
+                    let inner: ConsumeInner =
+                        Box::pin(sse_envelope_stream(resp).map(parse_bus_subscribe_envelope));
                     state = ReconnectState::Active {
                         client,
                         subscription_id,
@@ -2435,14 +2442,8 @@ async fn step_state(
                     ));
                 }
                 None => {
-                    return reconnect(
-                        client,
-                        subscription_id,
-                        resume_params,
-                        config,
-                        attempt,
-                    )
-                    .await;
+                    return reconnect(client, subscription_id, resume_params, config, attempt)
+                        .await;
                 }
             },
         }
@@ -2464,11 +2465,13 @@ async fn reconnect(
     let backoff_ms = backoff_for(attempt, &config);
     tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
     let next_attempt = attempt.saturating_add(1);
-    match client.open_bus_subscribe(&subscription_id, &resume_params).await {
+    match client
+        .open_bus_subscribe(&subscription_id, &resume_params)
+        .await
+    {
         Ok(resp) => {
-            let inner: ConsumeInner = Box::pin(
-                sse_envelope_stream(resp).map(parse_bus_subscribe_envelope),
-            );
+            let inner: ConsumeInner =
+                Box::pin(sse_envelope_stream(resp).map(parse_bus_subscribe_envelope));
             Some((
                 Ok(BusConsumeItem::Reconnected {
                     backoff_ms,
@@ -2508,7 +2511,9 @@ async fn reconnect(
 }
 
 fn backoff_for(attempt: u32, cfg: &ReconnectConfig) -> u64 {
-    let exp = cfg.initial_backoff_ms.saturating_mul(1u64 << attempt.min(20));
+    let exp = cfg
+        .initial_backoff_ms
+        .saturating_mul(1u64 << attempt.min(20));
     exp.min(cfg.max_backoff_ms)
 }
 
