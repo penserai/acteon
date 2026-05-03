@@ -249,6 +249,7 @@ pub async fn run(
             let params = ConsumeBusTopic {
                 topic: topic.clone(),
                 from: from.clone(),
+                reconnect: None,
             };
             // JSONL on stdout regardless of `--format` — a streaming
             // feed is awkward to surface through tracing, and JSONL is
@@ -272,6 +273,18 @@ pub async fn run(
                         warn!(error = %message, "bus.error");
                     }
                     BusConsumeItem::KeepAlive => {}
+                    BusConsumeItem::Reconnected { backoff_ms, attempt } => {
+                        warn!(
+                            backoff_ms,
+                            attempt,
+                            "bus subscription reconnected (best-effort tail; gaps possible)"
+                        );
+                    }
+                    // The non-exhaustive arm: forwards-compat with new
+                    // BusConsumeItem variants on the client side.
+                    other => {
+                        warn!(?other, "unhandled bus consume item — bump the SDK?");
+                    }
                 }
             }
         }
