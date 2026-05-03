@@ -467,19 +467,40 @@ type BusConsumedMessage struct {
 type BusConsumeItemKind string
 
 const (
-	BusConsumeKindMessage   BusConsumeItemKind = "message"
-	BusConsumeKindError     BusConsumeItemKind = "error"
-	BusConsumeKindKeepAlive BusConsumeItemKind = "keepalive"
+	BusConsumeKindMessage     BusConsumeItemKind = "message"
+	BusConsumeKindError       BusConsumeItemKind = "error"
+	BusConsumeKindKeepAlive   BusConsumeItemKind = "keepalive"
+	BusConsumeKindReconnected BusConsumeItemKind = "reconnected"
 )
 
 // BusConsumeItem is the per-record yield from ConsumeBusSubscription.
 // Inspect Kind, then the matching field. KeepAlive carries no extra
 // data and lets callers use the SSE comment frame as a liveness
-// signal.
+// signal. Reconnected is only emitted when the consumer is configured
+// with a ReconnectConfig and a reconnect succeeded — subsequent
+// messages may have gaps versus the pre-disconnect cursor.
 type BusConsumeItem struct {
-	Kind    BusConsumeItemKind
-	Message *BusConsumedMessage
-	Error   string
+	Kind      BusConsumeItemKind
+	Message   *BusConsumedMessage
+	Error     string
+	BackoffMs int64
+	Attempt   uint32
+}
+
+// ReconnectConfig configures the best-effort reconnect wrapper around
+// ConsumeBusSubscription. Reconnect always resumes from `latest`
+// because Phase 1 has no per-partition offset seek; workloads that
+// need lossless delivery should use Phase 2 durable subscriptions
+// with manual ack instead.
+//
+// Zero-value defaults: 500ms initial backoff, 30s cap, infinite
+// retries. The attempt counter resets after a successful read so a
+// long-stable connection isn't penalised for a single later blip.
+type ReconnectConfig struct {
+	InitialBackoffMs int64
+	MaxBackoffMs     int64
+	// MaxAttempts of 0 means "retry forever".
+	MaxAttempts uint32
 }
 
 // StreamChunkEnvelope mirrors `acteon_core::StreamChunk`.

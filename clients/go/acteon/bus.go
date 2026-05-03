@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Phase 8c: agentic bus surface (Phases 1-6c).
@@ -546,16 +547,28 @@ type ConsumeBusSubscriptionOptions struct {
 	Topic string
 	// From is "earliest" or "latest" (server defaults to latest if empty).
 	From string
+	// Reconnect, when non-nil, wraps the underlying SSE pump with
+	// best-effort exponential backoff + reconnect-from-latest. A
+	// successful reconnect emits an item with Kind ==
+	// BusConsumeKindReconnected so callers can resync state.
+	Reconnect *ReconnectConfig
 }
 
 // ConsumeBusSubscription opens an SSE stream against
 // `/v1/bus/subscribe/{subscription_id}` and returns a channel of typed
 // items. The channel is closed when the context is cancelled or the
-// connection drops.
+// connection drops (and reconnect is not configured).
 //
 // Server-side `bus.error` events surface as items with Kind == Error;
 // SSE keep-alive comments surface as Kind == KeepAlive so callers can
 // use them as a liveness signal.
+//
+// When `opts.Reconnect` is non-nil, a clean disconnect triggers
+// exponential backoff and a fresh subscribe call from `latest` —
+// emitting Kind == BusConsumeKindReconnected so callers can resync
+// state. Note that resume from `latest` means messages produced
+// during the disconnect window are dropped; use Phase 2 durable
+// subscriptions with manual ack for lossless delivery.
 func (c *Client) ConsumeBusSubscription(
 	ctx context.Context,
 	subscriptionID string,
@@ -564,12 +577,20 @@ func (c *Client) ConsumeBusSubscription(
 	if opts == nil || opts.Topic == "" {
 		return nil, &ConnectionError{Message: "ConsumeBusSubscription: opts.Topic is required"}
 	}
-	q := url.Values{}
-	q.Set("topic", opts.Topic)
-	if opts.From != "" {
-		q.Set("from", opts.From)
+	if opts.Reconnect == nil {
+		path := fmt.Sprintf("/v1/bus/subscribe/%s?%s",
+			busSeg(subscriptionID), buildSubscribeQuery(opts.Topic, opts.From).Encode())
+		return c.consumeBusSubscriptionOnce(ctx, path)
 	}
-	path := fmt.Sprintf("/v1/bus/subscribe/%s?%s", busSeg(subscriptionID), q.Encode())
+	return c.consumeBusSubscriptionReconnecting(ctx, subscriptionID, opts), nil
+}
+
+// consumeBusSubscriptionOnce opens a single SSE stream — used for
+// the no-reconnect path and as the inner pump of the reconnect loop.
+func (c *Client) consumeBusSubscriptionOnce(
+	ctx context.Context,
+	path string,
+) (<-chan *BusConsumeItem, error) {
 	envCh, err := c.openBusSSE(ctx, path)
 	if err != nil {
 		return nil, err
@@ -595,6 +616,101 @@ func (c *Client) ConsumeBusSubscription(
 		}
 	}()
 	return out, nil
+}
+
+// consumeBusSubscriptionReconnecting wraps the once-pump with
+// exponential backoff + reconnect-from-latest. The first attempt uses
+// `opts.From`; subsequent attempts always use `latest`. Counter
+// resets on a successful read.
+func (c *Client) consumeBusSubscriptionReconnecting(
+	ctx context.Context,
+	subscriptionID string,
+	opts *ConsumeBusSubscriptionOptions,
+) <-chan *BusConsumeItem {
+	out := make(chan *BusConsumeItem, 64)
+	cfg := *opts.Reconnect
+	if cfg.InitialBackoffMs == 0 {
+		cfg.InitialBackoffMs = 500
+	}
+	if cfg.MaxBackoffMs == 0 {
+		cfg.MaxBackoffMs = 30_000
+	}
+	go func() {
+		defer close(out)
+		var attempt uint32
+		firstOpen := true
+		for {
+			from := opts.From
+			if !firstOpen {
+				from = "latest"
+			}
+			path := fmt.Sprintf("/v1/bus/subscribe/%s?%s",
+				busSeg(subscriptionID), buildSubscribeQuery(opts.Topic, from).Encode())
+			inner, err := c.consumeBusSubscriptionOnce(ctx, path)
+			if err != nil {
+				select {
+				case out <- &BusConsumeItem{Kind: BusConsumeKindError, Error: err.Error()}:
+				case <-ctx.Done():
+					return
+				}
+			} else {
+				for item := range inner {
+					attempt = 0
+					select {
+					case out <- item:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+			firstOpen = false
+			if cfg.MaxAttempts != 0 && attempt >= cfg.MaxAttempts {
+				return
+			}
+			backoff := reconnectBackoffMs(attempt, &cfg)
+			timer := time.NewTimer(time.Duration(backoff) * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			}
+			attempt++
+			select {
+			case out <- &BusConsumeItem{
+				Kind:      BusConsumeKindReconnected,
+				BackoffMs: backoff,
+				Attempt:   attempt,
+			}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+func buildSubscribeQuery(topic, from string) url.Values {
+	q := url.Values{}
+	q.Set("topic", topic)
+	if from != "" {
+		q.Set("from", from)
+	}
+	return q
+}
+
+// reconnectBackoffMs is exponential, capped at cfg.MaxBackoffMs. The
+// shift is bounded at 20 so wild attempt counters can't overflow.
+func reconnectBackoffMs(attempt uint32, cfg *ReconnectConfig) int64 {
+	shift := attempt
+	if shift > 20 {
+		shift = 20
+	}
+	exp := cfg.InitialBackoffMs * (1 << shift)
+	if exp > cfg.MaxBackoffMs {
+		return cfg.MaxBackoffMs
+	}
+	return exp
 }
 
 // ConsumeBusStream opens an SSE stream against

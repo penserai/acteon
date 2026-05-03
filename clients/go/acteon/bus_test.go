@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -599,6 +600,85 @@ func TestConsumeBusSubscriptionEndToEnd(t *testing.T) {
 	}
 	if got[1].Kind != BusConsumeKindMessage || *got[1].Message.Offset != 5 {
 		t.Errorf("second item: %+v", got[1])
+	}
+}
+
+func TestReconnectBackoffCapsAtMax(t *testing.T) {
+	cfg := &ReconnectConfig{InitialBackoffMs: 100, MaxBackoffMs: 5_000}
+	if got := reconnectBackoffMs(0, cfg); got != 100 {
+		t.Errorf("attempt 0: %d", got)
+	}
+	if got := reconnectBackoffMs(1, cfg); got != 200 {
+		t.Errorf("attempt 1: %d", got)
+	}
+	if got := reconnectBackoffMs(20, cfg); got != 5_000 {
+		t.Errorf("attempt 20 (cap): %d", got)
+	}
+	if got := reconnectBackoffMs(64, cfg); got != 5_000 {
+		// Bounded shift handles wild attempt counters cleanly.
+		t.Errorf("attempt 64 (bounded shift): %d", got)
+	}
+}
+
+func TestConsumeBusSubscriptionReconnects(t *testing.T) {
+	// Server accepts two connections; each emits one frame and
+	// closes. With a Reconnect config set, the consumer should
+	// yield: message → reconnected → message.
+	var connectionCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		connectionCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		offset := connectionCount
+		_, _ = w.Write([]byte(
+			"event: bus.message\nid: " + strconv.Itoa(offset) +
+				"\ndata: {\"topic\":\"agents.demo.events\",\"offset\":" +
+				strconv.Itoa(offset) + "}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := client.ConsumeBusSubscription(ctx, "agent-A", &ConsumeBusSubscriptionOptions{
+		Topic: "agents.demo.events",
+		Reconnect: &ReconnectConfig{
+			InitialBackoffMs: 5,
+			MaxBackoffMs:     5,
+			MaxAttempts:      1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	var seen []BusConsumeItemKind
+	messageCount := 0
+	for item := range ch {
+		seen = append(seen, item.Kind)
+		if item.Kind == BusConsumeKindMessage {
+			messageCount++
+			if messageCount >= 2 {
+				cancel()
+			}
+		}
+	}
+	if messageCount < 2 {
+		t.Fatalf("expected 2 messages; got %d (seen %v)", messageCount, seen)
+	}
+	gotReconnected := false
+	for _, k := range seen {
+		if k == BusConsumeKindReconnected {
+			gotReconnected = true
+		}
+	}
+	if !gotReconnected {
+		t.Errorf("expected a Reconnected item between messages; got %v", seen)
+	}
+	if connectionCount < 2 {
+		t.Errorf("expected >=2 connections; got %d", connectionCount)
 	}
 }
 
