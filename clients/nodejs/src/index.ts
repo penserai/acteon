@@ -159,6 +159,7 @@ export {
   type PostBusToolResult,
   type PublishBusMessage,
   type PublishReceipt,
+  type ReconnectConfig,
   type RegisterBusAgent,
   type RegisterBusSchema,
   type StreamChunkEnvelope,

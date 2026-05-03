@@ -392,14 +392,34 @@ export interface BusConsumedMessage {
 }
 
 /**
+ * Best-effort reconnect policy for `consumeBusSubscription`.
+ *
+ * Defaults: 500ms initial backoff, 30s cap, infinite retries. The
+ * counter resets after a successful read so a long-stable connection
+ * isn't penalised for a single later blip.
+ *
+ * Reconnect always resumes from `latest` because Phase 1 has no
+ * per-partition offset seek; workloads that need lossless delivery
+ * should use Phase 2 durable subscriptions with manual ack.
+ */
+export interface ReconnectConfig {
+  initialBackoffMs?: number;
+  maxBackoffMs?: number;
+  /** Omit / `null` to retry forever. */
+  maxAttempts?: number;
+}
+
+/**
  * One item from `consumeBusSubscription`. The discriminator
- * (`kind`) tells you whether this is a record, an error, or
- * just a keep-alive used as a liveness signal.
+ * (`kind`) tells you whether this is a record, an error, a
+ * keep-alive (used as a liveness signal), or a successful
+ * reconnect (only when `reconnect` is configured).
  */
 export type BusConsumeItem =
   | { kind: "message"; message: BusConsumedMessage }
   | { kind: "error"; error: string }
-  | { kind: "keepAlive" };
+  | { kind: "keepAlive" }
+  | { kind: "reconnected"; backoffMs: number; attempt: number };
 
 /** `StreamChunk` envelope as it appears on the SSE feed. Mirrors `acteon_core::StreamChunk`. */
 export interface StreamChunkEnvelope {

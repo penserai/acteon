@@ -611,3 +611,40 @@ describe("SSE consumer line-protocol", () => {
     }
   });
 });
+
+describe("consumeBusSubscription reconnect", () => {
+  it("yields a `reconnected` boundary item between attempts", async () => {
+    const http = await import("node:http");
+    let connectionCount = 0;
+    const server = http.createServer((_req, res) => {
+      connectionCount += 1;
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const offset = connectionCount === 1 ? 1 : 2;
+      res.write(
+        `event: bus.message\nid: ${offset}\ndata: {"topic":"agents.demo.events","offset":${offset}}\n\n`,
+      );
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const c = new ActeonClient(`http://localhost:${port}`);
+      const seen: string[] = [];
+      let messageCount = 0;
+      for await (const item of c.consumeBusSubscription("agent-A", {
+        topic: "agents.demo.events",
+        reconnect: { initialBackoffMs: 5, maxBackoffMs: 5, maxAttempts: 1 },
+      })) {
+        seen.push(item.kind);
+        if (item.kind === "message") messageCount += 1;
+        if (messageCount >= 2) break;
+      }
+      // Expect: message → reconnected → message.
+      assert.ok(seen.includes("message"), `seen: ${seen.join(",")}`);
+      assert.ok(seen.includes("reconnected"), `seen: ${seen.join(",")}`);
+      assert.equal(connectionCount, 2);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
