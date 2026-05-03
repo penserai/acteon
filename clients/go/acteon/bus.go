@@ -1,6 +1,7 @@
 package acteon
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 // Phase 8c: agentic bus surface (Phases 1-6c).
@@ -536,6 +538,262 @@ func (c *Client) BusStreamConsumeURL(
 		c.baseURL,
 		busSeg(namespace), busSeg(tenant),
 		busSeg(conversationID), busSeg(streamID))
+}
+
+// ConsumeBusSubscriptionOptions configures the SSE topic tail.
+type ConsumeBusSubscriptionOptions struct {
+	// Topic is the full Kafka topic name (`namespace.tenant.name`).
+	Topic string
+	// From is "earliest" or "latest" (server defaults to latest if empty).
+	From string
+}
+
+// ConsumeBusSubscription opens an SSE stream against
+// `/v1/bus/subscribe/{subscription_id}` and returns a channel of typed
+// items. The channel is closed when the context is cancelled or the
+// connection drops.
+//
+// Server-side `bus.error` events surface as items with Kind == Error;
+// SSE keep-alive comments surface as Kind == KeepAlive so callers can
+// use them as a liveness signal.
+func (c *Client) ConsumeBusSubscription(
+	ctx context.Context,
+	subscriptionID string,
+	opts *ConsumeBusSubscriptionOptions,
+) (<-chan *BusConsumeItem, error) {
+	if opts == nil || opts.Topic == "" {
+		return nil, &ConnectionError{Message: "ConsumeBusSubscription: opts.Topic is required"}
+	}
+	q := url.Values{}
+	q.Set("topic", opts.Topic)
+	if opts.From != "" {
+		q.Set("from", opts.From)
+	}
+	path := fmt.Sprintf("/v1/bus/subscribe/%s?%s", busSeg(subscriptionID), q.Encode())
+	envCh, err := c.openBusSSE(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan *BusConsumeItem, 64)
+	go func() {
+		defer close(out)
+		for env := range envCh {
+			item, perr := parseBusConsumeEnvelope(env)
+			if perr != nil {
+				select {
+				case out <- &BusConsumeItem{Kind: BusConsumeKindError, Error: perr.Error()}:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			select {
+			case out <- item:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// ConsumeBusStream opens an SSE stream against
+// `/v1/bus/streams/{ns}/{tenant}/{conversation_id}/{stream_id}` and
+// returns a channel of typed items. The server filters records by
+// `(envelope_kind, conversation_id, stream_id)` so this consumer only
+// sees chunks for the requested stream id and the channel is closed
+// after the terminal `end` envelope is observed.
+func (c *Client) ConsumeBusStream(
+	ctx context.Context,
+	namespace, tenant, conversationID, streamID string,
+) (<-chan *BusStreamItem, error) {
+	path := fmt.Sprintf("/v1/bus/streams/%s/%s/%s/%s",
+		busSeg(namespace), busSeg(tenant),
+		busSeg(conversationID), busSeg(streamID))
+	envCh, err := c.openBusSSE(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan *BusStreamItem, 64)
+	go func() {
+		defer close(out)
+		for env := range envCh {
+			item, perr := parseBusStreamEnvelope(env)
+			if perr != nil {
+				select {
+				case out <- &BusStreamItem{Kind: BusStreamKindError, Error: perr.Error()}:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			select {
+			case out <- item:
+			case <-ctx.Done():
+				return
+			}
+			if item.Kind == BusStreamKindEnd {
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
+// busSseEnvelope is the raw line-protocol output the bus consumers
+// post-process into typed items. Either a frame (event/id/data) or a
+// keep-alive comment.
+type busSseEnvelope struct {
+	keepAlive bool
+	event     string
+	id        string
+	data      string
+}
+
+func parseBusConsumeEnvelope(env *busSseEnvelope) (*BusConsumeItem, error) {
+	if env.keepAlive {
+		return &BusConsumeItem{Kind: BusConsumeKindKeepAlive}, nil
+	}
+	name := env.event
+	if name == "" {
+		name = "message"
+	}
+	switch name {
+	case "bus.message", "message":
+		var msg BusConsumedMessage
+		if err := json.Unmarshal([]byte(env.data), &msg); err != nil {
+			return nil, fmt.Errorf("invalid bus.message payload: %w", err)
+		}
+		return &BusConsumeItem{Kind: BusConsumeKindMessage, Message: &msg}, nil
+	case "bus.error":
+		return &BusConsumeItem{Kind: BusConsumeKindError, Error: extractBusErrorMessage(env.data)}, nil
+	default:
+		return nil, fmt.Errorf("unexpected SSE event %q on bus subscribe stream", name)
+	}
+}
+
+func parseBusStreamEnvelope(env *busSseEnvelope) (*BusStreamItem, error) {
+	if env.keepAlive {
+		return &BusStreamItem{Kind: BusStreamKindKeepAlive}, nil
+	}
+	name := env.event
+	if name == "" {
+		name = "message"
+	}
+	switch name {
+	case "bus.stream.chunk":
+		var chunk StreamChunkEnvelope
+		if err := json.Unmarshal([]byte(env.data), &chunk); err != nil {
+			return nil, fmt.Errorf("invalid stream chunk payload: %w", err)
+		}
+		return &BusStreamItem{Kind: BusStreamKindChunk, Chunk: &chunk}, nil
+	case "bus.stream.end":
+		var end StreamEndEnvelope
+		if err := json.Unmarshal([]byte(env.data), &end); err != nil {
+			return nil, fmt.Errorf("invalid stream end payload: %w", err)
+		}
+		return &BusStreamItem{Kind: BusStreamKindEnd, End: &end}, nil
+	case "bus.stream.error":
+		return &BusStreamItem{Kind: BusStreamKindError, Error: extractBusErrorMessage(env.data)}, nil
+	default:
+		return nil, fmt.Errorf("unexpected SSE event %q on bus stream consumer", name)
+	}
+}
+
+// extractBusErrorMessage pulls the `error` field from a JSON `{"error":
+// "..."}` body. Falls back to the raw data if the body isn't structured
+// — defensive against the server emitting a plain string for some
+// future error path.
+func extractBusErrorMessage(data string) string {
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(data), &body); err == nil && body.Error != "" {
+		return body.Error
+	}
+	return data
+}
+
+// openBusSSE is a sibling of `openSSE` that surfaces SSE keep-alive
+// comments instead of swallowing them. Bus consumers want them as a
+// liveness signal so the surface is wider than the dispatch event
+// stream's.
+func (c *Client) openBusSSE(ctx context.Context, path string) (<-chan *busSseEnvelope, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	// SSE is long-lived — bypass the client timeout the same way
+	// `openSSE` does.
+	sseClient := &http.Client{}
+	resp, err := sseClient.Do(req)
+	if err != nil {
+		return nil, &ConnectionError{Message: err.Error()}
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, parseBusError(resp.StatusCode, body)
+	}
+	ch := make(chan *busSseEnvelope, 64)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		// Bus messages may exceed the default 64 KiB scanner buffer
+		// when payloads carry large strings. Bump to 1 MiB to match
+		// the dispatch stream comfort margin.
+		const maxLine = 1 << 20
+		scanner.Buffer(make([]byte, 0, 64*1024), maxLine)
+		var event, id string
+		var dataLines []string
+		flush := func() {
+			if len(dataLines) == 0 && event == "" && id == "" {
+				return
+			}
+			frame := &busSseEnvelope{
+				event: event,
+				id:    id,
+				data:  strings.Join(dataLines, "\n"),
+			}
+			select {
+			case ch <- frame:
+			case <-ctx.Done():
+			}
+			event = ""
+			id = ""
+			dataLines = nil
+		}
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.HasPrefix(line, ":") {
+				select {
+				case ch <- &busSseEnvelope{keepAlive: true}:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			if line == "" {
+				flush()
+				continue
+			}
+			switch {
+			case strings.HasPrefix(line, "id:"):
+				id = strings.TrimSpace(strings.TrimPrefix(line, "id:"))
+			case strings.HasPrefix(line, "event:"):
+				event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			case strings.HasPrefix(line, "data:"):
+				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+	}()
+	return ch, nil
 }
 
 // =============================================================================

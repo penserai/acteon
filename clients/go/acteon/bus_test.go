@@ -454,6 +454,127 @@ func TestApproveBusApprovalRoutesAndDecodes(t *testing.T) {
 	}
 }
 
+func TestParseBusConsumeEnvelope(t *testing.T) {
+	// Default `event: bus.message` decodes into BusConsumedMessage.
+	msg, err := parseBusConsumeEnvelope(&busSseEnvelope{
+		event: "bus.message",
+		data:  `{"topic":"agents.demo.events","payload":{"k":"v"},"partition":0,"offset":7}`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if msg.Kind != BusConsumeKindMessage {
+		t.Fatalf("kind: %v", msg.Kind)
+	}
+	if msg.Message.Topic != "agents.demo.events" || *msg.Message.Offset != 7 {
+		t.Errorf("topic/offset: %+v", msg.Message)
+	}
+
+	// `bus.error` lifts the `error` field.
+	errItem, perr := parseBusConsumeEnvelope(&busSseEnvelope{
+		event: "bus.error",
+		data:  `{"error":"broker disconnected"}`,
+	})
+	if perr != nil {
+		t.Fatalf("error parse: %v", perr)
+	}
+	if errItem.Kind != BusConsumeKindError || errItem.Error != "broker disconnected" {
+		t.Errorf("error item: %+v", errItem)
+	}
+
+	// Keep-alive surfaces as KeepAlive kind.
+	ka, _ := parseBusConsumeEnvelope(&busSseEnvelope{keepAlive: true})
+	if ka.Kind != BusConsumeKindKeepAlive {
+		t.Errorf("expected KeepAlive; got %v", ka.Kind)
+	}
+}
+
+func TestParseBusStreamEnvelope(t *testing.T) {
+	chunk, err := parseBusStreamEnvelope(&busSseEnvelope{
+		event: "bus.stream.chunk",
+		data:  `{"stream_id":"s1","chunk_seq":3,"body":{"token":"hi"},"created_at":"2026-05-02T12:00:00Z"}`,
+	})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if chunk.Kind != BusStreamKindChunk || chunk.Chunk.StreamID != "s1" || chunk.Chunk.ChunkSeq != 3 {
+		t.Errorf("chunk: %+v", chunk.Chunk)
+	}
+
+	end, perr := parseBusStreamEnvelope(&busSseEnvelope{
+		event: "bus.stream.end",
+		data:  `{"stream_id":"s1","chunk_seq":4,"status":"complete","created_at":"2026-05-02T12:00:01Z"}`,
+	})
+	if perr != nil {
+		t.Fatalf("end: %v", perr)
+	}
+	if end.Kind != BusStreamKindEnd || end.End.Status != "complete" {
+		t.Errorf("end: %+v", end.End)
+	}
+
+	// Plain-string error data falls back to the raw text — defensive
+	// against a future server emitting non-JSON.
+	plain, _ := parseBusStreamEnvelope(&busSseEnvelope{
+		event: "bus.stream.error",
+		data:  "broker disconnected",
+	})
+	if plain.Kind != BusStreamKindError || plain.Error != "broker disconnected" {
+		t.Errorf("plain error: %+v", plain)
+	}
+
+	// Unknown events are surfaced as parse errors.
+	_, unknownErr := parseBusStreamEnvelope(&busSseEnvelope{event: "bogus", data: "{}"})
+	if unknownErr == nil {
+		t.Fatalf("expected error for unknown event")
+	}
+}
+
+func TestConsumeBusSubscriptionEndToEnd(t *testing.T) {
+	// Server emits one keep-alive (`:ping`), one message frame, and
+	// closes — the consumer should yield both items in order.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("topic") != "agents.demo.events" {
+			t.Errorf("unexpected topic param: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte(":keep-alive\n\n"))
+		_, _ = w.Write([]byte("event: bus.message\nid: 5\ndata: {\"topic\":\"agents.demo.events\",\"offset\":5}\n\n"))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, err := client.ConsumeBusSubscription(ctx, "agent-A", &ConsumeBusSubscriptionOptions{
+		Topic: "agents.demo.events",
+		From:  "earliest",
+	})
+	if err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	got := []*BusConsumeItem{}
+	for item := range ch {
+		got = append(got, item)
+		if len(got) >= 2 {
+			break
+		}
+	}
+	cancel()
+	if len(got) < 2 {
+		t.Fatalf("expected 2 items; got %d", len(got))
+	}
+	if got[0].Kind != BusConsumeKindKeepAlive {
+		t.Errorf("first item: %v", got[0].Kind)
+	}
+	if got[1].Kind != BusConsumeKindMessage || *got[1].Message.Offset != 5 {
+		t.Errorf("second item: %+v", got[1])
+	}
+}
+
 func TestBusErrorParsing(t *testing.T) {
 	// The bus error path should map structured `{"error": "..."}`
 	// bodies (the shape Acteon's bus handlers emit) to *APIError.
