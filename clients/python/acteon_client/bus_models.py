@@ -818,3 +818,136 @@ class PostBusToolCallOutcome:
     @property
     def was_parked(self) -> bool:
         return self.parked is not None
+
+
+# ============================================================================
+# SSE consumer DTOs — bus subscription tail + stream-id tail
+# ============================================================================
+
+
+@dataclass
+class BusConsumedMessage:
+    """A single Kafka record observed by a bus subscription consumer.
+    Mirrors ``acteon_bus::BusMessage`` on the wire — the typed shape
+    saves callers from peeling apart raw JSON.
+    """
+
+    topic: str
+    payload: Any = None
+    key: Optional[str] = None
+    headers: dict[str, str] = field(default_factory=dict)
+    partition: Optional[int] = None
+    offset: Optional[int] = None
+    timestamp: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BusConsumedMessage":
+        return cls(
+            topic=data["topic"],
+            payload=data.get("payload"),
+            key=data.get("key"),
+            headers=data.get("headers") or {},
+            partition=data.get("partition"),
+            offset=data.get("offset"),
+            timestamp=data.get("timestamp"),
+        )
+
+
+@dataclass
+class BusConsumeItem:
+    """One item from :meth:`consume_bus_subscription`. Exactly one of
+    ``message`` or ``error`` is populated; both ``None`` is a keep-alive.
+    Inspect via :attr:`is_message` / :attr:`is_error` / :attr:`is_keep_alive`.
+    """
+
+    message: Optional[BusConsumedMessage] = None
+    error: Optional[str] = None
+
+    @property
+    def is_message(self) -> bool:
+        return self.message is not None
+
+    @property
+    def is_error(self) -> bool:
+        return self.error is not None
+
+    @property
+    def is_keep_alive(self) -> bool:
+        return self.message is None and self.error is None
+
+
+@dataclass
+class StreamChunkEnvelope:
+    """`StreamChunk` envelope as it appears on the SSE feed. Mirrors
+    ``acteon_core::StreamChunk``."""
+
+    stream_id: str
+    chunk_seq: int
+    body: Any = None
+    sender: Optional[str] = None
+    metadata: dict[str, str] = field(default_factory=dict)
+    created_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StreamChunkEnvelope":
+        return cls(
+            stream_id=data["stream_id"],
+            chunk_seq=data["chunk_seq"],
+            body=data.get("body"),
+            sender=data.get("sender"),
+            metadata=data.get("metadata") or {},
+            created_at=data.get("created_at"),
+        )
+
+
+@dataclass
+class StreamEndEnvelope:
+    """`StreamEnd` envelope as it appears on the SSE feed. Mirrors
+    ``acteon_core::StreamEnd``."""
+
+    stream_id: str
+    chunk_seq: int
+    status: str
+    error_message: Optional[str] = None
+    sender: Optional[str] = None
+    metadata: dict[str, str] = field(default_factory=dict)
+    created_at: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "StreamEndEnvelope":
+        return cls(
+            stream_id=data["stream_id"],
+            chunk_seq=data["chunk_seq"],
+            status=data["status"],
+            error_message=data.get("error_message"),
+            sender=data.get("sender"),
+            metadata=data.get("metadata") or {},
+            created_at=data.get("created_at"),
+        )
+
+
+@dataclass
+class BusStreamItem:
+    """One item from :meth:`consume_bus_stream`. Exactly one of
+    ``chunk`` / ``end`` / ``error`` is populated; all ``None`` is a
+    keep-alive. The consumer closes once an ``end`` lands."""
+
+    chunk: Optional[StreamChunkEnvelope] = None
+    end: Optional[StreamEndEnvelope] = None
+    error: Optional[str] = None
+
+    @property
+    def is_chunk(self) -> bool:
+        return self.chunk is not None
+
+    @property
+    def is_end(self) -> bool:
+        return self.end is not None
+
+    @property
+    def is_error(self) -> bool:
+        return self.error is not None
+
+    @property
+    def is_keep_alive(self) -> bool:
+        return self.chunk is None and self.end is None and self.error is None

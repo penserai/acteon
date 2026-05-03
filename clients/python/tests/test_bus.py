@@ -415,5 +415,101 @@ class TestAsyncSurface(unittest.TestCase):
         self.assertFalse(inspect.iscoroutinefunction(method))
 
 
+class TestSseConsumerParsing(unittest.TestCase):
+    """Round-trip the SSE protocol parser on synthetic frame streams,
+    covering the four event shapes the bus emits plus keep-alives.
+    """
+
+    def test_envelope_parser_yields_frames_and_keep_alives(self):
+        from acteon_client.bus import _KEEP_ALIVE, _SseFrame, _parse_sse_envelopes
+
+        lines = [
+            ":keep-alive",
+            "event: bus.message",
+            "id: 42",
+            'data: {"topic":"agents.demo.events","offset":42}',
+            "",
+            "event: bus.error",
+            'data: {"error":"broker disconnected"}',
+            "",
+        ]
+        items = list(_parse_sse_envelopes(iter(lines)))
+        self.assertIs(items[0], _KEEP_ALIVE)
+        self.assertIsInstance(items[1], _SseFrame)
+        self.assertEqual(items[1].event, "bus.message")
+        self.assertEqual(items[1].id, "42")
+        self.assertIn("agents.demo.events", items[1].data)
+        self.assertIsInstance(items[2], _SseFrame)
+        self.assertEqual(items[2].event, "bus.error")
+
+    def test_subscribe_message_event(self):
+        from acteon_client.bus import _SseFrame, _envelope_to_consume_item
+
+        frame = _SseFrame(
+            "bus.message",
+            "1",
+            '{"topic":"agents.demo.events","payload":{"k":"v"},"partition":0,"offset":7}',
+        )
+        item = _envelope_to_consume_item(frame)
+        self.assertTrue(item.is_message)
+        self.assertEqual(item.message.topic, "agents.demo.events")
+        self.assertEqual(item.message.offset, 7)
+        self.assertEqual(item.message.payload, {"k": "v"})
+
+    def test_subscribe_error_event(self):
+        from acteon_client.bus import _SseFrame, _envelope_to_consume_item
+
+        frame = _SseFrame("bus.error", None, '{"error":"broker disconnected"}')
+        item = _envelope_to_consume_item(frame)
+        self.assertTrue(item.is_error)
+        self.assertEqual(item.error, "broker disconnected")
+
+    def test_subscribe_keep_alive(self):
+        from acteon_client.bus import _KEEP_ALIVE, _envelope_to_consume_item
+
+        item = _envelope_to_consume_item(_KEEP_ALIVE)
+        self.assertTrue(item.is_keep_alive)
+
+    def test_stream_chunk_and_end(self):
+        from acteon_client.bus import _SseFrame, _envelope_to_stream_item
+
+        chunk_frame = _SseFrame(
+            "bus.stream.chunk",
+            "0",
+            '{"stream_id":"s1","chunk_seq":3,"body":{"token":"hi"},'
+            '"created_at":"2026-05-02T12:00:00Z"}',
+        )
+        end_frame = _SseFrame(
+            "bus.stream.end",
+            "1",
+            '{"stream_id":"s1","chunk_seq":4,"status":"complete",'
+            '"created_at":"2026-05-02T12:00:01Z"}',
+        )
+        chunk_item = _envelope_to_stream_item(chunk_frame)
+        self.assertTrue(chunk_item.is_chunk)
+        self.assertEqual(chunk_item.chunk.stream_id, "s1")
+        self.assertEqual(chunk_item.chunk.chunk_seq, 3)
+        end_item = _envelope_to_stream_item(end_frame)
+        self.assertTrue(end_item.is_end)
+        self.assertEqual(end_item.end.status, "complete")
+
+    def test_stream_error_event_with_plain_data(self):
+        # Server emits `{"error": "..."}`, but if the JSON is malformed
+        # for some reason we still want a useful message back.
+        from acteon_client.bus import _SseFrame, _envelope_to_stream_item
+
+        frame = _SseFrame("bus.stream.error", None, "broker disconnected")
+        item = _envelope_to_stream_item(frame)
+        self.assertTrue(item.is_error)
+        self.assertEqual(item.error, "broker disconnected")
+
+    def test_stream_unknown_event_raises(self):
+        from acteon_client.bus import _SseFrame, _envelope_to_stream_item
+
+        frame = _SseFrame("bogus", None, "{}")
+        with self.assertRaises(ValueError):
+            _envelope_to_stream_item(frame)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,8 @@ path, json=, params=)`` returning an ``httpx.Response``. The base
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+import json
+from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 from urllib.parse import quote
 
 from .bus_models import (
@@ -23,11 +24,14 @@ from .bus_models import (
     BusApprovalDecisionResponse,
     BusApprovalParkedReceipt,
     BusApprovalView,
+    BusConsumeItem,
+    BusConsumedMessage,
     BusConversation,
     BusLag,
     BusReplayResponse,
     BusSchema,
     BusStreamEnvelopeReceipt,
+    BusStreamItem,
     BusSubscription,
     BusToolEnvelopeReceipt,
     BusToolResultLookup,
@@ -45,6 +49,8 @@ from .bus_models import (
     PublishReceipt,
     RegisterBusAgent,
     RegisterBusSchema,
+    StreamChunkEnvelope,
+    StreamEndEnvelope,
 )
 from .errors import ApiError, HttpError
 
@@ -80,9 +86,9 @@ def _raise_for_status(resp: "httpx.Response") -> None:
 class _BusClientMixin:
     """Mixin providing the agentic bus REST surface."""
 
-    # The mixin doesn't define its own __init__; this attribute is
+    # The mixin doesn't define its own __init__; these attributes are
     # set by the concrete ``ActeonClient`` it gets mixed into. Stub
-    # the type so ``mypy`` (and humans) understand the contract.
+    # the types so ``mypy`` (and humans) understand the contract.
     if TYPE_CHECKING:
         def _request(  # noqa: D401
             self,
@@ -92,6 +98,10 @@ class _BusClientMixin:
             json: Optional[dict] = None,
             params: Optional[dict] = None,
         ) -> "httpx.Response": ...
+
+        def _headers(self) -> dict[str, str]: ...
+
+        _client: "httpx.Client"
         base_url: str
 
     # --------------- Phase 1: Topics + publish ---------------
@@ -481,6 +491,58 @@ class _BusClientMixin:
             f"{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/{_seg(stream_id)}"
         )
 
+    def consume_bus_subscription(
+        self,
+        subscription_id: str,
+        *,
+        topic: str,
+        from_offset: Optional[str] = None,
+    ) -> Iterator[BusConsumeItem]:
+        """Consume a bus subscription via SSE
+        (``GET /v1/bus/subscribe/{subscription_id}``). Yields one item
+        per Kafka record on the underlying topic. Server-side errors
+        surface as :attr:`BusConsumeItem.error`; SSE keep-alive
+        comments surface as :attr:`BusConsumeItem.is_keep_alive` so
+        callers can use them as a liveness signal.
+
+        Args:
+            subscription_id: Subscription id (Kafka consumer group).
+            topic: Full Kafka topic name (``namespace.tenant.name``).
+            from_offset: ``earliest`` or ``latest`` (server default).
+
+        Yields:
+            :class:`BusConsumeItem` per record.
+        """
+        params: dict[str, Any] = {"topic": topic}
+        if from_offset is not None:
+            params["from"] = from_offset
+        url = f"{self.base_url}/v1/bus/subscribe/{_seg(subscription_id)}"
+        for env in _open_bus_sse_stream(self._client, url, params, self._headers()):
+            yield _envelope_to_consume_item(env)
+
+    def consume_bus_stream(
+        self,
+        namespace: str,
+        tenant: str,
+        conversation_id: str,
+        stream_id: str,
+    ) -> Iterator[BusStreamItem]:
+        """Consume a typed stream via SSE
+        (``GET /v1/bus/streams/{ns}/{tenant}/{conv}/{stream_id}``). The
+        server filters by ``(envelope_kind, conversation_id, stream_id)``,
+        so this stream only emits chunks for the requested stream id and
+        closes after the terminal :class:`StreamEndEnvelope`.
+
+        Yields:
+            :class:`BusStreamItem` per chunk plus the terminal end marker.
+        """
+        url = self.bus_stream_consume_url(namespace, tenant, conversation_id, stream_id)
+        for env in _open_bus_sse_stream(self._client, url, None, self._headers()):
+            item = _envelope_to_stream_item(env)
+            yield item
+            if item.is_end:
+                break
+
     # --------------- Phase 6c: HITL approvals ---------------
 
     def list_bus_approvals(
@@ -571,6 +633,10 @@ class _AsyncBusClientMixin:
             json: Optional[dict] = None,
             params: Optional[dict] = None,
         ) -> "httpx.Response": ...
+
+        def _headers(self) -> dict[str, str]: ...
+
+        _client: "httpx.AsyncClient"
         base_url: str
 
     # --------------- Phase 1: Topics + publish ---------------
@@ -958,6 +1024,40 @@ class _AsyncBusClientMixin:
             f"{_seg(namespace)}/{_seg(tenant)}/{_seg(conversation_id)}/{_seg(stream_id)}"
         )
 
+    async def consume_bus_subscription(
+        self,
+        subscription_id: str,
+        *,
+        topic: str,
+        from_offset: Optional[str] = None,
+    ) -> AsyncIterator[BusConsumeItem]:
+        """Async version of :meth:`_BusClientMixin.consume_bus_subscription`."""
+        params: dict[str, Any] = {"topic": topic}
+        if from_offset is not None:
+            params["from"] = from_offset
+        url = f"{self.base_url}/v1/bus/subscribe/{_seg(subscription_id)}"
+        async for env in _async_open_bus_sse_stream(
+            self._client, url, params, self._headers()
+        ):
+            yield _envelope_to_consume_item(env)
+
+    async def consume_bus_stream(
+        self,
+        namespace: str,
+        tenant: str,
+        conversation_id: str,
+        stream_id: str,
+    ) -> AsyncIterator[BusStreamItem]:
+        """Async version of :meth:`_BusClientMixin.consume_bus_stream`."""
+        url = self.bus_stream_consume_url(namespace, tenant, conversation_id, stream_id)
+        async for env in _async_open_bus_sse_stream(
+            self._client, url, None, self._headers()
+        ):
+            item = _envelope_to_stream_item(env)
+            yield item
+            if item.is_end:
+                break
+
     # --------------- Phase 6c: HITL approvals ---------------
 
     async def list_bus_approvals(
@@ -1020,3 +1120,193 @@ class _AsyncBusClientMixin:
         )
         _raise_for_status(resp)
         return BusApprovalDecisionResponse.from_dict(resp.json())
+
+
+# ============================================================================
+# SSE protocol helpers — shared by sync + async consumers
+# ============================================================================
+#
+# The dispatch SSE parser in `models.py` silently drops keep-alive
+# comments. The bus consumers want to surface them as a liveness
+# signal, so we use a small private envelope type below and a
+# matching parser instead of layering on `_parse_sse_stream`.
+
+
+class _SseFrame:
+    """One parsed SSE frame: ``event`` (None means default ``message``),
+    ``id``, and ``data`` (the joined ``data:`` lines)."""
+
+    __slots__ = ("event", "id", "data")
+
+    def __init__(
+        self, event: Optional[str], id_: Optional[str], data: str,
+    ) -> None:
+        self.event = event
+        self.id = id_
+        self.data = data
+
+
+class _KeepAlive:
+    """Sentinel value yielded by the parsers for SSE comment lines."""
+
+    __slots__ = ()
+
+
+_KEEP_ALIVE = _KeepAlive()
+
+
+def _emit_frame(
+    event_type: Optional[str],
+    event_id: Optional[str],
+    data_parts: list[str],
+) -> Optional[_SseFrame]:
+    if not data_parts and event_type is None and event_id is None:
+        return None
+    return _SseFrame(event_type, event_id, "\n".join(data_parts))
+
+
+def _parse_sse_envelopes(lines: Iterator[str]) -> Iterator[Any]:
+    """Yields :class:`_SseFrame` for each frame and :data:`_KEEP_ALIVE`
+    for each comment. Mirrors the Rust client's ``sse_envelope_stream``."""
+    event_type: Optional[str] = None
+    event_id: Optional[str] = None
+    data_parts: list[str] = []
+    for line in lines:
+        if line.startswith(":"):
+            yield _KEEP_ALIVE
+            continue
+        if line == "":
+            frame = _emit_frame(event_type, event_id, data_parts)
+            if frame is not None:
+                yield frame
+            event_type = None
+            event_id = None
+            data_parts = []
+            continue
+        if line.startswith("event:"):
+            event_type = line[len("event:") :].strip()
+        elif line.startswith("id:"):
+            event_id = line[len("id:") :].strip()
+        elif line.startswith("data:"):
+            data_parts.append(line[len("data:") :].strip())
+
+
+async def _async_parse_sse_envelopes(
+    aiter_lines: AsyncIterator[str],
+) -> AsyncIterator[Any]:
+    """Async mirror of :func:`_parse_sse_envelopes`."""
+    event_type: Optional[str] = None
+    event_id: Optional[str] = None
+    data_parts: list[str] = []
+    async for line in aiter_lines:
+        if line.startswith(":"):
+            yield _KEEP_ALIVE
+            continue
+        if line == "":
+            frame = _emit_frame(event_type, event_id, data_parts)
+            if frame is not None:
+                yield frame
+            event_type = None
+            event_id = None
+            data_parts = []
+            continue
+        if line.startswith("event:"):
+            event_type = line[len("event:") :].strip()
+        elif line.startswith("id:"):
+            event_id = line[len("id:") :].strip()
+        elif line.startswith("data:"):
+            data_parts.append(line[len("data:") :].strip())
+
+
+def _open_bus_sse_stream(
+    client: "httpx.Client",
+    url: str,
+    params: Optional[dict[str, Any]],
+    headers: dict[str, str],
+) -> Iterator[Any]:
+    import httpx as _httpx
+
+    sse_headers = {**headers, "Accept": "text/event-stream"}
+    sse_headers.pop("Content-Type", None)
+    try:
+        with client.stream("GET", url, params=params, headers=sse_headers) as resp:
+            if resp.status_code != 200:
+                resp.read()
+                raise HttpError(resp.status_code, resp.text or "bus consume failed")
+            yield from _parse_sse_envelopes(resp.iter_lines())
+    except _httpx.ConnectError as e:  # pragma: no cover — network shape
+        raise ConnectionError(str(e)) from e
+    except _httpx.TimeoutException as e:  # pragma: no cover — network shape
+        raise ConnectionError(f"Request timed out: {e}") from e
+
+
+async def _async_open_bus_sse_stream(
+    client: "httpx.AsyncClient",
+    url: str,
+    params: Optional[dict[str, Any]],
+    headers: dict[str, str],
+) -> AsyncIterator[Any]:
+    import httpx as _httpx
+
+    sse_headers = {**headers, "Accept": "text/event-stream"}
+    sse_headers.pop("Content-Type", None)
+    try:
+        async with client.stream("GET", url, params=params, headers=sse_headers) as resp:
+            if resp.status_code != 200:
+                await resp.aread()
+                raise HttpError(resp.status_code, resp.text or "bus consume failed")
+            async for env in _async_parse_sse_envelopes(resp.aiter_lines()):
+                yield env
+    except _httpx.ConnectError as e:  # pragma: no cover — network shape
+        raise ConnectionError(str(e)) from e
+    except _httpx.TimeoutException as e:  # pragma: no cover — network shape
+        raise ConnectionError(f"Request timed out: {e}") from e
+
+
+def _decode_data_or_passthrough(data: str) -> Any:
+    try:
+        return json.loads(data)
+    except (json.JSONDecodeError, ValueError):
+        return data
+
+
+def _extract_error_message(data: str) -> str:
+    decoded = _decode_data_or_passthrough(data)
+    if isinstance(decoded, dict) and isinstance(decoded.get("error"), str):
+        return decoded["error"]
+    return data
+
+
+def _envelope_to_consume_item(env: Any) -> BusConsumeItem:
+    if isinstance(env, _KeepAlive):
+        return BusConsumeItem()
+    frame: _SseFrame = env
+    name = frame.event or "message"
+    if name in ("bus.message", "message"):
+        decoded = _decode_data_or_passthrough(frame.data)
+        if not isinstance(decoded, dict):
+            raise ValueError(f"invalid bus.message payload: {frame.data!r}")
+        return BusConsumeItem(message=BusConsumedMessage.from_dict(decoded))
+    if name == "bus.error":
+        return BusConsumeItem(error=_extract_error_message(frame.data))
+    raise ValueError(f"unexpected SSE event '{name}' on bus subscribe stream")
+
+
+def _envelope_to_stream_item(env: Any) -> BusStreamItem:
+    if isinstance(env, _KeepAlive):
+        return BusStreamItem()
+    frame: _SseFrame = env
+    name = frame.event or "message"
+    if name == "bus.stream.chunk":
+        decoded = _decode_data_or_passthrough(frame.data)
+        if not isinstance(decoded, dict):
+            raise ValueError(f"invalid stream chunk payload: {frame.data!r}")
+        return BusStreamItem(chunk=StreamChunkEnvelope.from_dict(decoded))
+    if name == "bus.stream.end":
+        decoded = _decode_data_or_passthrough(frame.data)
+        if not isinstance(decoded, dict):
+            raise ValueError(f"invalid stream end payload: {frame.data!r}")
+        return BusStreamItem(end=StreamEndEnvelope.from_dict(decoded))
+    if name == "bus.stream.error":
+        return BusStreamItem(error=_extract_error_message(frame.data))
+    raise ValueError(f"unexpected SSE event '{name}' on bus stream consumer")
