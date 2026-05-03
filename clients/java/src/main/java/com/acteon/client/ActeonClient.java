@@ -3546,6 +3546,36 @@ public class ActeonClient implements AutoCloseable {
     }
 
     /**
+     * Consume a bus subscription with best-effort reconnect on
+     * disconnect. The caller iterates a single
+     * {@link ReconnectingBusSseIterator} that transparently opens
+     * fresh SSE streams from {@code latest} between connections,
+     * yielding a {@link Bus.BusConsumeItem.Reconnected} boundary
+     * item so callers can resync state.
+     *
+     * <p>Resume from {@code latest} means messages produced during
+     * the disconnect window are dropped — workloads that need
+     * lossless delivery should use Phase 2 durable subscriptions
+     * with manual ack instead.
+     *
+     * @param subscriptionId Subscription id (Kafka consumer group).
+     * @param topic Full Kafka topic name ({@code namespace.tenant.name}).
+     * @param from {@code "earliest"} or {@code "latest"} for the first
+     *     attempt; subsequent attempts always use {@code "latest"}.
+     * @param reconnect Reconnect policy. Use {@link Bus.ReconnectConfig#defaults()}
+     *     for the standard 500ms / 30s / forever shape.
+     */
+    public ReconnectingBusSseIterator consumeBusSubscription(
+        String subscriptionId, String topic, String from, Bus.ReconnectConfig reconnect
+    ) throws ActeonException {
+        ReconnectingBusSseIterator.InnerOpener opener = (firstAttempt) -> {
+            String effectiveFrom = firstAttempt ? from : "latest";
+            return consumeBusSubscription(subscriptionId, topic, effectiveFrom);
+        };
+        return new ReconnectingBusSseIterator(opener, reconnect);
+    }
+
+    /**
      * Consume a typed stream via SSE
      * ({@code GET /v1/bus/streams/{ns}/{tenant}/{conversationId}/{streamId}}).
      * The server filters records by
