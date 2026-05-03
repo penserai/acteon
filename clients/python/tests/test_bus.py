@@ -511,5 +511,45 @@ class TestSseConsumerParsing(unittest.TestCase):
             _envelope_to_stream_item(frame)
 
 
+class TestReconnectBackoff(unittest.TestCase):
+    """Behaviour contract for the best-effort reconnect helper."""
+
+    def test_backoff_caps_at_max(self):
+        from acteon_client.bus import _reconnect_backoff_ms
+        from acteon_client.bus_models import ReconnectConfig
+
+        cfg = ReconnectConfig(initial_backoff_ms=100, max_backoff_ms=5_000)
+        self.assertEqual(_reconnect_backoff_ms(0, cfg), 100)
+        self.assertEqual(_reconnect_backoff_ms(1, cfg), 200)
+        self.assertEqual(_reconnect_backoff_ms(2, cfg), 400)
+        # Past the cap.
+        self.assertEqual(_reconnect_backoff_ms(20, cfg), 5_000)
+        # Bounded shift handles wild attempt counters cleanly.
+        self.assertEqual(_reconnect_backoff_ms(64, cfg), 5_000)
+
+    def test_reconnected_item_helpers(self):
+        from acteon_client.bus_models import (
+            BusConsumeItem,
+            BusConsumedMessage,
+            ReconnectedInfo,
+        )
+
+        keep_alive = BusConsumeItem()
+        self.assertTrue(keep_alive.is_keep_alive)
+        self.assertFalse(keep_alive.is_reconnected)
+
+        message = BusConsumeItem(message=BusConsumedMessage(topic="t"))
+        self.assertTrue(message.is_message)
+        self.assertFalse(message.is_keep_alive)
+
+        reconnected = BusConsumeItem(
+            reconnected=ReconnectedInfo(backoff_ms=500, attempt=1)
+        )
+        self.assertTrue(reconnected.is_reconnected)
+        self.assertFalse(reconnected.is_keep_alive)
+        self.assertFalse(reconnected.is_message)
+        self.assertFalse(reconnected.is_error)
+
+
 if __name__ == "__main__":
     unittest.main()
