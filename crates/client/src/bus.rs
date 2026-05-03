@@ -1992,6 +1992,41 @@ pub struct ConsumeBusTopic {
     /// `earliest` or `latest` (default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+    /// Opt-in best-effort reconnect on disconnect. When set, the
+    /// consumer wraps the underlying SSE stream with exponential
+    /// backoff and resubscribes from `latest` on each reconnect — a
+    /// `BusConsumeItem::Reconnected` is yielded so callers can resync
+    /// state. Note that resume from `latest` means messages produced
+    /// during the disconnect window are dropped; workloads that
+    /// require lossless delivery should use Phase 2 durable
+    /// subscriptions with manual ack instead.
+    #[serde(skip)]
+    pub reconnect: Option<ReconnectConfig>,
+}
+
+/// Configuration for the client-side reconnect wrapper around a bus
+/// subscription. Defaults: 500ms initial backoff, 30s cap, infinite
+/// retries.
+#[derive(Debug, Clone)]
+pub struct ReconnectConfig {
+    /// Initial sleep before the first reconnect attempt.
+    pub initial_backoff_ms: u64,
+    /// Cap for the exponential backoff.
+    pub max_backoff_ms: u64,
+    /// Hard ceiling on reconnect attempts. `None` is "retry forever
+    /// (until the caller drops the stream)". Counter resets after a
+    /// successful read.
+    pub max_attempts: Option<u32>,
+}
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            initial_backoff_ms: 500,
+            max_backoff_ms: 30_000,
+            max_attempts: None,
+        }
+    }
 }
 
 /// A single Kafka record observed by a bus subscription consumer.
@@ -2018,7 +2053,13 @@ pub struct BusConsumedMessage {
 /// becomes [`BusConsumeItem::Message`]; `bus.error` becomes
 /// [`BusConsumeItem::Error`]; SSE comments surface as [`BusConsumeItem::KeepAlive`]
 /// so consumers can use them as a liveness signal.
+///
+/// `Reconnected` is only emitted when [`ConsumeBusTopic::reconnect`]
+/// is set; it carries the backoff that ran before the new connection
+/// landed so callers can attribute downstream gaps and rebuild any
+/// per-record state.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum BusConsumeItem {
     /// A consumed Kafka record.
     Message(Box<BusConsumedMessage>),
@@ -2026,6 +2067,10 @@ pub enum BusConsumeItem {
     Error { message: String },
     /// SSE keep-alive comment.
     KeepAlive,
+    /// Best-effort reconnect succeeded. Subsequent messages may have
+    /// gaps versus the pre-disconnect cursor — callers that need
+    /// lossless delivery should use Phase 2 durable subscriptions.
+    Reconnected { backoff_ms: u64, attempt: u32 },
 }
 
 /// Async stream of [`BusConsumeItem`]s from the SSE subscription
@@ -2089,6 +2134,7 @@ impl ActeonClient {
     ///         &ConsumeBusTopic {
     ///             topic: "agents.demo.events".into(),
     ///             from: Some("earliest".into()),
+    ///             reconnect: None,
     ///         },
     ///     )
     ///     .await?;
@@ -2097,6 +2143,10 @@ impl ActeonClient {
     ///         BusConsumeItem::Message(msg) => println!("offset {:?}", msg.offset),
     ///         BusConsumeItem::Error { message } => eprintln!("server error: {message}"),
     ///         BusConsumeItem::KeepAlive => {}
+    ///         // `BusConsumeItem` is `#[non_exhaustive]` — newer SDK
+    ///         // versions may add variants like `Reconnected` (see
+    ///         // `ConsumeBusTopic::reconnect`).
+    ///         _ => {}
     ///     }
     /// }
     /// # Ok(()) }
@@ -2106,6 +2156,39 @@ impl ActeonClient {
         subscription_id: &str,
         params: &ConsumeBusTopic,
     ) -> Result<BusConsumeStream, Error> {
+        if let Some(reconnect) = params.reconnect.clone() {
+            // Reconnect always resumes from `latest` — Phase 1 has no
+            // per-partition offset seek, so the alternative would be
+            // replaying the topic backlog after every blip. Callers
+            // who need lossless delivery should layer Phase 2
+            // durable subscriptions on top.
+            let mut first_params = params.clone();
+            first_params.reconnect = None;
+            let resume_params = ConsumeBusTopic {
+                topic: params.topic.clone(),
+                from: Some("latest".into()),
+                reconnect: None,
+            };
+            return Ok(reconnecting_consume_stream(
+                self.clone(),
+                subscription_id.to_string(),
+                first_params,
+                resume_params,
+                reconnect,
+            ));
+        }
+        let resp = self.open_bus_subscribe(subscription_id, params).await?;
+        let inner = sse_envelope_stream(resp).map(parse_bus_subscribe_envelope);
+        Ok(BusConsumeStream {
+            inner: Box::pin(inner),
+        })
+    }
+
+    async fn open_bus_subscribe(
+        &self,
+        subscription_id: &str,
+        params: &ConsumeBusTopic,
+    ) -> Result<reqwest::Response, Error> {
         let url = format!(
             "{}/v1/bus/subscribe/{}",
             self.base_url,
@@ -2120,10 +2203,7 @@ impl ActeonClient {
         if !resp.status().is_success() {
             return Err(map_error(resp).await);
         }
-        let inner = sse_envelope_stream(resp).map(parse_bus_subscribe_envelope);
-        Ok(BusConsumeStream {
-            inner: Box::pin(inner),
-        })
+        Ok(resp)
     }
 
     /// Consume a typed stream via SSE
@@ -2243,9 +2323,219 @@ fn extract_error_message(data: &str) -> String {
         .unwrap_or_else(|| data.to_string())
 }
 
+/// Wrap repeated `consume_bus_subscription` calls in a single async
+/// `Stream` so callers see a continuous feed across disconnects. The
+/// first attempt uses `first_params` (which respects the caller's
+/// `from`); subsequent reconnects use `resume_params` (always
+/// `from=latest` — see the comment in `consume_bus_subscription`).
+fn reconnecting_consume_stream(
+    client: ActeonClient,
+    subscription_id: String,
+    first_params: ConsumeBusTopic,
+    resume_params: ConsumeBusTopic,
+    config: ReconnectConfig,
+) -> BusConsumeStream {
+    let stream = futures::stream::unfold(
+        ReconnectState::Initial {
+            client,
+            subscription_id,
+            first_params,
+            resume_params,
+            config,
+            attempt: 0,
+        },
+        step_state,
+    );
+
+    BusConsumeStream {
+        inner: Box::pin(stream),
+    }
+}
+
+type ConsumeInner = Pin<Box<dyn Stream<Item = Result<BusConsumeItem, Error>> + Send>>;
+
+enum ReconnectState {
+    /// Open the first subscription with the caller's `from`.
+    Initial {
+        client: ActeonClient,
+        subscription_id: String,
+        first_params: ConsumeBusTopic,
+        resume_params: ConsumeBusTopic,
+        config: ReconnectConfig,
+        attempt: u32,
+    },
+    /// Pump the inner stream until it ends or errors.
+    Active {
+        client: ActeonClient,
+        subscription_id: String,
+        resume_params: ConsumeBusTopic,
+        config: ReconnectConfig,
+        attempt: u32,
+        inner: ConsumeInner,
+    },
+}
+
+#[allow(clippy::needless_continue)]
+async fn step_state(
+    mut state: ReconnectState,
+) -> Option<(Result<BusConsumeItem, Error>, ReconnectState)> {
+    use futures::StreamExt as _;
+    loop {
+        match state {
+            ReconnectState::Initial {
+                client,
+                subscription_id,
+                first_params,
+                resume_params,
+                config,
+                attempt,
+            } => match client
+                .open_bus_subscribe(&subscription_id, &first_params)
+                .await
+            {
+                Ok(resp) => {
+                    let inner: ConsumeInner =
+                        Box::pin(sse_envelope_stream(resp).map(parse_bus_subscribe_envelope));
+                    state = ReconnectState::Active {
+                        client,
+                        subscription_id,
+                        resume_params,
+                        config,
+                        attempt: 0,
+                        inner,
+                    };
+                    continue;
+                }
+                Err(e) => {
+                    return Some((
+                        Err(e),
+                        ReconnectState::Initial {
+                            client,
+                            subscription_id,
+                            first_params,
+                            resume_params,
+                            config,
+                            attempt,
+                        },
+                    ));
+                }
+            },
+            ReconnectState::Active {
+                client,
+                subscription_id,
+                resume_params,
+                config,
+                attempt,
+                mut inner,
+            } => match inner.next().await {
+                Some(item) => {
+                    return Some((
+                        item,
+                        ReconnectState::Active {
+                            client,
+                            subscription_id,
+                            resume_params,
+                            config,
+                            attempt: 0,
+                            inner,
+                        },
+                    ));
+                }
+                None => {
+                    return reconnect(client, subscription_id, resume_params, config, attempt)
+                        .await;
+                }
+            },
+        }
+    }
+}
+
+async fn reconnect(
+    client: ActeonClient,
+    subscription_id: String,
+    resume_params: ConsumeBusTopic,
+    config: ReconnectConfig,
+    attempt: u32,
+) -> Option<(Result<BusConsumeItem, Error>, ReconnectState)> {
+    if let Some(max) = config.max_attempts
+        && attempt >= max
+    {
+        return None;
+    }
+    let backoff_ms = backoff_for(attempt, &config);
+    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+    let next_attempt = attempt.saturating_add(1);
+    match client
+        .open_bus_subscribe(&subscription_id, &resume_params)
+        .await
+    {
+        Ok(resp) => {
+            let inner: ConsumeInner =
+                Box::pin(sse_envelope_stream(resp).map(parse_bus_subscribe_envelope));
+            Some((
+                Ok(BusConsumeItem::Reconnected {
+                    backoff_ms,
+                    attempt: next_attempt,
+                }),
+                ReconnectState::Active {
+                    client,
+                    subscription_id,
+                    resume_params,
+                    config,
+                    attempt: next_attempt,
+                    inner,
+                },
+            ))
+        }
+        Err(e) => {
+            // The reconnect HTTP call failed (server down, network
+            // dead). Surface the error, bump the attempt counter,
+            // and let the next poll try again. Bouncing back through
+            // Active-with-empty-inner triggers the same reconnect
+            // path on the next `step`.
+            let empty: ConsumeInner =
+                Box::pin(futures::stream::empty::<Result<BusConsumeItem, Error>>());
+            Some((
+                Err(e),
+                ReconnectState::Active {
+                    client,
+                    subscription_id,
+                    resume_params,
+                    config,
+                    attempt: next_attempt,
+                    inner: empty,
+                },
+            ))
+        }
+    }
+}
+
+fn backoff_for(attempt: u32, cfg: &ReconnectConfig) -> u64 {
+    let exp = cfg
+        .initial_backoff_ms
+        .saturating_mul(1u64 << attempt.min(20));
+    exp.min(cfg.max_backoff_ms)
+}
+
 #[cfg(test)]
 mod consumer_tests {
     use super::*;
+
+    #[test]
+    fn backoff_caps_at_max() {
+        let cfg = ReconnectConfig {
+            initial_backoff_ms: 100,
+            max_backoff_ms: 5_000,
+            max_attempts: None,
+        };
+        assert_eq!(backoff_for(0, &cfg), 100);
+        assert_eq!(backoff_for(1, &cfg), 200);
+        assert_eq!(backoff_for(2, &cfg), 400);
+        // Past the cap.
+        assert_eq!(backoff_for(20, &cfg), 5_000);
+        // Saturating shift handles wild attempt counters cleanly.
+        assert_eq!(backoff_for(64, &cfg), 5_000);
+    }
 
     #[test]
     fn parse_subscribe_message_event() {
