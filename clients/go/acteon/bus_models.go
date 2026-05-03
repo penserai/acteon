@@ -1,5 +1,7 @@
 package acteon
 
+import "encoding/json"
+
 // DTOs for the Acteon agentic bus surface (Phases 1-6c).
 //
 // Field types are pointers wherever the server treats the field as
@@ -442,4 +444,82 @@ type PostBusToolCallOutcome struct {
 // pending approval row instead of producing to Kafka.
 func (o *PostBusToolCallOutcome) WasParked() bool {
 	return o != nil && o.Parked != nil
+}
+
+// =============================================================================
+// SSE consumer DTOs — bus subscription tail + stream-id tail
+// =============================================================================
+
+// BusConsumedMessage mirrors the wire shape of `acteon_bus::BusMessage`
+// without taking a dependency on the bus crate. Returned by
+// `Client.ConsumeBusSubscription` for each Kafka record.
+type BusConsumedMessage struct {
+	Topic     string            `json:"topic"`
+	Key       string            `json:"key,omitempty"`
+	Payload   json.RawMessage   `json:"payload,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Partition *int32            `json:"partition,omitempty"`
+	Offset    *int64            `json:"offset,omitempty"`
+	Timestamp *string           `json:"timestamp,omitempty"`
+}
+
+// BusConsumeItemKind tags the variant in BusConsumeItem.
+type BusConsumeItemKind string
+
+const (
+	BusConsumeKindMessage   BusConsumeItemKind = "message"
+	BusConsumeKindError     BusConsumeItemKind = "error"
+	BusConsumeKindKeepAlive BusConsumeItemKind = "keepalive"
+)
+
+// BusConsumeItem is the per-record yield from ConsumeBusSubscription.
+// Inspect Kind, then the matching field. KeepAlive carries no extra
+// data and lets callers use the SSE comment frame as a liveness
+// signal.
+type BusConsumeItem struct {
+	Kind    BusConsumeItemKind
+	Message *BusConsumedMessage
+	Error   string
+}
+
+// StreamChunkEnvelope mirrors `acteon_core::StreamChunk`.
+type StreamChunkEnvelope struct {
+	StreamID  string            `json:"stream_id"`
+	ChunkSeq  int64             `json:"chunk_seq"`
+	Body      json.RawMessage   `json:"body,omitempty"`
+	Sender    string            `json:"sender,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	CreatedAt string            `json:"created_at,omitempty"`
+}
+
+// StreamEndEnvelope mirrors `acteon_core::StreamEnd`. Status is one
+// of "complete", "aborted", or "error".
+type StreamEndEnvelope struct {
+	StreamID     string            `json:"stream_id"`
+	ChunkSeq     int64             `json:"chunk_seq"`
+	Status       string            `json:"status"`
+	ErrorMessage string            `json:"error_message,omitempty"`
+	Sender       string            `json:"sender,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+	CreatedAt    string            `json:"created_at,omitempty"`
+}
+
+// BusStreamItemKind tags the variant in BusStreamItem.
+type BusStreamItemKind string
+
+const (
+	BusStreamKindChunk     BusStreamItemKind = "chunk"
+	BusStreamKindEnd       BusStreamItemKind = "end"
+	BusStreamKindError     BusStreamItemKind = "error"
+	BusStreamKindKeepAlive BusStreamItemKind = "keepalive"
+)
+
+// BusStreamItem is the per-record yield from ConsumeBusStream. The
+// underlying channel closes automatically once an End item is
+// observed.
+type BusStreamItem struct {
+	Kind  BusStreamItemKind
+	Chunk *StreamChunkEnvelope
+	End   *StreamEndEnvelope
+	Error string
 }
