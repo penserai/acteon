@@ -373,6 +373,105 @@ export type PostBusToolCallOutcome =
   | { kind: "parked"; receipt: BusApprovalParkedReceipt };
 
 // =============================================================================
+// SSE consumer DTOs — bus subscription tail + stream-id tail
+// =============================================================================
+
+/**
+ * A single Kafka record observed by a bus subscription consumer.
+ * Mirrors the wire shape of `acteon_bus::BusMessage` so callers don't
+ * have to peel apart raw JSON.
+ */
+export interface BusConsumedMessage {
+  topic: string;
+  payload: unknown;
+  key?: string;
+  headers: Record<string, string>;
+  partition?: number;
+  offset?: number;
+  timestamp?: string;
+}
+
+/**
+ * One item from `consumeBusSubscription`. The discriminator
+ * (`kind`) tells you whether this is a record, an error, or
+ * just a keep-alive used as a liveness signal.
+ */
+export type BusConsumeItem =
+  | { kind: "message"; message: BusConsumedMessage }
+  | { kind: "error"; error: string }
+  | { kind: "keepAlive" };
+
+/** `StreamChunk` envelope as it appears on the SSE feed. Mirrors `acteon_core::StreamChunk`. */
+export interface StreamChunkEnvelope {
+  streamId: string;
+  chunkSeq: number;
+  body: unknown;
+  sender?: string;
+  metadata: Record<string, string>;
+  createdAt?: string;
+}
+
+/** Terminal status mirroring `acteon_core::StreamEndStatus`. */
+export type StreamEndEnvelopeStatus = "complete" | "aborted" | "error";
+
+/** `StreamEnd` envelope as it appears on the SSE feed. */
+export interface StreamEndEnvelope {
+  streamId: string;
+  chunkSeq: number;
+  status: StreamEndEnvelopeStatus;
+  errorMessage?: string;
+  sender?: string;
+  metadata: Record<string, string>;
+  createdAt?: string;
+}
+
+/**
+ * One item from `consumeBusStream`. The consumer closes once an
+ * `end` is yielded; downstream callers should `break` from the
+ * `for await` loop on observing it.
+ */
+export type BusStreamItem =
+  | { kind: "chunk"; chunk: StreamChunkEnvelope }
+  | { kind: "end"; end: StreamEndEnvelope }
+  | { kind: "error"; error: string }
+  | { kind: "keepAlive" };
+
+export function parseBusConsumedMessage(d: Record<string, unknown>): BusConsumedMessage {
+  return {
+    topic: d.topic as string,
+    payload: d.payload,
+    key: d.key as string | undefined,
+    headers: (d.headers as Record<string, string> | undefined) ?? {},
+    partition: d.partition as number | undefined,
+    offset: d.offset as number | undefined,
+    timestamp: d.timestamp as string | undefined,
+  };
+}
+
+export function parseStreamChunkEnvelope(d: Record<string, unknown>): StreamChunkEnvelope {
+  return {
+    streamId: d.stream_id as string,
+    chunkSeq: d.chunk_seq as number,
+    body: d.body,
+    sender: d.sender as string | undefined,
+    metadata: (d.metadata as Record<string, string> | undefined) ?? {},
+    createdAt: d.created_at as string | undefined,
+  };
+}
+
+export function parseStreamEndEnvelope(d: Record<string, unknown>): StreamEndEnvelope {
+  return {
+    streamId: d.stream_id as string,
+    chunkSeq: d.chunk_seq as number,
+    status: d.status as StreamEndEnvelopeStatus,
+    errorMessage: d.error_message as string | undefined,
+    sender: d.sender as string | undefined,
+    metadata: (d.metadata as Record<string, string> | undefined) ?? {},
+    createdAt: d.created_at as string | undefined,
+  };
+}
+
+// =============================================================================
 // Wire-format helpers
 // =============================================================================
 
