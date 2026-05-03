@@ -516,7 +516,10 @@ public final class Bus {
      * but lets callers use the SSE comment frame as a liveness signal.
      */
     public sealed interface BusConsumeItem
-        permits BusConsumeItem.Message, BusConsumeItem.Error, BusConsumeItem.KeepAlive {
+        permits BusConsumeItem.Message,
+            BusConsumeItem.Error,
+            BusConsumeItem.KeepAlive,
+            BusConsumeItem.Reconnected {
 
         /** A consumed Kafka record. */
         record Message(BusConsumedMessage message) implements BusConsumeItem {}
@@ -526,6 +529,39 @@ public final class Bus {
 
         /** SSE comment frame from the server. */
         record KeepAlive() implements BusConsumeItem {}
+
+        /**
+         * Best-effort reconnect succeeded after a disconnect. Only
+         * emitted when {@link ActeonClient#consumeBusSubscription} is
+         * called with a non-null {@link ReconnectConfig}; subsequent
+         * messages may have gaps versus the pre-disconnect cursor.
+         */
+        record Reconnected(long backoffMs, int attempt) implements BusConsumeItem {}
+    }
+
+    /**
+     * Best-effort reconnect policy for {@link ActeonClient#consumeBusSubscription}.
+     *
+     * <p>Defaults: 500ms initial backoff, 30s cap, infinite retries.
+     * The attempt counter resets after a successful read so a long-
+     * stable connection isn't penalised for a single later blip.
+     *
+     * <p>Reconnect always resumes from {@code latest} because Phase 1
+     * has no per-partition offset seek; workloads that need lossless
+     * delivery should use Phase 2 durable subscriptions with manual
+     * ack instead.
+     *
+     * @param maxAttempts {@code 0} means "retry forever".
+     */
+    public record ReconnectConfig(
+        long initialBackoffMs,
+        long maxBackoffMs,
+        int maxAttempts
+    ) {
+        /** Default policy: 500ms initial, 30s cap, retry forever. */
+        public static ReconnectConfig defaults() {
+            return new ReconnectConfig(500L, 30_000L, 0);
+        }
     }
 
     /** {@code StreamChunk} envelope as it appears on the SSE feed. Mirrors {@code acteon_core::StreamChunk}. */

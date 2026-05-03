@@ -481,4 +481,57 @@ class BusTest {
             assertEquals("broker disconnected", ((Bus.BusStreamItem.Error) item).message());
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Reconnect behaviour
+    // -------------------------------------------------------------------------
+
+    @Test
+    void reconnectBackoffCapsAtMax() {
+        Bus.ReconnectConfig cfg = new Bus.ReconnectConfig(100L, 5_000L, 0);
+        assertEquals(100L, ReconnectingBusSseIterator.backoffFor(0, cfg));
+        assertEquals(200L, ReconnectingBusSseIterator.backoffFor(1, cfg));
+        assertEquals(400L, ReconnectingBusSseIterator.backoffFor(2, cfg));
+        assertEquals(5_000L, ReconnectingBusSseIterator.backoffFor(20, cfg));
+        // Bounded shift handles wild attempt counters cleanly.
+        assertEquals(5_000L, ReconnectingBusSseIterator.backoffFor(64, cfg));
+    }
+
+    @Test
+    void reconnectingIteratorYieldsReconnectedBoundary() throws Exception {
+        // Opener returns a fresh in-memory SSE stream on each call;
+        // we drain the first one, then the iterator should sleep,
+        // reopen, and emit a Reconnected boundary before the next
+        // live record.
+        java.util.concurrent.atomic.AtomicInteger opens =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+        ReconnectingBusSseIterator.InnerOpener opener = (firstAttempt) -> {
+            int n = opens.incrementAndGet();
+            String body =
+                "event: bus.message\nid: " + n
+                    + "\ndata: {\"topic\":\"agents.demo.events\",\"offset\":" + n + "}\n\n";
+            return new BusSseIterator(
+                new java.io.ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
+        };
+        Bus.ReconnectConfig cfg = new Bus.ReconnectConfig(1L, 1L, 1);
+        java.util.List<Class<?>> kinds = new java.util.ArrayList<>();
+        try (ReconnectingBusSseIterator iter =
+                new ReconnectingBusSseIterator(opener, cfg)) {
+            int seenMessages = 0;
+            while (seenMessages < 2 && iter.hasNext()) {
+                Bus.BusConsumeItem item = iter.next();
+                kinds.add(item.getClass());
+                if (item instanceof Bus.BusConsumeItem.Message) {
+                    seenMessages += 1;
+                }
+            }
+        }
+        // The attempt counter resets after each successful read, so
+        // any number of opens >= 2 is correct here. The contract we
+        // care about: callers see *both* a Message and a Reconnected
+        // boundary in the resulting kind sequence.
+        assertTrue(kinds.contains(Bus.BusConsumeItem.Message.class), kinds.toString());
+        assertTrue(kinds.contains(Bus.BusConsumeItem.Reconnected.class), kinds.toString());
+        assertTrue(opens.get() >= 2, "opens=" + opens.get());
+    }
 }
