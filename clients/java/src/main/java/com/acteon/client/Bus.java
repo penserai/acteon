@@ -489,4 +489,77 @@ public final class Bus {
 
         default boolean isParked() { return this instanceof Parked; }
     }
+
+    // ============================================================================
+    // SSE consumer DTOs — bus subscription tail + stream-id tail
+    // ============================================================================
+
+    /**
+     * A single Kafka record observed by a bus subscription consumer.
+     * Mirrors the wire shape of {@code acteon_bus::BusMessage} so
+     * callers don't have to peel apart raw JSON.
+     */
+    public record BusConsumedMessage(
+        String topic,
+        String key,
+        com.fasterxml.jackson.databind.JsonNode payload,
+        java.util.Map<String, String> headers,
+        Integer partition,
+        Long offset,
+        String timestamp
+    ) {}
+
+    /**
+     * Sealed-interface union for items emitted by
+     * {@link ActeonClient#consumeBusSubscription}. Pattern-match in a
+     * {@code switch} on the result. {@code KeepAlive} carries no data
+     * but lets callers use the SSE comment frame as a liveness signal.
+     */
+    public sealed interface BusConsumeItem
+        permits BusConsumeItem.Message, BusConsumeItem.Error, BusConsumeItem.KeepAlive {
+
+        /** A consumed Kafka record. */
+        record Message(BusConsumedMessage message) implements BusConsumeItem {}
+
+        /** Server-side {@code bus.error} event. */
+        record Error(String message) implements BusConsumeItem {}
+
+        /** SSE comment frame from the server. */
+        record KeepAlive() implements BusConsumeItem {}
+    }
+
+    /** {@code StreamChunk} envelope as it appears on the SSE feed. Mirrors {@code acteon_core::StreamChunk}. */
+    public record StreamChunkEnvelope(
+        String streamId,
+        long chunkSeq,
+        com.fasterxml.jackson.databind.JsonNode body,
+        String sender,
+        java.util.Map<String, String> metadata,
+        String createdAt
+    ) {}
+
+    /** {@code StreamEnd} envelope as it appears on the SSE feed. Status is "complete", "aborted", or "error". */
+    public record StreamEndEnvelope(
+        String streamId,
+        long chunkSeq,
+        String status,
+        String errorMessage,
+        String sender,
+        java.util.Map<String, String> metadata,
+        String createdAt
+    ) {}
+
+    /**
+     * Sealed-interface union for items emitted by
+     * {@link ActeonClient#consumeBusStream}. The consumer closes the
+     * underlying HTTP stream once an {@code End} is observed.
+     */
+    public sealed interface BusStreamItem
+        permits BusStreamItem.Chunk, BusStreamItem.End, BusStreamItem.Error, BusStreamItem.KeepAlive {
+
+        record Chunk(StreamChunkEnvelope chunk) implements BusStreamItem {}
+        record End(StreamEndEnvelope end) implements BusStreamItem {}
+        record Error(String message) implements BusStreamItem {}
+        record KeepAlive() implements BusStreamItem {}
+    }
 }

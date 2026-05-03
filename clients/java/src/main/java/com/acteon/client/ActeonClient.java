@@ -3508,6 +3508,106 @@ public class ActeonClient implements AutoCloseable {
             + busSeg(conversationId) + "/" + busSeg(streamId);
     }
 
+    /**
+     * Consume a bus subscription via SSE
+     * ({@code GET /v1/bus/subscribe/{subscriptionId}}). Returns a
+     * {@link BusSseIterator} that yields typed
+     * {@link Bus.BusConsumeItem}s. Server-side {@code bus.error}
+     * events surface as {@code BusConsumeItem.Error}; SSE keep-alive
+     * comments surface as {@code BusConsumeItem.KeepAlive} so callers
+     * can use them as a liveness signal.
+     *
+     * <pre>{@code
+     * try (BusSseIterator iter = client.consumeBusSubscription(
+     *         "agent-A", "agents.demo.events", "earliest")) {
+     *     while (iter.hasNext()) {
+     *         switch (iter.next()) {
+     *             case Bus.BusConsumeItem.Message m -> System.out.println(m.message().offset());
+     *             case Bus.BusConsumeItem.Error e -> System.err.println(e.message());
+     *             case Bus.BusConsumeItem.KeepAlive __ -> {}
+     *         }
+     *     }
+     * }
+     * }</pre>
+     *
+     * @param subscriptionId Subscription id (Kafka consumer group).
+     * @param topic Full Kafka topic name ({@code namespace.tenant.name}).
+     * @param from {@code "earliest"} or {@code "latest"}, or {@code null} for the server default.
+     */
+    public BusSseIterator consumeBusSubscription(
+        String subscriptionId, String topic, String from
+    ) throws ActeonException {
+        java.util.LinkedHashMap<String, String> params = new java.util.LinkedHashMap<>();
+        params.put("topic", topic);
+        if (from != null) params.put("from", from);
+        String path = appendQuery("/v1/bus/subscribe/" + busSeg(subscriptionId), params);
+        InputStream body = openSseStream(path);
+        return new BusSseIterator(body);
+    }
+
+    /**
+     * Consume a typed stream via SSE
+     * ({@code GET /v1/bus/streams/{ns}/{tenant}/{conversationId}/{streamId}}).
+     * The server filters records by
+     * {@code (envelope_kind, conversation_id, stream_id)}, so this
+     * iterator only yields chunks for the requested stream id and
+     * closes after the terminal {@code BusStreamItem.End}.
+     *
+     * <pre>{@code
+     * try (BusStreamSseIterator iter = client.consumeBusStream(
+     *         "agents", "demo", "thread-1", "stream-42")) {
+     *     while (iter.hasNext()) {
+     *         var item = iter.next();
+     *         if (item instanceof Bus.BusStreamItem.Chunk c) {
+     *             System.out.println(c.chunk().chunkSeq());
+     *         } else if (item instanceof Bus.BusStreamItem.End) {
+     *             break;
+     *         }
+     *     }
+     * }
+     * }</pre>
+     */
+    public BusStreamSseIterator consumeBusStream(
+        String namespace, String tenant, String conversationId, String streamId
+    ) throws ActeonException {
+        String path = "/v1/bus/streams/" + busSeg(namespace) + "/" + busSeg(tenant) + "/"
+            + busSeg(conversationId) + "/" + busSeg(streamId);
+        InputStream body = openSseStream(path);
+        return new BusStreamSseIterator(body);
+    }
+
+    /**
+     * Open an SSE-flavoured GET against the given path and return the
+     * raw response body. Caller wraps it in a typed iterator. Errors
+     * surface as {@link HttpException} with the response body inlined.
+     */
+    private InputStream openSseStream(String path) throws ActeonException {
+        try {
+            HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + path))
+                .header("Accept", "text/event-stream");
+            if (apiKey != null && !apiKey.isEmpty()) {
+                builder.header("Authorization", "Bearer " + apiKey);
+            }
+            HttpRequest request = builder.GET().build();
+            HttpResponse<InputStream> response = httpClient.send(
+                request, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() == 200) {
+                return response.body();
+            }
+            try (InputStream body = response.body()) {
+                String errorBody = new String(body.readAllBytes(), StandardCharsets.UTF_8);
+                throw new HttpException(
+                    response.statusCode(), "bus SSE connection failed: " + errorBody);
+            }
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
     // --------------- Phase 6c: HITL approvals ---------------
 
     public List<Bus.BusApprovalView> listBusApprovals(
