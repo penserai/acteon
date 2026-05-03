@@ -1130,6 +1130,13 @@ class _AsyncBusClientMixin:
 # comments. The bus consumers want to surface them as a liveness
 # signal, so we use a small private envelope type below and a
 # matching parser instead of layering on `_parse_sse_stream`.
+#
+# Sync vs async parser duplication: Python's sync and async generators
+# don't share an underlying state machine cleanly — `for line in lines`
+# and `async for line in aiter_lines` differ at the syntactic level,
+# and a unified class-based implementation would add more LOC and
+# indirection than two short copies. Any frame-level bug fix has to
+# touch both functions; keep them in lock-step.
 
 
 class _SseFrame:

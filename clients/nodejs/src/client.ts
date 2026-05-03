@@ -2231,7 +2231,10 @@ export class ActeonClient {
         // Keep the last incomplete line in the buffer.
         buffer = lines.pop() ?? "";
 
-        for (const line of lines) {
+        for (const raw of lines) {
+          // Strip a trailing CR — splitting on `\n` alone leaves bare
+          // `\r` on every line when an intermediary normalises to CRLF.
+          const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
           if (line === "") {
             // Empty line signals end of an event.
             if (currentData.length > 0) {
@@ -2301,7 +2304,12 @@ export class ActeonClient {
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
-        for (const line of lines) {
+        for (const raw of lines) {
+          // Strip a trailing CR. The SSE spec accepts `\r\n`, `\r`, or
+          // `\n` as line terminators; splitting on `\n` alone leaves a
+          // bare `\r` on every line when an intermediary normalises to
+          // CRLF — and that breaks the empty-line frame trigger below.
+          const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
           if (line.startsWith(":")) {
             yield { kind: "keepAlive" };
             continue;

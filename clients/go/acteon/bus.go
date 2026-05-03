@@ -641,18 +641,28 @@ func (c *Client) ConsumeBusStream(
 }
 
 // busSseEnvelope is the raw line-protocol output the bus consumers
-// post-process into typed items. Either a frame (event/id/data) or a
-// keep-alive comment.
+// post-process into typed items. Either a frame (event/id/data), a
+// keep-alive comment, or a synthesized scanner-side error (bumped
+// past `bufio.ErrTooLong` and similar transport faults so consumers
+// see a typed Error item instead of a silent channel close).
 type busSseEnvelope struct {
 	keepAlive bool
 	event     string
 	id        string
 	data      string
+	// Set when the underlying byte scanner failed mid-stream. The
+	// outer consumer parser maps this to its own Error variant
+	// (`BusConsumeKindError` or `BusStreamKindError`) so the caller
+	// gets a typed signal instead of an opaque close.
+	transportErr string
 }
 
 func parseBusConsumeEnvelope(env *busSseEnvelope) (*BusConsumeItem, error) {
 	if env.keepAlive {
 		return &BusConsumeItem{Kind: BusConsumeKindKeepAlive}, nil
+	}
+	if env.transportErr != "" {
+		return &BusConsumeItem{Kind: BusConsumeKindError, Error: env.transportErr}, nil
 	}
 	name := env.event
 	if name == "" {
@@ -675,6 +685,9 @@ func parseBusConsumeEnvelope(env *busSseEnvelope) (*BusConsumeItem, error) {
 func parseBusStreamEnvelope(env *busSseEnvelope) (*BusStreamItem, error) {
 	if env.keepAlive {
 		return &BusStreamItem{Kind: BusStreamKindKeepAlive}, nil
+	}
+	if env.transportErr != "" {
+		return &BusStreamItem{Kind: BusStreamKindError, Error: env.transportErr}, nil
 	}
 	name := env.event
 	if name == "" {
@@ -745,10 +758,13 @@ func (c *Client) openBusSSE(ctx context.Context, path string) (<-chan *busSseEnv
 		defer close(ch)
 		defer resp.Body.Close()
 		scanner := bufio.NewScanner(resp.Body)
-		// Bus messages may exceed the default 64 KiB scanner buffer
-		// when payloads carry large strings. Bump to 1 MiB to match
-		// the dispatch stream comfort margin.
-		const maxLine = 1 << 20
+		// Bus payloads can carry large LLM outputs or batched state.
+		// 8 MiB is the upper bound we'll tolerate per `data:` line —
+		// anything longer is almost certainly a bug or a hostile
+		// upstream, and we surface the failure as a typed Error item
+		// (rather than letting the channel close silently the way
+		// `bufio.ErrTooLong` would).
+		const maxLine = 8 << 20
 		scanner.Buffer(make([]byte, 0, 64*1024), maxLine)
 		var event, id string
 		var dataLines []string
@@ -790,6 +806,17 @@ func (c *Client) openBusSSE(ctx context.Context, path string) (<-chan *busSseEnv
 				event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 			case strings.HasPrefix(line, "data:"):
 				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		// Surface scanner errors (most commonly `bufio.ErrTooLong`)
+		// as a synthesized envelope so both the subscription and
+		// stream parsers can lift it to their own Error item — the
+		// alternative is an opaque channel close that callers can't
+		// distinguish from the server cleanly ending the stream.
+		if err := scanner.Err(); err != nil {
+			select {
+			case ch <- &busSseEnvelope{transportErr: err.Error()}:
+			case <-ctx.Done():
 			}
 		}
 	}()

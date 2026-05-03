@@ -550,3 +550,64 @@ describe("SSE consumer DTOs", () => {
     assert.equal(e.errorMessage, "broker disconnected");
   });
 });
+
+describe("SSE consumer line-protocol", () => {
+  // The bus SSE consumers split on `\n` for performance, so a trailing
+  // `\r` (from intermediaries that normalise to CRLF) needs to be
+  // stripped explicitly — otherwise the empty-line frame trigger
+  // misses entirely and frames stop dispatching.
+
+  it("consumeBusSubscription handles CRLF-terminated frames", async () => {
+    const http = await import("node:http");
+    const body =
+      ":keep-alive\r\n\r\n" +
+      "event: bus.message\r\nid: 5\r\n" +
+      'data: {"topic":"agents.demo.events","offset":5}\r\n\r\n';
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(body);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const c = new ActeonClient(`http://localhost:${port}`);
+      const items: string[] = [];
+      for await (const item of c.consumeBusSubscription("agent-A", {
+        topic: "agents.demo.events",
+      })) {
+        items.push(item.kind);
+        if (items.length >= 2) break;
+      }
+      assert.deepEqual(items, ["keepAlive", "message"]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("consumeBusStream handles CRLF-terminated chunk + end", async () => {
+    const http = await import("node:http");
+    const body =
+      "event: bus.stream.chunk\r\nid: 0\r\n" +
+      'data: {"stream_id":"s1","chunk_seq":3,"body":{"t":"hi"},"created_at":"2026-05-02T12:00:00Z"}\r\n\r\n' +
+      "event: bus.stream.end\r\nid: 1\r\n" +
+      'data: {"stream_id":"s1","chunk_seq":4,"status":"complete","created_at":"2026-05-02T12:00:01Z"}\r\n\r\n';
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(body);
+      res.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const c = new ActeonClient(`http://localhost:${port}`);
+      const items: string[] = [];
+      for await (const item of c.consumeBusStream("agents", "demo", "thread-1", "s1")) {
+        items.push(item.kind);
+      }
+      assert.deepEqual(items, ["chunk", "end"]);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

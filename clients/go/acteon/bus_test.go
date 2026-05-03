@@ -529,6 +529,33 @@ func TestParseBusStreamEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseBusEnvelopeSurfacesTransportError(t *testing.T) {
+	// Scanner-side faults (e.g. `bufio.ErrTooLong`) come through as a
+	// `transportErr`-flagged envelope. Both consumer parsers should
+	// lift it to their own Error variant so the caller's channel sees
+	// a typed signal instead of just closing.
+	consumeItem, err := parseBusConsumeEnvelope(&busSseEnvelope{
+		transportErr: "bufio.Scanner: token too long",
+	})
+	if err != nil {
+		t.Fatalf("consume parse: %v", err)
+	}
+	if consumeItem.Kind != BusConsumeKindError ||
+		consumeItem.Error != "bufio.Scanner: token too long" {
+		t.Errorf("unexpected consume item: %+v", consumeItem)
+	}
+
+	streamItem, err := parseBusStreamEnvelope(&busSseEnvelope{
+		transportErr: "unexpected EOF",
+	})
+	if err != nil {
+		t.Fatalf("stream parse: %v", err)
+	}
+	if streamItem.Kind != BusStreamKindError || streamItem.Error != "unexpected EOF" {
+		t.Errorf("unexpected stream item: %+v", streamItem)
+	}
+}
+
 func TestConsumeBusSubscriptionEndToEnd(t *testing.T) {
 	// Server emits one keep-alive (`:ping`), one message frame, and
 	// closes — the consumer should yield both items in order.
