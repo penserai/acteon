@@ -173,6 +173,7 @@ import {
   type BusApprovalStatus,
   type BusApprovalView,
   type BusConsumeItem,
+  type ReconnectConfig,
   type BusConversation,
   type BusLag,
   type BusReplayResponse,
@@ -281,6 +282,21 @@ function decodeJsonOrPassthrough(data: string): unknown {
   } catch {
     return data;
   }
+}
+
+/**
+ * Exponential backoff capped at `maxBackoffMs`. The shift is bounded
+ * at 20 so wild attempt counters can't overflow; matches the Rust
+ * client's `backoff_for`.
+ */
+function reconnectBackoffMs(
+  attempt: number,
+  initialBackoffMs: number,
+  maxBackoffMs: number,
+): number {
+  const shift = Math.min(attempt, 20);
+  const exp = initialBackoffMs * Math.pow(2, shift);
+  return Math.min(exp, maxBackoffMs);
 }
 
 function extractErrorMessage(data: string): string {
@@ -2848,26 +2864,83 @@ export class ActeonClient {
    * as `kind: "error"`; SSE keep-alive comments surface as
    * `kind: "keepAlive"` so callers can use them as a liveness signal.
    *
+   * When `reconnect` is set, a clean disconnect triggers exponential
+   * backoff and a fresh subscribe call from `latest` — yielding a
+   * `kind: "reconnected"` item so callers can resync state. Note that
+   * resume from `latest` means messages produced during the disconnect
+   * window are dropped; use Phase 2 durable subscriptions with manual
+   * ack for lossless delivery.
+   *
    * @example
    * ```typescript
    * for await (const item of client.consumeBusSubscription("agent-A", {
    *   topic: "agents.demo.events",
    *   from: "earliest",
+   *   reconnect: {},  // 500ms initial, 30s cap, infinite retries
    * })) {
    *   if (item.kind === "message") console.log(item.message.offset);
+   *   else if (item.kind === "reconnected") {
+   *     console.warn(`reconnected after ${item.backoffMs}ms (attempt ${item.attempt})`);
+   *   }
    * }
    * ```
    */
   async *consumeBusSubscription(
     subscriptionId: string,
-    options: { topic: string; from?: "earliest" | "latest" },
+    options: {
+      topic: string;
+      from?: "earliest" | "latest";
+      reconnect?: ReconnectConfig;
+    },
   ): AsyncGenerator<BusConsumeItem, void, undefined> {
-    const params = new URLSearchParams();
-    params.set("topic", options.topic);
-    if (options.from !== undefined) params.set("from", options.from);
     const path = `/v1/bus/subscribe/${this.busSeg(subscriptionId)}`;
-    for await (const env of this.connectBusSse(path, params)) {
-      yield this.envelopeToConsumeItem(env);
+    if (options.reconnect === undefined) {
+      const params = new URLSearchParams();
+      params.set("topic", options.topic);
+      if (options.from !== undefined) params.set("from", options.from);
+      for await (const env of this.connectBusSse(path, params)) {
+        yield this.envelopeToConsumeItem(env);
+      }
+      return;
+    }
+
+    // Reconnect path: open the first stream with the caller's `from`,
+    // resume from `latest` after every disconnect. Counter resets on
+    // successful read so a long-stable connection isn't penalised
+    // for a single later blip.
+    const cfg = options.reconnect;
+    const initialBackoffMs = cfg.initialBackoffMs ?? 500;
+    const maxBackoffMs = cfg.maxBackoffMs ?? 30_000;
+    const maxAttempts = cfg.maxAttempts;
+    let attempt = 0;
+    let firstOpen = true;
+    while (true) {
+      const params = new URLSearchParams();
+      params.set("topic", options.topic);
+      params.set("from", firstOpen ? options.from ?? "latest" : "latest");
+      try {
+        for await (const env of this.connectBusSse(path, params)) {
+          attempt = 0;
+          yield this.envelopeToConsumeItem(env);
+        }
+      } catch (err) {
+        // Connection-level errors are the disconnect signal we're
+        // meant to recover from; let them flow through to the sleep+
+        // retry path. Anything else (parse error etc.) re-throws.
+        if (err instanceof HttpError || err instanceof ConnectionError) {
+          // expected — fall through to backoff
+        } else {
+          throw err;
+        }
+      }
+      firstOpen = false;
+      if (maxAttempts !== undefined && attempt >= maxAttempts) {
+        return;
+      }
+      const backoffMs = reconnectBackoffMs(attempt, initialBackoffMs, maxBackoffMs);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      attempt += 1;
+      yield { kind: "reconnected", backoffMs, attempt };
     }
   }
 
