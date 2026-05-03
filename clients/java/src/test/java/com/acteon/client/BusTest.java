@@ -404,4 +404,81 @@ class BusTest {
             server.stop(0);
         }
     }
+
+    // -------------------------------------------------------------------------
+    // SSE consumer parsing
+    // -------------------------------------------------------------------------
+
+    @Test
+    void busSseIteratorYieldsKeepAliveThenMessage() throws Exception {
+        // Server emits: keep-alive comment, then a `bus.message` frame, then closes.
+        String sse =
+            ":keep-alive\n\n"
+            + "event: bus.message\nid: 5\n"
+            + "data: {\"topic\":\"agents.demo.events\",\"offset\":5,\"payload\":{\"k\":\"v\"}}\n\n";
+        try (BusSseIterator iter = new BusSseIterator(
+                new java.io.ByteArrayInputStream(sse.getBytes(StandardCharsets.UTF_8)))) {
+            assertTrue(iter.hasNext());
+            Bus.BusConsumeItem first = iter.next();
+            assertInstanceOf(Bus.BusConsumeItem.KeepAlive.class, first);
+            assertTrue(iter.hasNext());
+            Bus.BusConsumeItem second = iter.next();
+            assertInstanceOf(Bus.BusConsumeItem.Message.class, second);
+            Bus.BusConsumedMessage msg = ((Bus.BusConsumeItem.Message) second).message();
+            assertEquals("agents.demo.events", msg.topic());
+            assertEquals(5L, msg.offset());
+        }
+    }
+
+    @Test
+    void busSseIteratorSurfacesBusErrorEvent() throws Exception {
+        String sse = "event: bus.error\ndata: {\"error\":\"broker disconnected\"}\n\n";
+        try (BusSseIterator iter = new BusSseIterator(
+                new java.io.ByteArrayInputStream(sse.getBytes(StandardCharsets.UTF_8)))) {
+            assertTrue(iter.hasNext());
+            Bus.BusConsumeItem item = iter.next();
+            assertInstanceOf(Bus.BusConsumeItem.Error.class, item);
+            assertEquals("broker disconnected", ((Bus.BusConsumeItem.Error) item).message());
+        }
+    }
+
+    @Test
+    void busStreamSseIteratorClosesAfterEnd() throws Exception {
+        // Server emits a chunk, then end. The iterator must yield both
+        // and then report no more items (closes the stream).
+        String sse =
+            "event: bus.stream.chunk\nid: 0\n"
+            + "data: {\"stream_id\":\"s1\",\"chunk_seq\":3,\"body\":{\"token\":\"hi\"},\"created_at\":\"2026-05-02T12:00:00Z\"}\n\n"
+            + "event: bus.stream.end\nid: 1\n"
+            + "data: {\"stream_id\":\"s1\",\"chunk_seq\":4,\"status\":\"complete\",\"created_at\":\"2026-05-02T12:00:01Z\"}\n\n"
+            + "event: bus.stream.chunk\nid: 2\n"
+            + "data: {\"stream_id\":\"s1\",\"chunk_seq\":99,\"body\":{}}\n\n";
+        try (BusStreamSseIterator iter = new BusStreamSseIterator(
+                new java.io.ByteArrayInputStream(sse.getBytes(StandardCharsets.UTF_8)))) {
+            assertTrue(iter.hasNext());
+            assertInstanceOf(Bus.BusStreamItem.Chunk.class, iter.next());
+            assertTrue(iter.hasNext());
+            Bus.BusStreamItem end = iter.next();
+            assertInstanceOf(Bus.BusStreamItem.End.class, end);
+            assertEquals("complete", ((Bus.BusStreamItem.End) end).end().status());
+            // Stream should be closed; the trailing chunk after End is
+            // ignored even though the underlying bytes are still
+            // available.
+            assertFalse(iter.hasNext());
+        }
+    }
+
+    @Test
+    void busStreamSseErrorWithPlainStringBody() throws Exception {
+        // Defensive: future server emits an `error` event with a
+        // non-JSON body. The iterator should surface the raw text.
+        String sse = "event: bus.stream.error\ndata: broker disconnected\n\n";
+        try (BusStreamSseIterator iter = new BusStreamSseIterator(
+                new java.io.ByteArrayInputStream(sse.getBytes(StandardCharsets.UTF_8)))) {
+            assertTrue(iter.hasNext());
+            Bus.BusStreamItem item = iter.next();
+            assertInstanceOf(Bus.BusStreamItem.Error.class, item);
+            assertEquals("broker disconnected", ((Bus.BusStreamItem.Error) item).message());
+        }
+    }
 }
