@@ -854,14 +854,37 @@ class BusConsumedMessage:
 
 
 @dataclass
+class ReconnectConfig:
+    """Best-effort reconnect policy for :meth:`consume_bus_subscription`.
+
+    Defaults: 500ms initial backoff, 30s cap, infinite retries. The
+    counter resets after a successful read so a long-stable
+    connection isn't penalised for a single later blip.
+
+    Reconnect always resumes from ``latest`` because Phase 1 has no
+    per-partition offset seek; workloads that need lossless delivery
+    should use Phase 2 durable subscriptions with manual ack instead.
+    """
+
+    initial_backoff_ms: int = 500
+    max_backoff_ms: int = 30_000
+    max_attempts: Optional[int] = None  # None = retry forever
+
+
+@dataclass
 class BusConsumeItem:
     """One item from :meth:`consume_bus_subscription`. Exactly one of
-    ``message`` or ``error`` is populated; both ``None`` is a keep-alive.
-    Inspect via :attr:`is_message` / :attr:`is_error` / :attr:`is_keep_alive`.
+    ``message`` / ``error`` / ``reconnected`` is populated; all
+    ``None`` is a keep-alive. Inspect via :attr:`is_message` etc.
+
+    ``reconnected`` is only set when ``ReconnectConfig`` is passed and
+    a reconnect succeeded. Subsequent messages may have gaps versus
+    the pre-disconnect cursor.
     """
 
     message: Optional[BusConsumedMessage] = None
     error: Optional[str] = None
+    reconnected: Optional["ReconnectedInfo"] = None
 
     @property
     def is_message(self) -> bool:
@@ -872,8 +895,26 @@ class BusConsumeItem:
         return self.error is not None
 
     @property
+    def is_reconnected(self) -> bool:
+        return self.reconnected is not None
+
+    @property
     def is_keep_alive(self) -> bool:
-        return self.message is None and self.error is None
+        return (
+            self.message is None
+            and self.error is None
+            and self.reconnected is None
+        )
+
+
+@dataclass
+class ReconnectedInfo:
+    """Carried by :class:`BusConsumeItem` when a best-effort reconnect
+    succeeds. Lets callers attribute downstream gaps and resync state.
+    """
+
+    backoff_ms: int
+    attempt: int
 
 
 @dataclass

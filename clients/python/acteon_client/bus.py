@@ -13,7 +13,9 @@ path, json=, params=)`` returning an ``httpx.Response``. The base
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import TYPE_CHECKING, Any, AsyncIterator, Iterator, Optional
 from urllib.parse import quote
 
@@ -47,6 +49,8 @@ from .bus_models import (
     PostBusToolResult,
     PublishBusMessage,
     PublishReceipt,
+    ReconnectConfig,
+    ReconnectedInfo,
     RegisterBusAgent,
     RegisterBusSchema,
     StreamChunkEnvelope,
@@ -497,6 +501,7 @@ class _BusClientMixin:
         *,
         topic: str,
         from_offset: Optional[str] = None,
+        reconnect: Optional[ReconnectConfig] = None,
     ) -> Iterator[BusConsumeItem]:
         """Consume a bus subscription via SSE
         (``GET /v1/bus/subscribe/{subscription_id}``). Yields one item
@@ -505,20 +510,66 @@ class _BusClientMixin:
         comments surface as :attr:`BusConsumeItem.is_keep_alive` so
         callers can use them as a liveness signal.
 
+        When ``reconnect`` is set, a clean disconnect triggers
+        exponential backoff and a fresh subscribe call from
+        ``latest`` — yielding a :attr:`BusConsumeItem.is_reconnected`
+        item so callers can resync state. Note that resume from
+        ``latest`` means messages produced during the disconnect
+        window are dropped; use Phase 2 durable subscriptions with
+        manual ack for lossless delivery.
+
         Args:
             subscription_id: Subscription id (Kafka consumer group).
             topic: Full Kafka topic name (``namespace.tenant.name``).
             from_offset: ``earliest`` or ``latest`` (server default).
+            reconnect: Opt-in :class:`ReconnectConfig` for best-effort
+                reconnect on disconnect.
 
         Yields:
             :class:`BusConsumeItem` per record.
         """
-        params: dict[str, Any] = {"topic": topic}
+        if reconnect is None:
+            params: dict[str, Any] = {"topic": topic}
+            if from_offset is not None:
+                params["from"] = from_offset
+            url = f"{self.base_url}/v1/bus/subscribe/{_seg(subscription_id)}"
+            for env in _open_bus_sse_stream(self._client, url, params, self._headers()):
+                yield _envelope_to_consume_item(env)
+            return
+
+        # Reconnect path: open the first stream with the caller's
+        # `from_offset`, then resume from `latest` after each
+        # disconnect. The attempt counter resets on a successful read.
+        first_params: dict[str, Any] = {"topic": topic}
         if from_offset is not None:
-            params["from"] = from_offset
+            first_params["from"] = from_offset
+        resume_params: dict[str, Any] = {"topic": topic, "from": "latest"}
         url = f"{self.base_url}/v1/bus/subscribe/{_seg(subscription_id)}"
-        for env in _open_bus_sse_stream(self._client, url, params, self._headers()):
-            yield _envelope_to_consume_item(env)
+        attempt = 0
+        params_for_open = first_params
+        while True:
+            try:
+                for env in _open_bus_sse_stream(
+                    self._client, url, params_for_open, self._headers()
+                ):
+                    attempt = 0
+                    yield _envelope_to_consume_item(env)
+            except (ConnectionError, HttpError):
+                # Reconnect path swallows these — they're the
+                # disconnect signal we're meant to recover from.
+                pass
+            if (
+                reconnect.max_attempts is not None
+                and attempt >= reconnect.max_attempts
+            ):
+                return
+            backoff_ms = _reconnect_backoff_ms(attempt, reconnect)
+            time.sleep(backoff_ms / 1000.0)
+            attempt += 1
+            yield BusConsumeItem(
+                reconnected=ReconnectedInfo(backoff_ms=backoff_ms, attempt=attempt)
+            )
+            params_for_open = resume_params
 
     def consume_bus_stream(
         self,
@@ -1030,16 +1081,53 @@ class _AsyncBusClientMixin:
         *,
         topic: str,
         from_offset: Optional[str] = None,
+        reconnect: Optional[ReconnectConfig] = None,
     ) -> AsyncIterator[BusConsumeItem]:
-        """Async version of :meth:`_BusClientMixin.consume_bus_subscription`."""
-        params: dict[str, Any] = {"topic": topic}
+        """Async version of :meth:`_BusClientMixin.consume_bus_subscription`.
+
+        See the sync counterpart for the reconnect contract: best-
+        effort, resumes from ``latest``, yields a typed
+        ``Reconnected`` boundary item between attempts.
+        """
+        if reconnect is None:
+            params: dict[str, Any] = {"topic": topic}
+            if from_offset is not None:
+                params["from"] = from_offset
+            url = f"{self.base_url}/v1/bus/subscribe/{_seg(subscription_id)}"
+            async for env in _async_open_bus_sse_stream(
+                self._client, url, params, self._headers()
+            ):
+                yield _envelope_to_consume_item(env)
+            return
+
+        first_params: dict[str, Any] = {"topic": topic}
         if from_offset is not None:
-            params["from"] = from_offset
+            first_params["from"] = from_offset
+        resume_params: dict[str, Any] = {"topic": topic, "from": "latest"}
         url = f"{self.base_url}/v1/bus/subscribe/{_seg(subscription_id)}"
-        async for env in _async_open_bus_sse_stream(
-            self._client, url, params, self._headers()
-        ):
-            yield _envelope_to_consume_item(env)
+        attempt = 0
+        params_for_open = first_params
+        while True:
+            try:
+                async for env in _async_open_bus_sse_stream(
+                    self._client, url, params_for_open, self._headers()
+                ):
+                    attempt = 0
+                    yield _envelope_to_consume_item(env)
+            except (ConnectionError, HttpError):
+                pass
+            if (
+                reconnect.max_attempts is not None
+                and attempt >= reconnect.max_attempts
+            ):
+                return
+            backoff_ms = _reconnect_backoff_ms(attempt, reconnect)
+            await asyncio.sleep(backoff_ms / 1000.0)
+            attempt += 1
+            yield BusConsumeItem(
+                reconnected=ReconnectedInfo(backoff_ms=backoff_ms, attempt=attempt)
+            )
+            params_for_open = resume_params
 
     async def consume_bus_stream(
         self,
@@ -1317,3 +1405,14 @@ def _envelope_to_stream_item(env: Any) -> BusStreamItem:
     if name == "bus.stream.error":
         return BusStreamItem(error=_extract_error_message(frame.data))
     raise ValueError(f"unexpected SSE event '{name}' on bus stream consumer")
+
+
+def _reconnect_backoff_ms(attempt: int, cfg: ReconnectConfig) -> int:
+    """Exponential backoff capped at ``cfg.max_backoff_ms``.
+
+    The shift is bounded at 20 so wild attempt counters can't
+    overflow the ``int`` arithmetic Python falls back to here.
+    """
+    shift = min(attempt, 20)
+    exp = cfg.initial_backoff_ms * (1 << shift)
+    return min(exp, cfg.max_backoff_ms)
