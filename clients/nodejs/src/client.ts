@@ -172,11 +172,13 @@ import {
   type BusApprovalDecisionResponse,
   type BusApprovalStatus,
   type BusApprovalView,
+  type BusConsumeItem,
   type BusConversation,
   type BusLag,
   type BusReplayResponse,
   type BusSchema,
   type BusStreamEnvelopeReceipt,
+  type BusStreamItem,
   type BusSubscription,
   type BusToolEnvelopeReceipt,
   type BusToolResultLookup,
@@ -204,6 +206,7 @@ import {
   parseBusApprovalDecisionResponse,
   parseBusApprovalParkedReceipt,
   parseBusApprovalView,
+  parseBusConsumedMessage,
   parseBusConversation,
   parseBusLag,
   parseBusReplayResponse,
@@ -214,6 +217,8 @@ import {
   parseBusToolResultLookup,
   parseBusTopic,
   parsePublishReceipt,
+  parseStreamChunkEnvelope,
+  parseStreamEndEnvelope,
   postBusStreamChunkBody,
   postBusStreamEndBody,
   postBusToolCallBody,
@@ -261,6 +266,35 @@ export interface ActeonClientOptions {
  * }
  * ```
  */
+/**
+ * Internal envelope yielded by `connectBusSse`. Either a complete
+ * SSE frame or a keep-alive comment (which the bus consumers surface
+ * to callers as a liveness signal).
+ */
+type BusSseEnvelope =
+  | { kind: "frame"; event?: string; id?: string; data: string }
+  | { kind: "keepAlive" };
+
+function decodeJsonOrPassthrough(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return data;
+  }
+}
+
+function extractErrorMessage(data: string): string {
+  const decoded = decodeJsonOrPassthrough(data);
+  if (
+    typeof decoded === "object" &&
+    decoded !== null &&
+    typeof (decoded as Record<string, unknown>).error === "string"
+  ) {
+    return (decoded as Record<string, unknown>).error as string;
+  }
+  return data;
+}
+
 export class ActeonClient {
   private readonly baseUrl: string;
   private readonly timeout: number;
@@ -2232,6 +2266,126 @@ export class ActeonClient {
     }
   }
 
+  /**
+   * Connect to a bus SSE endpoint and yield raw envelopes (frame or
+   * keep-alive). The dispatch `connectSse` silently swallows comments;
+   * bus consumers want them as liveness signals, so this private helper
+   * reimplements the line protocol with a slightly wider yield type.
+   */
+  private async *connectBusSse(
+    path: string,
+    params?: URLSearchParams,
+  ): AsyncGenerator<BusSseEnvelope, void, undefined> {
+    let url = `${this.baseUrl}${path}`;
+    if (params && params.toString()) url += `?${params.toString()}`;
+    const headers: Record<string, string> = { Accept: "text/event-stream" };
+    if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
+
+    const response = await fetch(url, { method: "GET", headers });
+    if (!response.ok) {
+      throw new HttpError(response.status, `bus SSE connection failed: ${path}`);
+    }
+    if (!response.body) {
+      throw new ConnectionError("Response body is null");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let currentEvent = "";
+    let currentId = "";
+    let currentData: string[] = [];
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (line.startsWith(":")) {
+            yield { kind: "keepAlive" };
+            continue;
+          }
+          if (line === "") {
+            if (currentData.length > 0 || currentEvent !== "" || currentId !== "") {
+              yield {
+                kind: "frame",
+                event: currentEvent || undefined,
+                id: currentId || undefined,
+                data: currentData.join("\n"),
+              };
+            }
+            currentEvent = "";
+            currentId = "";
+            currentData = [];
+            continue;
+          }
+          if (line.startsWith("event:")) currentEvent = line.slice(6).trim();
+          else if (line.startsWith("id:")) currentId = line.slice(3).trim();
+          else if (line.startsWith("data:")) currentData.push(line.slice(5).trim());
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  private envelopeToConsumeItem(env: BusSseEnvelope): BusConsumeItem {
+    if (env.kind === "keepAlive") return { kind: "keepAlive" };
+    const name = env.event ?? "message";
+    if (name === "bus.message" || name === "message") {
+      const decoded = decodeJsonOrPassthrough(env.data);
+      if (typeof decoded !== "object" || decoded === null) {
+        throw new ApiError("BUS", `invalid bus.message payload: ${env.data}`, false);
+      }
+      return {
+        kind: "message",
+        message: parseBusConsumedMessage(decoded as Record<string, unknown>),
+      };
+    }
+    if (name === "bus.error") {
+      return { kind: "error", error: extractErrorMessage(env.data) };
+    }
+    throw new ApiError(
+      "BUS",
+      `unexpected SSE event '${name}' on bus subscribe stream`,
+      false,
+    );
+  }
+
+  private envelopeToStreamItem(env: BusSseEnvelope): BusStreamItem {
+    if (env.kind === "keepAlive") return { kind: "keepAlive" };
+    const name = env.event ?? "message";
+    if (name === "bus.stream.chunk") {
+      const decoded = decodeJsonOrPassthrough(env.data);
+      if (typeof decoded !== "object" || decoded === null) {
+        throw new ApiError("BUS", `invalid stream chunk payload: ${env.data}`, false);
+      }
+      return {
+        kind: "chunk",
+        chunk: parseStreamChunkEnvelope(decoded as Record<string, unknown>),
+      };
+    }
+    if (name === "bus.stream.end") {
+      const decoded = decodeJsonOrPassthrough(env.data);
+      if (typeof decoded !== "object" || decoded === null) {
+        throw new ApiError("BUS", `invalid stream end payload: ${env.data}`, false);
+      }
+      return {
+        kind: "end",
+        end: parseStreamEndEnvelope(decoded as Record<string, unknown>),
+      };
+    }
+    if (name === "bus.stream.error") {
+      return { kind: "error", error: extractErrorMessage(env.data) };
+    }
+    throw new ApiError(
+      "BUS",
+      `unexpected SSE event '${name}' on bus stream consumer`,
+      false,
+    );
+  }
+
   // ===========================================================================
   // Phase 8b: Agentic bus surface (Phases 1-6c)
   // ===========================================================================
@@ -2677,6 +2831,67 @@ export class ActeonClient {
       `${this.busSeg(namespace)}/${this.busSeg(tenant)}/` +
       `${this.busSeg(conversationId)}/${this.busSeg(streamId)}`
     );
+  }
+
+  /**
+   * Consume a bus subscription via SSE
+   * (`GET /v1/bus/subscribe/{subscriptionId}`). Yields one item per
+   * Kafka record on the underlying topic. Server-side errors surface
+   * as `kind: "error"`; SSE keep-alive comments surface as
+   * `kind: "keepAlive"` so callers can use them as a liveness signal.
+   *
+   * @example
+   * ```typescript
+   * for await (const item of client.consumeBusSubscription("agent-A", {
+   *   topic: "agents.demo.events",
+   *   from: "earliest",
+   * })) {
+   *   if (item.kind === "message") console.log(item.message.offset);
+   * }
+   * ```
+   */
+  async *consumeBusSubscription(
+    subscriptionId: string,
+    options: { topic: string; from?: "earliest" | "latest" },
+  ): AsyncGenerator<BusConsumeItem, void, undefined> {
+    const params = new URLSearchParams();
+    params.set("topic", options.topic);
+    if (options.from !== undefined) params.set("from", options.from);
+    const path = `/v1/bus/subscribe/${this.busSeg(subscriptionId)}`;
+    for await (const env of this.connectBusSse(path, params)) {
+      yield this.envelopeToConsumeItem(env);
+    }
+  }
+
+  /**
+   * Consume a typed stream via SSE
+   * (`GET /v1/bus/streams/{ns}/{tenant}/{conversationId}/{streamId}`).
+   * The server filters records by `(envelope_kind, conversation_id,
+   * stream_id)`, so this generator only emits chunks for the requested
+   * stream id and closes after the terminal `kind: "end"`.
+   *
+   * @example
+   * ```typescript
+   * for await (const item of client.consumeBusStream("agents", "demo", "thread-1", "stream-42")) {
+   *   if (item.kind === "chunk") process.stdout.write(JSON.stringify(item.chunk.body));
+   *   else if (item.kind === "end") break;
+   * }
+   * ```
+   */
+  async *consumeBusStream(
+    namespace: string,
+    tenant: string,
+    conversationId: string,
+    streamId: string,
+  ): AsyncGenerator<BusStreamItem, void, undefined> {
+    const path =
+      `/v1/bus/streams/${this.busSeg(namespace)}/${this.busSeg(tenant)}/` +
+      `${this.busSeg(conversationId)}/${this.busSeg(streamId)}`;
+    for await (const env of this.connectBusSse(path)) {
+      const item = this.envelopeToStreamItem(env);
+      yield item;
+      if (item.kind === "end") return;
+    }
   }
 
   // --------------- Phase 6c: HITL approvals ---------------

@@ -36,7 +36,10 @@ import {
   parseBusApprovalView,
   parseBusApprovalDecisionResponse,
   parseBusApprovalParkedReceipt,
+  parseBusConsumedMessage,
   parsePublishReceipt,
+  parseStreamChunkEnvelope,
+  parseStreamEndEnvelope,
 } from "./bus_models.js";
 import { ActeonClient } from "./client.js";
 
@@ -493,5 +496,57 @@ describe("busStreamConsumeUrl", () => {
     const url = c.busStreamConsumeUrl("a", "b", "c", "d");
     // The constructor strips the trailing slash; consume URL inherits.
     assert.equal(url, "http://localhost:3000/v1/bus/streams/a/b/c/d");
+  });
+});
+
+describe("SSE consumer DTOs", () => {
+  it("BusConsumedMessage round-trips snake_case wire form", () => {
+    const m = parseBusConsumedMessage({
+      topic: "agents.demo.events",
+      payload: { k: "v" },
+      partition: 0,
+      offset: 7,
+      key: "alpha",
+      headers: { trace: "abc" },
+      timestamp: "2026-05-02T12:00:00Z",
+    });
+    assert.equal(m.topic, "agents.demo.events");
+    assert.equal(m.offset, 7);
+    assert.deepEqual(m.payload, { k: "v" });
+    assert.equal(m.headers.trace, "abc");
+  });
+
+  it("BusConsumedMessage defaults headers to empty when absent", () => {
+    const m = parseBusConsumedMessage({ topic: "t" });
+    assert.deepEqual(m.headers, {});
+    expect(m.partition).toBeUndefined();
+    expect(m.offset).toBeUndefined();
+  });
+
+  it("StreamChunkEnvelope maps snake_case to camelCase", () => {
+    const c = parseStreamChunkEnvelope({
+      stream_id: "s1",
+      chunk_seq: 3,
+      body: { token: "hi" },
+      sender: "agent-A",
+      created_at: "2026-05-02T12:00:00Z",
+    });
+    assert.equal(c.streamId, "s1");
+    assert.equal(c.chunkSeq, 3);
+    assert.equal(c.sender, "agent-A");
+    assert.deepEqual(c.body, { token: "hi" });
+    assert.equal(c.createdAt, "2026-05-02T12:00:00Z");
+  });
+
+  it("StreamEndEnvelope round-trips error status with message", () => {
+    const e = parseStreamEndEnvelope({
+      stream_id: "s1",
+      chunk_seq: 4,
+      status: "error",
+      error_message: "broker disconnected",
+    });
+    assert.equal(e.streamId, "s1");
+    assert.equal(e.status, "error");
+    assert.equal(e.errorMessage, "broker disconnected");
   });
 });
