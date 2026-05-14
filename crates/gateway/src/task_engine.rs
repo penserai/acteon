@@ -38,6 +38,7 @@
 //!   the server layer, not here. The engine speaks pure Rust types.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use tracing::{debug, warn};
@@ -51,6 +52,19 @@ use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 /// exhausted. Matches the bus's
 /// `crates/server/src/api/bus.rs::MAX_CAS_RETRY_ATTEMPTS`.
 pub const MAX_CAS_RETRY_ATTEMPTS: u32 = 8;
+
+/// TTL on A2A `messageId` deduplication markers
+/// ([`KeyKind::A2aMessageDedup`]). Without a TTL the dedup keyspace
+/// grows unboundedly — a long-running gateway eventually pays linear
+/// storage cost in total lifetime traffic.
+///
+/// 24h is chosen to comfortably exceed any realistic A2A client
+/// retry window (clients that haven't given up after a day aren't
+/// retrying anyway). After expiry, a *theoretical* very-late retry
+/// would re-apply the message rather than dedup. This is the safe
+/// failure mode — an erroneous append is recoverable (operator
+/// inspects and corrects); a memory leak is not.
+pub const MESSAGE_DEDUP_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Tenant scoping for a Task. Mirrors the
 /// `(namespace, tenant)` pair used by every other bus primitive so
@@ -310,6 +324,10 @@ impl TaskEngine {
 
     /// Mark a `messageId` as seen. Returns `true` if the marker
     /// already existed (i.e. duplicate), `false` if newly inserted.
+    ///
+    /// Markers are stored with [`MESSAGE_DEDUP_TTL`] so the dedup
+    /// keyspace doesn't grow without bound. See the constant's docs
+    /// for the late-retry trade-off.
     async fn dedup_message(
         &self,
         scope: &TaskScope,
@@ -317,7 +335,10 @@ impl TaskEngine {
     ) -> Result<bool, TaskEngineError> {
         let key = scope.dedup_key(message_id);
         let now = Utc::now().timestamp_millis().to_string();
-        let inserted = self.state.check_and_set(&key, &now, None).await?;
+        let inserted = self
+            .state
+            .check_and_set(&key, &now, Some(MESSAGE_DEDUP_TTL))
+            .await?;
         Ok(!inserted)
     }
 }

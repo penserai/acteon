@@ -31,8 +31,9 @@ pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot, ProviderMetrics, ProviderStatsSnapshot};
 pub use silence_enforcement::CachedSilence;
 pub use task_engine::{
-    MAX_CAS_RETRY_ATTEMPTS as A2A_MAX_CAS_RETRY_ATTEMPTS, ScopedTaskEngine, TaskEngine,
-    TaskEngineError, TaskScope,
+    MAX_CAS_RETRY_ATTEMPTS as A2A_MAX_CAS_RETRY_ATTEMPTS,
+    MESSAGE_DEDUP_TTL as A2A_MESSAGE_DEDUP_TTL, ScopedTaskEngine, TaskEngine, TaskEngineError,
+    TaskScope,
 };
 pub use time_interval_management::{TimeIntervalDecision, time_interval_cache_id};
 pub use watcher::RuleWatcher;
