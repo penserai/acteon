@@ -11,6 +11,7 @@ pub mod group_manager;
 pub mod metrics;
 mod quota_enforcement;
 mod silence_enforcement;
+pub mod task_engine;
 pub mod template_engine;
 mod template_management;
 mod time_interval_management;
@@ -29,5 +30,9 @@ pub use gateway::{ApprovalKey, ApprovalKeySet, ApprovalRecord, ApprovalStatus, G
 pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot, ProviderMetrics, ProviderStatsSnapshot};
 pub use silence_enforcement::CachedSilence;
+pub use task_engine::{
+    MAX_CAS_RETRY_ATTEMPTS as A2A_MAX_CAS_RETRY_ATTEMPTS, ScopedTaskEngine, TaskEngine,
+    TaskEngineError, TaskScope,
+};
 pub use time_interval_management::{TimeIntervalDecision, time_interval_cache_id};
 pub use watcher::RuleWatcher;
