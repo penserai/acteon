@@ -11,7 +11,7 @@
 //! [`crate::bus_agent::Agent`] struct is on the hot path — every
 //! heartbeat, every routing decision, every listing reads it.
 //! Inlining the card fields onto `Agent` would bloat that hot path
-//! for tenants with many agents. So [`Agent`] keeps a thin
+//! for tenants with many agents. So [`crate::bus_agent::Agent`] keeps a thin
 //! `has_agent_card: bool` flag, and the full card lives at a
 //! separate state-store key (Phase 2 wires `KeyKind::BusAgentCard`)
 //! fetched only when an A2A discovery request hits.
