@@ -2,6 +2,7 @@ pub mod action;
 pub mod analytics;
 pub mod attachment;
 pub mod bus_agent;
+pub mod bus_agent_card;
 pub mod bus_approval;
 pub mod bus_conversation;
 pub mod bus_schema;
@@ -43,17 +44,27 @@ pub use attachment::{Attachment, ResolvedAttachment};
 pub use bus_agent::{
     Agent, AgentStatus, AgentValidationError, DEFAULT_AGENT_INBOX_SUFFIX, DEFAULT_HEARTBEAT_TTL_MS,
 };
+pub use bus_agent_card::{
+    AgentCapabilities, AgentCard, AgentCardValidationError, Extension as AgentCardExtension,
+    Interface as AgentCardInterface, MAX_CARD_DESCRIPTION_BYTES, MAX_EXTENSIONS_PER_CARD,
+    MAX_INTERFACES_PER_CARD, MAX_OUTPUT_MEDIA_TYPES_PER_SKILL, MAX_SECURITY_SCHEMES_PER_CARD,
+    MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_INPUT_SCHEMA_BYTES, MAX_SKILLS_PER_CARD, Provider,
+    SecurityScheme, Skill,
+};
 pub use bus_approval::{
     BusApproval, BusApprovalEnvelope, BusApprovalStatus, BusApprovalValidationError,
     DEFAULT_APPROVAL_TTL_MS, MAX_APPROVAL_NOTE_BYTES, MAX_APPROVAL_TTL_MS, validate_approval_id,
     validate_approval_ttl,
 };
 pub use bus_conversation::{
-    Conversation, ConversationState, ConversationTransition, ConversationValidationError,
-    DEFAULT_CONVERSATIONS_EVENTS_SUFFIX,
+    Conversation, ConversationMessage, ConversationState, ConversationTransition,
+    ConversationValidationError, DEFAULT_CONVERSATIONS_EVENTS_SUFFIX,
 };
 pub use bus_schema::{Schema, SchemaFormat, SchemaValidationError};
-pub use bus_stream::{StreamChunk, StreamEnd, StreamEndStatus, StreamEnvelopeValidationError};
+pub use bus_stream::{
+    StreamChunk, StreamEnd, StreamEndStatus, StreamEnvelopeValidationError,
+    TaskArtifactUpdateEvent, TaskStatusUpdateEvent,
+};
 pub use bus_subscription::{
     AckMode, PartitionLag, StartOffset as SubscriptionStartOffset, Subscription,
     SubscriptionStatus, SubscriptionValidationError,

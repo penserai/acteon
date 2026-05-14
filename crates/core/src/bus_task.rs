@@ -457,27 +457,17 @@ impl Message {
 // Artifact
 // ---------------------------------------------------------------------
 
-/// A discrete output produced by the agent, possibly streamed in
-/// chunks. `append` and `lastChunk` enable progressive delivery: a
-/// stream of artifact-update events with the same `artifactId`, the
-/// first carrying `append = false` (replace) and subsequent ones
-/// `append = true` (append). The final chunk sets `lastChunk = true`.
+/// A discrete output produced by the agent. Per A2A spec §4.1.1 an
+/// Artifact is the *resolved* content — identity, name, parts.
 ///
-/// **Race safety (Acteon extension):** A2A spec is silent on
-/// out-of-order chunk delivery. To prevent the consumer from closing
-/// a Task before a late append arrives, Acteon adds two optional
-/// fields beyond the A2A wire shape:
-///
-/// - `chunkIndex` — monotonic sequence within the artifact (mirrors
-///   `StreamChunk.chunk_seq` from Phase 6b).
-/// - `totalChunks` — set on the `lastChunk` envelope to assert how
-///   many chunks the consumer must observe before treating the
-///   artifact as complete.
-///
-/// The Phase 2 Task Engine enforces: chunk indices are non-negative,
-/// no chunks arrive after `lastChunk = true`, and (when
-/// `totalChunks` is set) every index in `0..totalChunks` is observed
-/// before the artifact is closed.
+/// The per-delivery semantics (replace-vs-append, terminal marker,
+/// chunk sequencing) live on
+/// [`crate::bus_stream::TaskArtifactUpdateEvent`], which is the
+/// envelope that streams Artifacts in chunks. The Phase 2 Task
+/// Engine consumes those events, applies the append/replace
+/// directive against the Task's stored artifact list, and enforces
+/// race-safety invariants (`chunkIndex` ordering, `totalChunks`
+/// completeness).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -492,25 +482,9 @@ pub struct Artifact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Content parts. For a single-shot artifact this is the full
-    /// content; for streamed artifacts each chunk delivers its slice.
+    /// content; for a chunk delivery, this is the slice carried by
+    /// that one event.
     pub parts: Vec<Part>,
-    /// True if this update should be appended to the prior content
-    /// for this `artifactId`; false (default) means replace.
-    #[serde(default)]
-    pub append: bool,
-    /// True if this is the final chunk for the artifact. Consumers
-    /// can mark the artifact as complete once observed.
-    #[serde(default)]
-    pub last_chunk: bool,
-    /// Monotonic sequence number within this artifact's chunk stream.
-    /// Acteon extension beyond A2A spec; see struct-level docs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chunk_index: Option<i64>,
-    /// Total number of chunks expected for this artifact, set on the
-    /// `lastChunk = true` envelope so consumers can validate
-    /// completeness. Acteon extension; see struct-level docs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub total_chunks: Option<i64>,
     /// Free-form metadata.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]
@@ -518,7 +492,7 @@ pub struct Artifact {
 }
 
 impl Artifact {
-    /// Construct a single-shot artifact with one or more parts.
+    /// Construct an artifact with one or more parts.
     #[must_use]
     pub fn new(artifact_id: impl Into<String>, parts: Vec<Part>) -> Self {
         Self {
@@ -526,16 +500,11 @@ impl Artifact {
             name: None,
             description: None,
             parts,
-            append: false,
-            last_chunk: true,
-            chunk_index: None,
-            total_chunks: None,
             metadata: HashMap::new(),
         }
     }
 
-    /// Validate identity, bounded fields, and chunk sequencing
-    /// invariants (non-negative `chunkIndex`, positive `totalChunks`).
+    /// Validate identity and bounded fields.
     pub fn validate(&self) -> Result<(), TaskValidationError> {
         validate_id("artifactId", &self.artifact_id)?;
         if self.parts.is_empty() {
@@ -546,27 +515,6 @@ impl Artifact {
         }
         for p in &self.parts {
             p.validate()?;
-        }
-        if let Some(ix) = self.chunk_index
-            && ix < 0
-        {
-            return Err(TaskValidationError::NegativeChunkIndex(ix));
-        }
-        if let Some(t) = self.total_chunks
-            && t <= 0
-        {
-            return Err(TaskValidationError::InvalidTotalChunks(t));
-        }
-        // If a chunk advertises `totalChunks`, its own index must fit
-        // inside the asserted range — otherwise a consumer that trusts
-        // the cap will hang waiting for an index that can never arrive.
-        if let (Some(ix), Some(t)) = (self.chunk_index, self.total_chunks)
-            && ix >= t
-        {
-            return Err(TaskValidationError::ChunkIndexOutOfRange {
-                index: ix,
-                total: t,
-            });
         }
         validate_metadata(&self.metadata)?;
         Ok(())
@@ -771,21 +719,31 @@ impl Task {
         Ok(())
     }
 
-    /// Append (or replace) an artifact. If an artifact with the same
-    /// `artifactId` already exists and the new one carries
-    /// `append = true`, its parts are appended to the existing one;
-    /// otherwise the existing artifact is replaced. Counts as forward
-    /// progress.
-    pub fn upsert_artifact(&mut self, artifact: Artifact) -> Result<(), TaskValidationError> {
+    /// Append (or replace) an artifact, mirroring A2A
+    /// `TaskArtifactUpdateEvent` semantics:
+    ///
+    /// - `append = true`: if an artifact with the same `artifactId`
+    ///   already exists, append the new artifact's `parts` to the
+    ///   existing one (preserves name/description/metadata of the
+    ///   existing artifact). If no existing entry, the call is
+    ///   treated as a first insertion.
+    /// - `append = false`: insert if new, replace if an existing
+    ///   artifact with the same id is present.
+    ///
+    /// Counts as forward progress.
+    pub fn upsert_artifact(
+        &mut self,
+        artifact: Artifact,
+        append: bool,
+    ) -> Result<(), TaskValidationError> {
         artifact.validate()?;
         match self
             .artifacts
             .iter_mut()
             .find(|a| a.artifact_id == artifact.artifact_id)
         {
-            Some(existing) if artifact.append => {
+            Some(existing) if append => {
                 existing.parts.extend(artifact.parts);
-                existing.last_chunk = artifact.last_chunk;
                 if existing.parts.len() > MAX_PARTS_PER_CONTAINER {
                     return Err(TaskValidationError::TooManyParts);
                 }
@@ -990,16 +948,21 @@ pub enum TaskValidationError {
     IllegalTransition { from: TaskState, to: TaskState },
     #[error("message taskId '{0}' must not appear in its own referenceTaskIds (self-cycle)")]
     SelfReferenceTaskId(String),
+    #[error("workingTtlMs must be > 0 (got {0})")]
+    WorkingTtlNonPositive(i64),
+    #[error("workingTtlMs {0} exceeds the {MAX_WORKING_TTL_MS}ms cap")]
+    WorkingTtlTooLong(i64),
+    // Used by `crate::bus_stream::TaskArtifactUpdateEvent`. Kept in
+    // this error type so the Engine can match on a single error
+    // surface across task and event validation.
     #[error("chunkIndex must be non-negative (got {0})")]
     NegativeChunkIndex(i64),
     #[error("totalChunks must be positive (got {0})")]
     InvalidTotalChunks(i64),
     #[error("chunkIndex {index} is outside the asserted totalChunks range (0..{total})")]
     ChunkIndexOutOfRange { index: i64, total: i64 },
-    #[error("workingTtlMs must be > 0 (got {0})")]
-    WorkingTtlNonPositive(i64),
-    #[error("workingTtlMs {0} exceeds the {MAX_WORKING_TTL_MS}ms cap")]
-    WorkingTtlTooLong(i64),
+    #[error("append=true on chunk 0 would silently overwrite prior content")]
+    AppendOnFirstChunk,
 }
 
 // ---------------------------------------------------------------------
@@ -1310,9 +1273,9 @@ mod tests {
     #[test]
     fn task_upsert_artifact_replaces_when_not_appending() {
         let mut t = sample_task();
-        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("first")]))
+        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("first")]), false)
             .unwrap();
-        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("second")]))
+        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("second")]), false)
             .unwrap();
         assert_eq!(t.artifacts.len(), 1);
         assert_eq!(t.artifacts[0].parts[0].text.as_deref(), Some("second"));
@@ -1321,29 +1284,26 @@ mod tests {
     #[test]
     fn task_upsert_artifact_appends() {
         let mut t = sample_task();
-        let mut first = Artifact::new("art-1", vec![Part::text("a")]);
-        first.last_chunk = false;
-        t.upsert_artifact(first).unwrap();
-
-        let mut second = Artifact::new("art-1", vec![Part::text("b")]);
-        second.append = true;
-        second.last_chunk = true;
-        t.upsert_artifact(second).unwrap();
-
+        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("a")]), false)
+            .unwrap();
+        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("b")]), true)
+            .unwrap();
         assert_eq!(t.artifacts.len(), 1);
         assert_eq!(t.artifacts[0].parts.len(), 2);
-        assert!(t.artifacts[0].last_chunk);
     }
 
     #[test]
     fn task_upsert_artifact_caps_count() {
         let mut t = sample_task();
         for i in 0..MAX_ARTIFACTS_LEN {
-            t.upsert_artifact(Artifact::new(format!("art-{i}"), vec![Part::text("x")]))
-                .unwrap();
+            t.upsert_artifact(
+                Artifact::new(format!("art-{i}"), vec![Part::text("x")]),
+                false,
+            )
+            .unwrap();
         }
         let err = t
-            .upsert_artifact(Artifact::new("overflow", vec![Part::text("x")]))
+            .upsert_artifact(Artifact::new("overflow", vec![Part::text("x")]), false)
             .unwrap_err();
         assert_eq!(err, TaskValidationError::TooManyArtifacts);
     }
@@ -1415,8 +1375,11 @@ mod tests {
         t.transition_to(TaskState::Working, None).unwrap();
         t.append_history(Message::text("msg-1", Role::User, "hi"))
             .unwrap();
-        t.upsert_artifact(Artifact::new("art-1", vec![Part::data(json!({"k": 1}))]))
-            .unwrap();
+        t.upsert_artifact(
+            Artifact::new("art-1", vec![Part::data(json!({"k": 1}))]),
+            false,
+        )
+        .unwrap();
         let j = serde_json::to_string(&t).unwrap();
         let back: Task = serde_json::from_str(&j).unwrap();
         assert_eq!(back.id, t.id);
@@ -1469,7 +1432,7 @@ mod tests {
         let mut t = sample_task();
         let before = t.last_progress_at.unwrap();
         std::thread::sleep(std::time::Duration::from_millis(5));
-        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("x")]))
+        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("x")]), false)
             .unwrap();
         assert!(t.last_progress_at.unwrap() > before);
     }
@@ -1535,46 +1498,9 @@ mod tests {
         ));
     }
 
-    // --- Hardening: artifact chunk sequencing ---
-
-    #[test]
-    fn artifact_chunk_index_must_be_non_negative() {
-        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
-        a.chunk_index = Some(-1);
-        assert!(matches!(
-            a.validate(),
-            Err(TaskValidationError::NegativeChunkIndex(-1))
-        ));
-    }
-
-    #[test]
-    fn artifact_total_chunks_must_be_positive() {
-        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
-        a.total_chunks = Some(0);
-        assert!(matches!(
-            a.validate(),
-            Err(TaskValidationError::InvalidTotalChunks(0))
-        ));
-    }
-
-    #[test]
-    fn artifact_chunk_index_must_fit_total_range() {
-        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
-        a.chunk_index = Some(5);
-        a.total_chunks = Some(5);
-        assert!(matches!(
-            a.validate(),
-            Err(TaskValidationError::ChunkIndexOutOfRange { index: 5, total: 5 })
-        ));
-    }
-
-    #[test]
-    fn artifact_with_valid_chunk_metadata_passes() {
-        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
-        a.chunk_index = Some(2);
-        a.total_chunks = Some(5);
-        a.validate().unwrap();
-    }
+    // (chunk sequencing tests live in `bus_stream::tests` since
+    // `chunkIndex` / `totalChunks` are properties of the
+    // `TaskArtifactUpdateEvent` envelope, not the Artifact itself.)
 
     // --- Hardening: message self-reference ---
 
