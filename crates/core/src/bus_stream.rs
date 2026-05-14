@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::bus_task::{Artifact, MAX_METADATA_VALUE_BYTES, TaskStatus, TaskValidationError};
+
 /// Terminal status for a stream. `Complete` is the happy path —
 /// every chunk made it. `Aborted` is producer-side cancellation
 /// (the agent gave up cleanly). `Error` carries the reason the
@@ -188,6 +190,217 @@ impl StreamEnd {
     }
 }
 
+/// A2A `TaskStatusUpdateEvent` (spec §4.2.1) — emitted whenever a
+/// Task's lifecycle state changes. Phase 2 Task Engine produces one
+/// of these on every state transition; subscribers re-frame as a
+/// `statusUpdate` field on the A2A `StreamResponse` SSE envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TaskStatusUpdateEvent {
+    /// The task this update describes.
+    pub task_id: String,
+    /// Conversation/context this task belongs to. Mirrors `Task.contextId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    /// Lifecycle pin at the moment of the update (state + driving
+    /// message + timestamp).
+    pub status: TaskStatus,
+    /// Free-form metadata (trace IDs, source attribution).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl TaskStatusUpdateEvent {
+    /// Construct an event for the given task.
+    #[must_use]
+    pub fn new(task_id: impl Into<String>, status: TaskStatus) -> Self {
+        Self {
+            task_id: task_id.into(),
+            context_id: None,
+            status,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Validate identity fields and the embedded status.
+    pub fn validate(&self) -> Result<(), TaskValidationError> {
+        validate_task_event_id("taskId", &self.task_id)?;
+        if let Some(c) = &self.context_id {
+            validate_task_event_id("contextId", c)?;
+        }
+        self.status.validate()?;
+        validate_event_metadata(&self.metadata)?;
+        Ok(())
+    }
+}
+
+/// A2A `TaskArtifactUpdateEvent` (spec §4.2.2) — emitted for each
+/// chunk of a streamed artifact (or once for a single-shot artifact).
+///
+/// `append` and `lastChunk` carry the per-delivery semantics that are
+/// *not* on the [`Artifact`] itself: whether the new content replaces
+/// or appends to the prior content for this `artifactId`, and whether
+/// this is the terminal chunk.
+///
+/// **Acteon extensions (race safety):** A2A spec is silent on
+/// out-of-order delivery. `chunkIndex` and `totalChunks` let the
+/// Phase 2 Task Engine enforce:
+///
+/// - chunk indices are non-negative,
+/// - no chunks arrive after `lastChunk = true`,
+/// - when `totalChunks` is set, every index in `0..totalChunks` is
+///   observed before the artifact is closed.
+///
+/// Both fields are optional so non-streaming producers can omit them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct TaskArtifactUpdateEvent {
+    /// The task this artifact belongs to.
+    pub task_id: String,
+    /// Conversation/context this task belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    /// The artifact content for this delivery — identity + parts.
+    pub artifact: Artifact,
+    /// If true, append `artifact.parts` to the existing artifact with
+    /// the same `artifactId`; otherwise replace.
+    #[serde(default)]
+    pub append: bool,
+    /// If true, this is the final chunk for the artifact. The Task
+    /// Engine will reject subsequent updates for the same
+    /// `artifactId`.
+    #[serde(default)]
+    pub last_chunk: bool,
+    /// Monotonic sequence within this artifact's chunk stream.
+    /// Acteon extension; see struct-level docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_index: Option<i64>,
+    /// Total chunks expected for this artifact, set on the
+    /// `lastChunk = true` envelope. Acteon extension; see
+    /// struct-level docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_chunks: Option<i64>,
+    /// Free-form metadata.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl TaskArtifactUpdateEvent {
+    /// Construct a single-shot (non-streamed) artifact event —
+    /// `append = false`, `last_chunk = true`, no sequencing.
+    #[must_use]
+    pub fn single_shot(task_id: impl Into<String>, artifact: Artifact) -> Self {
+        Self {
+            task_id: task_id.into(),
+            context_id: None,
+            artifact,
+            append: false,
+            last_chunk: true,
+            chunk_index: None,
+            total_chunks: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Construct a chunk-stream event with sequencing metadata.
+    #[must_use]
+    pub fn chunk(
+        task_id: impl Into<String>,
+        artifact: Artifact,
+        chunk_index: i64,
+        last_chunk: bool,
+    ) -> Self {
+        Self {
+            task_id: task_id.into(),
+            context_id: None,
+            artifact,
+            append: chunk_index > 0,
+            last_chunk,
+            chunk_index: Some(chunk_index),
+            total_chunks: None,
+            metadata: HashMap::new(),
+        }
+    }
+
+    /// Validate identity, sequencing invariants, and the embedded
+    /// artifact.
+    pub fn validate(&self) -> Result<(), TaskValidationError> {
+        validate_task_event_id("taskId", &self.task_id)?;
+        if let Some(c) = &self.context_id {
+            validate_task_event_id("contextId", c)?;
+        }
+        self.artifact.validate()?;
+        if let Some(ix) = self.chunk_index
+            && ix < 0
+        {
+            return Err(TaskValidationError::NegativeChunkIndex(ix));
+        }
+        if let Some(t) = self.total_chunks
+            && t <= 0
+        {
+            return Err(TaskValidationError::InvalidTotalChunks(t));
+        }
+        // If a chunk advertises `totalChunks`, its own index must fit
+        // inside the asserted range — otherwise a consumer that trusts
+        // the cap will hang waiting for an index that can never arrive.
+        if let (Some(ix), Some(t)) = (self.chunk_index, self.total_chunks)
+            && ix >= t
+        {
+            return Err(TaskValidationError::ChunkIndexOutOfRange {
+                index: ix,
+                total: t,
+            });
+        }
+        // First chunk in a stream replaces; subsequent chunks append.
+        // A `chunk_index = 0` with `append = true` would silently drop
+        // any prior accumulated content — reject so callers don't
+        // accidentally lose data.
+        if matches!(self.chunk_index, Some(0)) && self.append {
+            return Err(TaskValidationError::AppendOnFirstChunk);
+        }
+        validate_event_metadata(&self.metadata)?;
+        Ok(())
+    }
+}
+
+fn validate_task_event_id(field: &'static str, s: &str) -> Result<(), TaskValidationError> {
+    if s.is_empty() {
+        return Err(TaskValidationError::EmptyId(field));
+    }
+    if s.len() > 120 {
+        return Err(TaskValidationError::IdTooLong(field));
+    }
+    if !s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(TaskValidationError::InvalidIdChar {
+            field,
+            value: s.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_event_metadata(
+    map: &HashMap<String, serde_json::Value>,
+) -> Result<(), TaskValidationError> {
+    for (k, v) in map {
+        if k.is_empty() {
+            return Err(TaskValidationError::EmptyMetadataKey);
+        }
+        let encoded = serde_json::to_vec(v).map_err(|_| TaskValidationError::MetadataInvalid)?;
+        if encoded.len() > MAX_METADATA_VALUE_BYTES {
+            return Err(TaskValidationError::MetadataValueTooLong { key: k.clone() });
+        }
+    }
+    Ok(())
+}
+
 /// Shared id-field validation used across `StreamChunk` and
 /// `StreamEnd`. Mirrors the rule applied to `ToolCall` / `Agent` /
 /// `Conversation` ids: alphanumeric plus `[._-]`, 1..=120 bytes.
@@ -303,5 +516,129 @@ mod tests {
         let back: StreamEnd = serde_json::from_str(&j).unwrap();
         assert_eq!(back.status, StreamEndStatus::Aborted);
         assert_eq!(back.error_message.as_deref(), Some("user canceled"));
+    }
+
+    // --- A2A TaskStatusUpdateEvent ---
+
+    use crate::bus_task::{Artifact, Part, TaskState, TaskStatus};
+
+    fn sample_status() -> TaskStatus {
+        TaskStatus::new(TaskState::Working, Utc::now())
+    }
+
+    #[test]
+    fn task_status_event_validates() {
+        TaskStatusUpdateEvent::new("task-1", sample_status())
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn task_status_event_rejects_bad_task_id() {
+        let mut e = TaskStatusUpdateEvent::new("bad/id", sample_status());
+        e.task_id = "bad/id".into();
+        assert!(matches!(
+            e.validate(),
+            Err(TaskValidationError::InvalidIdChar {
+                field: "taskId",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn task_status_event_serializes_camel_case() {
+        let mut e = TaskStatusUpdateEvent::new("task-1", sample_status());
+        e.context_id = Some("ctx".into());
+        let v = serde_json::to_value(&e).unwrap();
+        assert!(v.get("taskId").is_some());
+        assert!(v.get("contextId").is_some());
+        assert!(v.get("status").is_some());
+    }
+
+    // --- A2A TaskArtifactUpdateEvent ---
+
+    fn sample_artifact() -> Artifact {
+        Artifact::new("art-1", vec![Part::text("hello")])
+    }
+
+    #[test]
+    fn task_artifact_single_shot_validates() {
+        TaskArtifactUpdateEvent::single_shot("task-1", sample_artifact())
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn task_artifact_chunk_constructor_validates() {
+        TaskArtifactUpdateEvent::chunk("task-1", sample_artifact(), 0, false)
+            .validate()
+            .unwrap();
+        TaskArtifactUpdateEvent::chunk("task-1", sample_artifact(), 1, false)
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn task_artifact_rejects_negative_chunk_index() {
+        let mut e = TaskArtifactUpdateEvent::chunk("task-1", sample_artifact(), 0, false);
+        e.chunk_index = Some(-1);
+        assert!(matches!(
+            e.validate(),
+            Err(TaskValidationError::NegativeChunkIndex(-1))
+        ));
+    }
+
+    #[test]
+    fn task_artifact_rejects_non_positive_total_chunks() {
+        let mut e = TaskArtifactUpdateEvent::single_shot("task-1", sample_artifact());
+        e.total_chunks = Some(0);
+        assert!(matches!(
+            e.validate(),
+            Err(TaskValidationError::InvalidTotalChunks(0))
+        ));
+    }
+
+    #[test]
+    fn task_artifact_rejects_index_outside_total_range() {
+        let mut e = TaskArtifactUpdateEvent::single_shot("task-1", sample_artifact());
+        e.chunk_index = Some(5);
+        e.total_chunks = Some(5);
+        assert!(matches!(
+            e.validate(),
+            Err(TaskValidationError::ChunkIndexOutOfRange { index: 5, total: 5 })
+        ));
+    }
+
+    #[test]
+    fn task_artifact_rejects_append_on_first_chunk() {
+        // append=true with chunk_index=0 would silently overwrite the
+        // (nonexistent) prior accumulated content — flag it.
+        let mut e = TaskArtifactUpdateEvent::chunk("task-1", sample_artifact(), 0, false);
+        e.append = true;
+        assert!(matches!(
+            e.validate(),
+            Err(TaskValidationError::AppendOnFirstChunk)
+        ));
+    }
+
+    #[test]
+    fn task_artifact_chunk_helper_sets_append_correctly() {
+        // First chunk: replace mode.
+        let first = TaskArtifactUpdateEvent::chunk("task-1", sample_artifact(), 0, false);
+        assert!(!first.append);
+        // Subsequent chunks: append.
+        let second = TaskArtifactUpdateEvent::chunk("task-1", sample_artifact(), 1, false);
+        assert!(second.append);
+    }
+
+    #[test]
+    fn task_artifact_event_serializes_camel_case() {
+        let e = TaskArtifactUpdateEvent::chunk("task-1", sample_artifact(), 2, true);
+        let v = serde_json::to_value(&e).unwrap();
+        assert!(v.get("taskId").is_some());
+        assert!(v.get("artifact").is_some());
+        assert!(v.get("chunkIndex").is_some());
+        assert!(v.get("lastChunk").is_some());
     }
 }

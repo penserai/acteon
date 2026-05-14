@@ -80,6 +80,14 @@ pub struct Agent {
     /// Free-form operator labels.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
+    /// True iff an A2A [`crate::bus_agent_card::AgentCard`] exists for
+    /// this agent at a separate state-store key. The flag stays on the
+    /// hot path so the heartbeat / list / route code can decide
+    /// "should I bother fetching the card" without an extra round-trip.
+    /// The full card body lives in `KeyKind::BusAgentCard` (Phase 2)
+    /// and is fetched only by the A2A discovery handler.
+    #[serde(default)]
+    pub has_agent_card: bool,
     /// Registration time.
     pub created_at: DateTime<Utc>,
     /// Last time the agent record was mutated (register / update /
@@ -110,6 +118,7 @@ impl Agent {
             heartbeat_ttl_ms: default_heartbeat_ttl_ms(),
             last_heartbeat_at: None,
             labels: HashMap::new(),
+            has_agent_card: false,
             created_at: now,
             updated_at: now,
         }

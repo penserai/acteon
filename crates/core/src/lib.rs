@@ -2,11 +2,13 @@ pub mod action;
 pub mod analytics;
 pub mod attachment;
 pub mod bus_agent;
+pub mod bus_agent_card;
 pub mod bus_approval;
 pub mod bus_conversation;
 pub mod bus_schema;
 pub mod bus_stream;
 pub mod bus_subscription;
+pub mod bus_task;
 pub mod bus_tool;
 pub mod bus_topic;
 pub mod caller;
@@ -42,20 +44,38 @@ pub use attachment::{Attachment, ResolvedAttachment};
 pub use bus_agent::{
     Agent, AgentStatus, AgentValidationError, DEFAULT_AGENT_INBOX_SUFFIX, DEFAULT_HEARTBEAT_TTL_MS,
 };
+pub use bus_agent_card::{
+    AgentCapabilities, AgentCard, AgentCardValidationError, Extension as AgentCardExtension,
+    Interface as AgentCardInterface, MAX_CARD_DESCRIPTION_BYTES, MAX_EXTENSIONS_PER_CARD,
+    MAX_INTERFACES_PER_CARD, MAX_OUTPUT_MEDIA_TYPES_PER_SKILL, MAX_SECURITY_SCHEMES_PER_CARD,
+    MAX_SKILL_DESCRIPTION_BYTES, MAX_SKILL_INPUT_SCHEMA_BYTES, MAX_SKILLS_PER_CARD, Provider,
+    SecurityScheme, Skill,
+};
 pub use bus_approval::{
     BusApproval, BusApprovalEnvelope, BusApprovalStatus, BusApprovalValidationError,
     DEFAULT_APPROVAL_TTL_MS, MAX_APPROVAL_NOTE_BYTES, MAX_APPROVAL_TTL_MS, validate_approval_id,
     validate_approval_ttl,
 };
 pub use bus_conversation::{
-    Conversation, ConversationState, ConversationTransition, ConversationValidationError,
-    DEFAULT_CONVERSATIONS_EVENTS_SUFFIX,
+    Conversation, ConversationMessage, ConversationState, ConversationTransition,
+    ConversationValidationError, DEFAULT_CONVERSATIONS_EVENTS_SUFFIX,
 };
 pub use bus_schema::{Schema, SchemaFormat, SchemaValidationError};
-pub use bus_stream::{StreamChunk, StreamEnd, StreamEndStatus, StreamEnvelopeValidationError};
+pub use bus_stream::{
+    StreamChunk, StreamEnd, StreamEndStatus, StreamEnvelopeValidationError,
+    TaskArtifactUpdateEvent, TaskStatusUpdateEvent,
+};
 pub use bus_subscription::{
     AckMode, PartitionLag, StartOffset as SubscriptionStartOffset, Subscription,
     SubscriptionStatus, SubscriptionValidationError,
+};
+pub use bus_task::{
+    Artifact, DEFAULT_WORKING_TTL_MS, MAX_ARTIFACTS_LEN, MAX_HISTORY_LEN,
+    MAX_ID_LEN as MAX_TASK_ID_LEN, MAX_MESSAGE_EXTENSIONS,
+    MAX_METADATA_VALUE_BYTES as MAX_TASK_METADATA_VALUE_BYTES, MAX_PART_DATA_BYTES,
+    MAX_PART_RAW_BYTES, MAX_PART_TEXT_BYTES, MAX_PARTS_PER_CONTAINER, MAX_REFERENCE_DEPTH,
+    MAX_REFERENCE_TASK_IDS, MAX_WORKING_TTL_MS, Message as TaskMessage, Part as TaskPart,
+    Role as TaskRole, Task, TaskState, TaskStatus, TaskValidationError,
 };
 pub use bus_tool::{ToolCall, ToolEnvelopeValidationError, ToolResult, ToolResultStatus};
 pub use bus_topic::{Topic, TopicValidationError};
