@@ -3,236 +3,124 @@
 **Status:** Draft
 **Author:** Acteon Team
 **Created:** 2026-05-14
+**Updated:** 2026-05-14 (Core-First Convergence)
 
 ## Overview
 
-This document proposes implementing the [Agent2Agent (A2A) Protocol](https://a2a-protocol.org/latest/specification/) in Acteon, exposing the gateway as a first-class A2A endpoint so external agents (Google ADK, Microsoft Agent Framework, Amazon Bedrock AgentCore, custom builds) can discover, invoke, and stream from Acteon-managed agents using the open standard.
+This document proposes implementing the [Agent2Agent (A2A) Protocol](https://a2a-protocol.org/latest/specification/) in Acteon as a **primary architectural citizen**. Rather than a peripheral facade, A2A concepts (Tasks, AgentCards, and the 8-state lifecycle) will be promoted to **native primitives** in `acteon-core`.
 
-The work is principally a **translation/extension layer** rather than a ground-up build: Acteon already ships the underlying primitives (agents, conversations, tool-call envelopes, streaming SSE, human approvals, multi-tenant auth, schema registry, audit). The remaining 30-40% is wire-format adapters, an explicit `Task` lifecycle, AgentCard discovery, and per-task push notification configs.
+This "Core-First" approach ensures that Acteon's hardened orchestration—rules, quotas, compliance hash chains, and multi-tenant auth—is the foundation for a robust, scalable A2A implementation suitable for enterprise-grade federated agent ecosystems.
 
 ## Motivation
 
-A2A was donated to the Linux Foundation in late 2025 and is now backed by 150+ organizations including Google, Microsoft, AWS, Salesforce, SAP, ServiceNow, Workday, and IBM. Adoption is moving from "interesting standard" to "default interop fabric" for multi-vendor agent ecosystems.
+A2A is rapidly becoming the "default interop fabric" for multi-vendor agent ecosystems. By elevating A2A to a core use case, Acteon achieves:
 
-By exposing Acteon via A2A we unlock:
+1.  **Architectural Convergence** — Acteon agents, chains, and swarms are natively A2A-compliant, reducing translation overhead and improving reliability.
+2.  **Hardened Orchestration at Scale** — A2A Tasks inherit Acteon's compliance, audit, and sandboxed validation features out of the box.
+3.  **Strategic Multi-Agent Foundation** — Acteon becomes the "safe substrate" for cross-vendor coordination, where every external interaction is tracked via a standardized, observable Task lifecycle.
 
-1.  **Federated agent ecosystems** — Acteon agents (chains, swarm specialists, recurring jobs) become invocable by any A2A-speaking client.
-2.  **Reverse interop** — Acteon agents can act as A2A *clients* against third-party agents (Vertex AI, Bedrock AgentCore, Azure AI Foundry).
-3.  **Standardized observability** — A2A's `Task` lifecycle, `Artifact` streaming, and audit-friendly push notifications align with Acteon's existing audit/compliance posture.
-4.  **Strategic positioning** — Acteon's hardened orchestration (rules, quotas, retention, compliance hash chain, mTLS, WASM-sandboxed validation) becomes the "safe substrate" layer underneath an A2A-compliant facade.
+## Convergence Mapping: A2A ↔ Acteon Core
 
-Acteon's bus already implements most of A2A's *semantics*; this work makes them *interoperable*.
-
-## Background: A2A Protocol Summary
-
-Per the [official specification](https://a2a-protocol.org/latest/specification/):
-
-| Layer | Requirement |
-|---|---|
-| Transport | JSON-RPC 2.0 over HTTPS, SSE for streaming, optional HTTP+JSON/REST binding |
-| Discovery | `AgentCard` published at `/.well-known/agent.json` |
-| Core methods | `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks`, `CancelTask`, `SubscribeToTask`, `Create/Get/List/DeleteTaskPushNotificationConfig`, `GetExtendedAgentCard` |
-| Core types | `Task` (with `TaskState` enum: submitted/working/completed/failed/canceled/input_required/auth_required/rejected), `Message` (role + parts), `Part` (text/file/data), `Artifact` |
-| Streaming | SSE delivering `StreamResponse` wrapping one of `task`, `message`, `statusUpdate`, `artifactUpdate` |
-| Push | HTTP POST webhook with auth (API key, Bearer, OAuth2, OIDC, mTLS) |
-| Versioning | `A2A-Version` header negotiation |
-
-## Mapping: A2A → Acteon Primitives
-
-| A2A Concept | Acteon Equivalent | File |
+| A2A Concept | Acteon Core Implementation | Location |
 |---|---|---|
-| `AgentCard` | `Agent` struct (needs richer `skills`, `interfaces`, `securitySchemes`) | `crates/core/src/bus_agent.rs` |
-| Capability advertising | `Agent.capabilities: Vec<String>` (A2A `skills[]` is richer — input schema + media types) | `crates/core/src/bus_agent.rs` |
-| `contextId` | `Conversation.conversation_id` | `crates/core/src/bus_conversation.rs` |
-| `Message` / `Part` | Conversation messages with envelope kinds (Phase 6a/b) | `crates/server/src/api/bus.rs` |
-| `Task` + `TaskState` | **MISSING** — closest analog is chain `StepResult` | needs `crates/core/src/a2a_task.rs` |
-| `TaskStatusUpdateEvent` | `StreamChunk` / `StreamEnd` on conversation events | `crates/core/src/bus_stream.rs` |
-| `Artifact` (with `append` / `lastChunk`) | **MISSING** — tool output JSON has no streaming-append semantics | needs new type |
-| `ROLE_USER` / `ROLE_AGENT` | `ToolCall.sender` (agent_id) — implicit role | `crates/core/src/bus_tool.rs` |
-| Streaming via SSE | SSE stream + `Last-Event-ID` reconnect | `crates/server/src/api/stream.rs` |
-| Push notification webhook | **PARTIAL** — Acteon has webhook providers, not per-task push configs | needs new state-store entity |
-| API-key / Bearer / mTLS auth | Already supported | `crates/server/src/auth/`, `crates/crypto/src/tls.rs` |
-| `TASK_STATE_AUTH_REQUIRED` interrupt | `BusApproval` (Pending → Approved/Rejected) | `crates/core/src/bus_approval.rs` |
-| `TASK_STATE_INPUT_REQUIRED` | **MISSING** — needs Task-side pause-on-input semantics | new |
-| Idempotency via `messageId` | Dedup keys on action/chain path | `crates/gateway/src/` |
-| Schema registry | JSON Schema per topic, applied at publish-edge | `crates/bus/src/schema.rs` |
+| `AgentCard` | Native extension to `Agent` struct (skills, interfaces, schemas) | `crates/core/src/bus_agent.rs` |
+| `Task` | **NEW** `bus_task.rs` — Native Acteon primitive for asynchronous work | `crates/core/src/bus_task.rs` |
+| `TaskState` | Unified 8-state machine used by both A2A and internal orchestration | `crates/core/src/bus_task.rs` |
+| `Artifact` | Native `bus_stream.rs` extension with `append` / `lastChunk` support | `crates/core/src/bus_stream.rs` |
+| `Message` / `Part` | Converged envelope formats for all bus traffic | `crates/core/src/bus_conversation.rs` |
+| `requires_approval` | Maps natively to `BusApproval` | `crates/core/src/bus_approval.rs` |
+| Task ↔ Chain | **Native Bridge**: A2A Tasks are backed by Acteon Chain execution | `crates/core/src/chain.rs` |
 
-## Architecture
+## Architecture: Core Convergence
 
-We will ship A2A as a **facade crate** (`acteon-a2a`) alongside the existing internal bus, not as a replacement. The internal bus is *Acteon-as-orchestrator* (engines coordinating chains, swarms, tools); A2A is *Acteon-as-interoperable-agent* (external clients invoking Acteon over an open standard). Both consume the same state store, audit, auth, and Kafka transport — they differ in audience and wire format.
+A2A is integrated into the **core gateway loop**, not as a separate service. The `acteon-gateway` handles both internal bus events and A2A wire formats (JSON-RPC 2.0 / REST) using a shared protocol substrate.
 
 ```mermaid
 graph TD
-    External[External A2A clients<br/>ADK / Bedrock / Foundry / custom]
-    Internal[Internal callers<br/>swarm, chains, SDKs]
+    External[External A2A clients<br/>ADK / Bedrock / Foundry]
+    Internal[Internal callers<br/>Swarm, Chains, SDKs]
     
-    External -->|JSON-RPC 2.0 + SSE| A2A[acteon-a2a facade<br/>/a2a/rpc, /.well-known/agent.json]
-    Internal -->|REST + SSE| Bus[Existing bus API<br/>/v1/bus/*]
+    subgraph "Acteon Gateway (Core Convergence)"
+        Protocol[Protocol Codec Layer<br/>A2A JSON-RPC / REST / SSE]
+        TaskEngine[Task Lifecycle Manager<br/>Native 8-state machine]
+        ChainEngine[Chain Orchestrator]
+    end
+
+    External --> Protocol
+    Internal --> Protocol
     
-    A2A --> Gateway
-    Bus --> Gateway[acteon-gateway]
-    Gateway --> StateStore[(State store)]
-    Gateway --> Audit[(Audit store)]
-    Gateway --> Kafka[(Kafka)]
+    Protocol --> TaskEngine
+    TaskEngine <--> ChainEngine
+    
+    TaskEngine --> StateStore[(State store)]
+    TaskEngine --> Audit[(Audit store)]
+    TaskEngine --> Kafka[(Kafka)]
 ```
 
-Rationale:
+### Key Decisions for Core-First
 
-- The internal bus API is consumed by 5 polyglot SDKs, the swarm crate, simulation examples, and the admin UI. Refactoring it to *be* A2A would disrupt all of those for no internal benefit.
-- A2A's task lifecycle (8 states, including interrupt states) is richer than what the internal bus needs day-to-day. Keeping it in the facade avoids forcing those semantics on internal callers.
-- The facade can map A2A → bus selectively. For example, `SendMessage` with `requires_approval=true` lands as a `BusApproval`; `SubscribeToTask` proxies the existing `bus_stream.rs` SSE bridge with re-framed envelopes.
+1.  **Task ↔ Chain Foundation:** An A2A Task *is* the primary external representation of an Acteon Chain execution. When an external agent invokes Acteon, the lifecycle is managed by the Chain engine, and the state is projected via the A2A Task primitive.
+2.  **Stateless Entrypoints:** The protocol layer in the gateway remains stateless. All Task state is persisted in the shared `StateStore` and synchronized via `Kafka` events, allowing horizontal scaling of A2A endpoints.
+3.  **Identity Stamping:** A2A interactions use Phase 10's `Grant.agent_id`. Every external call is identity-bound, ensuring the audit trail shows the specific external agent identity alongside the tenant.
+4.  **State Machine Convergence:** The 8-state A2A `TaskState` enum is adopted **verbatim** as the canonical lifecycle. Narrower internal enums (`ConversationState`, `ToolResultStatus`) remain in place for their respective domains, and the Task Engine projects from / into them at the bus boundary. Internal callers are not forced to reason in 8 states.
+5.  **Breaking Changes Acceptable:** Acteon has no paid or external customers at this stage. The plan treats the existing bus envelope (`bus_conversation.rs`, `bus_stream.rs`, polyglot SDK message shapes) as freely mutable. No version-shimming or back-compat work is in scope.
 
-## Net-New Components
+### Inherits from Existing Infrastructure
 
-### Core types (`acteon-core`)
+The Core-First plan deliberately reuses what's already shipped, not rebuilds it:
 
-- `a2a::Task` — id, contextId, status, artifacts[], history[], metadata. 8-state machine.
-- `a2a::Artifact` — id, parts[], append/lastChunk flags for chunked output.
-- `a2a::Message` / `a2a::Part` — text/file(raw|url)/data variants. Distinct from `ToolCall.arguments` to keep wire-shape isolated.
-- `a2a::AgentCard` — extends `Agent` with skills, interfaces, securitySchemes, signature.
-- `a2a::PushNotificationConfig` — per-task webhook URL + auth scheme.
+- **SSE streaming + reconnect** (PRs #153–157, May 2026) — `Last-Event-ID` replay, per-tenant connection caps, slow-client backpressure. Drop-in for `SubscribeToTask` and push-notification fan-out.
+- **JSON Schema registry** at publish-edge (`crates/bus/src/schema.rs`) — directly powers A2A `Skill.inputSchema` validation.
+- **Audit hash chain + compliance verifier** (`crates/server/src/api/compliance.rs`) — every Task transition lands in the same tamper-evident audit pipeline.
+- **mTLS stack** (`crates/crypto/src/tls.rs`) — already wired into the shared `reqwest::Client`; satisfies `MutualTlsSecurityScheme` for both inbound A2A requests and outbound push delivery.
+- **Multi-tenant ACL** — A2A §3.3.2 ("never leak resource existence to unauthorized clients") is already how Acteon returns 403 vs. 404 on tenant mismatches.
+- **Idempotency** — action/chain dedup-key infrastructure maps onto A2A `messageId` deduplication.
+- **`Grant.agent_id` binding** (Phase 10) — per-agent API-key identity is already in the auth layer.
 
-### Facade crate (`crates/a2a`)
+## Risks
 
-- JSON-RPC 2.0 router for the 11 spec methods.
-- `Task` state machine owner; persistence via existing `State` backend (new `KeyKind::A2aTask`).
-- SSE bridge re-framing `StreamChunk`/`StreamEnd` as A2A `StreamResponse`.
-- Push delivery worker (reuses shared `reqwest::Client` from `main.rs` and the existing audit-stamped envelope pattern).
-
-### Server endpoints
-
-- `GET /.well-known/agent.json` — public, unauthenticated, returns the active card.
-- `POST /a2a/rpc` — JSON-RPC entry point.
-- `GET /a2a/tasks/{id}:subscribe` — SSE stream.
-- Optional REST binding at `/a2a/tasks/...` per spec §11.
-
-### Auth integration
-
-Map A2A `securitySchemes` to existing API-key grants:
-
-- `APIKeySecurityScheme` → existing API keys.
-- `HTTPAuthSecurityScheme` (Bearer) → trivial extension.
-- `MutualTlsSecurityScheme` → already supported.
-- `OAuth2SecurityScheme` / `OpenIdConnect` → out of scope for MVP.
-
-`Grant.agent_id` (Phase 10 of the bus work) gives caller→agent identity stamping for free.
-
-## What We Get For Free
-
-- **Streaming + reconnect**: PRs #153–157 (May 2026) shipped SSE reconnect with `Last-Event-ID` across all SDKs. Drop-in for `SubscribeToTask`.
-- **Multi-tenancy + ACL**: A2A §3.3.2 mandates "never leak resource existence to unauthorized clients." Acteon already returns 403 (not 404) on wrong-tenant access.
-- **Schema validation**: A2A `Skill.inputSchema` is JSON Schema; the bus already validates JSON Schema at publish-edge.
-- **Idempotency**: Action dedup keys map onto A2A `messageId` idempotency (spec §3.3.1).
-- **Audit trail**: Every A2A message → audit record, with hash-chain compliance verification.
-- **Polyglot SDKs**: Rust, Python, Node, Go, Java — once the server speaks A2A, all five get it via the existing client codegen pattern.
-
-## Architectural Decisions to Settle
-
-1.  **Task ↔ Chain relationship.** Two options:
-    - *Independent* — A2A tasks live in their own state-store kind; chains stay internal-only.
-    - *Bridge* — an incoming A2A task can spawn a chain, and chain state is exposed as `TaskStatus`. More work, but powerful (external agents can drive Acteon chains end-to-end).
-    
-    **Recommended:** start with Independent for MVP. Add the bridge in a follow-up once the task primitive has shipped.
-
-2.  **AgentCard signing.** Optional per spec §8.4. Required only for federated discovery; HTTPS at the well-known endpoint is sufficient for most deployments. Skip in MVP unless customers ask.
-
-3.  **Identity granularity.** A2A is agent-to-agent. Acteon's auth is tenant + API key + grant. Phase 10's `Grant.agent_id` binding lets each external A2A agent get its own API key for cleaner audit. Default to that.
-
-4.  **Versioning posture.** Ship A2A 1.0 only. Use the `A2A-Version` header to gate future migrations.
-
-## Risks & Unknowns
-
-- **Spec churn.** A2A 1.0 ratified late 2025; subsequent versions may change framing. Keep the facade thin to preserve a clean migration path.
-- **utoipa recursion.** A2A's `Task` is recursive via `referenceTaskIds`; same infinite-recursion landmine as `ChainStepStatus.parallel_sub_steps`. Apply the same `#[schema(value_type = Object)]` workaround.
-- **Payload size.** A2A `Part` can carry arbitrary data; existing publish-edge caps (512KB content / 1MB payload) may need an A2A-specific tier.
-- **Push delivery reliability.** A2A doesn't mandate exactly-once. Reuse the existing webhook provider's retry + DLQ pattern.
-- **OAuth2 / OIDC.** Not in MVP. If enterprise customers require it, scope as Phase 10.
-
-## Effort Estimate
-
-**~6 weeks single-engineer for full SDK parity** or **~3 weeks server-only MVP**.
-
----
+- **A2A spec churn.** 1.0 was ratified in late 2025 and is still evolving. Keep the protocol codec layer thin and put the `A2A-Version` header on the critical path so future revisions don't cascade into the Task Engine.
+- **utoipa recursion landmine.** `Task` references other tasks via `referenceTaskIds`, mirroring the `ChainStepStatus.parallel_sub_steps` infinite-schema-recursion bug. Use `#[schema(value_type = Object)]` on the recursive field from day one.
+- **Payload size.** A2A `Part` carries arbitrary data (text, base64 raw, URL refs, JSON). Existing publish-edge caps (512KB content / 1MB payload) are tuned for the internal bus; A2A may need an explicit per-tenant tier or chunked-artifact streaming for large outputs.
+- **Push delivery semantics.** A2A doesn't mandate exactly-once. Reuse the webhook provider's retry + DLQ pattern and stamp `acteon.push.attempt` headers for audit replay.
+- **8-state surface area in clients.** SDK consumers will now see eight Task states. Worth a doc page distinguishing terminal (Completed/Failed/Canceled/Rejected) from interrupt (InputRequired/AuthRequired) states so library users don't write incorrect "is finished" checks.
 
 ## Implementation Plan
 
-### Phase 0: RFC & Alignment
-- [ ] Settle the four architectural decisions above (Task↔Chain, signing, identity, versioning) with the core team.
-- [ ] Confirm coexistence (facade) vs. replacement of internal bus surface.
-- [ ] Pick MVP cut: server-only vs. full SDK parity.
-
-### Phase 1: Core Types (`acteon-core`)
-- [ ] Add `a2a::Task` with 8-state lifecycle (`Submitted`/`Working`/`Completed`/`Failed`/`Canceled`/`InputRequired`/`AuthRequired`/`Rejected`).
-- [ ] Add `a2a::Artifact` with `append` / `lastChunk` semantics.
-- [ ] Add `a2a::Message` and `a2a::Part` (text/file/data variants).
-- [ ] Add `a2a::AgentCard` extending `Agent` with `skills[]`, `interfaces[]`, `securitySchemes`, optional `signature`.
-- [ ] Add `a2a::PushNotificationConfig`.
-- [ ] Validation rules + serde + utoipa schemas (apply `#[schema(value_type = Object)]` to recursive fields).
+### Phase 1: Core Primitives (`acteon-core`) — ~5 days
+- [ ] **Native Task:** Add `bus_task.rs` defining `Task` with the 8-state lifecycle, `Artifact`, `Message`, `Part`, and `PushNotificationConfig`. Include validation, serde, and utoipa schemas (apply `#[schema(value_type = Object)]` to recursive fields).
+- [ ] **Artifact Streaming:** Update `bus_stream.rs` to include `append` and `last_chunk` metadata for native A2A artifact support.
+- [ ] **Agent Evolution:** Extend `Agent` in `bus_agent.rs` with `skills[]`, `interfaces[]`, and JSON Schema capability definitions.
+- [ ] **Converged Envelopes:** Align `bus_conversation.rs` message parts with A2A `Message`/`Part` semantics.
 - [ ] Unit tests for state transitions, validation, and serde round-trips.
 
-### Phase 2: Facade Crate (`crates/a2a`)
-- [ ] Scaffold `crates/a2a`; register in workspace.
-- [ ] JSON-RPC 2.0 router covering the 11 spec methods.
-- [ ] `Task` persistence via existing `State` backend (new `KeyKind::A2aTask`).
-- [ ] Translation layer: A2A `SendMessage` → bus operations (conversation create / message append / tool-call envelope).
-- [ ] CAS-based status transitions matching the bus's retry pattern.
-- [ ] Idempotency on `messageId` via existing dedup-key infra.
+### Phase 2: Gateway Integration (`crates/gateway`) — ~6 days
+- [ ] **Protocol Codecs:** Implement encoders/decoders for A2A JSON-RPC 2.0 and the REST binding (spec §11). Wire `A2A-Version` header negotiation with `VersionNotSupportedError`.
+- [ ] **Task Engine:** Implement the lifecycle manager in the gateway, handling state transitions and persistence via the existing `State` backend (new `KeyKind::A2aTask`). Use CAS retries to mirror the bus's optimistic-locking pattern.
+- [ ] **The Bridge:** Implement native mapping between `Task` state and `Chain` status — A2A `Submitted/Working` ↔ chain step progress; `InputRequired/AuthRequired` ↔ `BusApproval`; terminal states ↔ chain `StepResult`.
+- [ ] **Audit Integration:** Stamp every A2A operation with `AuditEventKind::A2aTaskTransition`.
+- [ ] **Idempotency:** Wire A2A `messageId` through existing dedup-key infrastructure.
 
-### Phase 3: Discovery & Auth
-- [ ] `GET /.well-known/agent.json` (public, unauthenticated).
-- [ ] AgentCard builder (assembles capabilities, skills, interfaces, security schemes from server config + registered providers).
-- [ ] `A2A-Version` header negotiation; `VersionNotSupportedError` for unsupported.
-- [ ] Map `APIKeySecurityScheme` / `HTTPAuthSecurityScheme` (Bearer) / `MutualTlsSecurityScheme` to existing grants.
+### Phase 3: Discovery & SSE Bridge — ~4 days
+- [ ] **Global Discovery Registry:** Implement a dynamic `DiscoveryService` that aggregates native `AgentCard` data for `/.well-known/agent.json`. Public and unauthenticated per spec.
+- [ ] **High-Scale Streaming:** Integrate `SubscribeToTask` and `SendStreamingMessage` directly with the gateway's SSE bridge, reusing `Last-Event-ID` and per-tenant connection caps. Re-frame internal `StreamChunk` / `StreamEnd` records as A2A `StreamResponse` envelopes.
 - [ ] Optional `GetExtendedAgentCard` for authenticated callers.
 
-### Phase 4: Streaming Bridge
-- [ ] `GET /a2a/tasks/{id}:subscribe` SSE endpoint.
-- [ ] Bridge: subscribe to relevant `StreamChunk`/`StreamEnd` records, reframe as A2A `StreamResponse`.
-- [ ] Reuse `Last-Event-ID` reconnect (already implemented for bus).
-- [ ] Per-tenant SSE connection caps (reuse existing config).
-- [ ] `SendStreamingMessage` initial response with full task, subsequent updates as `statusUpdate` / `artifactUpdate`.
+### Phase 4: Push Notifications & Security Schemes — ~4 days
+- [ ] **Native Push Delivery:** Implement task-scoped webhook delivery (`Create/Get/List/Delete TaskPushNotificationConfig`). Reuse shared `reqwest::Client`, retry + DLQ, and audit-stamped envelope pattern from the webhook provider.
+- [ ] **Security Schemes:** Map `APIKeySecurityScheme`, `HTTPAuthSecurityScheme` (Bearer), and `MutualTlsSecurityScheme` to native Acteon Grants and TLS configurations. (`OAuth2`/`OpenIdConnect` deferred to a follow-up.)
 
-### Phase 5: Push Notifications
-- [ ] `PushNotificationConfig` CRUD endpoints (`Create/Get/List/Delete`).
-- [ ] Per-task config persistence (new state-store entity).
-- [ ] Delivery worker: subscribes to task status changes, POSTs `StreamResponse` to registered webhooks.
-- [ ] Reuse shared `reqwest::Client` and mTLS support from `crates/crypto/src/tls.rs`.
-- [ ] Retry + DLQ mirroring webhook provider behavior.
-- [ ] Audit-stamp delivery attempts.
+### Phase 5: Hardening & Validation — ~3 days
+- [ ] **Recursive depth validation** for Tasks to prevent circular reference attacks via `referenceTaskIds`.
+- [ ] **Payload caps:** A2A-specific size limits for `Part` content; chunked-artifact streaming for outputs exceeding the existing 1MB payload tier.
+- [ ] **Security review:** Run the existing security-review skill against the new endpoints (`/.well-known/agent.json`, `/a2a/rpc`, push delivery worker).
+- [ ] **Load test:** Add gateway benchmark covering streamed Task lifecycle under N concurrent subscribers.
 
-### Phase 6: REST Binding
-- [ ] `POST /a2a/tasks` (SendMessage).
-- [ ] `POST /a2a/tasks:stream` (SendStreamingMessage).
-- [ ] `GET /a2a/tasks/{id}` (GetTask).
-- [ ] `GET /a2a/tasks` (ListTasks with pagination + status filter).
-- [ ] `POST /a2a/tasks/{id}:cancel` (CancelTask).
-- [ ] `GET /a2a/tasks/{id}:subscribe` (SubscribeToTask).
-- [ ] Push notification config endpoints.
-- [ ] All thin wrappers over the JSON-RPC handlers.
-
-### Phase 7: Polyglot SDK Updates
-- [ ] Rust client: `crates/client/src/a2a.rs` with helper methods.
-- [ ] Python SDK: A2A client surface.
-- [ ] Node.js SDK: A2A client surface.
-- [ ] Go SDK: A2A client surface.
-- [ ] Java SDK: A2A client surface.
-
-### Phase 8: Simulation & Docs
-- [ ] `crates/simulation/examples/a2a_simulation.rs` — round-trip a Task through all 8 states.
-- [ ] `docs/book/features/a2a.md` — user-facing guide.
-- [ ] `docs/architecture/a2a.md` — final architecture doc once shipped.
-- [ ] Update CHANGELOG and README feature matrix.
-
-### Phase 9: UI Surface (Optional)
-- [ ] Dashboard tab listing A2A tasks distinctly from internal bus tasks.
-- [ ] AgentCard preview / signing controls.
-- [ ] Push notification config management.
-
-### Phase 10: Hardening (Future)
-- [ ] `OAuth2SecurityScheme` / `OpenIdConnectSecurityScheme` support.
-- [ ] AgentCard signing (Ed25519, reusing the compliance hash-chain crypto stack).
-- [ ] Bridge mode: A2A Task → Acteon Chain spawn.
-- [ ] Acteon-as-A2A-client (outbound calls to third-party agents).
+### Phase 6: SDK & Simulation — ~5 days
+- [ ] Update all polyglot SDKs (Rust, Python, Node, Go, Java) to support the native A2A Task primitives.
+- [ ] Add `a2a_core_simulation.rs` demonstrating a Task pipeline through all 8 states (including `InputRequired` and `AuthRequired` interrupts).
+- [ ] `docs/book/features/a2a.md` user-facing guide; promote this design doc to `docs/architecture/a2a.md` once shipped.
+- [ ] CHANGELOG entry + README feature-matrix update.
 
 ### Pre-Commit Checks (per Phase)
 - [ ] `cargo fmt --all`
@@ -241,7 +129,7 @@ Map A2A `securitySchemes` to existing API-key grants:
 - [ ] `cargo check --all-targets`
 - [ ] `(cd ui && npm run lint && npm run build)` when UI changes touched
 
----
+**Total estimated effort: ~27 days (≈5.5 weeks single-engineer).** Phase ordering is deliberate — Phases 1–3 deliver an unauthenticated, streaming, discoverable A2A endpoint usable by external clients; Phases 4–6 layer in production-grade auth, push, hardening, and SDK parity.
 
 ## References
 
@@ -249,5 +137,5 @@ Map A2A `securitySchemes` to existing API-key grants:
 - [A2A on GitHub](https://github.com/a2aproject/A2A)
 - [Google announcement of A2A](https://developers.googleblog.com/en/a2a-a-new-era-of-agent-interoperability/)
 - [Agent2Agent protocol upgrade — Google Cloud Blog](https://cloud.google.com/blog/products/ai-machine-learning/agent2agent-protocol-is-getting-an-upgrade)
-- Internal: `docs/design/mcp-server.md` (sibling external-protocol implementation)
-- Internal: `docs/architecture/agent-swarm.md` (multi-agent orchestration this complements)
+- Internal: `docs/design/mcp-server.md` — sibling external-protocol implementation
+- Internal: `docs/architecture/agent-swarm.md` — multi-agent orchestration this complements
