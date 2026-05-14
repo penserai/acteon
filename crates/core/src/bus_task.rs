@@ -160,12 +160,13 @@ impl TaskState {
         use TaskState::{
             AuthRequired, Canceled, Completed, Failed, InputRequired, Rejected, Submitted, Working,
         };
-        matches!(
-            (self, next),
-            (Submitted, Working | Canceled | Failed | Rejected)
-                | (Working, Completed | Failed | Canceled | InputRequired | AuthRequired)
-                | (InputRequired | AuthRequired, Working | Canceled | Failed)
-        )
+        let allowed: &[TaskState] = match self {
+            Submitted => &[Working, Canceled, Failed, Rejected],
+            Working => &[Completed, Failed, Canceled, InputRequired, AuthRequired],
+            InputRequired | AuthRequired => &[Working, Canceled, Failed],
+            Completed | Failed | Canceled | Rejected => &[],
+        };
+        allowed.contains(&next)
     }
 }
 
