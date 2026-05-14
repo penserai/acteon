@@ -7,6 +7,7 @@ pub mod bus_conversation;
 pub mod bus_schema;
 pub mod bus_stream;
 pub mod bus_subscription;
+pub mod bus_task;
 pub mod bus_tool;
 pub mod bus_topic;
 pub mod caller;
@@ -56,6 +57,13 @@ pub use bus_stream::{StreamChunk, StreamEnd, StreamEndStatus, StreamEnvelopeVali
 pub use bus_subscription::{
     AckMode, PartitionLag, StartOffset as SubscriptionStartOffset, Subscription,
     SubscriptionStatus, SubscriptionValidationError,
+};
+pub use bus_task::{
+    Artifact, MAX_ARTIFACTS_LEN, MAX_HISTORY_LEN, MAX_ID_LEN as MAX_TASK_ID_LEN,
+    MAX_MESSAGE_EXTENSIONS, MAX_METADATA_VALUE_BYTES as MAX_TASK_METADATA_VALUE_BYTES,
+    MAX_PART_DATA_BYTES, MAX_PART_RAW_BYTES, MAX_PART_TEXT_BYTES, MAX_PARTS_PER_CONTAINER,
+    MAX_REFERENCE_TASK_IDS, Message as TaskMessage, Part as TaskPart, Role as TaskRole, Task,
+    TaskState, TaskStatus, TaskValidationError,
 };
 pub use bus_tool::{ToolCall, ToolEnvelopeValidationError, ToolResult, ToolResultStatus};
 pub use bus_topic::{Topic, TopicValidationError};
