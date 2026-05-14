@@ -59,11 +59,12 @@ pub use bus_subscription::{
     SubscriptionStatus, SubscriptionValidationError,
 };
 pub use bus_task::{
-    Artifact, MAX_ARTIFACTS_LEN, MAX_HISTORY_LEN, MAX_ID_LEN as MAX_TASK_ID_LEN,
-    MAX_MESSAGE_EXTENSIONS, MAX_METADATA_VALUE_BYTES as MAX_TASK_METADATA_VALUE_BYTES,
-    MAX_PART_DATA_BYTES, MAX_PART_RAW_BYTES, MAX_PART_TEXT_BYTES, MAX_PARTS_PER_CONTAINER,
-    MAX_REFERENCE_TASK_IDS, Message as TaskMessage, Part as TaskPart, Role as TaskRole, Task,
-    TaskState, TaskStatus, TaskValidationError,
+    Artifact, DEFAULT_WORKING_TTL_MS, MAX_ARTIFACTS_LEN, MAX_HISTORY_LEN,
+    MAX_ID_LEN as MAX_TASK_ID_LEN, MAX_MESSAGE_EXTENSIONS,
+    MAX_METADATA_VALUE_BYTES as MAX_TASK_METADATA_VALUE_BYTES, MAX_PART_DATA_BYTES,
+    MAX_PART_RAW_BYTES, MAX_PART_TEXT_BYTES, MAX_PARTS_PER_CONTAINER, MAX_REFERENCE_DEPTH,
+    MAX_REFERENCE_TASK_IDS, MAX_WORKING_TTL_MS, Message as TaskMessage, Part as TaskPart,
+    Role as TaskRole, Task, TaskState, TaskStatus, TaskValidationError,
 };
 pub use bus_tool::{ToolCall, ToolEnvelopeValidationError, ToolResult, ToolResultStatus};
 pub use bus_topic::{Topic, TopicValidationError};

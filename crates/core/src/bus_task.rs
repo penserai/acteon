@@ -51,18 +51,23 @@ use serde::{Deserialize, Serialize};
 /// and Kafka headers.
 pub const MAX_ID_LEN: usize = 120;
 
-/// Max characters in a `Part::text` field. Matches the existing
-/// publish-edge content cap so an oversized text part can't bypass
-/// the bus's content limits by riding inside a Task.
-pub const MAX_PART_TEXT_BYTES: usize = 512 * 1024; // 512KB
+/// Max characters in a `Part::text` field. A2A messages are
+/// primarily text exchanges between agents — 256KB (~64K tokens) is
+/// plenty for prose without giving a malicious caller room to
+/// inflate Kafka records. Larger payloads must use `Part::url` to
+/// reference an external store.
+pub const MAX_PART_TEXT_BYTES: usize = 256 * 1024;
 
-/// Max `base64` length of a `Part::raw` payload. The 1MB cap aligns
-/// with the existing bus payload tier; chunked artifacts are the
-/// supported pattern for outputs larger than this.
-pub const MAX_PART_RAW_BYTES: usize = 1024 * 1024; // 1MB (base64)
+/// Max `base64` length of a `Part::raw` payload. Same 256KB cap as
+/// `text`: small binaries inline (icons, thumbnails), large binaries
+/// by reference via `url`. The `acteon-blob` crate was removed in an
+/// earlier refactor, so external object stores (S3, GCS, etc.) are
+/// the supported escape hatch.
+pub const MAX_PART_RAW_BYTES: usize = 256 * 1024;
 
-/// Max bytes for a serialized `Part::data` JSON value.
-pub const MAX_PART_DATA_BYTES: usize = 1024 * 1024; // 1MB
+/// Max bytes for a serialized `Part::data` JSON value. Same 256KB
+/// tier as `text` / `raw`.
+pub const MAX_PART_DATA_BYTES: usize = 256 * 1024;
 
 /// Max history length on a [`Task`]. A2A's `historyLength` query
 /// parameter is the client-facing way to bound this on the wire; the
@@ -84,6 +89,27 @@ pub const MAX_REFERENCE_TASK_IDS: usize = 32;
 
 /// Max number of `extensions` entries on a [`Message`].
 pub const MAX_MESSAGE_EXTENSIONS: usize = 32;
+
+/// Max depth of Task → Task references the Task Engine is allowed to
+/// traverse before declaring a cycle. `Task` is structurally flat
+/// (references are `Vec<String>` IDs, never nested objects), so the
+/// serializer is safe; the landmine is the *graph* across rows. The
+/// Engine (Phase 2) reads this constant when resolving reference
+/// graphs and rejects anything deeper.
+pub const MAX_REFERENCE_DEPTH: usize = 5;
+
+/// Default time-to-live for a Task sitting in a non-terminal state
+/// without progress. Mirrors the `Agent.status_at()` pattern from
+/// `bus_agent.rs` — staleness is *derived* on read from
+/// `last_progress_at + working_ttl_ms`, so the read path remains
+/// correct even if a background reaper is lagging. 30 minutes is a
+/// sensible default for tasks backed by chains; tune per-task via
+/// [`Task::with_working_ttl`].
+pub const DEFAULT_WORKING_TTL_MS: i64 = 30 * 60 * 1_000;
+
+/// Hard cap on `working_ttl_ms`. A never-expiring Task is a memory
+/// leak waiting to happen.
+pub const MAX_WORKING_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1_000; // 7d
 
 // ---------------------------------------------------------------------
 // TaskState
@@ -367,8 +393,28 @@ impl Message {
         }
     }
 
-    /// Validate identity, bounded fields, and each part.
+    /// Validate identity, bounded fields, and each part. Also
+    /// rejects the simplest cycle: a message whose `taskId` appears
+    /// in its own `referenceTaskIds`. Cycle detection across multiple
+    /// Task rows is the Phase 2 Engine's responsibility (it walks the
+    /// graph with a [`MAX_REFERENCE_DEPTH`] cap).
     pub fn validate(&self) -> Result<(), TaskValidationError> {
+        self.validate_against_parent(None)
+    }
+
+    /// Like [`Message::validate`] but also rejects self-reference
+    /// against an externally-supplied parent task ID. Used by
+    /// [`Task::validate`] so a message that lives inside Task `T`
+    /// can't list `T` in `referenceTaskIds` (the trivial 1-hop
+    /// cycle).
+    pub fn validate_in_task(&self, parent_task_id: &str) -> Result<(), TaskValidationError> {
+        self.validate_against_parent(Some(parent_task_id))
+    }
+
+    fn validate_against_parent(
+        &self,
+        parent_task_id: Option<&str>,
+    ) -> Result<(), TaskValidationError> {
         validate_id("messageId", &self.message_id)?;
         if let Some(c) = &self.context_id {
             validate_id("contextId", c)?;
@@ -391,6 +437,14 @@ impl Message {
         for r in &self.reference_task_ids {
             validate_id("referenceTaskIds", r)?;
         }
+        // Trivial 1-hop cycle: message's own task references itself.
+        // The Phase 2 Engine does multi-hop detection.
+        let self_id = parent_task_id.or(self.task_id.as_deref());
+        if let Some(sid) = self_id
+            && self.reference_task_ids.iter().any(|r| r == sid)
+        {
+            return Err(TaskValidationError::SelfReferenceTaskId(sid.to_string()));
+        }
         if self.extensions.len() > MAX_MESSAGE_EXTENSIONS {
             return Err(TaskValidationError::TooManyExtensions);
         }
@@ -408,6 +462,22 @@ impl Message {
 /// stream of artifact-update events with the same `artifactId`, the
 /// first carrying `append = false` (replace) and subsequent ones
 /// `append = true` (append). The final chunk sets `lastChunk = true`.
+///
+/// **Race safety (Acteon extension):** A2A spec is silent on
+/// out-of-order chunk delivery. To prevent the consumer from closing
+/// a Task before a late append arrives, Acteon adds two optional
+/// fields beyond the A2A wire shape:
+///
+/// - `chunkIndex` — monotonic sequence within the artifact (mirrors
+///   `StreamChunk.chunk_seq` from Phase 6b).
+/// - `totalChunks` — set on the `lastChunk` envelope to assert how
+///   many chunks the consumer must observe before treating the
+///   artifact as complete.
+///
+/// The Phase 2 Task Engine enforces: chunk indices are non-negative,
+/// no chunks arrive after `lastChunk = true`, and (when
+/// `totalChunks` is set) every index in `0..totalChunks` is observed
+/// before the artifact is closed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -432,6 +502,15 @@ pub struct Artifact {
     /// can mark the artifact as complete once observed.
     #[serde(default)]
     pub last_chunk: bool,
+    /// Monotonic sequence number within this artifact's chunk stream.
+    /// Acteon extension beyond A2A spec; see struct-level docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_index: Option<i64>,
+    /// Total number of chunks expected for this artifact, set on the
+    /// `lastChunk = true` envelope so consumers can validate
+    /// completeness. Acteon extension; see struct-level docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_chunks: Option<i64>,
     /// Free-form metadata.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]
@@ -449,11 +528,14 @@ impl Artifact {
             parts,
             append: false,
             last_chunk: true,
+            chunk_index: None,
+            total_chunks: None,
             metadata: HashMap::new(),
         }
     }
 
-    /// Validate identity and bounded fields.
+    /// Validate identity, bounded fields, and chunk sequencing
+    /// invariants (non-negative `chunkIndex`, positive `totalChunks`).
     pub fn validate(&self) -> Result<(), TaskValidationError> {
         validate_id("artifactId", &self.artifact_id)?;
         if self.parts.is_empty() {
@@ -464,6 +546,27 @@ impl Artifact {
         }
         for p in &self.parts {
             p.validate()?;
+        }
+        if let Some(ix) = self.chunk_index
+            && ix < 0
+        {
+            return Err(TaskValidationError::NegativeChunkIndex(ix));
+        }
+        if let Some(t) = self.total_chunks
+            && t <= 0
+        {
+            return Err(TaskValidationError::InvalidTotalChunks(t));
+        }
+        // If a chunk advertises `totalChunks`, its own index must fit
+        // inside the asserted range — otherwise a consumer that trusts
+        // the cap will hang waiting for an index that can never arrive.
+        if let (Some(ix), Some(t)) = (self.chunk_index, self.total_chunks)
+            && ix >= t
+        {
+            return Err(TaskValidationError::ChunkIndexOutOfRange {
+                index: ix,
+                total: t,
+            });
         }
         validate_metadata(&self.metadata)?;
         Ok(())
@@ -517,6 +620,15 @@ impl TaskStatus {
 /// An A2A task — the canonical unit of asynchronous work observable
 /// to external callers. Lives at `KeyKind::A2aTask` (added in Phase 2)
 /// keyed by `(namespace, tenant, task_id)`.
+///
+/// Staleness: a Task that sits in a non-terminal state without
+/// progress is a zombie. [`Task::is_stale_at`] derives staleness from
+/// `last_progress_at + working_ttl_ms` on read; the Phase 2 reaper
+/// transitions stale tasks to `Failed`. `last_progress_at` is
+/// bumped on every mutating operation
+/// ([`Task::transition_to`], [`Task::append_history`],
+/// [`Task::upsert_artifact`]) and on explicit
+/// [`Task::record_progress`] heartbeats.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -551,6 +663,32 @@ pub struct Task {
     pub created_at: DateTime<Utc>,
     /// Last mutation timestamp.
     pub updated_at: DateTime<Utc>,
+    /// Last time the task observed *forward progress* (state
+    /// transition, history append, artifact update, explicit
+    /// heartbeat). Distinct from `updated_at` so that purely
+    /// administrative writes (e.g. metadata-only mutations from an
+    /// operator) don't reset the staleness clock.
+    #[serde(default)]
+    pub last_progress_at: Option<DateTime<Utc>>,
+    /// Time-to-live in milliseconds for non-terminal states without
+    /// progress. Once `now > last_progress_at + working_ttl_ms`, the
+    /// task is considered stale ([`Task::is_stale_at`] returns `true`)
+    /// and the Phase 2 reaper will transition it to `Failed`.
+    #[serde(default = "default_working_ttl_ms")]
+    pub working_ttl_ms: i64,
+    /// If the task is paused awaiting a human (state is
+    /// `AuthRequired` or `InputRequired`), the ID of the
+    /// `BusApproval` row gating resumption. Exactly one approval row
+    /// represents the pause regardless of which interrupt flavor —
+    /// the Phase 2 `BusApproval` will carry a `kind: PauseKind`
+    /// (`OperatorApproval` / `UserAuth` / `UserInput`) so the audit
+    /// trail has a single source of truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_approval_id: Option<String>,
+}
+
+fn default_working_ttl_ms() -> i64 {
+    DEFAULT_WORKING_TTL_MS
 }
 
 impl Task {
@@ -573,12 +711,23 @@ impl Task {
             tenant: tenant.into(),
             created_at: now,
             updated_at: now,
+            last_progress_at: Some(now),
+            working_ttl_ms: DEFAULT_WORKING_TTL_MS,
+            pending_approval_id: None,
         }
+    }
+
+    /// Builder helper: set a custom `working_ttl_ms` (validated).
+    pub fn with_working_ttl(mut self, ttl_ms: i64) -> Result<Self, TaskValidationError> {
+        validate_working_ttl(ttl_ms)?;
+        self.working_ttl_ms = ttl_ms;
+        Ok(self)
     }
 
     /// Apply a state transition, capturing the driving message. Rejects
     /// illegal transitions explicitly so the API can surface a 409
-    /// rather than silently dropping the change.
+    /// rather than silently dropping the change. Bumps
+    /// `last_progress_at` since a state change is forward progress.
     pub fn transition_to(
         &mut self,
         next: TaskState,
@@ -600,24 +749,33 @@ impl Task {
             timestamp: now,
         };
         self.updated_at = now;
+        self.last_progress_at = Some(now);
+        // Leaving an interrupt clears the gating approval reference.
+        if matches!(next, TaskState::Working) {
+            self.pending_approval_id = None;
+        }
         Ok(())
     }
 
-    /// Append a message to the history, enforcing the cap.
+    /// Append a message to the history, enforcing the cap. Counts as
+    /// forward progress.
     pub fn append_history(&mut self, message: Message) -> Result<(), TaskValidationError> {
         if self.history.len() >= MAX_HISTORY_LEN {
             return Err(TaskValidationError::HistoryFull);
         }
         message.validate()?;
         self.history.push(message);
-        self.updated_at = Utc::now();
+        let now = Utc::now();
+        self.updated_at = now;
+        self.last_progress_at = Some(now);
         Ok(())
     }
 
     /// Append (or replace) an artifact. If an artifact with the same
     /// `artifactId` already exists and the new one carries
     /// `append = true`, its parts are appended to the existing one;
-    /// otherwise the existing artifact is replaced.
+    /// otherwise the existing artifact is replaced. Counts as forward
+    /// progress.
     pub fn upsert_artifact(&mut self, artifact: Artifact) -> Result<(), TaskValidationError> {
         artifact.validate()?;
         match self
@@ -642,8 +800,48 @@ impl Task {
                 self.artifacts.push(artifact);
             }
         }
-        self.updated_at = Utc::now();
+        let now = Utc::now();
+        self.updated_at = now;
+        self.last_progress_at = Some(now);
         Ok(())
+    }
+
+    /// Record an explicit heartbeat — the task is alive and working
+    /// even if no state/history/artifact change has happened. Producers
+    /// driving long-running work without intermediate output should
+    /// call this periodically so the staleness reaper doesn't reap
+    /// them.
+    pub fn record_progress(&mut self) {
+        self.last_progress_at = Some(Utc::now());
+    }
+
+    /// Mark the task as paused awaiting a human (either `AuthRequired`
+    /// or `InputRequired`), with the gating approval ID stamped. The
+    /// caller is responsible for calling [`Task::transition_to`] to
+    /// the appropriate interrupt state separately — this method only
+    /// records the approval link.
+    pub fn set_pending_approval(&mut self, approval_id: impl Into<String>) {
+        self.pending_approval_id = Some(approval_id.into());
+    }
+
+    /// Derive staleness from `last_progress_at + working_ttl_ms`.
+    /// Terminal tasks are never stale (they're done, not zombies).
+    /// Tasks without a recorded progress timestamp use `created_at`
+    /// as the baseline.
+    #[must_use]
+    pub fn is_stale_at(&self, now: DateTime<Utc>) -> bool {
+        if self.status.state.is_terminal() {
+            return false;
+        }
+        let baseline = self.last_progress_at.unwrap_or(self.created_at);
+        let age_ms = (now - baseline).num_milliseconds();
+        age_ms > self.working_ttl_ms
+    }
+
+    /// Convenience: [`Self::is_stale_at`] using `Utc::now()`.
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.is_stale_at(Utc::now())
     }
 
     /// Validate identity, status, and all contained messages/artifacts.
@@ -654,12 +852,16 @@ impl Task {
         if let Some(c) = &self.context_id {
             validate_id("contextId", c)?;
         }
+        if let Some(a) = &self.pending_approval_id {
+            validate_id("pendingApprovalId", a)?;
+        }
+        validate_working_ttl(self.working_ttl_ms)?;
         self.status.validate()?;
         if self.history.len() > MAX_HISTORY_LEN {
             return Err(TaskValidationError::HistoryFull);
         }
         for m in &self.history {
-            m.validate()?;
+            m.validate_in_task(&self.id)?;
         }
         if self.artifacts.len() > MAX_ARTIFACTS_LEN {
             return Err(TaskValidationError::TooManyArtifacts);
@@ -727,6 +929,16 @@ fn validate_metadata(map: &HashMap<String, serde_json::Value>) -> Result<(), Tas
     Ok(())
 }
 
+fn validate_working_ttl(ttl_ms: i64) -> Result<(), TaskValidationError> {
+    if ttl_ms <= 0 {
+        return Err(TaskValidationError::WorkingTtlNonPositive(ttl_ms));
+    }
+    if ttl_ms > MAX_WORKING_TTL_MS {
+        return Err(TaskValidationError::WorkingTtlTooLong(ttl_ms));
+    }
+    Ok(())
+}
+
 /// Validation failures across the A2A task model.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TaskValidationError {
@@ -776,6 +988,18 @@ pub enum TaskValidationError {
     MetadataInvalid,
     #[error("illegal transition from {from:?} to {to:?}")]
     IllegalTransition { from: TaskState, to: TaskState },
+    #[error("message taskId '{0}' must not appear in its own referenceTaskIds (self-cycle)")]
+    SelfReferenceTaskId(String),
+    #[error("chunkIndex must be non-negative (got {0})")]
+    NegativeChunkIndex(i64),
+    #[error("totalChunks must be positive (got {0})")]
+    InvalidTotalChunks(i64),
+    #[error("chunkIndex {index} is outside the asserted totalChunks range (0..{total})")]
+    ChunkIndexOutOfRange { index: i64, total: i64 },
+    #[error("workingTtlMs must be > 0 (got {0})")]
+    WorkingTtlNonPositive(i64),
+    #[error("workingTtlMs {0} exceeds the {MAX_WORKING_TTL_MS}ms cap")]
+    WorkingTtlTooLong(i64),
 }
 
 // ---------------------------------------------------------------------
@@ -1199,5 +1423,193 @@ mod tests {
         assert_eq!(back.status.state, TaskState::Working);
         assert_eq!(back.history.len(), 1);
         assert_eq!(back.artifacts.len(), 1);
+    }
+
+    // --- Hardening: staleness / TTL ---
+
+    #[test]
+    fn fresh_task_not_stale() {
+        let t = sample_task();
+        assert!(!t.is_stale());
+    }
+
+    #[test]
+    fn stale_when_no_progress_past_ttl() {
+        let mut t = sample_task();
+        t.transition_to(TaskState::Working, None).unwrap();
+        let future = Utc::now() + chrono::Duration::milliseconds(t.working_ttl_ms + 1);
+        assert!(t.is_stale_at(future));
+    }
+
+    #[test]
+    fn terminal_task_never_stale() {
+        let mut t = sample_task();
+        t.transition_to(TaskState::Working, None).unwrap();
+        t.transition_to(TaskState::Completed, None).unwrap();
+        // Even far in the future, a completed task is not "stale" —
+        // staleness is a zombie indicator, not an "old" indicator.
+        let far_future = Utc::now() + chrono::Duration::days(365);
+        assert!(!t.is_stale_at(far_future));
+    }
+
+    #[test]
+    fn record_progress_resets_staleness() {
+        let mut t = sample_task();
+        t.transition_to(TaskState::Working, None).unwrap();
+        // Manually wind back last_progress_at to simulate an old task.
+        t.last_progress_at =
+            Some(Utc::now() - chrono::Duration::milliseconds(t.working_ttl_ms + 5));
+        assert!(t.is_stale());
+        t.record_progress();
+        assert!(!t.is_stale());
+    }
+
+    #[test]
+    fn artifact_upsert_bumps_last_progress() {
+        let mut t = sample_task();
+        let before = t.last_progress_at.unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        t.upsert_artifact(Artifact::new("art-1", vec![Part::text("x")]))
+            .unwrap();
+        assert!(t.last_progress_at.unwrap() > before);
+    }
+
+    #[test]
+    fn validate_rejects_zero_ttl() {
+        let mut t = sample_task();
+        t.working_ttl_ms = 0;
+        assert!(matches!(
+            t.validate(),
+            Err(TaskValidationError::WorkingTtlNonPositive(0))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_ttl_above_cap() {
+        let mut t = sample_task();
+        t.working_ttl_ms = MAX_WORKING_TTL_MS + 1;
+        assert!(matches!(
+            t.validate(),
+            Err(TaskValidationError::WorkingTtlTooLong(_))
+        ));
+    }
+
+    #[test]
+    fn with_working_ttl_validates() {
+        let t = Task::new("t", "ns", "tn").with_working_ttl(60_000).unwrap();
+        assert_eq!(t.working_ttl_ms, 60_000);
+        assert!(Task::new("t", "ns", "tn").with_working_ttl(-1).is_err());
+    }
+
+    // --- Hardening: pending approval link ---
+
+    #[test]
+    fn set_pending_approval_records_id() {
+        let mut t = sample_task();
+        t.transition_to(TaskState::Working, None).unwrap();
+        t.transition_to(TaskState::InputRequired, None).unwrap();
+        t.set_pending_approval("appr-7");
+        assert_eq!(t.pending_approval_id.as_deref(), Some("appr-7"));
+    }
+
+    #[test]
+    fn resuming_to_working_clears_pending_approval() {
+        let mut t = sample_task();
+        t.transition_to(TaskState::Working, None).unwrap();
+        t.transition_to(TaskState::AuthRequired, None).unwrap();
+        t.set_pending_approval("appr-1");
+        t.transition_to(TaskState::Working, None).unwrap();
+        assert!(t.pending_approval_id.is_none());
+    }
+
+    #[test]
+    fn validate_rejects_bad_approval_id() {
+        let mut t = sample_task();
+        t.pending_approval_id = Some("bad/id".into());
+        assert!(matches!(
+            t.validate(),
+            Err(TaskValidationError::InvalidIdChar {
+                field: "pendingApprovalId",
+                ..
+            })
+        ));
+    }
+
+    // --- Hardening: artifact chunk sequencing ---
+
+    #[test]
+    fn artifact_chunk_index_must_be_non_negative() {
+        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
+        a.chunk_index = Some(-1);
+        assert!(matches!(
+            a.validate(),
+            Err(TaskValidationError::NegativeChunkIndex(-1))
+        ));
+    }
+
+    #[test]
+    fn artifact_total_chunks_must_be_positive() {
+        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
+        a.total_chunks = Some(0);
+        assert!(matches!(
+            a.validate(),
+            Err(TaskValidationError::InvalidTotalChunks(0))
+        ));
+    }
+
+    #[test]
+    fn artifact_chunk_index_must_fit_total_range() {
+        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
+        a.chunk_index = Some(5);
+        a.total_chunks = Some(5);
+        assert!(matches!(
+            a.validate(),
+            Err(TaskValidationError::ChunkIndexOutOfRange { index: 5, total: 5 })
+        ));
+    }
+
+    #[test]
+    fn artifact_with_valid_chunk_metadata_passes() {
+        let mut a = Artifact::new("art-1", vec![Part::text("x")]);
+        a.chunk_index = Some(2);
+        a.total_chunks = Some(5);
+        a.validate().unwrap();
+    }
+
+    // --- Hardening: message self-reference ---
+
+    #[test]
+    fn message_self_reference_via_own_task_id_rejected() {
+        let mut m = Message::text("msg-1", Role::User, "hi");
+        m.task_id = Some("task-1".into());
+        m.reference_task_ids = vec!["task-1".into()];
+        assert!(matches!(
+            m.validate(),
+            Err(TaskValidationError::SelfReferenceTaskId(_))
+        ));
+    }
+
+    #[test]
+    fn task_validate_rejects_history_message_referencing_parent() {
+        let mut t = sample_task();
+        let mut m = Message::text("msg-1", Role::Agent, "x");
+        // The message doesn't carry its own task_id but lives inside
+        // a Task whose `id` it cites — the trivial 1-hop cycle.
+        m.reference_task_ids = vec!["task-1".into()];
+        // Bypass the public append_history validation (which uses
+        // Message::validate without a parent) and shove it directly.
+        t.history.push(m);
+        assert!(matches!(
+            t.validate(),
+            Err(TaskValidationError::SelfReferenceTaskId(_))
+        ));
+    }
+
+    #[test]
+    fn message_validate_in_task_uses_supplied_parent() {
+        let mut m = Message::text("msg-1", Role::User, "hi");
+        m.reference_task_ids = vec!["task-99".into()];
+        m.validate_in_task("task-99").unwrap_err();
+        m.validate_in_task("task-other").unwrap();
     }
 }

@@ -79,25 +79,42 @@ The Core-First plan deliberately reuses what's already shipped, not rebuilds it:
 
 ## Risks
 
+The Core-First posture imports A2A's complexity into Acteon's substrate. Each risk below carries a concrete defense that lands in code as part of the listed phase — Phase 1 is *not* a "trust the spec" pass.
+
 - **A2A spec churn.** 1.0 was ratified in late 2025 and is still evolving. Keep the protocol codec layer thin and put the `A2A-Version` header on the critical path so future revisions don't cascade into the Task Engine.
-- **utoipa recursion landmine.** `Task` references other tasks via `referenceTaskIds`, mirroring the `ChainStepStatus.parallel_sub_steps` infinite-schema-recursion bug. Use `#[schema(value_type = Object)]` on the recursive field from day one.
-- **Payload size.** A2A `Part` carries arbitrary data (text, base64 raw, URL refs, JSON). Existing publish-edge caps (512KB content / 1MB payload) are tuned for the internal bus; A2A may need an explicit per-tenant tier or chunked-artifact streaming for large outputs.
+- **Recursive task-graph landmine (cycles + depth).** `Task` is structurally flat (`referenceTaskIds: Vec<String>` carries IDs, not nested objects, so serialize-side stack overflow is avoided), but the *graph* across rows can cycle. Defenses: Phase 1 ships `MAX_REFERENCE_DEPTH = 5` plus 1-hop self-reference rejection at validation time; Phase 2's Task Engine does BFS cycle detection across rows when resolving reference graphs. utoipa schema is safe (`Vec<String>` not recursive).
+- **Shadow states ("Working" task with no chain).** A Task left in a non-terminal state without progress is a memory leak. Defenses: Phase 1 adds `working_ttl_ms`, `last_progress_at`, `is_stale_at(now)` to Task (default 30-minute TTL, derived staleness mirrors `Agent.status_at()`); Phase 2 ships the reaper that transitions stale tasks to `Failed`. Read-time derivation is the backstop if the reaper lags.
+- **Part bloat (large `base64` in Kafka).** A2A `Part` carries arbitrary content. Defense: Phase 1 caps `text`/`raw`/`data` parts at **256KB** each; anything larger must use `Part::url` referencing an external store. (The `acteon-blob` crate was previously removed, so external object stores are the supported escape hatch.)
+- **AgentCard registry contamination.** A2A `Skill`/`Interface` schemas are verbose; inlining them onto `Agent` bloats the hot heartbeat/list/route path. Defense: the follow-up bus_agent PR adds `Agent.has_agent_card: bool` and stores the full AgentCard at a separate `KeyKind::BusAgentCard`. A2A discovery reads the card; nothing else does.
+- **Fragmented HITL workflows.** Acteon has `BusApproval` for operator-approves-outbound-tool-call; A2A adds `AuthRequired` (user provides credential) and `InputRequired` (user clarifies). Defense: Phase 1 adds `Task.pending_approval_id: Option<String>` so any paused Task points at *one* row representing the pause; Phase 2 generalizes `BusApproval` with `kind: PauseKind` (`OperatorApproval` / `UserAuth` / `UserInput`) so there's a single source of truth for "waiting on human."
+- **Artifact streaming race.** A2A doesn't specify ordering between `append` chunks and `lastChunk`. A late append after a `lastChunk: true` closes the task can silently drop data. Defense: Phase 1 adds Acteon-extension fields `chunk_index: Option<i64>` (mirrors `StreamChunk.chunk_seq`) and `total_chunks: Option<i64>` (asserted on the last chunk); Phase 2 Engine enforces "all chunks 0..total before close" and "no chunks after lastChunk."
 - **Push delivery semantics.** A2A doesn't mandate exactly-once. Reuse the webhook provider's retry + DLQ pattern and stamp `acteon.push.attempt` headers for audit replay.
 - **8-state surface area in clients.** SDK consumers will now see eight Task states. Worth a doc page distinguishing terminal (Completed/Failed/Canceled/Rejected) from interrupt (InputRequired/AuthRequired) states so library users don't write incorrect "is finished" checks.
 
 ## Implementation Plan
 
 ### Phase 1: Core Primitives (`acteon-core`) — ~5 days
-- [ ] **Native Task:** Add `bus_task.rs` defining `Task` with the 8-state lifecycle, `Artifact`, `Message`, `Part`, and `PushNotificationConfig`. Include validation, serde, and utoipa schemas (apply `#[schema(value_type = Object)]` to recursive fields).
+- [x] **Native Task:** `bus_task.rs` defining `Task` with the 8-state lifecycle, `Artifact`, `Message`, `Part`. Validation, serde, utoipa.
+- [x] **Defensive validation (from adversarial review):**
+  - [x] Part caps at 256KB (text/raw/data) — larger payloads must go by URL reference.
+  - [x] `MAX_REFERENCE_DEPTH = 5` constant + 1-hop self-reference rejection. Phase 2 Engine does multi-hop BFS.
+  - [x] `working_ttl_ms` / `last_progress_at` / `is_stale_at(now)` for shadow-state defense (default 30-minute TTL).
+  - [x] `pending_approval_id: Option<String>` to point any paused Task at exactly one BusApproval row.
+  - [x] Artifact `chunk_index` / `total_chunks` for streaming race-safety.
 - [ ] **Artifact Streaming:** Update `bus_stream.rs` to include `append` and `last_chunk` metadata for native A2A artifact support.
-- [ ] **Agent Evolution:** Extend `Agent` in `bus_agent.rs` with `skills[]`, `interfaces[]`, and JSON Schema capability definitions.
+- [ ] **Agent Evolution:** Extend `Agent` in `bus_agent.rs` with `has_agent_card: bool` flag; store the full `AgentCard` (skills, interfaces, security schemes) at a separate `KeyKind::BusAgentCard` so the hot heartbeat/list/route path stays lean.
 - [ ] **Converged Envelopes:** Align `bus_conversation.rs` message parts with A2A `Message`/`Part` semantics.
-- [ ] Unit tests for state transitions, validation, and serde round-trips.
+- [x] Unit tests for state transitions, validation, serde round-trips, and the defensive validations above.
 
 ### Phase 2: Gateway Integration (`crates/gateway`) — ~6 days
 - [ ] **Protocol Codecs:** Implement encoders/decoders for A2A JSON-RPC 2.0 and the REST binding (spec §11). Wire `A2A-Version` header negotiation with `VersionNotSupportedError`.
 - [ ] **Task Engine:** Implement the lifecycle manager in the gateway, handling state transitions and persistence via the existing `State` backend (new `KeyKind::A2aTask`). Use CAS retries to mirror the bus's optimistic-locking pattern.
-- [ ] **The Bridge:** Implement native mapping between `Task` state and `Chain` status — A2A `Submitted/Working` ↔ chain step progress; `InputRequired/AuthRequired` ↔ `BusApproval`; terminal states ↔ chain `StepResult`.
+- [ ] **Engine-side hardening (graph + streaming):**
+  - [ ] BFS cycle detection across multi-Task `referenceTaskIds` graphs, capped at `MAX_REFERENCE_DEPTH`.
+  - [ ] Reaper that transitions stale tasks (`is_stale_at(now)`) to `Failed`, with a corresponding `acteon.task.reaped` audit envelope.
+  - [ ] Artifact-stream gatekeeper: rejects chunks arriving after `lastChunk = true`; when `totalChunks` is asserted, holds the close until all indices 0..total are observed.
+- [ ] **BusApproval generalization (single source of truth for HITL):** Extend `BusApproval` with `kind: PauseKind` (`OperatorApproval` / `UserAuth` / `UserInput`); Task Engine stamps the approval row's id onto `Task.pending_approval_id`.
+- [ ] **The Bridge:** Native mapping between `Task` state and `Chain` status — A2A `Submitted/Working` ↔ chain step progress; `InputRequired/AuthRequired` ↔ generalized `BusApproval`; terminal states ↔ chain `StepResult`.
 - [ ] **Audit Integration:** Stamp every A2A operation with `AuditEventKind::A2aTaskTransition`.
 - [ ] **Idempotency:** Wire A2A `messageId` through existing dedup-key infrastructure.
 
@@ -111,10 +128,11 @@ The Core-First plan deliberately reuses what's already shipped, not rebuilds it:
 - [ ] **Security Schemes:** Map `APIKeySecurityScheme`, `HTTPAuthSecurityScheme` (Bearer), and `MutualTlsSecurityScheme` to native Acteon Grants and TLS configurations. (`OAuth2`/`OpenIdConnect` deferred to a follow-up.)
 
 ### Phase 5: Hardening & Validation — ~3 days
-- [ ] **Recursive depth validation** for Tasks to prevent circular reference attacks via `referenceTaskIds`.
-- [ ] **Payload caps:** A2A-specific size limits for `Part` content; chunked-artifact streaming for outputs exceeding the existing 1MB payload tier.
+- [ ] **Adversarial test suite:** explicit tests for each Risks bullet — Part bloat at boundary, deep cycle attacks, stale-task reaping, race-prone artifact streams, HITL workflow consistency.
 - [ ] **Security review:** Run the existing security-review skill against the new endpoints (`/.well-known/agent.json`, `/a2a/rpc`, push delivery worker).
-- [ ] **Load test:** Add gateway benchmark covering streamed Task lifecycle under N concurrent subscribers.
+- [ ] **Load test:** Gateway benchmark covering streamed Task lifecycle under N concurrent subscribers, including chunk-ordering and stale-reaper behavior.
+- [ ] **Fuzz the codecs:** quickcheck/proptest fuzzing on the JSON-RPC and REST codec layers — guarantees no panics on malformed input.
+- [ ] **Per-tenant cap overrides** (if needed): wire the Phase 1 cap constants to be tenant-overridable via the existing quota system for trusted high-throughput tenants.
 
 ### Phase 6: SDK & Simulation — ~5 days
 - [ ] Update all polyglot SDKs (Rust, Python, Node, Go, Java) to support the native A2A Task primitives.
