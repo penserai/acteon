@@ -28,7 +28,7 @@
 //! three ways: a cycle back to the root is rejected, a path deeper
 //! than [`acteon_core::MAX_REFERENCE_DEPTH`] is rejected, and a graph
 //! wider than [`MAX_REFERENCE_GRAPH_NODES`] distinct nodes is
-//! rejected. See [`TaskEngine::check_reference_graph`].
+//! rejected. See the `check_reference_graph` method.
 //!
 //! ## Out of scope for this PR (deferred to follow-ups)
 //!
@@ -156,7 +156,7 @@ impl TaskEngine {
     /// if a task with the same id already exists in the same scope.
     ///
     /// If the task's history carries `referenceTaskIds`, the reference
-    /// graph is walked first — see [`Self::check_reference_graph`].
+    /// graph is walked first — see the `check_reference_graph` method.
     pub async fn create_task(&self, task: Task) -> Result<Task, TaskEngineError> {
         task.validate()?;
         let scope = TaskScope::new(&task.namespace, &task.tenant);
