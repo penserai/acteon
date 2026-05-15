@@ -108,15 +108,15 @@ The Core-First posture imports A2A's complexity into Acteon's substrate. Each ri
 
 ### Phase 2: Gateway Integration (`crates/gateway`) — ~6 days
 - [ ] **Protocol Codecs:** Implement encoders/decoders for A2A JSON-RPC 2.0 and the REST binding (spec §11). Wire `A2A-Version` header negotiation with `VersionNotSupportedError`.
-- [ ] **Task Engine:** Implement the lifecycle manager in the gateway, handling state transitions and persistence via the existing `State` backend (new `KeyKind::A2aTask`). Use CAS retries to mirror the bus's optimistic-locking pattern.
+- [x] **Task Engine (2.1):** `task_engine.rs` — lifecycle manager with CRUD + transitions + history append + artifact upsert + heartbeat, persisted via the `State` backend (`KeyKind::A2aTask`). CAS-retry mirrors the bus's optimistic-locking pattern.
+- [x] **Idempotency (2.1):** A2A `messageId` deduplication via `KeyKind::A2aMessageDedup` markers, bounded by a 24h TTL.
 - [ ] **Engine-side hardening (graph + streaming):**
-  - [ ] BFS cycle detection across multi-Task `referenceTaskIds` graphs, capped at `MAX_REFERENCE_DEPTH`.
+  - [x] **BFS cycle detection (2.2):** reference-graph walk at *write time* (in `create_task` / `append_history`), capped at `MAX_REFERENCE_DEPTH` (cycle) and `MAX_REFERENCE_GRAPH_NODES` (fan-out). Graph bombs refused before they persist.
   - [ ] Reaper that transitions stale tasks (`is_stale_at(now)`) to `Failed`, with a corresponding `acteon.task.reaped` audit envelope.
   - [ ] Artifact-stream gatekeeper: rejects chunks arriving after `lastChunk = true`; when `totalChunks` is asserted, holds the close until all indices 0..total are observed.
 - [ ] **BusApproval generalization (single source of truth for HITL):** Extend `BusApproval` with `kind: PauseKind` (`OperatorApproval` / `UserAuth` / `UserInput`); Task Engine stamps the approval row's id onto `Task.pending_approval_id`.
 - [ ] **The Bridge:** Native mapping between `Task` state and `Chain` status — A2A `Submitted/Working` ↔ chain step progress; `InputRequired/AuthRequired` ↔ generalized `BusApproval`; terminal states ↔ chain `StepResult`.
 - [ ] **Audit Integration:** Stamp every A2A operation with `AuditEventKind::A2aTaskTransition`.
-- [ ] **Idempotency:** Wire A2A `messageId` through existing dedup-key infrastructure.
 
 ### Phase 3: Discovery & SSE Bridge — ~4 days
 - [ ] **Global Discovery Registry:** Implement a dynamic `DiscoveryService` that aggregates native `AgentCard` data for `/.well-known/agent.json`. Public and unauthenticated per spec.
