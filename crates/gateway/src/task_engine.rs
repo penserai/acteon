@@ -14,15 +14,27 @@
 //! re-submission returns the already-committed task without
 //! reapplying the mutation.
 //!
+//! ## Reference-graph validation (graph-bomb defense)
+//!
+//! A2A `Message`s carry `referenceTaskIds`, so Task A's history can
+//! cite Task B, whose history cites Task C, and so on. A malicious or
+//! buggy producer could build a cycle (A → B → A) or a pathologically
+//! deep / wide graph that exhausts the gateway when traversed.
+//!
+//! The engine walks the reference graph **at write time** — inside
+//! [`TaskEngine::create_task`] and [`TaskEngine::append_history`],
+//! before the row is persisted — rather than at read time, so a
+//! graph bomb is refused before it ever lands. The walk is bounded
+//! three ways: a cycle back to the root is rejected, a path deeper
+//! than [`acteon_core::MAX_REFERENCE_DEPTH`] is rejected, and a graph
+//! wider than [`MAX_REFERENCE_GRAPH_NODES`] distinct nodes is
+//! rejected. See the `check_reference_graph` method.
+//!
 //! ## Out of scope for this PR (deferred to follow-ups)
 //!
 //! - **Audit integration**: stamping `AuditEventKind::A2aTaskTransition`
 //!   on every transition. Deferred to a follow-up that touches
 //!   `acteon-audit` simultaneously.
-//! - **Cycle detection**: BFS walker over multi-Task
-//!   `referenceTaskIds`. The constant
-//!   [`acteon_core::MAX_REFERENCE_DEPTH`] is wired so the walker can
-//!   read from one source of truth.
 //! - **Stale-task reaper**: background job that transitions stale
 //!   tasks to `Failed` via [`Task::is_stale_at`]. Lives in
 //!   `crates/gateway/src/background/` (next PR).
@@ -37,6 +49,7 @@
 //! - **Protocol codecs**: A2A JSON-RPC 2.0 + REST framing lives in
 //!   the server layer, not here. The engine speaks pure Rust types.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,7 +57,8 @@ use chrono::Utc;
 use tracing::{debug, warn};
 
 use acteon_core::{
-    Artifact, Task, TaskArtifactUpdateEvent, TaskMessage, TaskState, TaskValidationError,
+    Artifact, MAX_REFERENCE_DEPTH, Task, TaskArtifactUpdateEvent, TaskMessage, TaskState,
+    TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
@@ -65,6 +79,17 @@ pub const MAX_CAS_RETRY_ATTEMPTS: u32 = 8;
 /// failure mode — an erroneous append is recoverable (operator
 /// inspects and corrects); a memory leak is not.
 pub const MESSAGE_DEDUP_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Max distinct tasks the reference-graph walker visits before
+/// declaring the graph too large. [`MAX_REFERENCE_DEPTH`] bounds how
+/// *deep* a reference chain may go; this bounds how *wide* it may fan
+/// out. Without it, one task referencing tens of thousands of others
+/// (`MAX_REFERENCE_TASK_IDS` × `MAX_HISTORY_LEN`) would force that
+/// many state-store reads on every write that touches the graph.
+///
+/// 256 is generous for legitimate citation (a task cites a handful of
+/// prior tasks) and tight enough to refuse a fan-out bomb cheaply.
+pub const MAX_REFERENCE_GRAPH_NODES: usize = 256;
 
 /// Tenant scoping for a Task. Mirrors the
 /// `(namespace, tenant)` pair used by every other bus primitive so
@@ -129,9 +154,16 @@ impl TaskEngine {
 
     /// Create a new task. Fails with [`TaskEngineError::AlreadyExists`]
     /// if a task with the same id already exists in the same scope.
+    ///
+    /// If the task's history carries `referenceTaskIds`, the reference
+    /// graph is walked first — see the `check_reference_graph` method.
     pub async fn create_task(&self, task: Task) -> Result<Task, TaskEngineError> {
         task.validate()?;
         let scope = TaskScope::new(&task.namespace, &task.tenant);
+        let refs = collect_task_references(&task);
+        if !refs.is_empty() {
+            self.check_reference_graph(&scope, &task.id, &refs).await?;
+        }
         let key = scope.task_key(&task.id);
         let payload = serde_json::to_string(&task)?;
         let inserted = self.state.check_and_set(&key, &payload, None).await?;
@@ -196,12 +228,26 @@ impl TaskEngine {
     /// Append a history message to a task. Idempotent on
     /// `message.message_id`: a duplicate submission returns the
     /// already-committed task unmodified.
+    ///
+    /// Ordering matters here: the message is validated against the
+    /// parent task id (catching the 1-hop self-cycle), then the
+    /// multi-hop reference graph is walked, and only then is the
+    /// dedup marker written. Running the dedup write *before* the
+    /// graph check would let a rejected message burn its `messageId`
+    /// — a later corrected re-submission with the same id would be
+    /// silently deduped away.
     pub async fn append_history(
         &self,
         scope: &TaskScope,
         task_id: &str,
         message: TaskMessage,
     ) -> Result<Task, TaskEngineError> {
+        message.validate_in_task(task_id)?;
+        let new_refs: HashSet<String> = message.reference_task_ids.iter().cloned().collect();
+        if !new_refs.is_empty() {
+            self.check_reference_graph(scope, task_id, &new_refs)
+                .await?;
+        }
         if self.dedup_message(scope, &message.message_id).await? {
             // Already applied — return the current task snapshot.
             return self
@@ -341,6 +387,93 @@ impl TaskEngine {
             .await?;
         Ok(!inserted)
     }
+
+    /// Breadth-first walk of the Task → Task reference graph rooted at
+    /// `root_task_id` (the task being written), starting from
+    /// `seed_refs` — the `referenceTaskIds` the pending write
+    /// introduces. Rejects three classes of abuse:
+    ///
+    /// - a path that loops back to `root_task_id`
+    ///   ([`TaskEngineError::ReferenceCycle`]),
+    /// - a path deeper than [`MAX_REFERENCE_DEPTH`] hops
+    ///   ([`TaskEngineError::ReferenceDepthExceeded`]),
+    /// - a graph wider than [`MAX_REFERENCE_GRAPH_NODES`] distinct
+    ///   referenced tasks ([`TaskEngineError::ReferenceGraphTooLarge`]).
+    ///
+    /// References to tasks absent from the scope are treated as dead
+    /// ends, not errors: a cited task may have been deleted, or may
+    /// live in another system. Only structural abuse is refused.
+    ///
+    /// A pre-existing cycle that does *not* pass through the root is
+    /// traversed safely (the visited set prevents re-expansion) and
+    /// not re-flagged — this check rejects only what the current
+    /// write would introduce.
+    ///
+    /// Known limitation: the walk and the subsequent commit are not a
+    /// single transaction. Two concurrent writers could each add an
+    /// edge that, combined, forms a cycle neither walk saw alone.
+    /// That residual race is the read-path guard's job; write-time
+    /// rejection catches the overwhelming majority cheaply.
+    async fn check_reference_graph(
+        &self,
+        scope: &TaskScope,
+        root_task_id: &str,
+        seed_refs: &HashSet<String>,
+    ) -> Result<(), TaskEngineError> {
+        // `visited` holds referenced tasks already expanded. The root
+        // is deliberately *not* inserted: a reference that reaches the
+        // root is a cycle, and must hit the `tid == root` check below
+        // rather than being silently dropped as "already visited".
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut frontier: Vec<String> = seed_refs.iter().cloned().collect();
+        let mut nodes_visited = 0usize;
+        let mut depth = 1usize;
+
+        while !frontier.is_empty() {
+            if depth > MAX_REFERENCE_DEPTH {
+                return Err(TaskEngineError::ReferenceDepthExceeded {
+                    task_id: root_task_id.to_string(),
+                });
+            }
+            let mut next: HashSet<String> = HashSet::new();
+            for tid in frontier {
+                if tid == root_task_id {
+                    return Err(TaskEngineError::ReferenceCycle {
+                        task_id: root_task_id.to_string(),
+                    });
+                }
+                if !visited.insert(tid.clone()) {
+                    // Already explored on a shorter path — skip.
+                    continue;
+                }
+                nodes_visited += 1;
+                if nodes_visited > MAX_REFERENCE_GRAPH_NODES {
+                    return Err(TaskEngineError::ReferenceGraphTooLarge {
+                        task_id: root_task_id.to_string(),
+                    });
+                }
+                if let Some(task) = self.get_task(scope, &tid).await? {
+                    for r in collect_task_references(&task) {
+                        if !visited.contains(&r) {
+                            next.insert(r);
+                        }
+                    }
+                }
+            }
+            frontier = next.into_iter().collect();
+            depth += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Union of every `referenceTaskIds` entry across a task's history.
+/// This is the out-edge set the reference-graph walker follows.
+fn collect_task_references(task: &Task) -> HashSet<String> {
+    task.history
+        .iter()
+        .flat_map(|m| m.reference_task_ids.iter().cloned())
+        .collect()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -357,6 +490,16 @@ pub enum TaskEngineError {
     Serde(#[from] serde_json::Error),
     #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
     CasExhausted(String),
+    #[error("reference graph for task '{task_id}' contains a cycle back to itself")]
+    ReferenceCycle { task_id: String },
+    #[error(
+        "reference graph for task '{task_id}' is deeper than the {MAX_REFERENCE_DEPTH}-hop limit"
+    )]
+    ReferenceDepthExceeded { task_id: String },
+    #[error(
+        "reference graph for task '{task_id}' exceeds the {MAX_REFERENCE_GRAPH_NODES}-node budget"
+    )]
+    ReferenceGraphTooLarge { task_id: String },
 }
 
 // `PartialEq` for testing assertions. Stringly-compared so error
@@ -697,5 +840,143 @@ mod tests {
         assert_eq!(got.id, "t1");
         s.transition("t1", TaskState::Working, None).await.unwrap();
         assert_eq!(s.list().await.unwrap().len(), 1);
+    }
+
+    // --- Reference-graph validation ---
+
+    /// Create a task that optionally references one other task via a
+    /// single history message.
+    async fn create_with_ref(e: &TaskEngine, id: &str, refs_to: Option<&str>) {
+        let mut t = sample_task(id);
+        if let Some(r) = refs_to {
+            let mut m = TaskMessage::text(format!("{id}-msg"), Role::Agent, "x");
+            m.reference_task_ids = vec![r.to_string()];
+            t.history.push(m);
+        }
+        e.create_task(t).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reference_to_existing_task_ok() {
+        let e = engine();
+        create_with_ref(&e, "target", None).await;
+        create_with_ref(&e, "citing", Some("target")).await;
+        assert!(e.get_task(&scope(), "citing").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn reference_to_missing_task_is_dead_end_ok() {
+        // Citing a task that doesn't exist locally is allowed — it may
+        // have been deleted or live in another system. Dead end, not
+        // an error.
+        let e = engine();
+        create_with_ref(&e, "citing", Some("ghost")).await;
+        assert!(e.get_task(&scope(), "citing").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn reference_self_loop_rejected_as_validation() {
+        // A 1-hop self-reference is caught by `validate_in_task`
+        // before the graph walk runs — surfaces as Validation.
+        let e = engine();
+        create_with_ref(&e, "solo", None).await;
+        let mut m = TaskMessage::text("self-msg", Role::Agent, "x");
+        m.reference_task_ids = vec!["solo".into()];
+        let err = e.append_history(&scope(), "solo", m).await.unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn reference_direct_cycle_rejected() {
+        let e = engine();
+        create_with_ref(&e, "a", None).await;
+        create_with_ref(&e, "b", Some("a")).await; // b -> a
+        // Appending a -> b closes the cycle a -> b -> a.
+        let mut m = TaskMessage::text("a-cycle", Role::Agent, "x");
+        m.reference_task_ids = vec!["b".into()];
+        let err = e.append_history(&scope(), "a", m).await.unwrap_err();
+        assert!(matches!(err, TaskEngineError::ReferenceCycle { .. }));
+    }
+
+    #[tokio::test]
+    async fn reference_depth_at_limit_ok() {
+        // Chain exactly MAX_REFERENCE_DEPTH (5) hops from the root.
+        let e = engine();
+        create_with_ref(&e, "d5", None).await;
+        create_with_ref(&e, "d4", Some("d5")).await;
+        create_with_ref(&e, "d3", Some("d4")).await;
+        create_with_ref(&e, "d2", Some("d3")).await;
+        create_with_ref(&e, "d1", Some("d2")).await;
+        // root5 -> d1 -> d2 -> d3 -> d4 -> d5 : d5 sits at depth 5.
+        create_with_ref(&e, "root5", Some("d1")).await;
+        assert!(e.get_task(&scope(), "root5").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn reference_depth_exceeded_rejected() {
+        let e = engine();
+        create_with_ref(&e, "t6", None).await;
+        create_with_ref(&e, "t5", Some("t6")).await;
+        create_with_ref(&e, "t4", Some("t5")).await;
+        create_with_ref(&e, "t3", Some("t4")).await;
+        create_with_ref(&e, "t2", Some("t3")).await;
+        create_with_ref(&e, "t1", Some("t2")).await; // chain t1..t6, 5 deep
+        // t0 -> t1 pushes t6 to depth 6.
+        let mut t0 = sample_task("t0");
+        let mut m = TaskMessage::text("t0-msg", Role::Agent, "x");
+        m.reference_task_ids = vec!["t1".into()];
+        t0.history.push(m);
+        let err = e.create_task(t0).await.unwrap_err();
+        assert!(matches!(
+            err,
+            TaskEngineError::ReferenceDepthExceeded { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn reference_graph_too_large_rejected() {
+        let e = engine();
+        let leaf_count = MAX_REFERENCE_GRAPH_NODES + 8;
+        for i in 0..leaf_count {
+            e.create_task(sample_task(&format!("leaf-{i}")))
+                .await
+                .unwrap();
+        }
+        // Root whose history references every leaf, chunked into
+        // messages of <= MAX_REFERENCE_TASK_IDS refs each.
+        let mut root = sample_task("root");
+        let mut leaves: Vec<String> = (0..leaf_count).map(|i| format!("leaf-{i}")).collect();
+        let mut idx = 0;
+        while !leaves.is_empty() {
+            let take = leaves.len().min(acteon_core::MAX_REFERENCE_TASK_IDS);
+            let chunk: Vec<String> = leaves.drain(..take).collect();
+            let mut m = TaskMessage::text(format!("m{idx}"), Role::Agent, "x");
+            m.reference_task_ids = chunk;
+            root.history.push(m);
+            idx += 1;
+        }
+        let err = e.create_task(root).await.unwrap_err();
+        assert!(matches!(
+            err,
+            TaskEngineError::ReferenceGraphTooLarge { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_graph_check_does_not_consume_dedup_marker() {
+        // A graph-check rejection on append must happen *before* the
+        // dedup marker is written — otherwise a corrected re-submission
+        // with the same messageId would be silently swallowed.
+        let e = engine();
+        create_with_ref(&e, "x", None).await;
+        create_with_ref(&e, "y", Some("x")).await;
+        // First attempt: append x -> y closes the cycle x -> y -> x.
+        let mut bad = TaskMessage::text("dup-id", Role::Agent, "bad");
+        bad.reference_task_ids = vec!["y".into()];
+        assert!(e.append_history(&scope(), "x", bad).await.is_err());
+        // Re-submit the same messageId without the cycle — must apply.
+        let good = TaskMessage::text("dup-id", Role::Agent, "fixed");
+        let updated = e.append_history(&scope(), "x", good).await.unwrap();
+        assert_eq!(updated.history.len(), 1);
     }
 }
