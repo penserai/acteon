@@ -443,13 +443,6 @@ impl ScopedTaskEngine {
     }
 }
 
-// Used by serde-roundtrip tests below to construct fresh tasks
-// without depending on the public Task constructor every time.
-#[cfg(test)]
-fn sample_task(id: &str) -> Task {
-    Task::new(id, "agents", "demo")
-}
-
 // ---------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------
@@ -466,6 +459,10 @@ mod tests {
 
     fn scope() -> TaskScope {
         TaskScope::new("agents", "demo")
+    }
+
+    fn sample_task(id: &str) -> Task {
+        Task::new(id, "agents", "demo")
     }
 
     #[tokio::test]
@@ -655,9 +652,10 @@ mod tests {
         assert_eq!(updated.pending_approval_id.as_deref(), Some("appr-42"));
     }
 
-    // CAS retry behavior: simulate concurrent writers by interleaving
-    // a direct state-store write between get_versioned and CAS in a
-    // fast loop. The engine's CAS retry should win eventually.
+    // Concurrency: four writers race the same Submitted -> Working
+    // transition. The CAS loop must serialize them so exactly one
+    // commit lands; the losers re-read the now-Working task and fail
+    // the transition legitimately (not via CAS exhaustion).
     #[tokio::test]
     async fn cas_retry_handles_concurrent_writers() {
         let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
