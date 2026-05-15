@@ -1,0 +1,701 @@
+//! A2A Task Engine — Phase 2 of the A2A protocol.
+//!
+//! Owns the persistence and mutation lifecycle for [`Task`] rows.
+//! Every Task lives at a [`KeyKind::A2aTask`] row keyed by
+//! `(namespace, tenant, task_id)`. Mutations use the same
+//! optimistic-locking pattern as the bus's `cas_update` helper:
+//! load-with-version, mutate, `compare_and_swap`, retry on conflict.
+//!
+//! ## Idempotency
+//!
+//! A2A clients submit messages with a stable `messageId`. The engine
+//! deduplicates by writing a marker at
+//! [`KeyKind::A2aMessageDedup`] before applying the message. A
+//! re-submission returns the already-committed task without
+//! reapplying the mutation.
+//!
+//! ## Out of scope for this PR (deferred to follow-ups)
+//!
+//! - **Audit integration**: stamping `AuditEventKind::A2aTaskTransition`
+//!   on every transition. Deferred to a follow-up that touches
+//!   `acteon-audit` simultaneously.
+//! - **Cycle detection**: BFS walker over multi-Task
+//!   `referenceTaskIds`. The constant
+//!   [`acteon_core::MAX_REFERENCE_DEPTH`] is wired so the walker can
+//!   read from one source of truth.
+//! - **Stale-task reaper**: background job that transitions stale
+//!   tasks to `Failed` via [`Task::is_stale_at`]. Lives in
+//!   `crates/gateway/src/background/` (next PR).
+//! - **Artifact-stream gatekeeper**: enforces "no chunks after
+//!   `lastChunk`" and `totalChunks` completeness across multiple
+//!   `TaskArtifactUpdateEvent` deliveries. Stateful per-artifact;
+//!   the engine surface here is the single-event apply.
+//! - **`BusApproval.kind: PauseKind`** generalization. The engine
+//!   exposes [`TaskEngine::set_pending_approval`] today; the
+//!   semantic projection into the new `BusApproval` kind lands when
+//!   that crate-side enum exists.
+//! - **Protocol codecs**: A2A JSON-RPC 2.0 + REST framing lives in
+//!   the server layer, not here. The engine speaks pure Rust types.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::Utc;
+use tracing::{debug, warn};
+
+use acteon_core::{
+    Artifact, Task, TaskArtifactUpdateEvent, TaskMessage, TaskState, TaskValidationError,
+};
+use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
+
+/// Max number of CAS retry attempts before declaring contention
+/// exhausted. Matches the bus's
+/// `crates/server/src/api/bus.rs::MAX_CAS_RETRY_ATTEMPTS`.
+pub const MAX_CAS_RETRY_ATTEMPTS: u32 = 8;
+
+/// TTL on A2A `messageId` deduplication markers
+/// ([`KeyKind::A2aMessageDedup`]). Without a TTL the dedup keyspace
+/// grows unboundedly — a long-running gateway eventually pays linear
+/// storage cost in total lifetime traffic.
+///
+/// 24h is chosen to comfortably exceed any realistic A2A client
+/// retry window (clients that haven't given up after a day aren't
+/// retrying anyway). After expiry, a *theoretical* very-late retry
+/// would re-apply the message rather than dedup. This is the safe
+/// failure mode — an erroneous append is recoverable (operator
+/// inspects and corrects); a memory leak is not.
+pub const MESSAGE_DEDUP_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Tenant scoping for a Task. Mirrors the
+/// `(namespace, tenant)` pair used by every other bus primitive so
+/// the state-store key derivation is mechanical.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskScope {
+    pub namespace: String,
+    pub tenant: String,
+}
+
+impl TaskScope {
+    /// Construct a scope.
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, tenant: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+        }
+    }
+
+    fn task_key(&self, task_id: &str) -> StateKey {
+        StateKey::new(
+            self.namespace.clone(),
+            self.tenant.clone(),
+            KeyKind::A2aTask,
+            task_id.to_string(),
+        )
+    }
+
+    fn dedup_key(&self, message_id: &str) -> StateKey {
+        StateKey::new(
+            self.namespace.clone(),
+            self.tenant.clone(),
+            KeyKind::A2aMessageDedup,
+            message_id.to_string(),
+        )
+    }
+}
+
+/// A2A Task lifecycle manager.
+///
+/// Stateless wrt the in-memory cache — every operation hits the
+/// state store. Tasks are not on the same per-request hot path as
+/// agents/groups; persistence reads are the source of truth.
+#[derive(Clone)]
+pub struct TaskEngine {
+    state: Arc<dyn StateStore>,
+}
+
+impl std::fmt::Debug for TaskEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskEngine").finish_non_exhaustive()
+    }
+}
+
+impl TaskEngine {
+    /// Construct a Task Engine backed by the given state store.
+    #[must_use]
+    pub fn new(state: Arc<dyn StateStore>) -> Self {
+        Self { state }
+    }
+
+    /// Create a new task. Fails with [`TaskEngineError::AlreadyExists`]
+    /// if a task with the same id already exists in the same scope.
+    pub async fn create_task(&self, task: Task) -> Result<Task, TaskEngineError> {
+        task.validate()?;
+        let scope = TaskScope::new(&task.namespace, &task.tenant);
+        let key = scope.task_key(&task.id);
+        let payload = serde_json::to_string(&task)?;
+        let inserted = self.state.check_and_set(&key, &payload, None).await?;
+        if !inserted {
+            return Err(TaskEngineError::AlreadyExists(task.id));
+        }
+        debug!(task_id = %task.id, namespace = %task.namespace, tenant = %task.tenant, "task created");
+        Ok(task)
+    }
+
+    /// Fetch a task by scope + id.
+    pub async fn get_task(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Option<Task>, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        let Some(raw) = self.state.get(&key).await? else {
+            return Ok(None);
+        };
+        let task: Task = serde_json::from_str(&raw)?;
+        Ok(Some(task))
+    }
+
+    /// List all tasks in a scope. O(N) scan of `A2aTask` keys for the
+    /// tenant — keep result sets bounded by the caller (pagination
+    /// lives in the API layer in a follow-up).
+    pub async fn list_tasks(&self, scope: &TaskScope) -> Result<Vec<Task>, TaskEngineError> {
+        let entries = self
+            .state
+            .scan_keys(&scope.namespace, &scope.tenant, KeyKind::A2aTask, None)
+            .await?;
+        let mut out = Vec::with_capacity(entries.len());
+        for (_, raw) in entries {
+            match serde_json::from_str::<Task>(&raw) {
+                Ok(t) => out.push(t),
+                Err(e) => {
+                    warn!(error = %e, "skipping malformed task row during list");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Transition a task to a new state with an optional driving
+    /// message. CAS-retries on contention.
+    pub async fn transition_task(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        next: TaskState,
+        message: Option<TaskMessage>,
+    ) -> Result<Task, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+            task.transition_to(next, message.clone())?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Append a history message to a task. Idempotent on
+    /// `message.message_id`: a duplicate submission returns the
+    /// already-committed task unmodified.
+    pub async fn append_history(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        message: TaskMessage,
+    ) -> Result<Task, TaskEngineError> {
+        if self.dedup_message(scope, &message.message_id).await? {
+            // Already applied — return the current task snapshot.
+            return self
+                .get_task(scope, task_id)
+                .await?
+                .ok_or_else(|| TaskEngineError::NotFound(task_id.to_string()));
+        }
+        let key = scope.task_key(task_id);
+        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+            task.append_history(message.clone())?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Apply an artifact-update event from the streaming layer.
+    /// CAS-retries on contention.
+    pub async fn apply_artifact_update(
+        &self,
+        scope: &TaskScope,
+        event: TaskArtifactUpdateEvent,
+    ) -> Result<Task, TaskEngineError> {
+        event.validate()?;
+        let key = scope.task_key(&event.task_id);
+        let artifact = event.artifact.clone();
+        let append = event.append;
+        self.cas_mutate(&key, &event.task_id, move |task: &mut Task| {
+            task.upsert_artifact(artifact.clone(), append)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Record a liveness heartbeat. Bumps `last_progress_at` without
+    /// changing state — for long-running tasks that produce no
+    /// intermediate output but want to defeat the staleness reaper.
+    pub async fn record_progress(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+    ) -> Result<Task, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        self.cas_mutate(&key, task_id, |task: &mut Task| {
+            task.record_progress();
+            Ok(())
+        })
+        .await
+    }
+
+    /// Stamp a pending approval id on a task — the single-source-of-
+    /// truth pointer for "this task is paused awaiting human X." The
+    /// caller is responsible for separately transitioning the task to
+    /// `InputRequired` or `AuthRequired`.
+    pub async fn set_pending_approval(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        approval_id: String,
+    ) -> Result<Task, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+            task.set_pending_approval(approval_id.clone());
+            Ok(())
+        })
+        .await
+    }
+
+    /// Direct artifact upsert (e.g. from a non-streaming producer).
+    /// `apply_artifact_update` is the preferred entry; this is a
+    /// convenience for callers that aren't producing wire events.
+    pub async fn upsert_artifact(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        artifact: Artifact,
+        append: bool,
+    ) -> Result<Task, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+            task.upsert_artifact(artifact.clone(), append)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Atomically read-modify-write the task at `key` via CAS retry.
+    /// The closure is reapplied on each retry against a fresh copy.
+    async fn cas_mutate<F>(
+        &self,
+        key: &StateKey,
+        task_id: &str,
+        mut mutate: F,
+    ) -> Result<Task, TaskEngineError>
+    where
+        F: FnMut(&mut Task) -> Result<(), TaskValidationError>,
+    {
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(key).await? else {
+                return Err(TaskEngineError::NotFound(task_id.to_string()));
+            };
+            let mut task: Task = serde_json::from_str(&raw)?;
+            mutate(&mut task)?;
+            let payload = serde_json::to_string(&task)?;
+            match self
+                .state
+                .compare_and_swap(key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    debug!(task_id = %task_id, state = ?task.status.state, "task mutated");
+                    return Ok(task);
+                }
+                CasResult::Conflict { .. } => {
+                    // Lost the race; re-read and re-apply.
+                }
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.to_string()))
+    }
+
+    /// Mark a `messageId` as seen. Returns `true` if the marker
+    /// already existed (i.e. duplicate), `false` if newly inserted.
+    ///
+    /// Markers are stored with [`MESSAGE_DEDUP_TTL`] so the dedup
+    /// keyspace doesn't grow without bound. See the constant's docs
+    /// for the late-retry trade-off.
+    async fn dedup_message(
+        &self,
+        scope: &TaskScope,
+        message_id: &str,
+    ) -> Result<bool, TaskEngineError> {
+        let key = scope.dedup_key(message_id);
+        let now = Utc::now().timestamp_millis().to_string();
+        let inserted = self
+            .state
+            .check_and_set(&key, &now, Some(MESSAGE_DEDUP_TTL))
+            .await?;
+        Ok(!inserted)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TaskEngineError {
+    #[error("task '{0}' already exists")]
+    AlreadyExists(String),
+    #[error("task '{0}' not found")]
+    NotFound(String),
+    #[error("state error: {0}")]
+    State(#[from] StateError),
+    #[error("validation error: {0}")]
+    Validation(#[from] TaskValidationError),
+    #[error("serde error: {0}")]
+    Serde(#[from] serde_json::Error),
+    #[error("CAS contention exceeded {MAX_CAS_RETRY_ATTEMPTS} retries for task '{0}'")]
+    CasExhausted(String),
+}
+
+// `PartialEq` for testing assertions. Stringly-compared so error
+// variants with non-Eq inner types (StateError, serde_json::Error)
+// still work.
+impl PartialEq for TaskEngineError {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_string() == other.to_string()
+    }
+}
+
+// ---------------------------------------------------------------------
+// Convenience: a small wrapper that keeps the (namespace, tenant)
+// pair alongside the engine for handler code that has a stable scope
+// for many calls. Optional sugar; the bare engine is the contract.
+// ---------------------------------------------------------------------
+
+/// A [`TaskEngine`] pre-bound to a [`TaskScope`]. Useful for API
+/// handlers that derive scope once from the caller identity and then
+/// dispatch many engine calls.
+#[derive(Clone, Debug)]
+pub struct ScopedTaskEngine {
+    engine: TaskEngine,
+    scope: TaskScope,
+}
+
+impl ScopedTaskEngine {
+    /// Bind a Task Engine to a scope.
+    #[must_use]
+    pub fn new(engine: TaskEngine, scope: TaskScope) -> Self {
+        Self { engine, scope }
+    }
+
+    /// Underlying engine reference.
+    #[must_use]
+    pub fn engine(&self) -> &TaskEngine {
+        &self.engine
+    }
+
+    /// Bound scope.
+    #[must_use]
+    pub fn scope(&self) -> &TaskScope {
+        &self.scope
+    }
+
+    pub async fn create(&self, task: Task) -> Result<Task, TaskEngineError> {
+        self.engine.create_task(task).await
+    }
+
+    pub async fn get(&self, task_id: &str) -> Result<Option<Task>, TaskEngineError> {
+        self.engine.get_task(&self.scope, task_id).await
+    }
+
+    pub async fn list(&self) -> Result<Vec<Task>, TaskEngineError> {
+        self.engine.list_tasks(&self.scope).await
+    }
+
+    pub async fn transition(
+        &self,
+        task_id: &str,
+        next: TaskState,
+        message: Option<TaskMessage>,
+    ) -> Result<Task, TaskEngineError> {
+        self.engine
+            .transition_task(&self.scope, task_id, next, message)
+            .await
+    }
+
+    pub async fn append_history(
+        &self,
+        task_id: &str,
+        message: TaskMessage,
+    ) -> Result<Task, TaskEngineError> {
+        self.engine
+            .append_history(&self.scope, task_id, message)
+            .await
+    }
+
+    pub async fn apply_artifact_update(
+        &self,
+        event: TaskArtifactUpdateEvent,
+    ) -> Result<Task, TaskEngineError> {
+        self.engine.apply_artifact_update(&self.scope, event).await
+    }
+}
+
+// ---------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acteon_core::{Artifact, TaskPart as Part, TaskRole as Role};
+    use acteon_state_memory::MemoryStateStore;
+
+    fn engine() -> TaskEngine {
+        TaskEngine::new(Arc::new(MemoryStateStore::new()))
+    }
+
+    fn scope() -> TaskScope {
+        TaskScope::new("agents", "demo")
+    }
+
+    fn sample_task(id: &str) -> Task {
+        Task::new(id, "agents", "demo")
+    }
+
+    #[tokio::test]
+    async fn create_then_get_task() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let got = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(got.id, "t1");
+        assert_eq!(got.status.state, TaskState::Submitted);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_duplicate_id() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let err = e.create_task(sample_task("t1")).await.unwrap_err();
+        assert!(matches!(err, TaskEngineError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn create_validates_payload() {
+        let e = engine();
+        let mut bad = sample_task("t1");
+        bad.id = "bad/id".into();
+        let err = e.create_task(bad).await.unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn get_returns_none_for_missing() {
+        assert!(
+            engine()
+                .get_task(&scope(), "missing")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_returns_all_in_scope() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.create_task(sample_task("t2")).await.unwrap();
+        let all = e.list_tasks(&scope()).await.unwrap();
+        assert_eq!(all.len(), 2);
+        let mut ids: Vec<_> = all.iter().map(|t| t.id.clone()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["t1".to_string(), "t2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn transition_persists_new_state() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let updated = e
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        assert_eq!(updated.status.state, TaskState::Working);
+        let reloaded = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(reloaded.status.state, TaskState::Working);
+    }
+
+    #[tokio::test]
+    async fn transition_rejects_illegal_state() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        // Submitted -> Completed is illegal.
+        let err = e
+            .transition_task(&scope(), "t1", TaskState::Completed, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+        // State unchanged.
+        let reloaded = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(reloaded.status.state, TaskState::Submitted);
+    }
+
+    #[tokio::test]
+    async fn transition_on_missing_task_errors() {
+        let err = engine()
+            .transition_task(&scope(), "missing", TaskState::Working, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TaskEngineError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn append_history_persists_message() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let m = TaskMessage::text("m1", Role::User, "hello");
+        let updated = e.append_history(&scope(), "t1", m).await.unwrap();
+        assert_eq!(updated.history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_history_is_idempotent_on_message_id() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let m = TaskMessage::text("m-once", Role::User, "hi");
+        e.append_history(&scope(), "t1", m.clone()).await.unwrap();
+        // Re-submit with same messageId — should be a no-op.
+        let again = e.append_history(&scope(), "t1", m).await.unwrap();
+        assert_eq!(again.history.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn apply_artifact_update_inserts_new_artifact() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let ev = TaskArtifactUpdateEvent::single_shot(
+            "t1",
+            Artifact::new("art-1", vec![Part::text("output")]),
+        );
+        let updated = e.apply_artifact_update(&scope(), ev).await.unwrap();
+        assert_eq!(updated.artifacts.len(), 1);
+        assert_eq!(updated.artifacts[0].artifact_id, "art-1");
+    }
+
+    #[tokio::test]
+    async fn apply_artifact_update_appends_on_subsequent_chunk() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        // First chunk: replace (default for chunk_index 0).
+        e.apply_artifact_update(
+            &scope(),
+            TaskArtifactUpdateEvent::chunk(
+                "t1",
+                Artifact::new("art-1", vec![Part::text("a")]),
+                0,
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+        // Second chunk: append.
+        let updated = e
+            .apply_artifact_update(
+                &scope(),
+                TaskArtifactUpdateEvent::chunk(
+                    "t1",
+                    Artifact::new("art-1", vec![Part::text("b")]),
+                    1,
+                    true,
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.artifacts.len(), 1);
+        assert_eq!(updated.artifacts[0].parts.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn apply_artifact_update_validates_event() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let mut bad = TaskArtifactUpdateEvent::single_shot(
+            "t1",
+            Artifact::new("art-1", vec![Part::text("x")]),
+        );
+        bad.chunk_index = Some(-1);
+        let err = e.apply_artifact_update(&scope(), bad).await.unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn record_progress_bumps_last_progress_at() {
+        let e = engine();
+        let mut t = sample_task("t1");
+        let original = Utc::now() - chrono::Duration::seconds(10);
+        t.last_progress_at = Some(original);
+        e.create_task(t).await.unwrap();
+        let updated = e.record_progress(&scope(), "t1").await.unwrap();
+        assert!(updated.last_progress_at.unwrap() > original);
+    }
+
+    #[tokio::test]
+    async fn set_pending_approval_stamps_id() {
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let updated = e
+            .set_pending_approval(&scope(), "t1", "appr-42".into())
+            .await
+            .unwrap();
+        assert_eq!(updated.pending_approval_id.as_deref(), Some("appr-42"));
+    }
+
+    // Concurrency: four writers race the same Submitted -> Working
+    // transition. The CAS loop must serialize them so exactly one
+    // commit lands; the losers re-read the now-Working task and fail
+    // the transition legitimately (not via CAS exhaustion).
+    #[tokio::test]
+    async fn cas_retry_handles_concurrent_writers() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let e = TaskEngine::new(store.clone());
+        e.create_task(sample_task("t1")).await.unwrap();
+
+        // Spawn 4 concurrent transitions from Submitted -> Working.
+        // All but one should error with IllegalTransition (since the
+        // first arriver moves to Working and the rest can't repeat),
+        // but none should be a NotFound or CasExhausted.
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let e2 = e.clone();
+            handles.push(tokio::spawn(async move {
+                e2.transition_task(&scope(), "t1", TaskState::Working, None)
+                    .await
+            }));
+        }
+        let mut ok = 0;
+        let mut illegal = 0;
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(_) => ok += 1,
+                Err(TaskEngineError::Validation(_)) => illegal += 1,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+        assert_eq!(ok, 1);
+        assert_eq!(illegal, 3);
+    }
+
+    // Scoped wrapper sanity check.
+    #[tokio::test]
+    async fn scoped_engine_dispatch() {
+        let e = engine();
+        let s = ScopedTaskEngine::new(e, scope());
+        s.create(sample_task("t1")).await.unwrap();
+        let got = s.get("t1").await.unwrap().unwrap();
+        assert_eq!(got.id, "t1");
+        s.transition("t1", TaskState::Working, None).await.unwrap();
+        assert_eq!(s.list().await.unwrap().len(), 1);
+    }
+}

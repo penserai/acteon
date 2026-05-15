@@ -70,6 +70,12 @@ pub enum KeyKind {
     BusApproval,
     /// Index of pending bus approvals for fast list/expiry scans.
     PendingBusApprovals,
+    /// A2A `Task` lifecycle row (Phase 2 of the A2A protocol).
+    A2aTask,
+    /// Idempotency key for A2A `messageId` deduplication.
+    A2aMessageDedup,
+    /// Full `AgentCard` record (separate from `BusAgent` hot path).
+    BusAgentCard,
     Custom(String),
 }
 
@@ -113,6 +119,9 @@ impl KeyKind {
             Self::BusConversation => "bus_conversation",
             Self::BusApproval => "bus_approval",
             Self::PendingBusApprovals => "pending_bus_approvals",
+            Self::A2aTask => "a2a_task",
+            Self::A2aMessageDedup => "a2a_message_dedup",
+            Self::BusAgentCard => "bus_agent_card",
             Self::Custom(s) => s.as_str(),
         }
     }
@@ -214,6 +223,9 @@ mod tests {
         assert_eq!(KeyKind::BusSchema.as_str(), "bus_schema");
         assert_eq!(KeyKind::BusAgent.as_str(), "bus_agent");
         assert_eq!(KeyKind::BusConversation.as_str(), "bus_conversation");
+        assert_eq!(KeyKind::A2aTask.as_str(), "a2a_task");
+        assert_eq!(KeyKind::A2aMessageDedup.as_str(), "a2a_message_dedup");
+        assert_eq!(KeyKind::BusAgentCard.as_str(), "bus_agent_card");
         assert_eq!(KeyKind::Custom("foo".into()).as_str(), "foo");
     }
 
