@@ -55,6 +55,8 @@ fn build_metrics_response(
         retention_deleted_state: snap.retention_deleted_state,
         retention_skipped_compliance: snap.retention_skipped_compliance,
         retention_errors: snap.retention_errors,
+        stale_tasks_reaped: snap.stale_tasks_reaped,
+        stale_task_reaper_errors: snap.stale_task_reaper_errors,
         wasm_invocations: snap.wasm_invocations,
         wasm_errors: snap.wasm_errors,
         signing_verified: snap.signing_verified,

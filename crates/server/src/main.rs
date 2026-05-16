@@ -1653,6 +1653,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             retention_check_interval: Duration::from_secs(
                 config.background.retention_check_interval_seconds,
             ),
+            enable_stale_task_reaper: config.background.enable_stale_task_reaper,
+            stale_task_check_interval: Duration::from_secs(
+                config.background.stale_task_check_interval_seconds,
+            ),
             enable_template_sync: config.background.enable_template_sync,
             template_sync_interval: Duration::from_secs(
                 config.background.template_sync_interval_seconds,

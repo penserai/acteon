@@ -79,6 +79,10 @@ pub struct GatewayMetrics {
     pub retention_skipped_compliance: AtomicU64,
     /// Retention reaper errors.
     pub retention_errors: AtomicU64,
+    /// A2A tasks transitioned to `Failed` by the stale-task reaper.
+    pub stale_tasks_reaped: AtomicU64,
+    /// Stale-task reaper errors.
+    pub stale_task_reaper_errors: AtomicU64,
     /// WASM plugin invocations.
     pub wasm_invocations: AtomicU64,
     /// WASM plugin invocation errors.
@@ -273,6 +277,17 @@ impl GatewayMetrics {
         self.retention_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the stale-tasks-reaped counter.
+    pub fn increment_stale_tasks_reaped(&self) {
+        self.stale_tasks_reaped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the stale-task reaper errors counter.
+    pub fn increment_stale_task_reaper_errors(&self) {
+        self.stale_task_reaper_errors
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Increment the WASM invocations counter.
     pub fn increment_wasm_invocations(&self) {
         self.wasm_invocations.fetch_add(1, Ordering::Relaxed);
@@ -372,6 +387,8 @@ impl GatewayMetrics {
             retention_deleted_state: self.retention_deleted_state.load(Ordering::Relaxed),
             retention_skipped_compliance: self.retention_skipped_compliance.load(Ordering::Relaxed),
             retention_errors: self.retention_errors.load(Ordering::Relaxed),
+            stale_tasks_reaped: self.stale_tasks_reaped.load(Ordering::Relaxed),
+            stale_task_reaper_errors: self.stale_task_reaper_errors.load(Ordering::Relaxed),
             wasm_invocations: self.wasm_invocations.load(Ordering::Relaxed),
             wasm_errors: self.wasm_errors.load(Ordering::Relaxed),
             signing_verified: self.signing_verified.load(Ordering::Relaxed),
@@ -452,6 +469,10 @@ pub struct MetricsSnapshot {
     pub retention_skipped_compliance: u64,
     /// Retention reaper errors.
     pub retention_errors: u64,
+    /// A2A tasks transitioned to `Failed` by the stale-task reaper.
+    pub stale_tasks_reaped: u64,
+    /// Stale-task reaper errors.
+    pub stale_task_reaper_errors: u64,
     /// WASM plugin invocations.
     pub wasm_invocations: u64,
     /// WASM plugin invocation errors.

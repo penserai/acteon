@@ -4,4 +4,5 @@ mod group_flush;
 mod recurring;
 mod retention;
 mod scheduled;
+mod stale_task;
 mod timeout;
