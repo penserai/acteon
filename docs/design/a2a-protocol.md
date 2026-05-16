@@ -110,10 +110,10 @@ The Core-First posture imports A2A's complexity into Acteon's substrate. Each ri
 - [ ] **Protocol Codecs:** Implement encoders/decoders for A2A JSON-RPC 2.0 and the REST binding (spec §11). Wire `A2A-Version` header negotiation with `VersionNotSupportedError`.
 - [x] **Task Engine (2.1):** `task_engine.rs` — lifecycle manager with CRUD + transitions + history append + artifact upsert + heartbeat, persisted via the `State` backend (`KeyKind::A2aTask`). CAS-retry mirrors the bus's optimistic-locking pattern.
 - [x] **Idempotency (2.1):** A2A `messageId` deduplication via `KeyKind::A2aMessageDedup` markers, bounded by a 24h TTL.
-- [ ] **Engine-side hardening (graph + streaming):**
+- [x] **Engine-side hardening (graph + streaming):**
   - [x] **BFS cycle detection (2.2):** reference-graph walk at *write time* (in `create_task` / `append_history`), capped at `MAX_REFERENCE_DEPTH` (cycle) and `MAX_REFERENCE_GRAPH_NODES` (fan-out). Graph bombs refused before they persist.
   - [x] **Stale-task reaper (2.3):** background worker scans `KeyKind::A2aTask` and transitions tasks stale per `is_stale_at(now)` to `Failed` via `TaskEngine::fail_if_stale` (staleness re-checked under CAS, so a just-heartbeated task is spared). The `acteon.task.reaped` audit envelope rides along with the Audit Integration item below.
-  - [ ] Artifact-stream gatekeeper: rejects chunks arriving after `lastChunk = true`; when `totalChunks` is asserted, holds the close until all indices 0..total are observed.
+  - [x] **Artifact-stream gatekeeper (2.4):** `Task::apply_artifact_event` enforces, across deliveries, no updates after a `lastChunk`, strictly in-order `chunkIndex`, and `totalChunks` completeness on close. Per-artifact stream state lives on the Task and commits under the engine CAS.
 - [ ] **BusApproval generalization (single source of truth for HITL):** Extend `BusApproval` with `kind: PauseKind` (`OperatorApproval` / `UserAuth` / `UserInput`); Task Engine stamps the approval row's id onto `Task.pending_approval_id`.
 - [ ] **The Bridge:** Native mapping between `Task` state and `Chain` status — A2A `Submitted/Working` ↔ chain step progress; `InputRequired/AuthRequired` ↔ generalized `BusApproval`; terminal states ↔ chain `StepResult`.
 - [ ] **Audit Integration:** Stamp every A2A operation with `AuditEventKind::A2aTaskTransition`.
