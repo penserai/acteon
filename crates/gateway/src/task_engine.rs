@@ -35,10 +35,6 @@
 //! - **Audit integration**: stamping `AuditEventKind::A2aTaskTransition`
 //!   on every transition. Deferred to a follow-up that touches
 //!   `acteon-audit` simultaneously.
-//! - **Artifact-stream gatekeeper**: enforces "no chunks after
-//!   `lastChunk`" and `totalChunks` completeness across multiple
-//!   `TaskArtifactUpdateEvent` deliveries. Stateful per-artifact;
-//!   the engine surface here is the single-event apply.
 //! - **`BusApproval.kind: PauseKind`** generalization. The engine
 //!   exposes [`TaskEngine::set_pending_approval`] today; the
 //!   semantic projection into the new `BusApproval` kind lands when
@@ -357,8 +353,17 @@ impl TaskEngine {
         .await
     }
 
-    /// Apply an artifact-update event from the streaming layer.
-    /// CAS-retries on contention.
+    /// Apply an artifact-update event from the streaming layer,
+    /// CAS-retrying on contention.
+    ///
+    /// Beyond the per-event structural checks of
+    /// [`TaskArtifactUpdateEvent::validate`], this runs the
+    /// artifact-stream gatekeeper (`Task::apply_artifact_event`):
+    /// the cross-delivery invariants — no updates after a
+    /// `lastChunk`, strictly in-order `chunkIndex`, and `totalChunks`
+    /// completeness on close — which need the Task's stored
+    /// per-artifact stream state and so are enforced inside the CAS
+    /// loop.
     pub async fn apply_artifact_update(
         &self,
         scope: &TaskScope,
@@ -366,10 +371,12 @@ impl TaskEngine {
     ) -> Result<Task, TaskEngineError> {
         event.validate()?;
         let key = scope.task_key(&event.task_id);
-        let artifact = event.artifact.clone();
-        let append = event.append;
-        self.cas_mutate(&key, &event.task_id, move |task: &mut Task| {
-            task.upsert_artifact(artifact.clone(), append)?;
+        // `task_id` is cloned out before the closure: `cas_mutate`
+        // borrows it for error reporting while the closure moves the
+        // whole `event` in to apply it.
+        let task_id = event.task_id.clone();
+        self.cas_mutate(&key, &task_id, move |task: &mut Task| {
+            task.apply_artifact_event(&event)?;
             Ok(())
         })
         .await
@@ -913,6 +920,67 @@ mod tests {
         );
         bad.chunk_index = Some(-1);
         let err = e.apply_artifact_update(&scope(), bad).await.unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn apply_artifact_update_rejects_update_after_last_chunk() {
+        // A lastChunk = true envelope closes the artifact stream; any
+        // further update for that artifactId is rejected.
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.apply_artifact_update(
+            &scope(),
+            TaskArtifactUpdateEvent::chunk(
+                "t1",
+                Artifact::new("art-1", vec![Part::text("a")]),
+                0,
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+        let err = e
+            .apply_artifact_update(
+                &scope(),
+                TaskArtifactUpdateEvent::single_shot(
+                    "t1",
+                    Artifact::new("art-1", vec![Part::text("b")]),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn apply_artifact_update_rejects_out_of_order_chunk() {
+        // chunkIndex must advance by exactly one; a gap is rejected.
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.apply_artifact_update(
+            &scope(),
+            TaskArtifactUpdateEvent::chunk(
+                "t1",
+                Artifact::new("art-1", vec![Part::text("a")]),
+                0,
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+        let err = e
+            .apply_artifact_update(
+                &scope(),
+                TaskArtifactUpdateEvent::chunk(
+                    "t1",
+                    Artifact::new("art-1", vec![Part::text("c")]),
+                    2,
+                    false,
+                ),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(err, TaskEngineError::Validation(_)));
     }
 

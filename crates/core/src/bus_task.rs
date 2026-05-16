@@ -522,6 +522,32 @@ impl Artifact {
 }
 
 // ---------------------------------------------------------------------
+// ArtifactStream
+// ---------------------------------------------------------------------
+
+/// Acteon-side per-artifact streaming bookkeeping for the
+/// artifact-stream gatekeeper. One entry per `artifactId` that has
+/// received a sequenced or terminal
+/// [`crate::bus_stream::TaskArtifactUpdateEvent`].
+///
+/// Not part of the A2A wire `Artifact` — it lives on the [`Task`] so
+/// the gatekeeper's cross-delivery checks commit atomically with the
+/// artifact upsert under the engine's compare-and-swap.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct ArtifactStream {
+    /// Index of the most recently applied sequenced chunk; `None`
+    /// before the first chunk carrying a `chunkIndex`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_chunk_index: Option<i64>,
+    /// True once a `last_chunk = true` envelope has been applied —
+    /// the stream is closed and further updates are rejected.
+    #[serde(default)]
+    pub closed: bool,
+}
+
+// ---------------------------------------------------------------------
 // TaskStatus
 // ---------------------------------------------------------------------
 
@@ -633,6 +659,11 @@ pub struct Task {
     /// trail has a single source of truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval_id: Option<String>,
+    /// Acteon-side: per-artifact streaming state for the
+    /// artifact-stream gatekeeper, keyed by `artifactId`. Empty for
+    /// tasks with no streamed artifacts. See [`ArtifactStream`].
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub artifact_streams: HashMap<String, ArtifactStream>,
 }
 
 fn default_working_ttl_ms() -> i64 {
@@ -662,6 +693,7 @@ impl Task {
             last_progress_at: Some(now),
             working_ttl_ms: DEFAULT_WORKING_TTL_MS,
             pending_approval_id: None,
+            artifact_streams: HashMap::new(),
         }
     }
 
@@ -761,6 +793,81 @@ impl Task {
         let now = Utc::now();
         self.updated_at = now;
         self.last_progress_at = Some(now);
+        Ok(())
+    }
+
+    /// Apply a streamed artifact-update event, enforcing the
+    /// cross-delivery gatekeeper invariants the per-event
+    /// [`crate::bus_stream::TaskArtifactUpdateEvent::validate`] cannot
+    /// see:
+    ///
+    /// - **No updates after close** — once a `last_chunk = true`
+    ///   envelope is applied for an `artifactId`, any further update
+    ///   for that id is rejected
+    ///   ([`TaskValidationError::ArtifactStreamClosed`]).
+    /// - **In-order chunks** — a sequenced chunk's `chunkIndex` must
+    ///   be exactly one past the previous chunk's (`0` for the
+    ///   first). The `append`-vs-replace directive already assumes
+    ///   in-order delivery; this turns a gap or reorder into an
+    ///   explicit error rather than silent corruption
+    ///   ([`TaskValidationError::ArtifactChunkOutOfOrder`]).
+    /// - **Completeness on close** — a closing chunk that asserts
+    ///   `totalChunks` must itself be the final index
+    ///   (`chunkIndex == totalChunks - 1`), i.e. every index in
+    ///   `0..totalChunks` was observed
+    ///   ([`TaskValidationError::ArtifactStreamIncomplete`]).
+    ///
+    /// Per-artifact stream state lives in [`Task::artifact_streams`].
+    /// The event is assumed already structurally validated by the
+    /// caller (the Task Engine validates before its CAS loop). On a
+    /// clean apply this delegates to [`Task::upsert_artifact`].
+    pub fn apply_artifact_event(
+        &mut self,
+        event: &crate::bus_stream::TaskArtifactUpdateEvent,
+    ) -> Result<(), TaskValidationError> {
+        let artifact_id = &event.artifact.artifact_id;
+        let (closed, expected_index) = match self.artifact_streams.get(artifact_id) {
+            Some(s) => (s.closed, s.last_chunk_index.map_or(0, |last| last + 1)),
+            None => (false, 0),
+        };
+        if closed {
+            return Err(TaskValidationError::ArtifactStreamClosed(
+                artifact_id.clone(),
+            ));
+        }
+        if let Some(index) = event.chunk_index
+            && index != expected_index
+        {
+            return Err(TaskValidationError::ArtifactChunkOutOfOrder {
+                artifact_id: artifact_id.clone(),
+                expected: expected_index,
+                got: index,
+            });
+        }
+        if event.last_chunk
+            && let (Some(total), Some(index)) = (event.total_chunks, event.chunk_index)
+            && index + 1 != total
+        {
+            return Err(TaskValidationError::ArtifactStreamIncomplete {
+                artifact_id: artifact_id.clone(),
+                seen: index + 1,
+                total,
+            });
+        }
+        // Apply the artifact content first — `upsert_artifact` is the
+        // only fallible step left, so stream state advances only once
+        // the content has actually landed.
+        self.upsert_artifact(event.artifact.clone(), event.append)?;
+        let stream = self
+            .artifact_streams
+            .entry(event.artifact.artifact_id.clone())
+            .or_default();
+        if let Some(index) = event.chunk_index {
+            stream.last_chunk_index = Some(index);
+        }
+        if event.last_chunk {
+            stream.closed = true;
+        }
         Ok(())
     }
 
@@ -963,6 +1070,22 @@ pub enum TaskValidationError {
     ChunkIndexOutOfRange { index: i64, total: i64 },
     #[error("append=true on chunk 0 would silently overwrite prior content")]
     AppendOnFirstChunk,
+    #[error("artifact '{0}' stream is closed; no updates allowed after lastChunk")]
+    ArtifactStreamClosed(String),
+    #[error(
+        "artifact '{artifact_id}' chunk out of order: expected chunkIndex {expected}, got {got}"
+    )]
+    ArtifactChunkOutOfOrder {
+        artifact_id: String,
+        expected: i64,
+        got: i64,
+    },
+    #[error("artifact '{artifact_id}' stream closed incomplete: {seen} of {total} chunks observed")]
+    ArtifactStreamIncomplete {
+        artifact_id: String,
+        seen: i64,
+        total: i64,
+    },
 }
 
 // ---------------------------------------------------------------------
@@ -1537,5 +1660,100 @@ mod tests {
         m.reference_task_ids = vec!["task-99".into()];
         m.validate_in_task("task-99").unwrap_err();
         m.validate_in_task("task-other").unwrap();
+    }
+
+    // --- Artifact-stream gatekeeper (apply_artifact_event) ---
+
+    fn artifact_chunk(
+        artifact_id: &str,
+        index: i64,
+        last: bool,
+    ) -> crate::bus_stream::TaskArtifactUpdateEvent {
+        crate::bus_stream::TaskArtifactUpdateEvent::chunk(
+            "task-1",
+            Artifact::new(artifact_id, vec![Part::text("x")]),
+            index,
+            last,
+        )
+    }
+
+    #[test]
+    fn artifact_event_clean_chunk_sequence() {
+        let mut t = Task::new("task-1", "agents", "demo");
+        t.apply_artifact_event(&artifact_chunk("art", 0, false))
+            .unwrap();
+        t.apply_artifact_event(&artifact_chunk("art", 1, false))
+            .unwrap();
+        t.apply_artifact_event(&artifact_chunk("art", 2, true))
+            .unwrap();
+        assert!(t.artifact_streams["art"].closed);
+        assert_eq!(t.artifacts.len(), 1);
+        assert_eq!(t.artifacts[0].parts.len(), 3);
+    }
+
+    #[test]
+    fn artifact_event_rejects_update_after_close() {
+        let mut t = Task::new("task-1", "agents", "demo");
+        let shot = || {
+            crate::bus_stream::TaskArtifactUpdateEvent::single_shot(
+                "task-1",
+                Artifact::new("art", vec![Part::text("x")]),
+            )
+        };
+        t.apply_artifact_event(&shot()).unwrap();
+        // single_shot carries last_chunk = true, so the stream is closed.
+        let err = t.apply_artifact_event(&shot()).unwrap_err();
+        assert!(matches!(err, TaskValidationError::ArtifactStreamClosed(_)));
+    }
+
+    #[test]
+    fn artifact_event_rejects_out_of_order_chunk() {
+        let mut t = Task::new("task-1", "agents", "demo");
+        t.apply_artifact_event(&artifact_chunk("art", 0, false))
+            .unwrap();
+        // Skipping index 1 is a gap — rejected, not silently applied.
+        let err = t
+            .apply_artifact_event(&artifact_chunk("art", 2, false))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            TaskValidationError::ArtifactChunkOutOfOrder {
+                expected: 1,
+                got: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn artifact_event_rejects_incomplete_on_close() {
+        // A closing chunk that asserts more totalChunks than its own
+        // index implies missing chunks.
+        let mut t = Task::new("task-1", "agents", "demo");
+        t.apply_artifact_event(&artifact_chunk("art", 0, false))
+            .unwrap();
+        let mut closing = artifact_chunk("art", 1, true);
+        closing.total_chunks = Some(5);
+        let err = t.apply_artifact_event(&closing).unwrap_err();
+        assert!(matches!(
+            err,
+            TaskValidationError::ArtifactStreamIncomplete {
+                seen: 2,
+                total: 5,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn artifact_event_complete_close_with_total_ok() {
+        // The closing chunk's index is totalChunks - 1 — complete.
+        let mut t = Task::new("task-1", "agents", "demo");
+        t.apply_artifact_event(&artifact_chunk("art", 0, false))
+            .unwrap();
+        let mut closing = artifact_chunk("art", 1, true);
+        closing.total_chunks = Some(2);
+        t.apply_artifact_event(&closing).unwrap();
+        assert!(t.artifact_streams["art"].closed);
     }
 }
