@@ -46,6 +46,12 @@ pub struct BackgroundProcessingConfig {
     /// How often to run the data retention reaper (seconds).
     #[serde(default = "default_retention_check_interval")]
     pub retention_check_interval_seconds: u64,
+    /// Whether to run the stale-task reaper.
+    #[serde(default)]
+    pub enable_stale_task_reaper: bool,
+    /// How often to run the stale-task reaper (seconds).
+    #[serde(default = "default_stale_task_check_interval")]
+    pub stale_task_check_interval_seconds: u64,
     /// Whether to periodically sync templates from the state store.
     #[serde(default = "default_enable_template_sync")]
     pub enable_template_sync: bool,
@@ -108,6 +114,8 @@ impl Default for BackgroundProcessingConfig {
             max_recurring_actions_per_tenant: default_max_recurring_actions_per_tenant(),
             enable_retention_reaper: false,
             retention_check_interval_seconds: default_retention_check_interval(),
+            enable_stale_task_reaper: false,
+            stale_task_check_interval_seconds: default_stale_task_check_interval(),
             enable_template_sync: default_enable_template_sync(),
             template_sync_interval_seconds: default_template_sync_interval(),
             enable_silence_sync: default_enable_silence_sync(),
@@ -148,6 +156,10 @@ fn default_group_sync_interval() -> u64 {
 
 fn default_retention_check_interval() -> u64 {
     3600
+}
+
+fn default_stale_task_check_interval() -> u64 {
+    60
 }
 
 fn default_enable_template_sync() -> bool {

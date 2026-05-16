@@ -35,9 +35,6 @@
 //! - **Audit integration**: stamping `AuditEventKind::A2aTaskTransition`
 //!   on every transition. Deferred to a follow-up that touches
 //!   `acteon-audit` simultaneously.
-//! - **Stale-task reaper**: background job that transitions stale
-//!   tasks to `Failed` via [`Task::is_stale_at`]. Lives in
-//!   `crates/gateway/src/background/` (next PR).
 //! - **Artifact-stream gatekeeper**: enforces "no chunks after
 //!   `lastChunk`" and `totalChunks` completeness across multiple
 //!   `TaskArtifactUpdateEvent` deliveries. Stateful per-artifact;
@@ -53,12 +50,12 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use tracing::{debug, warn};
 
 use acteon_core::{
-    Artifact, MAX_REFERENCE_DEPTH, Task, TaskArtifactUpdateEvent, TaskMessage, TaskState,
+    Artifact, MAX_REFERENCE_DEPTH, Task, TaskArtifactUpdateEvent, TaskMessage, TaskRole, TaskState,
     TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
@@ -235,6 +232,66 @@ impl TaskEngine {
             Ok(())
         })
         .await
+    }
+
+    /// Transition a task to [`TaskState::Failed`] **iff** it is still
+    /// stale at `now` when the fresh row is loaded under CAS.
+    ///
+    /// This is the stale-task reaper's mutation entry point. A task
+    /// that sits in a non-terminal state past its `working_ttl_ms`
+    /// without recorded progress is a zombie; failing it makes that
+    /// verdict durable rather than only derived on read by
+    /// [`Task::is_stale_at`].
+    ///
+    /// Returns the updated task if it was reaped, or `None` if —
+    /// between the reaper's scan and this write — the task recorded
+    /// progress or reached a terminal state and is no longer stale.
+    /// The staleness re-check runs against the *fresh* CAS-loaded
+    /// row, so a task a producer just heartbeated is never failed out
+    /// from under it. [`Task::is_stale_at`] already excludes terminal
+    /// tasks, and `Failed` is a legal transition from every
+    /// non-terminal state, so the transition itself cannot be
+    /// rejected.
+    pub async fn fail_if_stale(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<Task>, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        let reason = TaskMessage::text(
+            format!("stale-reaper-{}", now.timestamp_millis()),
+            TaskRole::Agent,
+            "Task failed by the stale-task reaper: no recorded progress within its working TTL.",
+        );
+        for _ in 0..MAX_CAS_RETRY_ATTEMPTS {
+            let Some((raw, version)) = self.state.get_versioned(&key).await? else {
+                // Task was deleted between the reaper's scan and now.
+                return Ok(None);
+            };
+            let mut task: Task = serde_json::from_str(&raw)?;
+            if !task.is_stale_at(now) {
+                // Recorded progress or reached a terminal state since
+                // the scan — no longer a zombie, leave it untouched.
+                return Ok(None);
+            }
+            task.transition_to(TaskState::Failed, Some(reason.clone()))?;
+            let payload = serde_json::to_string(&task)?;
+            match self
+                .state
+                .compare_and_swap(&key, version, &payload, None)
+                .await?
+            {
+                CasResult::Ok => {
+                    debug!(task_id = %task_id, "stale task reaped to Failed");
+                    return Ok(Some(task));
+                }
+                CasResult::Conflict { .. } => {
+                    // Lost the race; re-read and re-evaluate staleness.
+                }
+            }
+        }
+        Err(TaskEngineError::CasExhausted(task_id.to_string()))
     }
 
     /// Append a history message to a task. Idempotent on
@@ -1139,5 +1196,92 @@ mod tests {
         }
         e.create_task(root).await.unwrap();
         assert!(e.get_task(&scope(), "wide-root").await.unwrap().is_some());
+    }
+
+    // --- Stale-task reaper (fail_if_stale) ---
+
+    /// A task whose last progress is `age_secs` in the past with a
+    /// `ttl_ms` working TTL — stale once `age > ttl`.
+    fn aged_task(id: &str, age_secs: i64, ttl_ms: i64) -> Task {
+        let mut t = sample_task(id);
+        t.last_progress_at = Some(Utc::now() - chrono::Duration::seconds(age_secs));
+        t.working_ttl_ms = ttl_ms;
+        t
+    }
+
+    #[tokio::test]
+    async fn fail_if_stale_reaps_a_stale_task() {
+        let e = engine();
+        // Submitted, last progress an hour ago, 60s TTL → stale.
+        e.create_task(aged_task("zombie", 3600, 60_000))
+            .await
+            .unwrap();
+        let reaped = e
+            .fail_if_stale(&scope(), "zombie", Utc::now())
+            .await
+            .unwrap();
+        assert!(reaped.is_some());
+        let t = e.get_task(&scope(), "zombie").await.unwrap().unwrap();
+        assert_eq!(t.status.state, TaskState::Failed);
+        // The failure carries an explanatory status message.
+        assert!(t.status.message.is_some());
+    }
+
+    #[tokio::test]
+    async fn fail_if_stale_leaves_a_fresh_task() {
+        let e = engine();
+        // Fresh task: last progress is now, well within its TTL.
+        e.create_task(sample_task("alive")).await.unwrap();
+        let reaped = e
+            .fail_if_stale(&scope(), "alive", Utc::now())
+            .await
+            .unwrap();
+        assert!(reaped.is_none());
+        let t = e.get_task(&scope(), "alive").await.unwrap().unwrap();
+        assert_eq!(t.status.state, TaskState::Submitted);
+    }
+
+    #[tokio::test]
+    async fn fail_if_stale_leaves_a_terminal_task() {
+        // A terminal task is never stale; fail_if_stale must no-op
+        // rather than re-transition it.
+        let e = engine();
+        e.create_task(sample_task("done")).await.unwrap();
+        e.transition_task(&scope(), "done", TaskState::Working, None)
+            .await
+            .unwrap();
+        e.transition_task(&scope(), "done", TaskState::Completed, None)
+            .await
+            .unwrap();
+        let reaped = e.fail_if_stale(&scope(), "done", Utc::now()).await.unwrap();
+        assert!(reaped.is_none());
+        let t = e.get_task(&scope(), "done").await.unwrap().unwrap();
+        assert_eq!(t.status.state, TaskState::Completed);
+    }
+
+    #[tokio::test]
+    async fn fail_if_stale_reaps_a_stale_working_task() {
+        // Staleness applies to any non-terminal state. Reap a Working
+        // task by evaluating against a `now` far past its TTL.
+        let e = engine();
+        e.create_task(sample_task("busy")).await.unwrap();
+        e.transition_task(&scope(), "busy", TaskState::Working, None)
+            .await
+            .unwrap();
+        let far_future = Utc::now() + chrono::Duration::days(1);
+        let reaped = e.fail_if_stale(&scope(), "busy", far_future).await.unwrap();
+        assert!(reaped.is_some());
+        let t = e.get_task(&scope(), "busy").await.unwrap().unwrap();
+        assert_eq!(t.status.state, TaskState::Failed);
+    }
+
+    #[tokio::test]
+    async fn fail_if_stale_on_missing_task_is_noop() {
+        let e = engine();
+        let reaped = e
+            .fail_if_stale(&scope(), "ghost", Utc::now())
+            .await
+            .unwrap();
+        assert!(reaped.is_none());
     }
 }

@@ -56,6 +56,10 @@ pub struct BackgroundConfig {
     pub enable_retention_reaper: bool,
     /// How often to run the data retention reaper (default: 3600 seconds).
     pub retention_check_interval: Duration,
+    /// Whether the stale-task reaper is enabled (default: false).
+    pub enable_stale_task_reaper: bool,
+    /// How often to run the stale-task reaper (default: 60 seconds).
+    pub stale_task_check_interval: Duration,
     /// Whether periodic template sync from state store is enabled (default: false).
     pub enable_template_sync: bool,
     /// How often to sync templates from the state store (default: 30 seconds).
@@ -109,6 +113,8 @@ impl Default for BackgroundConfig {
             recurring_check_interval: Duration::from_secs(60),
             enable_retention_reaper: false,
             retention_check_interval: Duration::from_secs(3600),
+            enable_stale_task_reaper: false,
+            stale_task_check_interval: Duration::from_secs(60),
             enable_template_sync: false,
             template_sync_interval: Duration::from_secs(30),
             enable_silence_sync: true,
@@ -367,6 +373,7 @@ impl BackgroundProcessor {
         let mut scheduled_interval = interval(self.config.scheduled_check_interval);
         let mut recurring_interval = interval(self.config.recurring_check_interval);
         let mut retention_interval = interval(self.config.retention_check_interval);
+        let mut stale_task_interval = interval(self.config.stale_task_check_interval);
         let mut template_sync_interval = interval(self.config.template_sync_interval);
         let mut silence_sync_interval = interval(self.config.silence_sync_interval);
         let mut time_interval_sync_interval = interval(self.config.time_interval_sync_interval);
@@ -406,6 +413,11 @@ impl BackgroundProcessor {
                 _ = retention_interval.tick(), if self.config.enable_retention_reaper => {
                     if let Err(e) = self.run_retention_reaper().await {
                         error!(error = %e, "error running retention reaper");
+                    }
+                }
+                _ = stale_task_interval.tick(), if self.config.enable_stale_task_reaper => {
+                    if let Err(e) = self.run_stale_task_reaper().await {
+                        error!(error = %e, "error running stale-task reaper");
                     }
                 }
                 // TODO(template-sync): Replace with reactive invalidation
@@ -711,6 +723,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_stale_task_reaper: false,
+                stale_task_check_interval: Duration::from_secs(60),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
@@ -837,6 +851,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_stale_task_reaper: false,
+                stale_task_check_interval: Duration::from_secs(60),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
@@ -954,6 +970,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_stale_task_reaper: false,
+                stale_task_check_interval: Duration::from_secs(60),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
@@ -1062,6 +1080,8 @@ mod tests {
                 recurring_check_interval: Duration::from_secs(60),
                 enable_retention_reaper: false,
                 retention_check_interval: Duration::from_secs(3600),
+                enable_stale_task_reaper: false,
+                stale_task_check_interval: Duration::from_secs(60),
                 enable_template_sync: false,
                 template_sync_interval: Duration::from_secs(30),
                 enable_silence_sync: false,
@@ -1596,6 +1616,60 @@ mod tests {
         let snap = metrics.snapshot();
         assert_eq!(snap.retention_deleted_state, 0);
         assert_eq!(snap.retention_skipped_compliance, 1);
+    }
+
+    #[tokio::test]
+    async fn stale_task_reaper_fails_zombie_tasks() {
+        let group_manager = Arc::new(GroupManager::new());
+        let state: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let metrics = Arc::new(GatewayMetrics::default());
+
+        // A zombie: non-terminal, last progress two hours ago, 60s TTL.
+        let mut zombie = acteon_core::Task::new("zombie", "ns", "tn");
+        zombie.last_progress_at = Some(Utc::now() - chrono::Duration::hours(2));
+        zombie.working_ttl_ms = 60_000;
+        let zombie_key = StateKey::new("ns", "tn", KeyKind::A2aTask, "zombie");
+        state
+            .set(&zombie_key, &serde_json::to_string(&zombie).unwrap(), None)
+            .await
+            .unwrap();
+
+        // A fresh task: progress just now, well within its TTL.
+        let fresh = acteon_core::Task::new("fresh", "ns", "tn");
+        let fresh_key = StateKey::new("ns", "tn", KeyKind::A2aTask, "fresh");
+        state
+            .set(&fresh_key, &serde_json::to_string(&fresh).unwrap(), None)
+            .await
+            .unwrap();
+
+        let processor = BackgroundProcessor::new(
+            BackgroundConfig {
+                enable_stale_task_reaper: true,
+                stale_task_check_interval: Duration::from_secs(60),
+                ..BackgroundConfig::default()
+            },
+            group_manager,
+            Arc::clone(&state),
+            Arc::clone(&metrics),
+            Vec::new(),
+            mpsc::channel(1).1,
+        );
+
+        processor.run_stale_task_reaper().await.unwrap();
+
+        // The zombie was transitioned to Failed.
+        let raw = state.get(&zombie_key).await.unwrap().unwrap();
+        let reaped: acteon_core::Task = serde_json::from_str(&raw).unwrap();
+        assert_eq!(reaped.status.state, acteon_core::TaskState::Failed);
+
+        // The fresh task was left untouched.
+        let raw = state.get(&fresh_key).await.unwrap().unwrap();
+        let kept: acteon_core::Task = serde_json::from_str(&raw).unwrap();
+        assert_eq!(kept.status.state, acteon_core::TaskState::Submitted);
+
+        let snap = metrics.snapshot();
+        assert_eq!(snap.stale_tasks_reaped, 1);
+        assert_eq!(snap.stale_task_reaper_errors, 0);
     }
 
     #[tokio::test]

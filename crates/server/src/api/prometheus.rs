@@ -327,6 +327,20 @@ fn render_snapshot(snap: &MetricsSnapshot) -> String {
         "Retention reaper processing errors.",
         snap.retention_errors,
     );
+
+    // -- Stale-task reaper counters --
+    write_counter(
+        &mut buf,
+        "acteon_stale_tasks_reaped_total",
+        "A2A tasks transitioned to Failed by the stale-task reaper.",
+        snap.stale_tasks_reaped,
+    );
+    write_counter(
+        &mut buf,
+        "acteon_stale_task_reaper_errors_total",
+        "Stale-task reaper processing errors.",
+        snap.stale_task_reaper_errors,
+    );
     write_counter(
         &mut buf,
         "acteon_wasm_invocations_total",
@@ -608,6 +622,8 @@ mod tests {
             retention_deleted_state: 0,
             retention_skipped_compliance: 0,
             retention_errors: 0,
+            stale_tasks_reaped: 0,
+            stale_task_reaper_errors: 0,
             wasm_invocations: 0,
             wasm_errors: 0,
             signing_verified: 0,
@@ -654,6 +670,8 @@ mod tests {
             retention_deleted_state: 10,
             retention_skipped_compliance: 2,
             retention_errors: 1,
+            stale_tasks_reaped: 4,
+            stale_task_reaper_errors: 1,
             wasm_invocations: 6,
             wasm_errors: 2,
             signing_verified: 42,
@@ -864,6 +882,8 @@ mod tests {
         "acteon_retention_deleted_state_total",
         "acteon_retention_skipped_compliance_total",
         "acteon_retention_errors_total",
+        "acteon_stale_tasks_reaped_total",
+        "acteon_stale_task_reaper_errors_total",
         "acteon_wasm_invocations_total",
         "acteon_wasm_errors_total",
         "acteon_signing_verified_total",
@@ -876,7 +896,7 @@ mod tests {
     ];
 
     #[test]
-    fn render_snapshot_contains_all_40_counter_metrics() {
+    fn render_snapshot_contains_all_counter_metrics() {
         let snap = zero_snapshot();
         let output = render_snapshot(&snap);
 
@@ -956,6 +976,8 @@ mod tests {
         assert!(output.contains("acteon_retention_deleted_state_total 10"));
         assert!(output.contains("acteon_retention_skipped_compliance_total 2"));
         assert!(output.contains("acteon_retention_errors_total 1"));
+        assert!(output.contains("acteon_stale_tasks_reaped_total 4"));
+        assert!(output.contains("acteon_stale_task_reaper_errors_total 1"));
         assert!(output.contains("acteon_wasm_invocations_total 6"));
         assert!(output.contains("acteon_wasm_errors_total 2"));
         assert!(output.contains("acteon_signing_verified_total 42"));
@@ -1190,7 +1212,7 @@ mod tests {
         providers.insert("email".to_string(), sample_provider_stats());
         render_provider_metrics(&mut output, &providers);
 
-        // 40 counter metrics from the snapshot
+        // 42 counter metrics from the snapshot
         for metric in EXPECTED_COUNTER_METRICS {
             assert!(output.contains(metric), "Missing snapshot metric: {metric}");
         }
@@ -1200,16 +1222,16 @@ mod tests {
             assert!(output.contains(name), "Missing provider metric: {name}");
         }
 
-        // 40 counters + 1 gauge from the snapshot + 8 provider families = 49.
+        // 42 counters + 1 gauge from the snapshot + 8 provider families = 51.
         let type_lines: Vec<&str> = output
             .lines()
             .filter(|l| l.starts_with("# TYPE "))
             .collect();
-        assert_eq!(type_lines.len(), 49, "Expected 49 TYPE declarations");
+        assert_eq!(type_lines.len(), 51, "Expected 51 TYPE declarations");
     }
 
     #[test]
-    fn full_render_no_providers_has_40_type_lines() {
+    fn full_render_no_providers_type_lines() {
         let snap = zero_snapshot();
         let mut output = render_snapshot(&snap);
         let empty: HashMap<String, ProviderStatsSnapshot> = HashMap::new();
@@ -1221,8 +1243,8 @@ mod tests {
             .collect();
         assert_eq!(
             type_lines.len(),
-            41,
-            "Expected 41 TYPE declarations without providers (40 counters + 1 gauge)"
+            43,
+            "Expected 43 TYPE declarations without providers (42 counters + 1 gauge)"
         );
     }
 

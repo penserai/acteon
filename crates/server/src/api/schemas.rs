@@ -116,6 +116,12 @@ pub struct MetricsResponse {
     /// Retention reaper errors.
     #[schema(example = 0)]
     pub retention_errors: u64,
+    /// A2A tasks transitioned to `Failed` by the stale-task reaper.
+    #[schema(example = 0)]
+    pub stale_tasks_reaped: u64,
+    /// Stale-task reaper errors.
+    #[schema(example = 0)]
+    pub stale_task_reaper_errors: u64,
     /// WASM plugin invocations.
     #[schema(example = 0)]
     pub wasm_invocations: u64,
