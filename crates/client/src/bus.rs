@@ -1887,6 +1887,20 @@ pub enum BusApprovalStatus {
     Expired,
 }
 
+/// Why a [`BusApprovalView`] exists — an operator gate on an outbound
+/// bus tool-call, or an A2A Task paused waiting on the user.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseKind {
+    /// An operator must approve an outbound bus tool-call before it
+    /// publishes.
+    OperatorApproval,
+    /// An A2A Task is paused awaiting a user-supplied credential.
+    UserAuth,
+    /// An A2A Task is paused awaiting clarifying user input.
+    UserInput,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BusApprovalParkedReceipt {
     pub approval_id: String,
@@ -1904,7 +1918,15 @@ pub struct BusApprovalView {
     pub approval_id: String,
     pub namespace: String,
     pub tenant: String,
-    pub conversation_id: String,
+    /// Why this approval exists — operator gate vs. A2A task pause.
+    pub kind: PauseKind,
+    /// Target conversation. `None` for task-pause approvals.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// The A2A Task this approval pauses. `None` for operator
+    /// approvals.
+    #[serde(default)]
+    pub task_id: Option<String>,
     pub correlation_token: String,
     pub envelope_kind: String,
     pub status: BusApprovalStatus,

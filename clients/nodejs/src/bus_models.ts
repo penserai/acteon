@@ -316,6 +316,10 @@ export interface BusStreamEnvelopeReceipt {
 
 export type BusApprovalStatus = "pending" | "approved" | "rejected" | "expired";
 
+/** Why a {@link BusApprovalView} exists — an operator gate on a bus
+ * tool-call, or an A2A Task paused waiting on the user. */
+export type BusApprovalKind = "operator_approval" | "user_auth" | "user_input";
+
 export interface BusApprovalParkedReceipt {
   approvalId: string;
   namespace: string;
@@ -331,7 +335,12 @@ export interface BusApprovalView {
   approvalId: string;
   namespace: string;
   tenant: string;
-  conversationId: string;
+  /** Why this approval exists — operator gate vs. A2A task pause. */
+  kind: BusApprovalKind;
+  /** Target conversation. `null` for task-pause approvals. */
+  conversationId: string | null;
+  /** The A2A Task this approval pauses. `null` for operator approvals. */
+  taskId: string | null;
   correlationToken: string;
   envelopeKind: string;
   status: BusApprovalStatus;
@@ -852,7 +861,9 @@ export function parseBusApprovalView(d: Record<string, unknown>): BusApprovalVie
     approvalId: d.approval_id as string,
     namespace: d.namespace as string,
     tenant: d.tenant as string,
-    conversationId: d.conversation_id as string,
+    kind: d.kind as BusApprovalKind,
+    conversationId: (d.conversation_id as string | null | undefined) ?? null,
+    taskId: (d.task_id as string | null | undefined) ?? null,
     correlationToken: d.correlation_token as string,
     envelopeKind: d.envelope_kind as string,
     status: d.status as BusApprovalStatus,

@@ -52,13 +52,13 @@ type ListBusTopicsFilter struct {
 }
 
 type PublishBusMessage struct {
-	Topic     *string                `json:"topic,omitempty"`
-	Namespace *string                `json:"namespace,omitempty"`
-	Tenant    *string                `json:"tenant,omitempty"`
-	Name      *string                `json:"name,omitempty"`
-	Key       *string                `json:"key,omitempty"`
-	Payload   any                    `json:"payload"`
-	Headers   map[string]string      `json:"headers,omitempty"`
+	Topic     *string           `json:"topic,omitempty"`
+	Namespace *string           `json:"namespace,omitempty"`
+	Tenant    *string           `json:"tenant,omitempty"`
+	Name      *string           `json:"name,omitempty"`
+	Key       *string           `json:"key,omitempty"`
+	Payload   any               `json:"payload"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 type PublishReceipt struct {
@@ -112,10 +112,10 @@ type ListBusSubscriptionsFilter struct {
 }
 
 type BusLagPartition struct {
-	Partition      int32 `json:"partition"`
-	Committed      int64 `json:"committed"`
-	HighWaterMark  int64 `json:"high_water_mark"`
-	Lag            int64 `json:"lag"`
+	Partition     int32 `json:"partition"`
+	Committed     int64 `json:"committed"`
+	HighWaterMark int64 `json:"high_water_mark"`
+	Lag           int64 `json:"lag"`
 }
 
 type BusLag struct {
@@ -164,29 +164,29 @@ type ListBusSchemasFilter struct {
 // =============================================================================
 
 type RegisterBusAgent struct {
-	AgentID         string            `json:"agent_id"`
-	Namespace       string            `json:"namespace"`
-	Tenant          string            `json:"tenant"`
-	Capabilities    []string          `json:"capabilities,omitempty"`
-	InboxSuffix     *string           `json:"inbox_suffix,omitempty"`
-	HeartbeatTtlMs  *uint64           `json:"heartbeat_ttl_ms,omitempty"`
-	Description     *string           `json:"description,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
+	AgentID        string            `json:"agent_id"`
+	Namespace      string            `json:"namespace"`
+	Tenant         string            `json:"tenant"`
+	Capabilities   []string          `json:"capabilities,omitempty"`
+	InboxSuffix    *string           `json:"inbox_suffix,omitempty"`
+	HeartbeatTtlMs *uint64           `json:"heartbeat_ttl_ms,omitempty"`
+	Description    *string           `json:"description,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
 }
 
 type BusAgent struct {
-	AgentID          string            `json:"agent_id"`
-	Namespace        string            `json:"namespace"`
-	Tenant           string            `json:"tenant"`
-	Capabilities     []string          `json:"capabilities"`
-	InboxTopic       string            `json:"inbox_topic"`
-	Status           string            `json:"status"`
-	LastHeartbeatAt  *string           `json:"last_heartbeat_at,omitempty"`
-	HeartbeatTtlMs   uint64            `json:"heartbeat_ttl_ms"`
-	Description      *string           `json:"description,omitempty"`
-	Labels           map[string]string `json:"labels,omitempty"`
-	CreatedAt        string            `json:"created_at"`
-	UpdatedAt        string            `json:"updated_at"`
+	AgentID         string            `json:"agent_id"`
+	Namespace       string            `json:"namespace"`
+	Tenant          string            `json:"tenant"`
+	Capabilities    []string          `json:"capabilities"`
+	InboxTopic      string            `json:"inbox_topic"`
+	Status          string            `json:"status"`
+	LastHeartbeatAt *string           `json:"last_heartbeat_at,omitempty"`
+	HeartbeatTtlMs  uint64            `json:"heartbeat_ttl_ms"`
+	Description     *string           `json:"description,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
 }
 
 type ListBusAgentsResponse struct {
@@ -330,12 +330,12 @@ type BusToolResultLookupParams struct {
 }
 
 type BusToolResultLookup struct {
-	CallID         string         `json:"call_id"`
-	EventsTopic    string         `json:"events_topic"`
-	ConversationID string         `json:"conversation_id"`
-	Partition      int32          `json:"partition"`
-	Offset         int64          `json:"offset"`
-	ProducedAt     string         `json:"produced_at"`
+	CallID         string        `json:"call_id"`
+	EventsTopic    string        `json:"events_topic"`
+	ConversationID string        `json:"conversation_id"`
+	Partition      int32         `json:"partition"`
+	Offset         int64         `json:"offset"`
+	ProducedAt     string        `json:"produced_at"`
 	Result         BusToolResult `json:"result"`
 }
 
@@ -390,7 +390,9 @@ type BusApprovalView struct {
 	ApprovalID        string  `json:"approval_id"`
 	Namespace         string  `json:"namespace"`
 	Tenant            string  `json:"tenant"`
-	ConversationID    string  `json:"conversation_id"`
+	Kind              string  `json:"kind"`
+	ConversationID    *string `json:"conversation_id,omitempty"`
+	TaskID            *string `json:"task_id,omitempty"`
 	CorrelationToken  string  `json:"correlation_token"`
 	EnvelopeKind      string  `json:"envelope_kind"`
 	Status            string  `json:"status"`

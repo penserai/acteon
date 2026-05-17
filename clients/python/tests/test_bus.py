@@ -283,6 +283,7 @@ class TestResponseSerde(unittest.TestCase):
         v = BusApprovalView.from_dict({
             "approval_id": "appr-1",
             "namespace": "n", "tenant": "te",
+            "kind": "operator_approval",
             "conversation_id": "c1",
             "correlation_token": "call-1",
             "envelope_kind": "tool_call",
@@ -292,6 +293,9 @@ class TestResponseSerde(unittest.TestCase):
             "envelope": {"kind": "tool_call"},
         })
         self.assertEqual(v.status, "pending")
+        self.assertEqual(v.kind, "operator_approval")
+        self.assertEqual(v.conversation_id, "c1")
+        self.assertIsNone(v.task_id)
         self.assertIsNone(v.decided_by)
         self.assertIsNone(v.produced_offset)
 
@@ -299,6 +303,7 @@ class TestResponseSerde(unittest.TestCase):
         r = BusApprovalDecisionResponse.from_dict({
             "approval": {
                 "approval_id": "appr-1", "namespace": "n", "tenant": "te",
+                "kind": "operator_approval",
                 "conversation_id": "c1", "correlation_token": "call-1",
                 "envelope_kind": "tool_call", "status": "approved",
                 "created_at": "2026-01-01T00:00:00Z",
@@ -322,6 +327,7 @@ class TestResponseSerde(unittest.TestCase):
         r = BusApprovalDecisionResponse.from_dict({
             "approval": {
                 "approval_id": "appr-1", "namespace": "n", "tenant": "te",
+                "kind": "operator_approval",
                 "conversation_id": "c1", "correlation_token": "call-1",
                 "envelope_kind": "tool_call", "status": "rejected",
                 "created_at": "2026-01-01T00:00:00Z",

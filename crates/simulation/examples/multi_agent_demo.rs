@@ -36,8 +36,8 @@ use tracing::{Level, info};
 
 use acteon_bus::{BusMessage, MemoryBackend, ScanFrom};
 use acteon_core::{
-    Agent, BusApproval, BusApprovalEnvelope, BusApprovalStatus, Conversation, StreamChunk,
-    StreamEnd, ToolCall, ToolResult, ToolResultStatus, Topic,
+    Agent, BusApproval, BusApprovalEnvelope, BusApprovalStatus, Conversation, PauseKind,
+    StreamChunk, StreamEnd, ToolCall, ToolResult, ToolResultStatus, Topic,
 };
 use acteon_state::{KeyKind, StateKey, StateStore};
 use acteon_state_memory::MemoryStateStore;
@@ -282,9 +282,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         approval_id: approval_id.clone(),
         namespace: NS.into(),
         tenant: TENANT.into(),
-        conversation_id: conv.conversation_id.clone(),
+        kind: PauseKind::OperatorApproval,
+        conversation_id: Some(conv.conversation_id.clone()),
         reason: Some("refund — operator review required".into()),
-        envelope: BusApprovalEnvelope::ToolCall(pay_request.clone()),
+        envelope: Some(BusApprovalEnvelope::ToolCall(pay_request.clone())),
+        task_id: None,
         status: BusApprovalStatus::Pending,
         created_at: now,
         expires_at: now + chrono::Duration::hours(1),

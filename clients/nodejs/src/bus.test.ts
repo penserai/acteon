@@ -375,6 +375,7 @@ describe("bus response parsers", () => {
       approval_id: "appr-1",
       namespace: "n",
       tenant: "te",
+      kind: "operator_approval",
       conversation_id: "c1",
       correlation_token: "call-1",
       envelope_kind: "tool_call",
@@ -384,6 +385,9 @@ describe("bus response parsers", () => {
       envelope: { kind: "tool_call" },
     });
     assert.equal(v.status, "pending");
+    assert.equal(v.kind, "operator_approval");
+    assert.equal(v.conversationId, "c1");
+    assert.equal(v.taskId, null);
     assert.equal(v.decidedBy, null);
     assert.equal(v.producedOffset, null);
   });

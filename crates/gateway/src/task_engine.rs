@@ -43,12 +43,20 @@
 //! task transition is the source of truth, the audit record a
 //! best-effort projection of it.
 //!
+//! ## Human-in-the-loop pauses
+//!
+//! [`TaskEngine::pause_for_human`] pauses a Task on a human: it
+//! transitions the Task to [`TaskState::AuthRequired`] /
+//! [`TaskState::InputRequired`] and creates the matching
+//! [`acteon_core::BusApproval`] row (a [`PauseKind::UserAuth`] /
+//! [`PauseKind::UserInput`] kind), stamping the approval id onto
+//! `Task.pending_approval_id`. `BusApproval` is the single
+//! "waiting on a human" record — the same row type the bus's
+//! operator-approval gate uses. The Task transition itself rides the
+//! audit integration above.
+//!
 //! ## Out of scope for this PR (deferred to follow-ups)
 //!
-//! - **`BusApproval.kind: PauseKind`** generalization. The engine
-//!   exposes [`TaskEngine::set_pending_approval`] today; the
-//!   semantic projection into the new `BusApproval` kind lands when
-//!   that crate-side enum exists.
 //! - **Protocol codecs**: A2A JSON-RPC 2.0 + REST framing lives in
 //!   the server layer, not here. The engine speaks pure Rust types.
 
@@ -62,8 +70,9 @@ use tracing::{debug, warn};
 
 use acteon_audit::store::AuditStore;
 use acteon_core::{
-    Artifact, MAX_REFERENCE_DEPTH, Task, TaskArtifactUpdateEvent, TaskMessage, TaskRole, TaskState,
-    TaskValidationError,
+    Artifact, BusApproval, BusApprovalValidationError, DEFAULT_APPROVAL_TTL_MS,
+    MAX_APPROVAL_TTL_MS, MAX_REFERENCE_DEPTH, PauseKind, Task, TaskArtifactUpdateEvent,
+    TaskMessage, TaskRole, TaskState, TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
@@ -467,6 +476,146 @@ impl TaskEngine {
         .await
     }
 
+    /// Pause a Task on a human and create the [`BusApproval`] row
+    /// that represents the pause.
+    ///
+    /// This is the Task-side entry point for the `BusApproval`
+    /// generalization. It performs two writes:
+    ///
+    /// 1. Persists a fresh task-pause [`BusApproval`] row (status
+    ///    `Pending`) at [`KeyKind::BusApproval`], plus a
+    ///    [`KeyKind::PendingBusApprovals`] index entry so the row
+    ///    appears in `status=pending` listings.
+    /// 2. CAS-mutates the Task: transitions it to the state `kind`
+    ///    maps to ([`TaskState::AuthRequired`] for
+    ///    [`PauseKind::UserAuth`], [`TaskState::InputRequired`] for
+    ///    [`PauseKind::UserInput`]) and stamps the approval id onto
+    ///    `Task.pending_approval_id`.
+    ///
+    /// `kind` must be a task-pause kind;
+    /// [`PauseKind::OperatorApproval`] returns
+    /// [`TaskEngineError::InvalidPauseKind`].
+    ///
+    /// The transition itself can be rejected: A2A only allows
+    /// `AuthRequired` / `InputRequired` from `Working`, so a task
+    /// still `Submitted` or already terminal cannot be paused.
+    ///
+    /// The two writes are not one transaction (separate state keys —
+    /// the same trade-off the bus's park flow accepts). The approval
+    /// row is written first; if the task mutation then fails — the
+    /// task is missing, the transition is illegal, or CAS contention
+    /// is exhausted — the orphan approval row and its index entry are
+    /// deleted best-effort before the error propagates, so a failed
+    /// pause leaves no dangling "waiting on human" record.
+    ///
+    /// `ttl` defaults to [`DEFAULT_APPROVAL_TTL_MS`] and is clamped to
+    /// [`MAX_APPROVAL_TTL_MS`].
+    pub async fn pause_for_human(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        kind: PauseKind,
+        reason: Option<String>,
+        ttl: Option<Duration>,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        // A task-pause kind only — `OperatorApproval` gates a bus
+        // tool-call, not a Task, and maps to no task state.
+        let Some(target_state) = kind.task_state() else {
+            return Err(TaskEngineError::InvalidPauseKind(kind));
+        };
+
+        // Resolve + clamp the TTL, then build and validate the row.
+        let ttl_ms = ttl
+            .map_or(DEFAULT_APPROVAL_TTL_MS, |d| {
+                u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+            })
+            .min(MAX_APPROVAL_TTL_MS);
+        let now = Utc::now();
+        let expires_at =
+            now + chrono::Duration::milliseconds(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
+        let approval_id = uuid::Uuid::now_v7().to_string();
+        let approval = BusApproval::new_task_pause(
+            &approval_id,
+            &scope.namespace,
+            &scope.tenant,
+            kind,
+            task_id,
+            reason,
+            now,
+            expires_at,
+        );
+        approval.validate()?;
+
+        // Write 1: persist the approval row. `check_and_set` so a
+        // (vanishingly unlikely) UUIDv7 collision fails loudly rather
+        // than clobbering an existing row.
+        let approval_key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::BusApproval,
+            &approval_id,
+        );
+        let raw = serde_json::to_string(&approval)?;
+        if !self.state.check_and_set(&approval_key, &raw, None).await? {
+            return Err(TaskEngineError::ApprovalConflict(approval_id.clone()));
+        }
+        // Pending-approvals index: lets `status=pending` listings scan
+        // a smaller keyspace. Best-effort — a failed index write only
+        // costs this row its place in pending-filtered listings, which
+        // an unfiltered list still recovers.
+        let index_key = StateKey::new(
+            scope.namespace.clone(),
+            scope.tenant.clone(),
+            KeyKind::PendingBusApprovals,
+            &approval_id,
+        );
+        if let Err(e) = self.state.set(&index_key, "", None).await {
+            warn!(
+                approval_id = %approval_id,
+                error = %e,
+                "failed to write pending-approvals index entry for task pause",
+            );
+        }
+
+        // Write 2: transition the Task and stamp the approval id —
+        // one CAS closure, so both land atomically on the task row.
+        let key = scope.task_key(task_id);
+        let stamp_id = approval_id.clone();
+        let mutated = self
+            .cas_mutate(&key, task_id, "pause", move |task: &mut Task| {
+                task.transition_to(target_state, None)?;
+                task.set_pending_approval(stamp_id.clone());
+                Ok(())
+            })
+            .await;
+
+        match mutated {
+            Ok(task) => {
+                debug!(
+                    task_id = %task_id,
+                    approval_id = %approval_id,
+                    kind = kind.as_str(),
+                    "task paused for human",
+                );
+                Ok((task, approval))
+            }
+            Err(e) => {
+                // The task didn't move — drop the orphan approval row
+                // and its index entry so a failed pause leaves no
+                // dangling row behind.
+                if let Err(del) = self.state.delete(&approval_key).await {
+                    warn!(
+                        approval_id = %approval_id,
+                        error = %del,
+                        "failed to delete orphan approval row after task pause failed",
+                    );
+                }
+                let _ = self.state.delete(&index_key).await;
+                Err(e)
+            }
+        }
+    }
+
     /// Direct artifact upsert (e.g. from a non-streaming producer).
     /// `apply_artifact_update` is the preferred entry; this is a
     /// convenience for callers that aren't producing wire events.
@@ -708,6 +857,14 @@ pub enum TaskEngineError {
         "reference graph for task '{task_id}' exceeds the {MAX_REFERENCE_GRAPH_NODES}-node budget"
     )]
     ReferenceGraphTooLarge { task_id: String },
+    #[error(
+        "pause kind {0:?} is not a task-pause kind — pause_for_human needs UserAuth or UserInput"
+    )]
+    InvalidPauseKind(PauseKind),
+    #[error("approval row for the pause is invalid: {0}")]
+    Approval(#[from] BusApprovalValidationError),
+    #[error("generated approval id '{0}' collided with an existing row")]
+    ApprovalConflict(String),
 }
 
 // `PartialEq` for testing assertions. Stringly-compared so error
@@ -791,6 +948,18 @@ impl ScopedTaskEngine {
         event: TaskArtifactUpdateEvent,
     ) -> Result<Task, TaskEngineError> {
         self.engine.apply_artifact_update(&self.scope, event).await
+    }
+
+    pub async fn pause_for_human(
+        &self,
+        task_id: &str,
+        kind: PauseKind,
+        reason: Option<String>,
+        ttl: Option<Duration>,
+    ) -> Result<(Task, BusApproval), TaskEngineError> {
+        self.engine
+            .pause_for_human(&self.scope, task_id, kind, reason, ttl)
+            .await
     }
 }
 
@@ -1604,5 +1773,155 @@ mod tests {
             .await
             .unwrap();
         assert!(e.audit.is_none());
+    }
+
+    // --- Human-in-the-loop pauses (BusApproval generalization) ---
+
+    use acteon_core::BusApprovalStatus;
+
+    /// Read the persisted approval row for an id straight from the
+    /// engine's state store.
+    async fn stored_approval(e: &TaskEngine, approval_id: &str) -> Option<BusApproval> {
+        let key = StateKey::new("agents", "demo", KeyKind::BusApproval, approval_id);
+        let raw = e.state.get(&key).await.unwrap()?;
+        Some(serde_json::from_str(&raw).unwrap())
+    }
+
+    /// Count the persisted `BusApproval` rows in the test scope.
+    async fn approval_row_count(e: &TaskEngine) -> usize {
+        e.state
+            .scan_keys("agents", "demo", KeyKind::BusApproval, None)
+            .await
+            .unwrap()
+            .len()
+    }
+
+    /// Move a freshly-created task to `Working` — the only state A2A
+    /// allows `InputRequired` / `AuthRequired` to be entered from.
+    async fn working_task(e: &TaskEngine, id: &str) {
+        e.create_task(sample_task(id)).await.unwrap();
+        e.transition_task(&scope(), id, TaskState::Working, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_input_required() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (task, approval) = e
+            .pause_for_human(
+                &scope(),
+                "t1",
+                PauseKind::UserInput,
+                Some("clarify the date".into()),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(task.status.state, TaskState::InputRequired);
+        assert_eq!(
+            task.pending_approval_id.as_deref(),
+            Some(approval.approval_id.as_str()),
+        );
+        assert_eq!(approval.kind, PauseKind::UserInput);
+        assert_eq!(approval.task_id.as_deref(), Some("t1"));
+        assert_eq!(approval.status, BusApprovalStatus::Pending);
+        assert!(approval.envelope.is_none());
+        assert!(approval.conversation_id.is_none());
+        // The row is persisted, not just returned, and is well-formed.
+        let stored = stored_approval(&e, &approval.approval_id).await.unwrap();
+        assert_eq!(stored.kind, PauseKind::UserInput);
+        stored.validate().unwrap();
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_auth_required() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (task, approval) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserAuth, None, None)
+            .await
+            .unwrap();
+        assert_eq!(task.status.state, TaskState::AuthRequired);
+        assert_eq!(approval.kind, PauseKind::UserAuth);
+        assert_eq!(approval.task_id.as_deref(), Some("t1"));
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_writes_pending_index() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let (_, approval) = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap();
+        let idx = StateKey::new(
+            "agents",
+            "demo",
+            KeyKind::PendingBusApprovals,
+            &approval.approval_id,
+        );
+        assert!(e.state.get(&idx).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_rejects_operator_kind() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let err = e
+            .pause_for_human(&scope(), "t1", PauseKind::OperatorApproval, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TaskEngineError::InvalidPauseKind(_)));
+        // Rejected before any write: the task is untouched and no
+        // approval row exists.
+        let t = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(t.status.state, TaskState::Working);
+        assert!(t.pending_approval_id.is_none());
+        assert_eq!(approval_row_count(&e).await, 0);
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_missing_task_leaves_no_orphan() {
+        let e = engine();
+        let err = e
+            .pause_for_human(&scope(), "ghost", PauseKind::UserInput, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TaskEngineError::NotFound(_)));
+        // The approval row written before the failed task mutation
+        // was cleaned up.
+        assert_eq!(approval_row_count(&e).await, 0);
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_illegal_transition_leaves_no_orphan() {
+        // `Submitted` cannot go straight to `InputRequired`; the pause
+        // must fail and clean up the approval row it pre-wrote.
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let err = e
+            .pause_for_human(&scope(), "t1", PauseKind::UserInput, None, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+        let t = e.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(t.status.state, TaskState::Submitted);
+        assert!(t.pending_approval_id.is_none());
+        assert_eq!(approval_row_count(&e).await, 0);
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_via_scoped_engine() {
+        let e = engine();
+        working_task(&e, "t1").await;
+        let scoped = ScopedTaskEngine::new(e, scope());
+        let (task, approval) = scoped
+            .pause_for_human("t1", PauseKind::UserAuth, None, None)
+            .await
+            .unwrap();
+        assert_eq!(task.status.state, TaskState::AuthRequired);
+        assert_eq!(approval.kind, PauseKind::UserAuth);
     }
 }

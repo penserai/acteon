@@ -31,7 +31,7 @@ use tracing::{Level, info};
 
 use acteon_bus::{BusMessage, MemoryBackend, ScanFrom};
 use acteon_core::{
-    BusApproval, BusApprovalEnvelope, BusApprovalStatus, Conversation, ToolCall, Topic,
+    BusApproval, BusApprovalEnvelope, BusApprovalStatus, Conversation, PauseKind, ToolCall, Topic,
 };
 use acteon_state::{KeyKind, StateKey, StateStore};
 use acteon_state_memory::MemoryStateStore;
@@ -184,9 +184,11 @@ async fn park_tool_call(
         approval_id: approval_id.clone(),
         namespace: conv.namespace.clone(),
         tenant: conv.tenant.clone(),
-        conversation_id: conv.conversation_id.clone(),
+        kind: PauseKind::OperatorApproval,
+        conversation_id: Some(conv.conversation_id.clone()),
         reason: reason.map(str::to_string),
-        envelope: BusApprovalEnvelope::ToolCall(call),
+        envelope: Some(BusApprovalEnvelope::ToolCall(call)),
+        task_id: None,
         status: BusApprovalStatus::Pending,
         created_at: now,
         expires_at: now + chrono::Duration::hours(1),
