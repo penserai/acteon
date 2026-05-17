@@ -1,6 +1,53 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// The kind of event an [`AuditRecord`] describes.
+///
+/// The audit pipeline was originally action-centric — every record was
+/// a dispatched action's lifecycle. A2A Task transitions reuse the same
+/// [`AuditRecord`] schema (and therefore the same hash-chain and
+/// compliance machinery) rather than a parallel table; this enum is the
+/// taxonomy that distinguishes them.
+///
+/// There is deliberately no dedicated `event_kind` column on
+/// [`AuditRecord`]: the discriminator rides in the existing
+/// `action_type` field via [`AuditEventKind::as_action_type`], so no
+/// cross-backend schema migration is needed. Audit queries filter A2A
+/// task events with `action_type = "a2a.task.transition"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum AuditEventKind {
+    /// A dispatched action's lifecycle — the original audit use case.
+    /// Real action records carry the action's own type (`send_email`,
+    /// …) in `action_type`, so this variant's discriminator string is
+    /// only a fallback label.
+    #[default]
+    ActionDispatch,
+    /// An A2A Task lifecycle event recorded by the gateway Task Engine
+    /// (creation, state transition, history append, artifact update,
+    /// stale-task reap, …).
+    A2aTaskTransition,
+}
+
+impl AuditEventKind {
+    /// The `action_type` discriminator string stamped on records of
+    /// this kind. For [`AuditEventKind::A2aTaskTransition`] this is the
+    /// stable value audit queries filter on.
+    #[must_use]
+    pub fn as_action_type(self) -> &'static str {
+        match self {
+            Self::ActionDispatch => "action_dispatch",
+            Self::A2aTaskTransition => "a2a.task.transition",
+        }
+    }
+}
+
+/// The `provider` value stamped on A2A Task audit records. Action
+/// records carry a real provider; Task transitions are not provider
+/// dispatches, so they share this synthetic marker.
+pub const A2A_AUDIT_PROVIDER: &str = "a2a";
+
 /// A single audit record capturing the full lifecycle of a dispatched action.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]

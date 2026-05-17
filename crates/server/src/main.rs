@@ -1711,6 +1711,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bg_builder = bg_builder.payload_encryptor(Arc::clone(enc));
         }
 
+        // Give the stale-task reaper the gateway's compliance-decorated
+        // audit store so reaped A2A tasks land on the same hash chain
+        // as action records.
+        if let Some(audit) = gateway.read().await.audit_store() {
+            bg_builder = bg_builder.audit(audit);
+        }
+
         if config.background.enable_template_sync {
             bg_builder = bg_builder.gateway(Arc::clone(&gateway));
         }
