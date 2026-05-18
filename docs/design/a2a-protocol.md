@@ -107,7 +107,7 @@ The Core-First posture imports A2A's complexity into Acteon's substrate. Each ri
 - [x] Unit tests for state transitions, validation, serde round-trips, and the defensive validations above.
 
 ### Phase 2: Gateway Integration (`crates/gateway`) — ~6 days
-- [ ] **Protocol Codecs:** Implement encoders/decoders for A2A JSON-RPC 2.0 and the REST binding (spec §11). Wire `A2A-Version` header negotiation with `VersionNotSupportedError`.
+- [x] **Protocol Codecs:** `crates/server/src/api/a2a.rs` — A2A JSON-RPC 2.0 (`POST /a2a/{namespace}/{tenant}`) and the REST binding (`v1/message:send`, `v1/tasks/{id}`, `v1/tasks/{id}/cancel`) share one set of method implementations (`message/send`, `tasks/get`, `tasks/cancel`) over the Task Engine. `A2A-Version` header negotiation rejects unsupported versions. Streaming methods (`message/stream`, `tasks/resubscribe`) are deferred to the Phase 3 SSE bridge; push-notification config to Phase 4.
 - [x] **Task Engine (2.1):** `task_engine.rs` — lifecycle manager with CRUD + transitions + history append + artifact upsert + heartbeat, persisted via the `State` backend (`KeyKind::A2aTask`). CAS-retry mirrors the bus's optimistic-locking pattern.
 - [x] **Idempotency (2.1):** A2A `messageId` deduplication via `KeyKind::A2aMessageDedup` markers, bounded by a 24h TTL.
 - [x] **Engine-side hardening (graph + streaming):**

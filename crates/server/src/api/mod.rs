@@ -1,3 +1,4 @@
+pub mod a2a;
 pub mod analytics;
 pub mod approvals;
 pub mod audit;
@@ -149,6 +150,20 @@ pub fn router(state: AppState) -> Router {
         // Dispatch
         .route("/v1/dispatch", post(dispatch::dispatch))
         .route("/v1/dispatch/batch", post(dispatch::dispatch_batch))
+        // A2A protocol — JSON-RPC 2.0 + REST binding
+        .route("/a2a/{namespace}/{tenant}", post(a2a::a2a_rpc))
+        .route(
+            "/a2a/{namespace}/{tenant}/v1/message:send",
+            post(a2a::a2a_rest_message_send),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
+            get(a2a::a2a_rest_task_get),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/cancel",
+            post(a2a::a2a_rest_task_cancel),
+        )
         // Rules management
         .route("/v1/rules", get(rules::list_rules))
         .route("/v1/rules/coverage", get(rules::rule_coverage))
