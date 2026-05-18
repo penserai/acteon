@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::time::interval;
 use tracing::{debug, error, info};
 
+use acteon_audit::store::AuditStore;
 use acteon_core::{EventGroup, StateMachineConfig};
 use acteon_state::StateStore;
 
@@ -244,6 +245,9 @@ pub struct BackgroundProcessor {
     pub(crate) retention_policies: HashMap<String, acteon_core::RetentionPolicy>,
     /// Optional gateway reference for template sync.
     pub(crate) gateway: Option<Arc<tokio::sync::RwLock<crate::gateway::Gateway>>>,
+    /// Optional audit sink. When set, the stale-task reaper records an
+    /// A2A task-transition audit entry for every task it reaps.
+    pub(crate) audit: Option<Arc<dyn AuditStore>>,
 }
 
 impl BackgroundProcessor {
@@ -272,7 +276,16 @@ impl BackgroundProcessor {
             payload_encryptor: None,
             retention_policies: HashMap::new(),
             gateway: None,
+            audit: None,
         }
+    }
+
+    /// Set the audit sink so the stale-task reaper records an audit
+    /// entry for every task it transitions to `Failed`.
+    #[must_use]
+    pub fn with_audit_store(mut self, audit: Arc<dyn AuditStore>) -> Self {
+        self.audit = Some(audit);
+        self
     }
 
     /// Set the retention policies for the reaper.
@@ -518,6 +531,7 @@ pub struct BackgroundProcessorBuilder {
     payload_encryptor: Option<Arc<PayloadEncryptor>>,
     metrics: Option<Arc<GatewayMetrics>>,
     gateway: Option<Arc<tokio::sync::RwLock<crate::gateway::Gateway>>>,
+    audit: Option<Arc<dyn AuditStore>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -538,7 +552,18 @@ impl BackgroundProcessorBuilder {
             payload_encryptor: None,
             metrics: None,
             gateway: None,
+            audit: None,
         }
+    }
+
+    /// Set the audit store. When set, the stale-task reaper records an
+    /// A2A task-transition audit entry for every task it reaps. Pass
+    /// the gateway's compliance-decorated store so reaped-task records
+    /// share the hash chain with action records.
+    #[must_use]
+    pub fn audit(mut self, audit: Arc<dyn AuditStore>) -> Self {
+        self.audit = Some(audit);
+        self
     }
 
     /// Set the metrics for the background processor.
@@ -681,6 +706,10 @@ impl BackgroundProcessorBuilder {
 
         if let Some(gw) = self.gateway {
             processor = processor.with_gateway(gw);
+        }
+
+        if let Some(audit) = self.audit {
+            processor = processor.with_audit_store(audit);
         }
 
         Ok((processor, shutdown_tx))

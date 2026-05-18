@@ -5756,6 +5756,17 @@ impl Gateway {
         &self.state
     }
 
+    /// Get a clone of the audit store, if one is configured.
+    ///
+    /// This is the compliance-decorated store (hash chain / immutable
+    /// audit applied as configured), so callers that record their own
+    /// audit entries — e.g. the [`BackgroundProcessor`](crate::background::BackgroundProcessor)
+    /// stale-task reaper — share the same tamper-evident chain as
+    /// action records.
+    pub fn audit_store(&self) -> Option<Arc<dyn AuditStore>> {
+        self.audit.clone()
+    }
+
     /// Get a clone of the broadcast sender for SSE event streaming.
     ///
     /// Callers can use `subscribe()` on the returned sender to create

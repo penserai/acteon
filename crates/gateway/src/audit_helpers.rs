@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 
-use acteon_audit::AuditRecord;
-use acteon_core::{Action, ActionOutcome, Caller};
+use acteon_audit::{A2A_AUDIT_PROVIDER, AuditEventKind, AuditRecord};
+use acteon_core::{Action, ActionOutcome, Caller, Task, TaskState};
 use acteon_rules::RuleVerdict;
 
 /// Extract the matched rule name from a `RuleVerdict`, if any.
@@ -102,6 +102,75 @@ pub(crate) fn enrich_audit_metadata(action: &Action) -> serde_json::Value {
         }
     }
     meta
+}
+
+/// Build an [`AuditRecord`] for an A2A Task lifecycle event.
+///
+/// A2A Task transitions are not rule-evaluated provider dispatches, so
+/// the action-centric fields are mapped onto the Task domain: `action_id`
+/// is the task id, `provider` is the synthetic [`A2A_AUDIT_PROVIDER`]
+/// marker, `action_type` is the [`AuditEventKind::A2aTaskTransition`]
+/// discriminator, and the lifecycle detail (operation, from/to state)
+/// lands in `outcome_details`. Routing it through [`AuditRecord`] means
+/// every Task event inherits the same hash-chain and compliance
+/// machinery as action records.
+///
+/// `caller` is `None` for system-driven events (e.g. the stale-task
+/// reaper); externally-driven transitions stamp the caller once the
+/// protocol-codec layer threads identity into the engine.
+pub(crate) fn build_task_audit_record(
+    task: &Task,
+    operation: &str,
+    from_state: Option<TaskState>,
+    occurred_at: chrono::DateTime<chrono::Utc>,
+    caller: Option<&Caller>,
+) -> AuditRecord {
+    let to_state = task.status.state;
+    let outcome_details = serde_json::json!({
+        "operation": operation,
+        "from_state": from_state.map(TaskState::as_str),
+        "to_state": to_state.as_str(),
+        "context_id": task.context_id,
+        "pending_approval_id": task.pending_approval_id,
+        "history_len": task.history.len(),
+        "artifact_count": task.artifacts.len(),
+    });
+
+    AuditRecord {
+        id: uuid::Uuid::now_v7().to_string(),
+        action_id: task.id.clone(),
+        chain_id: None,
+        namespace: task.namespace.clone(),
+        tenant: task.tenant.clone(),
+        provider: A2A_AUDIT_PROVIDER.to_owned(),
+        action_type: AuditEventKind::A2aTaskTransition
+            .as_action_type()
+            .to_owned(),
+        // Task transitions are not gated by rule evaluation; record a
+        // stable neutral verdict so analytics that group on it don't
+        // see an empty bucket.
+        verdict: "allow".to_owned(),
+        matched_rule: None,
+        outcome: to_state.as_str().to_owned(),
+        action_payload: None,
+        verdict_details: serde_json::json!({}),
+        outcome_details,
+        metadata: serde_json::to_value(&task.metadata).unwrap_or_default(),
+        dispatched_at: occurred_at,
+        completed_at: occurred_at,
+        duration_ms: 0,
+        expires_at: None,
+        caller_id: caller.map_or_else(String::new, |c| c.id.clone()),
+        auth_method: caller.map_or_else(String::new, |c| c.auth_method.clone()),
+        record_hash: None,
+        previous_hash: None,
+        sequence_number: None,
+        attachment_metadata: Vec::new(),
+        signature: None,
+        signer_id: None,
+        kid: None,
+        canonical_hash: None,
+    }
 }
 
 /// Build an `AuditRecord` from the dispatch context.

@@ -30,11 +30,21 @@
 //! wider than [`MAX_REFERENCE_GRAPH_NODES`] distinct nodes is
 //! rejected. See the `check_reference_graph` method.
 //!
+//! ## Audit integration
+//!
+//! When an [`AuditStore`] is attached via [`TaskEngine::with_audit`],
+//! every successful mutation emits an
+//! [`AuditEventKind::A2aTaskTransition`](acteon_audit::AuditEventKind)
+//! record — creation, state transition, history append, artifact
+//! update, heartbeat, pending-approval stamp, and stale-task reap.
+//! The record rides the same [`AuditStore`] the gateway uses, so it
+//! inherits hash-chaining and compliance decorators automatically. An
+//! audit write failure is logged but never fails the mutation: the
+//! task transition is the source of truth, the audit record a
+//! best-effort projection of it.
+//!
 //! ## Out of scope for this PR (deferred to follow-ups)
 //!
-//! - **Audit integration**: stamping `AuditEventKind::A2aTaskTransition`
-//!   on every transition. Deferred to a follow-up that touches
-//!   `acteon-audit` simultaneously.
 //! - **`BusApproval.kind: PauseKind`** generalization. The engine
 //!   exposes [`TaskEngine::set_pending_approval`] today; the
 //!   semantic projection into the new `BusApproval` kind lands when
@@ -50,11 +60,14 @@ use chrono::{DateTime, Utc};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use tracing::{debug, warn};
 
+use acteon_audit::store::AuditStore;
 use acteon_core::{
     Artifact, MAX_REFERENCE_DEPTH, Task, TaskArtifactUpdateEvent, TaskMessage, TaskRole, TaskState,
     TaskValidationError,
 };
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
+
+use crate::audit_helpers::build_task_audit_record;
 
 /// Max number of CAS retry attempts before declaring contention
 /// exhausted. Matches the bus's
@@ -140,6 +153,11 @@ impl TaskScope {
 #[derive(Clone)]
 pub struct TaskEngine {
     state: Arc<dyn StateStore>,
+    /// Optional audit sink. When set, every successful mutation emits
+    /// an A2A task-transition record. `None` disables audit emission
+    /// entirely (the engine still functions; transitions just aren't
+    /// projected into the audit trail).
+    audit: Option<Arc<dyn AuditStore>>,
 }
 
 impl std::fmt::Debug for TaskEngine {
@@ -149,10 +167,40 @@ impl std::fmt::Debug for TaskEngine {
 }
 
 impl TaskEngine {
-    /// Construct a Task Engine backed by the given state store.
+    /// Construct a Task Engine backed by the given state store, with
+    /// audit emission disabled. Use [`TaskEngine::with_audit`] to
+    /// attach an audit sink.
     #[must_use]
     pub fn new(state: Arc<dyn StateStore>) -> Self {
-        Self { state }
+        Self { state, audit: None }
+    }
+
+    /// Attach an audit sink so every successful mutation emits an A2A
+    /// task-transition record. Pass the same (compliance-decorated)
+    /// [`AuditStore`] the gateway uses so task records share the
+    /// hash chain with action records.
+    #[must_use]
+    pub fn with_audit(mut self, audit: Arc<dyn AuditStore>) -> Self {
+        self.audit = Some(audit);
+        self
+    }
+
+    /// Emit a best-effort A2A task-transition audit record. A write
+    /// failure is logged, never propagated — the persisted task is the
+    /// source of truth and must not be rolled back over an audit miss.
+    async fn emit_audit(&self, task: &Task, operation: &str, from_state: Option<TaskState>) {
+        let Some(audit) = &self.audit else {
+            return;
+        };
+        let record = build_task_audit_record(task, operation, from_state, Utc::now(), None);
+        if let Err(e) = audit.record(record).await {
+            warn!(
+                error = %e,
+                task_id = %task.id,
+                operation,
+                "A2A task audit write failed"
+            );
+        }
     }
 
     /// Create a new task. Fails with [`TaskEngineError::AlreadyExists`]
@@ -176,6 +224,7 @@ impl TaskEngine {
             return Err(TaskEngineError::AlreadyExists(task.id));
         }
         debug!(task_id = %task.id, namespace = %task.namespace, tenant = %task.tenant, "task created");
+        self.emit_audit(&task, "create", None).await;
         Ok(task)
     }
 
@@ -223,7 +272,7 @@ impl TaskEngine {
         message: Option<TaskMessage>,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+        self.cas_mutate(&key, task_id, "transition", move |task: &mut Task| {
             task.transition_to(next, message.clone())?;
             Ok(())
         })
@@ -271,6 +320,7 @@ impl TaskEngine {
                 // the scan — no longer a zombie, leave it untouched.
                 return Ok(None);
             }
+            let from_state = task.status.state;
             task.transition_to(TaskState::Failed, Some(reason.clone()))?;
             let payload = serde_json::to_string(&task)?;
             match self
@@ -280,6 +330,7 @@ impl TaskEngine {
             {
                 CasResult::Ok => {
                     debug!(task_id = %task_id, "stale task reaped to Failed");
+                    self.emit_audit(&task, "reap", Some(from_state)).await;
                     return Ok(Some(task));
                 }
                 CasResult::Conflict { .. } => {
@@ -346,7 +397,7 @@ impl TaskEngine {
                 .ok_or_else(|| TaskEngineError::NotFound(task_id.to_string()));
         }
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+        self.cas_mutate(&key, task_id, "append_history", move |task: &mut Task| {
             task.append_history(message.clone())?;
             Ok(())
         })
@@ -375,7 +426,7 @@ impl TaskEngine {
         // borrows it for error reporting while the closure moves the
         // whole `event` in to apply it.
         let task_id = event.task_id.clone();
-        self.cas_mutate(&key, &task_id, move |task: &mut Task| {
+        self.cas_mutate(&key, &task_id, "artifact_update", move |task: &mut Task| {
             task.apply_artifact_event(&event)?;
             Ok(())
         })
@@ -391,7 +442,7 @@ impl TaskEngine {
         task_id: &str,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, |task: &mut Task| {
+        self.cas_mutate(&key, task_id, "progress", |task: &mut Task| {
             task.record_progress();
             Ok(())
         })
@@ -409,7 +460,7 @@ impl TaskEngine {
         approval_id: String,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+        self.cas_mutate(&key, task_id, "pending_approval", move |task: &mut Task| {
             task.set_pending_approval(approval_id.clone());
             Ok(())
         })
@@ -427,7 +478,7 @@ impl TaskEngine {
         append: bool,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, move |task: &mut Task| {
+        self.cas_mutate(&key, task_id, "artifact_upsert", move |task: &mut Task| {
             task.upsert_artifact(artifact.clone(), append)?;
             Ok(())
         })
@@ -436,10 +487,15 @@ impl TaskEngine {
 
     /// Atomically read-modify-write the task at `key` via CAS retry.
     /// The closure is reapplied on each retry against a fresh copy.
+    ///
+    /// On commit, emits an audit record tagged with `operation` and
+    /// the task's pre-mutation state, so the audit trail captures the
+    /// `from → to` transition rather than only the resulting state.
     async fn cas_mutate<F>(
         &self,
         key: &StateKey,
         task_id: &str,
+        operation: &str,
         mut mutate: F,
     ) -> Result<Task, TaskEngineError>
     where
@@ -450,6 +506,7 @@ impl TaskEngine {
                 return Err(TaskEngineError::NotFound(task_id.to_string()));
             };
             let mut task: Task = serde_json::from_str(&raw)?;
+            let from_state = task.status.state;
             mutate(&mut task)?;
             let payload = serde_json::to_string(&task)?;
             match self
@@ -459,6 +516,7 @@ impl TaskEngine {
             {
                 CasResult::Ok => {
                     debug!(task_id = %task_id, state = ?task.status.state, "task mutated");
+                    self.emit_audit(&task, operation, Some(from_state)).await;
                     return Ok(task);
                 }
                 CasResult::Conflict { .. } => {
@@ -1351,5 +1409,200 @@ mod tests {
             .await
             .unwrap();
         assert!(reaped.is_none());
+    }
+
+    // --- Audit integration ---
+
+    use acteon_audit::store::AuditStore;
+    use acteon_audit::{AuditError, AuditPage, AuditQuery, AuditRecord};
+
+    /// In-memory `AuditStore` that just collects every record it is
+    /// handed, so a test can assert on what the engine emitted.
+    #[derive(Default)]
+    struct CollectingAudit {
+        records: parking_lot::Mutex<Vec<AuditRecord>>,
+    }
+
+    impl CollectingAudit {
+        fn records(&self) -> Vec<AuditRecord> {
+            self.records.lock().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AuditStore for CollectingAudit {
+        async fn record(&self, entry: AuditRecord) -> Result<(), AuditError> {
+            self.records.lock().push(entry);
+            Ok(())
+        }
+        async fn get_by_action_id(&self, _: &str) -> Result<Option<AuditRecord>, AuditError> {
+            Ok(None)
+        }
+        async fn get_by_id(&self, _: &str) -> Result<Option<AuditRecord>, AuditError> {
+            Ok(None)
+        }
+        async fn query(&self, _: &AuditQuery) -> Result<AuditPage, AuditError> {
+            Ok(AuditPage {
+                records: Vec::new(),
+                total: Some(0),
+                limit: 0,
+                offset: 0,
+                next_cursor: None,
+            })
+        }
+        async fn cleanup_expired(&self) -> Result<u64, AuditError> {
+            Ok(0)
+        }
+    }
+
+    /// An audit store that always fails to record — proves an audit
+    /// write failure never fails the underlying mutation.
+    struct FailingAudit;
+
+    #[async_trait::async_trait]
+    impl AuditStore for FailingAudit {
+        async fn record(&self, _: AuditRecord) -> Result<(), AuditError> {
+            Err(AuditError::Storage("synthetic audit failure".into()))
+        }
+        async fn get_by_action_id(&self, _: &str) -> Result<Option<AuditRecord>, AuditError> {
+            Ok(None)
+        }
+        async fn get_by_id(&self, _: &str) -> Result<Option<AuditRecord>, AuditError> {
+            Ok(None)
+        }
+        async fn query(&self, _: &AuditQuery) -> Result<AuditPage, AuditError> {
+            Ok(AuditPage {
+                records: Vec::new(),
+                total: Some(0),
+                limit: 0,
+                offset: 0,
+                next_cursor: None,
+            })
+        }
+        async fn cleanup_expired(&self) -> Result<u64, AuditError> {
+            Ok(0)
+        }
+    }
+
+    fn audited_engine() -> (TaskEngine, Arc<CollectingAudit>) {
+        let audit = Arc::new(CollectingAudit::default());
+        let engine = TaskEngine::new(Arc::new(MemoryStateStore::new()))
+            .with_audit(Arc::clone(&audit) as Arc<dyn AuditStore>);
+        (engine, audit)
+    }
+
+    #[tokio::test]
+    async fn audit_records_task_creation() {
+        let (e, audit) = audited_engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        let records = audit.records();
+        assert_eq!(records.len(), 1);
+        let r = &records[0];
+        assert_eq!(r.action_id, "t1");
+        assert_eq!(r.provider, "a2a");
+        assert_eq!(r.action_type, "a2a.task.transition");
+        assert_eq!(r.outcome, "submitted");
+        assert_eq!(r.outcome_details["operation"], "create");
+        // A fresh task has no prior state.
+        assert!(r.outcome_details["from_state"].is_null());
+        assert_eq!(r.outcome_details["to_state"], "submitted");
+    }
+
+    #[tokio::test]
+    async fn audit_records_state_transition_with_from_state() {
+        let (e, audit) = audited_engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let records = audit.records();
+        assert_eq!(records.len(), 2);
+        let t = &records[1];
+        assert_eq!(t.outcome_details["operation"], "transition");
+        assert_eq!(t.outcome_details["from_state"], "submitted");
+        assert_eq!(t.outcome_details["to_state"], "working");
+        assert_eq!(t.outcome, "working");
+    }
+
+    #[tokio::test]
+    async fn audit_records_history_and_artifact_operations() {
+        let (e, audit) = audited_engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.append_history(&scope(), "t1", TaskMessage::text("m1", Role::User, "hi"))
+            .await
+            .unwrap();
+        e.apply_artifact_update(
+            &scope(),
+            TaskArtifactUpdateEvent::single_shot(
+                "t1",
+                Artifact::new("art-1", vec![Part::text("out")]),
+            ),
+        )
+        .await
+        .unwrap();
+        let ops: Vec<String> = audit
+            .records()
+            .iter()
+            .map(|r| r.outcome_details["operation"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ops, vec!["create", "append_history", "artifact_update"]);
+    }
+
+    #[tokio::test]
+    async fn audit_records_stale_task_reap() {
+        let (e, audit) = audited_engine();
+        e.create_task(aged_task("zombie", 3600, 60_000))
+            .await
+            .unwrap();
+        e.fail_if_stale(&scope(), "zombie", Utc::now())
+            .await
+            .unwrap()
+            .expect("task should be reaped");
+        let records = audit.records();
+        // create + reap.
+        assert_eq!(records.len(), 2);
+        let reap = &records[1];
+        assert_eq!(reap.outcome_details["operation"], "reap");
+        assert_eq!(reap.outcome_details["from_state"], "submitted");
+        assert_eq!(reap.outcome, "failed");
+    }
+
+    #[tokio::test]
+    async fn audit_skips_rejected_transition() {
+        // An illegal transition errors before the CAS commit, so no
+        // audit record is emitted for it.
+        let (e, audit) = audited_engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        // Submitted -> Completed is illegal.
+        e.transition_task(&scope(), "t1", TaskState::Completed, None)
+            .await
+            .unwrap_err();
+        // Only the creation record exists.
+        assert_eq!(audit.records().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn audit_failure_does_not_fail_mutation() {
+        // An audit write failure is logged, never propagated — the
+        // task transition still succeeds and persists.
+        let engine = TaskEngine::new(Arc::new(MemoryStateStore::new()))
+            .with_audit(Arc::new(FailingAudit) as Arc<dyn AuditStore>);
+        engine.create_task(sample_task("t1")).await.unwrap();
+        let updated = engine
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        assert_eq!(updated.status.state, TaskState::Working);
+    }
+
+    #[tokio::test]
+    async fn engine_without_audit_emits_nothing() {
+        // The bare engine (no audit sink) still mutates correctly.
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        assert!(e.audit.is_none());
     }
 }

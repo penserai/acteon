@@ -116,7 +116,7 @@ The Core-First posture imports A2A's complexity into Acteon's substrate. Each ri
   - [x] **Artifact-stream gatekeeper (2.4):** `Task::apply_artifact_event` enforces, across deliveries, no updates after a `lastChunk`, strictly in-order `chunkIndex`, and `totalChunks` completeness on close. Per-artifact stream state lives on the Task and commits under the engine CAS.
 - [ ] **BusApproval generalization (single source of truth for HITL):** Extend `BusApproval` with `kind: PauseKind` (`OperatorApproval` / `UserAuth` / `UserInput`); Task Engine stamps the approval row's id onto `Task.pending_approval_id`.
 - [ ] **The Bridge:** Native mapping between `Task` state and `Chain` status — A2A `Submitted/Working` ↔ chain step progress; `InputRequired/AuthRequired` ↔ generalized `BusApproval`; terminal states ↔ chain `StepResult`.
-- [ ] **Audit Integration:** Stamp every A2A operation with `AuditEventKind::A2aTaskTransition`.
+- [x] **Audit Integration:** Stamp every A2A operation with `AuditEventKind::A2aTaskTransition`. The `TaskEngine` takes an optional `AuditStore` (`with_audit`); every successful mutation — create, transition, history append, artifact update, heartbeat, pending-approval stamp, stale-task reap — emits an `AuditRecord` carrying the `a2a.task.transition` discriminator and the `from → to` states. Records ride the gateway's compliance-decorated store, so they inherit hash-chaining automatically.
 
 ### Phase 3: Discovery & SSE Bridge — ~4 days
 - [ ] **Global Discovery Registry:** Implement a dynamic `DiscoveryService` that aggregates native `AgentCard` data for `/.well-known/agent.json`. Public and unauthenticated per spec.

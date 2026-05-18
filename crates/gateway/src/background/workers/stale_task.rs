@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use tracing::{info, warn};
 
@@ -25,7 +27,10 @@ impl BackgroundProcessor {
         &self,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now();
-        let engine = TaskEngine::new(self.state.clone());
+        let mut engine = TaskEngine::new(self.state.clone());
+        if let Some(audit) = &self.audit {
+            engine = engine.with_audit(Arc::clone(audit));
+        }
         let entries = self.state.scan_keys_by_kind(KeyKind::A2aTask).await?;
 
         let mut reaped = 0u64;

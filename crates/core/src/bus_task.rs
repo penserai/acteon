@@ -172,6 +172,24 @@ impl TaskState {
         !self.is_terminal()
     }
 
+    /// Stable `snake_case` wire value for this state. Matches the
+    /// serde representation; useful for audit records and metrics
+    /// labels that need a `&'static str` without a serialization
+    /// round-trip.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TaskState::Submitted => "submitted",
+            TaskState::Working => "working",
+            TaskState::Completed => "completed",
+            TaskState::Failed => "failed",
+            TaskState::Canceled => "canceled",
+            TaskState::InputRequired => "input_required",
+            TaskState::AuthRequired => "auth_required",
+            TaskState::Rejected => "rejected",
+        }
+    }
+
     /// True iff a transition from `self` to `next` is allowed.
     ///
     /// Allowed graph:
