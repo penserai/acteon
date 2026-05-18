@@ -7,17 +7,20 @@
 //!
 //! - **JSON-RPC 2.0** — `POST /a2a/{namespace}/{tenant}`. A2A's
 //!   primary transport: one endpoint, the method named in the
-//!   envelope.
+//!   envelope. Single requests, batch arrays, and notifications
+//!   (requests with no `id` — processed, but not answered) are all
+//!   handled per the JSON-RPC 2.0 spec.
 //! - **REST binding** (A2A spec §11) — `POST .../v1/message:send`,
-//!   `GET .../v1/tasks/{id}`, `POST .../v1/tasks/{id}/cancel`.
-//!   (§11 spells cancel `:cancel`; axum's router cannot match a path
-//!   parameter with a literal suffix in one segment, so the routable
-//!   form is `/cancel`. The JSON-RPC method name stays spec-exact.)
+//!   `GET .../v1/tasks/{id}`, `POST .../v1/tasks/{id}:cancel`. The
+//!   final path segment is matched whole and the `:cancel` verb
+//!   suffix split off in-handler, since axum's router matches whole
+//!   segments — the URL stays spec-exact.
 //!
 //! Both transports are scoped by a `{namespace}/{tenant}` path prefix.
 //! A2A itself has no notion of Acteon's multi-tenancy, so the tenant
 //! is carried in the URL and authorized against the caller's grants,
-//! mirroring the bus API.
+//! mirroring the bus API. Request bodies are explicitly capped at
+//! [`A2A_MAX_BODY_BYTES`].
 //!
 //! Methods here are the non-streaming core: `message/send`,
 //! `tasks/get`, `tasks/cancel`. Streaming (`message/stream`,
@@ -51,25 +54,16 @@ pub const A2A_PROTOCOL_VERSION: &str = "1.0";
 /// case-insensitively by `HeaderMap`.
 const A2A_VERSION_HEADER: &str = "a2a-version";
 
+/// Hard cap on an A2A request body. A JSON-RPC `message/send` carries
+/// a [`TaskMessage`]; legitimate ones are well under this. The cap is
+/// applied as an explicit per-route `DefaultBodyLimit` rather than
+/// relying on axum's process-wide default, so it stays correct even
+/// if that default is later tuned.
+pub const A2A_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
 // ---------------------------------------------------------------------
 // JSON-RPC 2.0 envelope
 // ---------------------------------------------------------------------
-
-/// Inbound JSON-RPC 2.0 request envelope. Parsed leniently — a bad
-/// `jsonrpc` value or missing field becomes a structured JSON-RPC
-/// error rather than an HTTP-level rejection.
-#[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
-    #[serde(default)]
-    jsonrpc: String,
-    method: String,
-    #[serde(default)]
-    params: Value,
-    /// JSON-RPC `id` — string, number, or null. Echoed verbatim on
-    /// the response.
-    #[serde(default)]
-    id: Value,
-}
 
 /// Outbound JSON-RPC 2.0 response. Exactly one of `result` / `error`
 /// is populated.
@@ -182,18 +176,30 @@ impl From<TaskEngineError> for A2aError {
             TaskEngineError::AlreadyExists(id) => {
                 A2aError::invalid_params(format!("task '{id}' already exists"))
             }
+            // Client-attributable failures — the message names a task
+            // id, a transition, or a structural limit the caller
+            // controls, none of it server-internal.
             TaskEngineError::Validation(v) => A2aError::invalid_params(v.to_string()),
             TaskEngineError::ReferenceCycle { .. }
             | TaskEngineError::ReferenceDepthExceeded { .. }
             | TaskEngineError::ReferenceGraphTooLarge { .. }
-            | TaskEngineError::Approval(_)
-            | TaskEngineError::InvalidPauseKind(_) => A2aError::invalid_params(e.to_string()),
-            // CAS contention, serde, state-store, approval-id collision —
-            // transient or server-side; surface as internal.
-            TaskEngineError::CasExhausted(_)
-            | TaskEngineError::ApprovalConflict(_)
-            | TaskEngineError::State(_)
-            | TaskEngineError::Serde(_) => A2aError::internal(e.to_string()),
+            | TaskEngineError::InvalidPauseKind(_)
+            | TaskEngineError::Approval(_) => A2aError::invalid_params(e.to_string()),
+            // Contention is transient and server-side; the retry count
+            // is not useful to the caller.
+            TaskEngineError::CasExhausted(_) => {
+                A2aError::internal("the task is under contention; retry the request")
+            }
+            // State-store and serde failures can carry backend
+            // internals — connection strings, SQL, file paths. Log the
+            // detail server-side and return an opaque message so it
+            // never reaches the caller (CWE-209).
+            other @ (TaskEngineError::State(_)
+            | TaskEngineError::Serde(_)
+            | TaskEngineError::ApprovalConflict(_)) => {
+                tracing::error!(error = %other, "a2a task-engine internal error");
+                A2aError::internal("internal error")
+            }
         }
     }
 }
@@ -365,35 +371,167 @@ fn version_header() -> [(&'static str, &'static str); 1] {
 // JSON-RPC transport
 // ---------------------------------------------------------------------
 
-/// Encode a JSON-RPC success response (HTTP 200 — JSON-RPC carries
-/// failures in the body, not the status line).
-fn rpc_ok(id: Value, result: Value) -> Response {
+fn success_response(id: Value, result: Value) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        result: Some(result),
+        error: None,
+        id,
+    }
+}
+
+fn error_response(id: Value, err: &A2aError) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: "2.0",
+        result: None,
+        error: Some(err.to_jsonrpc()),
+        id,
+    }
+}
+
+/// A single JSON-RPC error response (HTTP 200, `id` null) — used for
+/// failures detected before any request object is dispatched: version
+/// mismatch, an unparseable body, an empty batch.
+fn rpc_single_error(err: &A2aError) -> Response {
     (
         StatusCode::OK,
         version_header(),
-        Json(JsonRpcResponse {
-            jsonrpc: "2.0",
-            result: Some(result),
-            error: None,
-            id,
-        }),
+        Json(error_response(Value::Null, err)),
     )
         .into_response()
 }
 
-/// Encode a JSON-RPC error response (also HTTP 200).
-fn rpc_err(id: Value, err: &A2aError) -> Response {
-    (
-        StatusCode::OK,
-        version_header(),
-        Json(JsonRpcResponse {
-            jsonrpc: "2.0",
-            result: None,
-            error: Some(err.to_jsonrpc()),
-            id,
-        }),
-    )
-        .into_response()
+/// The outcome of a JSON-RPC payload: a single response, a batch of
+/// responses, or nothing at all (the payload was a notification, or a
+/// batch of only notifications — the spec says answer with no body).
+#[derive(Debug)]
+enum RpcReply {
+    Single(JsonRpcResponse),
+    Batch(Vec<JsonRpcResponse>),
+    Empty,
+}
+
+/// Route an A2A method to its implementation.
+async fn dispatch_method(
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    method: &str,
+    params: Value,
+) -> Result<Task, A2aError> {
+    match method {
+        "message/send" => {
+            let p = serde_json::from_value::<MessageSendParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            method_message_send(engine, scope, p).await
+        }
+        "tasks/get" => {
+            let p = serde_json::from_value::<TaskQueryParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            method_tasks_get(engine, scope, p).await
+        }
+        "tasks/cancel" => {
+            let p = serde_json::from_value::<TaskIdParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            method_tasks_cancel(engine, scope, p).await
+        }
+        other => Err(A2aError::new(
+            METHOD_NOT_FOUND,
+            format!("method '{other}' is not supported"),
+        )),
+    }
+}
+
+/// Dispatch one JSON-RPC request object.
+///
+/// Returns `None` when the object is a **notification** — a request
+/// with no `id` member: per JSON-RPC 2.0 it is still processed, but
+/// the server MUST NOT answer it (even if it is otherwise malformed).
+/// Returns `Some(response)` for an id-bearing request.
+async fn dispatch_rpc_value(
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    value: &Value,
+) -> Option<JsonRpcResponse> {
+    let Some(obj) = value.as_object() else {
+        // Not an object — cannot be a notification (no `id` to be
+        // absent *from*), so it is an Invalid Request.
+        return Some(error_response(
+            Value::Null,
+            &A2aError::new(INVALID_REQUEST, "request must be a JSON object"),
+        ));
+    };
+    // Presence of the `id` member — not its value — decides
+    // notification vs. request. A present `"id": null` is a request.
+    let is_notification = !obj.contains_key("id");
+    let id = obj.get("id").cloned().unwrap_or(Value::Null);
+
+    if obj.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return (!is_notification).then(|| {
+            error_response(
+                id.clone(),
+                &A2aError::new(INVALID_REQUEST, "the jsonrpc field must be \"2.0\""),
+            )
+        });
+    }
+    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+        return (!is_notification).then(|| {
+            error_response(
+                id.clone(),
+                &A2aError::new(INVALID_REQUEST, "missing or non-string method"),
+            )
+        });
+    };
+    let params = obj.get("params").cloned().unwrap_or(Value::Null);
+    let outcome = dispatch_method(engine, scope, method, params).await;
+    if is_notification {
+        // Processed; a notification is answered with nothing.
+        return None;
+    }
+    Some(match outcome {
+        Ok(task) => match serde_json::to_value(&task) {
+            Ok(v) => success_response(id, v),
+            Err(_) => error_response(id, &A2aError::internal("internal error")),
+        },
+        Err(e) => error_response(id, &e),
+    })
+}
+
+/// Process a parsed JSON-RPC payload — a single request object or a
+/// batch array.
+async fn handle_rpc_payload(engine: &TaskEngine, scope: &TaskScope, parsed: Value) -> RpcReply {
+    match parsed {
+        Value::Array(items) => {
+            if items.is_empty() {
+                return RpcReply::Single(error_response(
+                    Value::Null,
+                    &A2aError::new(INVALID_REQUEST, "a batch request must not be empty"),
+                ));
+            }
+            let mut responses = Vec::new();
+            for item in &items {
+                if let Some(resp) = dispatch_rpc_value(engine, scope, item).await {
+                    responses.push(resp);
+                }
+            }
+            // A batch of only notifications is answered with no body.
+            if responses.is_empty() {
+                RpcReply::Empty
+            } else {
+                RpcReply::Batch(responses)
+            }
+        }
+        obj @ Value::Object(_) => match dispatch_rpc_value(engine, scope, &obj).await {
+            Some(resp) => RpcReply::Single(resp),
+            None => RpcReply::Empty,
+        },
+        _ => RpcReply::Single(error_response(
+            Value::Null,
+            &A2aError::new(
+                INVALID_REQUEST,
+                "request must be a JSON object or a batch array",
+            ),
+        )),
+    }
 }
 
 /// `POST /a2a/{namespace}/{tenant}` — the A2A JSON-RPC 2.0 endpoint.
@@ -409,54 +547,24 @@ pub async fn a2a_rpc(
     body: String,
 ) -> Response {
     if let Err(e) = negotiate_version(&headers) {
-        return rpc_err(Value::Null, &e);
+        return rpc_single_error(&e);
     }
-    if let Err((status, body)) = authorize(&identity, &namespace, &tenant) {
-        return (status, version_header(), body).into_response();
+    if let Err((status, errbody)) = authorize(&identity, &namespace, &tenant) {
+        return (status, version_header(), errbody).into_response();
     }
-    let req: JsonRpcRequest = match serde_json::from_str(&body) {
-        Ok(r) => r,
+    let parsed: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
         Err(e) => {
-            return rpc_err(
-                Value::Null,
-                &A2aError::new(PARSE_ERROR, format!("parse error: {e}")),
-            );
+            return rpc_single_error(&A2aError::new(PARSE_ERROR, format!("parse error: {e}")));
         }
     };
-    if req.jsonrpc != "2.0" {
-        return rpc_err(
-            req.id,
-            &A2aError::new(INVALID_REQUEST, "jsonrpc field must be \"2.0\""),
-        );
-    }
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
-
-    let outcome: Result<Task, A2aError> = match req.method.as_str() {
-        "message/send" => match serde_json::from_value::<MessageSendParams>(req.params) {
-            Ok(p) => method_message_send(&engine, &scope, p).await,
-            Err(e) => Err(A2aError::invalid_params(format!("invalid params: {e}"))),
-        },
-        "tasks/get" => match serde_json::from_value::<TaskQueryParams>(req.params) {
-            Ok(p) => method_tasks_get(&engine, &scope, p).await,
-            Err(e) => Err(A2aError::invalid_params(format!("invalid params: {e}"))),
-        },
-        "tasks/cancel" => match serde_json::from_value::<TaskIdParams>(req.params) {
-            Ok(p) => method_tasks_cancel(&engine, &scope, p).await,
-            Err(e) => Err(A2aError::invalid_params(format!("invalid params: {e}"))),
-        },
-        other => Err(A2aError::new(
-            METHOD_NOT_FOUND,
-            format!("method '{other}' is not supported"),
-        )),
-    };
-
-    match outcome {
-        Ok(task) => match serde_json::to_value(&task) {
-            Ok(v) => rpc_ok(req.id, v),
-            Err(e) => rpc_err(req.id, &A2aError::internal(format!("encode error: {e}"))),
-        },
-        Err(e) => rpc_err(req.id, &e),
+    match handle_rpc_payload(&engine, &scope, parsed).await {
+        RpcReply::Single(resp) => (StatusCode::OK, version_header(), Json(resp)).into_response(),
+        RpcReply::Batch(resps) => (StatusCode::OK, version_header(), Json(resps)).into_response(),
+        // Notification(s) only — JSON-RPC 2.0 says answer with no body.
+        RpcReply::Empty => (StatusCode::NO_CONTENT, version_header()).into_response(),
     }
 }
 
@@ -498,6 +606,14 @@ pub async fn a2a_rest_message_send(
     rest_result(method_message_send(&engine, &scope, params).await)
 }
 
+/// Query string for the REST `tasks/get`.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskGetQuery {
+    #[serde(default)]
+    history_length: Option<usize>,
+}
+
 /// `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}` — REST binding for
 /// `tasks/get`. `?historyLength=N` trims the returned history.
 pub async fn a2a_rest_task_get(
@@ -522,20 +638,19 @@ pub async fn a2a_rest_task_get(
     rest_result(method_tasks_get(&engine, &scope, params).await)
 }
 
-/// Query string for the REST `tasks/get`.
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskGetQuery {
-    #[serde(default)]
-    history_length: Option<usize>,
-}
-
-/// `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}/cancel` — REST
+/// `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel` — REST
 /// binding for `tasks/cancel`.
+///
+/// A2A spec §11 spells this `tasks/{id}:cancel`. axum's router matches
+/// whole path segments, so the final segment — `{id}:cancel` — is
+/// captured intact and the `:cancel` verb suffix is split off here.
+/// Task ids are `[A-Za-z0-9._-]` (no `:`), so the split is
+/// unambiguous; a final segment that is not `<id>:cancel` is a
+/// method-not-found.
 pub async fn a2a_rest_task_cancel(
     State(state): State<AppState>,
     axum::Extension(identity): axum::Extension<CallerIdentity>,
-    Path((namespace, tenant, id)): Path<(String, String, String)>,
+    Path((namespace, tenant, id_and_verb)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Response {
     if let Err(e) = negotiate_version(&headers) {
@@ -544,9 +659,24 @@ pub async fn a2a_rest_task_cancel(
     if let Err((status, body)) = authorize(&identity, &namespace, &tenant) {
         return (status, version_header(), body).into_response();
     }
+    let Some(task_id) = id_and_verb.strip_suffix(":cancel") else {
+        return rest_result(Err(A2aError::new(
+            METHOD_NOT_FOUND,
+            format!("unknown task action '{id_and_verb}' — expected '<id>:cancel'"),
+        )));
+    };
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
-    rest_result(method_tasks_cancel(&engine, &scope, TaskIdParams { id }).await)
+    rest_result(
+        method_tasks_cancel(
+            &engine,
+            &scope,
+            TaskIdParams {
+                id: task_id.to_string(),
+            },
+        )
+        .await,
+    )
 }
 
 #[cfg(test)]
@@ -569,6 +699,20 @@ mod tests {
         TaskMessage::text(uuid::Uuid::now_v7().to_string(), TaskRole::User, text)
     }
 
+    /// Mint a task via `message/send` and return its id.
+    async fn seed_task(e: &TaskEngine) -> String {
+        method_message_send(
+            e,
+            &scope(),
+            MessageSendParams {
+                message: user_message("seed"),
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
     #[tokio::test]
     async fn message_send_mints_a_new_task() {
         let e = engine();
@@ -578,10 +722,8 @@ mod tests {
         let task = method_message_send(&e, &scope(), params).await.unwrap();
         assert_eq!(task.status.state, TaskState::Submitted);
         assert_eq!(task.history.len(), 1);
-        // The minted task is persisted and fetchable.
         let got = e.get_task(&scope(), &task.id).await.unwrap().unwrap();
         assert_eq!(got.id, task.id);
-        // The message was bound to the new task.
         assert_eq!(got.history[0].task_id.as_deref(), Some(task.id.as_str()));
     }
 
@@ -658,7 +800,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(trimmed.history.len(), 1);
-        // Trimming keeps the most recent message.
         assert_eq!(trimmed.history[0].parts[0].text.as_deref(), Some("two"));
     }
 
@@ -682,58 +823,23 @@ mod tests {
     #[tokio::test]
     async fn tasks_cancel_cancels_a_live_task() {
         let e = engine();
-        let task = method_message_send(
-            &e,
-            &scope(),
-            MessageSendParams {
-                message: user_message("work"),
-            },
-        )
-        .await
-        .unwrap();
-        let canceled = method_tasks_cancel(
-            &e,
-            &scope(),
-            TaskIdParams {
-                id: task.id.clone(),
-            },
-        )
-        .await
-        .unwrap();
+        let id = seed_task(&e).await;
+        let canceled = method_tasks_cancel(&e, &scope(), TaskIdParams { id: id.clone() })
+            .await
+            .unwrap();
         assert_eq!(canceled.status.state, TaskState::Canceled);
     }
 
     #[tokio::test]
     async fn tasks_cancel_on_terminal_is_not_cancelable() {
         let e = engine();
-        let task = method_message_send(
-            &e,
-            &scope(),
-            MessageSendParams {
-                message: user_message("work"),
-            },
-        )
-        .await
-        .unwrap();
-        method_tasks_cancel(
-            &e,
-            &scope(),
-            TaskIdParams {
-                id: task.id.clone(),
-            },
-        )
-        .await
-        .unwrap();
-        // Second cancel — already Canceled (terminal).
-        let err = method_tasks_cancel(
-            &e,
-            &scope(),
-            TaskIdParams {
-                id: task.id.clone(),
-            },
-        )
-        .await
-        .unwrap_err();
+        let id = seed_task(&e).await;
+        method_tasks_cancel(&e, &scope(), TaskIdParams { id: id.clone() })
+            .await
+            .unwrap();
+        let err = method_tasks_cancel(&e, &scope(), TaskIdParams { id: id.clone() })
+            .await
+            .unwrap_err();
         assert_eq!(err.code, TASK_NOT_CANCELABLE);
         assert_eq!(err.http_status(), StatusCode::CONFLICT);
     }
@@ -741,12 +847,9 @@ mod tests {
     #[test]
     fn version_negotiation() {
         let mut h = HeaderMap::new();
-        // Absent header — accepted.
-        assert!(negotiate_version(&h).is_ok());
-        // Matching version — accepted.
+        assert!(negotiate_version(&h).is_ok()); // absent — accepted
         h.insert(A2A_VERSION_HEADER, A2A_PROTOCOL_VERSION.parse().unwrap());
-        assert!(negotiate_version(&h).is_ok());
-        // Mismatched version — rejected.
+        assert!(negotiate_version(&h).is_ok()); // matching — accepted
         h.insert(A2A_VERSION_HEADER, "0.1".parse().unwrap());
         let err = negotiate_version(&h).unwrap_err();
         assert_eq!(err.code, VERSION_NOT_SUPPORTED);
@@ -757,21 +860,124 @@ mod tests {
     fn engine_error_maps_to_a2a_error() {
         let nf: A2aError = TaskEngineError::NotFound("t1".into()).into();
         assert_eq!(nf.code, TASK_NOT_FOUND);
+
         let cas: A2aError = TaskEngineError::CasExhausted("t1".into()).into();
         assert_eq!(cas.code, INTERNAL_ERROR);
+
+        // A serde failure must not leak its detail to the caller
+        // (CWE-209) — the message is opaque.
+        let serde_err = serde_json::from_str::<i32>("not-a-number").unwrap_err();
+        let masked: A2aError = TaskEngineError::Serde(serde_err).into();
+        assert_eq!(masked.code, INTERNAL_ERROR);
+        assert_eq!(masked.message, "internal error");
     }
 
-    #[test]
-    fn jsonrpc_request_parses() {
-        let raw = json!({
+    #[tokio::test]
+    async fn rpc_notification_gets_no_response() {
+        let e = engine();
+        let id = seed_task(&e).await;
+        // A request object with no `id` member is a notification.
+        let payload = json!({
             "jsonrpc": "2.0",
             "method": "tasks/get",
-            "params": {"id": "t1"},
-            "id": 7
+            "params": { "id": id },
         });
-        let req: JsonRpcRequest = serde_json::from_value(raw).unwrap();
-        assert_eq!(req.method, "tasks/get");
-        assert_eq!(req.jsonrpc, "2.0");
-        assert_eq!(req.id, json!(7));
+        let reply = handle_rpc_payload(&e, &scope(), payload).await;
+        assert!(matches!(reply, RpcReply::Empty));
+    }
+
+    #[tokio::test]
+    async fn rpc_request_with_null_id_still_answered() {
+        let e = engine();
+        let id = seed_task(&e).await;
+        // A present `"id": null` is a request, not a notification.
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "tasks/get",
+            "params": { "id": id },
+            "id": null,
+        });
+        match handle_rpc_payload(&e, &scope(), payload).await {
+            RpcReply::Single(resp) => {
+                assert_eq!(resp.id, Value::Null);
+                assert!(resp.result.is_some());
+            }
+            other => panic!("expected a single response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_batch_mixes_requests_and_notifications() {
+        let e = engine();
+        let id = seed_task(&e).await;
+        let payload = json!([
+            { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id}, "id": 1 },
+            // notification — no `id`, processed but not answered
+            { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id} },
+            { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id}, "id": 2 },
+        ]);
+        match handle_rpc_payload(&e, &scope(), payload).await {
+            RpcReply::Batch(resps) => {
+                // Two id-bearing requests answered; the notification omitted.
+                assert_eq!(resps.len(), 2);
+                assert_eq!(resps[0].id, json!(1));
+                assert_eq!(resps[1].id, json!(2));
+            }
+            other => panic!("expected a batch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_batch_of_only_notifications_is_empty() {
+        let e = engine();
+        let id = seed_task(&e).await;
+        let payload = json!([
+            { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id} },
+            { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id} },
+        ]);
+        assert!(matches!(
+            handle_rpc_payload(&e, &scope(), payload).await,
+            RpcReply::Empty
+        ));
+    }
+
+    #[tokio::test]
+    async fn rpc_empty_batch_is_invalid_request() {
+        let e = engine();
+        match handle_rpc_payload(&e, &scope(), json!([])).await {
+            RpcReply::Single(resp) => {
+                assert_eq!(resp.error.unwrap().code, INVALID_REQUEST);
+            }
+            other => panic!("expected a single error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_unknown_method_is_method_not_found() {
+        let e = engine();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "tasks/teleport",
+            "params": {},
+            "id": 9,
+        });
+        match handle_rpc_payload(&e, &scope(), payload).await {
+            RpcReply::Single(resp) => {
+                assert_eq!(resp.error.unwrap().code, METHOD_NOT_FOUND);
+            }
+            other => panic!("expected a single error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_bad_jsonrpc_version_is_invalid_request() {
+        let e = engine();
+        let payload = json!({ "jsonrpc": "1.0", "method": "tasks/get", "id": 1 });
+        match handle_rpc_payload(&e, &scope(), payload).await {
+            RpcReply::Single(resp) => {
+                assert_eq!(resp.error.unwrap().code, INVALID_REQUEST);
+            }
+            other => panic!("expected a single error, got {other:?}"),
+        }
     }
 }

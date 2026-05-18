@@ -37,6 +37,7 @@ pub mod verify;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use tokio::sync::RwLock;
@@ -150,19 +151,21 @@ pub fn router(state: AppState) -> Router {
         // Dispatch
         .route("/v1/dispatch", post(dispatch::dispatch))
         .route("/v1/dispatch/batch", post(dispatch::dispatch_batch))
-        // A2A protocol — JSON-RPC 2.0 + REST binding
-        .route("/a2a/{namespace}/{tenant}", post(a2a::a2a_rpc))
+        // A2A protocol — JSON-RPC 2.0 + REST binding (Phase 2). The
+        // body-reading routes carry an explicit A2A body-size cap; the
+        // REST cancel verb shares the `tasks/{id}` path (its `{id}`
+        // segment carries the `:cancel` suffix, split in-handler).
+        .route(
+            "/a2a/{namespace}/{tenant}",
+            post(a2a::a2a_rpc).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
+        )
         .route(
             "/a2a/{namespace}/{tenant}/v1/message:send",
-            post(a2a::a2a_rest_message_send),
+            post(a2a::a2a_rest_message_send).layer(DefaultBodyLimit::max(a2a::A2A_MAX_BODY_BYTES)),
         )
         .route(
             "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
-            get(a2a::a2a_rest_task_get),
-        )
-        .route(
-            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/cancel",
-            post(a2a::a2a_rest_task_cancel),
+            get(a2a::a2a_rest_task_get).post(a2a::a2a_rest_task_cancel),
         )
         // Rules management
         .route("/v1/rules", get(rules::list_rules))
