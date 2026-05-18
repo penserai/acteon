@@ -291,7 +291,7 @@ use acteon_core::{
         super::bus::ListBusApprovalsResponse,
         super::bus::BusApprovalDecisionRequest, super::bus::BusApprovalDecisionResponse,
         acteon_core::BusApproval, acteon_core::BusApprovalEnvelope,
-        acteon_core::BusApprovalStatus,
+        acteon_core::BusApprovalStatus, acteon_core::PauseKind,
     ))
 )]
 pub struct ApiDoc;

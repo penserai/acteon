@@ -105,6 +105,12 @@ pub async fn run_once(
         if approval.status != BusApprovalStatus::Approving {
             continue;
         }
+        if approval.kind != acteon_core::PauseKind::OperatorApproval {
+            // The reconciler retries a parked-envelope produce; a
+            // task-pause approval has no envelope to produce. Such a
+            // row should never reach `Approving`, but skip defensively.
+            continue;
+        }
         // Don't race the approve handler. Use `decided_at` (set when
         // the row entered Approving) as the age anchor.
         let decided_at = if let Some(t) = approval.decided_at {
@@ -130,7 +136,7 @@ pub async fn run_once(
                 retried += 1;
                 info!(
                     approval_id = %approval.approval_id,
-                    call_id = %approval.envelope.correlation_token(),
+                    call_id = %approval.correlation_token(),
                     "reconciler approved stuck row",
                 );
             }
@@ -162,16 +168,26 @@ async fn retry_approving_row(
     backend: &SharedBackend,
     approval: &BusApproval,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // The scan loop already filtered to operator-approval rows, so a
+    // parked conversation + tool-call envelope is guaranteed present;
+    // a missing field means a corrupt row.
+    let (Some(conversation_id), Some(BusApprovalEnvelope::ToolCall(envelope))) =
+        (&approval.conversation_id, &approval.envelope)
+    else {
+        return Err(format!(
+            "approval {} is not an operator-approval row with a parked tool-call envelope",
+            approval.approval_id
+        )
+        .into());
+    };
+    let envelope = envelope.clone();
     let conv = load_conversation(
         state,
         &approval.namespace,
         &approval.tenant,
-        &approval.conversation_id,
+        conversation_id,
     )
     .await?;
-    let envelope = match &approval.envelope {
-        BusApprovalEnvelope::ToolCall(c) => c.clone(),
-    };
     let payload: Value = serde_json::to_value(&envelope)?;
     let events_topic = conv.effective_events_topic();
     let mut msg = BusMessage::new(events_topic.clone(), payload).with_key(&conv.conversation_id);
@@ -306,9 +322,11 @@ mod tests {
             approval_id: "appr-1".into(),
             namespace: "agents".into(),
             tenant: "demo".into(),
-            conversation_id: conv.conversation_id.clone(),
+            kind: acteon_core::PauseKind::OperatorApproval,
+            conversation_id: Some(conv.conversation_id.clone()),
             reason: Some("paid action".into()),
-            envelope: BusApprovalEnvelope::ToolCall(call),
+            envelope: Some(BusApprovalEnvelope::ToolCall(call)),
+            task_id: None,
             status: BusApprovalStatus::Approving,
             created_at: now - chrono::Duration::seconds(120),
             expires_at: now + chrono::Duration::hours(1),

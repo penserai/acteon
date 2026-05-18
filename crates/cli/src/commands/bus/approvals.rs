@@ -111,9 +111,11 @@ pub async fn run(
                     for a in &resp.approvals {
                         info!(
                             approval_id = %a.approval_id,
+                            kind = ?a.kind,
                             status = ?a.status,
                             envelope_kind = %a.envelope_kind,
-                            conversation_id = %a.conversation_id,
+                            conversation_id = a.conversation_id.as_deref().unwrap_or("-"),
+                            task_id = a.task_id.as_deref().unwrap_or("-"),
                             expires_at = %a.expires_at,
                             "Approval"
                         );

@@ -143,6 +143,7 @@ class BusTest {
         String body = """
             {
               "approval_id": "appr-1", "namespace": "n", "tenant": "te",
+              "kind": "operator_approval",
               "conversation_id": "c1", "correlation_token": "call-1",
               "envelope_kind": "tool_call", "status": "pending",
               "created_at": "2026-01-01T00:00:00Z",
@@ -152,6 +153,9 @@ class BusTest {
             """;
         Bus.BusApprovalView v = MAPPER.readValue(body, Bus.BusApprovalView.class);
         assertEquals("pending", v.status());
+        assertEquals("operator_approval", v.kind());
+        assertEquals("c1", v.conversationId());
+        assertNull(v.taskId());
         assertNull(v.decidedBy());
         assertNull(v.producedOffset());
     }

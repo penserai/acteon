@@ -213,6 +213,7 @@ func TestBusLagResponseRoundTrip(t *testing.T) {
 func TestBusApprovalViewRoundTrip(t *testing.T) {
 	body := []byte(`{
 		"approval_id": "appr-1", "namespace": "n", "tenant": "te",
+		"kind": "operator_approval",
 		"conversation_id": "c1", "correlation_token": "call-1",
 		"envelope_kind": "tool_call", "status": "pending",
 		"created_at": "2026-01-01T00:00:00Z",
@@ -225,6 +226,15 @@ func TestBusApprovalViewRoundTrip(t *testing.T) {
 	}
 	if v.Status != "pending" {
 		t.Errorf("status mismatch: %s", v.Status)
+	}
+	if v.Kind != "operator_approval" {
+		t.Errorf("kind mismatch: %s", v.Kind)
+	}
+	if v.ConversationID == nil || *v.ConversationID != "c1" {
+		t.Errorf("conversation_id mismatch: %v", v.ConversationID)
+	}
+	if v.TaskID != nil {
+		t.Errorf("task_id should be nil for an operator approval; got %v", v.TaskID)
 	}
 	if v.DecidedBy != nil {
 		t.Errorf("decided_by should be nil before decision; got %v", v.DecidedBy)

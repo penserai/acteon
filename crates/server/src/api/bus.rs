@@ -7247,7 +7247,16 @@ pub struct BusApprovalView {
     pub approval_id: String,
     pub namespace: String,
     pub tenant: String,
-    pub conversation_id: String,
+    /// Why this approval exists — an operator gate on a bus tool-call
+    /// (`operator_approval`), or an A2A Task paused on the user
+    /// (`user_auth` / `user_input`).
+    pub kind: acteon_core::PauseKind,
+    /// Conversation the parked envelope targets. `None` for
+    /// task-pause approvals.
+    pub conversation_id: Option<String>,
+    /// The A2A Task this approval pauses. `None` for operator
+    /// approvals.
+    pub task_id: Option<String>,
     pub correlation_token: String,
     pub envelope_kind: String,
     pub status: acteon_core::BusApprovalStatus,
@@ -7270,14 +7279,18 @@ pub struct BusApprovalView {
 #[cfg(feature = "bus")]
 fn approval_to_view(a: &acteon_core::BusApproval) -> BusApprovalView {
     let envelope_kind = match &a.envelope {
-        acteon_core::BusApprovalEnvelope::ToolCall(_) => "tool_call".to_string(),
-    };
+        Some(acteon_core::BusApprovalEnvelope::ToolCall(_)) => "tool_call",
+        None => "task_pause",
+    }
+    .to_string();
     BusApprovalView {
         approval_id: a.approval_id.clone(),
         namespace: a.namespace.clone(),
         tenant: a.tenant.clone(),
+        kind: a.kind,
         conversation_id: a.conversation_id.clone(),
-        correlation_token: a.envelope.correlation_token().to_string(),
+        task_id: a.task_id.clone(),
+        correlation_token: a.correlation_token().to_string(),
         envelope_kind,
         status: a.status,
         reason: a.reason.clone(),
@@ -7289,7 +7302,9 @@ fn approval_to_view(a: &acteon_core::BusApproval) -> BusApprovalView {
         produced_partition: a.produced_partition,
         produced_offset: a.produced_offset,
         produced_at: a.produced_at,
-        envelope: serde_json::to_value(&a.envelope).unwrap_or(serde_json::Value::Null),
+        envelope: a.envelope.as_ref().map_or(serde_json::Value::Null, |e| {
+            serde_json::to_value(e).unwrap_or(serde_json::Value::Null)
+        }),
     }
 }
 
@@ -7457,9 +7472,11 @@ async fn park_tool_call_for_approval(
         approval_id: approval_id.clone(),
         namespace: namespace.to_string(),
         tenant: tenant.to_string(),
-        conversation_id: conv.conversation_id.clone(),
+        kind: acteon_core::PauseKind::OperatorApproval,
+        conversation_id: Some(conv.conversation_id.clone()),
         reason,
-        envelope: acteon_core::BusApprovalEnvelope::ToolCall(envelope.clone()),
+        envelope: Some(acteon_core::BusApprovalEnvelope::ToolCall(envelope.clone())),
+        task_id: None,
         status: acteon_core::BusApprovalStatus::Pending,
         created_at: now,
         expires_at,
@@ -7639,7 +7656,7 @@ pub async fn list_bus_approvals(
                 continue;
             }
             if let Some(c) = &params.conversation_id
-                && &a.conversation_id != c
+                && a.conversation_id.as_deref() != Some(c.as_str())
             {
                 continue;
             }
@@ -7799,6 +7816,22 @@ pub async fn approve_bus_approval(
             Ok(a) => a,
             Err(resp) => return resp,
         };
+        // The bus approve endpoint produces a parked envelope to
+        // Kafka — that only makes sense for an operator-approval row.
+        // A task-pause approval (UserAuth / UserInput) is resolved
+        // through the A2A Task API, not here.
+        if approval.kind != acteon_core::PauseKind::OperatorApproval {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "approval {approval_id} is a task pause ({}); resolve it via the A2A Task API, not the bus approve endpoint",
+                        approval.kind.as_str()
+                    ),
+                }),
+            )
+                .into_response();
+        }
         // Phase 10 atomic-HITL state machine. Three branches:
         //   - Pending: claim the row (Pending → Approving) with the
         //     operator's decision metadata, then produce.
@@ -7897,12 +7930,30 @@ pub async fn approve_bus_approval(
         }
         // Resolve the conversation that owns this approval — its
         // `effective_events_topic()` is what the produce targets.
+        // An operator-approval row carries a conversation + envelope
+        // (`BusApproval::validate` guarantees it for this kind, and
+        // the kind guard above already rejected task-pause rows).
+        // A missing field here means a corrupt row.
+        let (Some(parked_conversation_id), Some(parked_envelope)) = (
+            approval.conversation_id.as_deref(),
+            approval.envelope.as_ref(),
+        ) else {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!(
+                        "operator-approval row {approval_id} is missing its conversation_id or envelope"
+                    ),
+                }),
+            )
+                .into_response();
+        };
         let conv =
-            match load_conversation(&state, &namespace, &tenant, &approval.conversation_id).await {
+            match load_conversation(&state, &namespace, &tenant, parked_conversation_id).await {
                 Ok(c) => c,
                 Err(resp) => return resp,
             };
-        let envelope = match &approval.envelope {
+        let envelope = match parked_envelope {
             acteon_core::BusApprovalEnvelope::ToolCall(c) => c.clone(),
         };
         let payload = match serde_json::to_value(&envelope) {
@@ -8101,6 +8152,22 @@ pub async fn reject_bus_approval(
         );
         let updated =
             cas_update::<acteon_core::BusApproval, _>(&state, &key, "approval not found", |a| {
+                // The bus reject endpoint is for operator-approval
+                // rows; a task-pause approval is resolved through the
+                // A2A Task API.
+                if a.kind != acteon_core::PauseKind::OperatorApproval {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse {
+                            error: format!(
+                                "approval {} is a task pause ({}); resolve it via the A2A Task API",
+                                a.approval_id,
+                                a.kind.as_str()
+                            ),
+                        }),
+                    )
+                        .into_response());
+                }
                 // Only Pending rows can be rejected. Approving means
                 // the operator has already decided "approve" and the
                 // produce is in flight — rejecting at that point

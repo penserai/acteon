@@ -736,7 +736,9 @@ class BusApprovalView:
     approval_id: str
     namespace: str
     tenant: str
-    conversation_id: str
+    kind: str
+    conversation_id: Optional[str]
+    task_id: Optional[str]
     correlation_token: str
     envelope_kind: str
     status: str
@@ -757,7 +759,9 @@ class BusApprovalView:
             approval_id=d["approval_id"],
             namespace=d["namespace"],
             tenant=d["tenant"],
-            conversation_id=d["conversation_id"],
+            kind=d["kind"],
+            conversation_id=d.get("conversation_id"),
+            task_id=d.get("task_id"),
             correlation_token=d["correlation_token"],
             envelope_kind=d["envelope_kind"],
             status=d["status"],
