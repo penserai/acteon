@@ -3475,9 +3475,18 @@ impl Gateway {
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
         // A2A bridge: if this chain backs an A2A Task, project the
-        // chain's current status onto the task. Best-effort.
-        self.project_chain_to_task(namespace, tenant, chain_id)
-            .await;
+        // chain's current status onto the task. The chain row is
+        // authoritative — load the final state and project best-
+        // effort (a projection hiccup must not unwind the chain
+        // mutation that just succeeded).
+        if let Ok(Some(raw)) = self
+            .state
+            .get(&StateKey::new(namespace, tenant, KeyKind::Chain, chain_id))
+            .await
+            && let Ok(chain) = serde_json::from_str::<ChainState>(&raw)
+        {
+            self.project_chain_to_task(&chain).await;
+        }
 
         Ok(())
     }
@@ -5271,8 +5280,9 @@ impl Gateway {
         }
 
         // A2A bridge: project the cancel onto a linked task, if any.
-        self.project_chain_to_task(namespace, tenant, chain_id)
-            .await;
+        // `chain_state` is already the post-cancel in-memory state,
+        // so no re-read is needed here.
+        self.project_chain_to_task(&chain_state).await;
 
         Ok(chain_state)
     }
@@ -5787,33 +5797,22 @@ impl Gateway {
     /// failure but never propagated — the chain row is authoritative
     /// and a projection hiccup must not unwind the chain mutation
     /// that just succeeded.
-    async fn project_chain_to_task(&self, namespace: &str, tenant: &str, chain_id: &str) {
-        let key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
-        let chain: ChainState = match self.state.get(&key).await {
-            Ok(Some(raw)) => match serde_json::from_str(&raw) {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(chain_id = %chain_id, error = %e, "bridge: chain row not deserializable for projection");
-                    return;
-                }
-            },
-            Ok(None) => return,
-            Err(e) => {
-                warn!(chain_id = %chain_id, error = %e, "bridge: chain row load failed for projection");
-                return;
-            }
-        };
+    async fn project_chain_to_task(&self, chain: &ChainState) {
         if chain.task_id.is_none() {
             return;
         }
-        let mut engine = TaskEngine::new(self.state.clone());
-        if let Some(audit) = &self.audit {
-            engine = engine.with_audit(audit.clone());
-        }
-        if let Err(e) =
-            crate::task_chain_bridge::project_chain_to_linked_task(&engine, &chain).await
+        let engine = match &self.audit {
+            Some(audit) => TaskEngine::new(self.state.clone()).with_audit(audit.clone()),
+            None => TaskEngine::new(self.state.clone()),
+        };
+        if let Err(e) = crate::task_chain_bridge::project_chain_to_linked_task(&engine, chain).await
         {
-            warn!(chain_id = %chain.chain_id, task_id = ?chain.task_id, error = %e, "bridge: chain → task projection failed");
+            warn!(
+                chain_id = %chain.chain_id,
+                task_id = ?chain.task_id,
+                error = %e,
+                "bridge: chain → task projection failed",
+            );
         }
     }
 

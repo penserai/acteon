@@ -339,10 +339,23 @@ async fn method_tasks_cancel(
             return Err(A2aError::internal("internal error"));
         }
         drop(gw);
-        return engine
-            .get_task(scope, &params.id)
-            .await?
-            .ok_or_else(|| A2aError::task_not_found(&params.id));
+        // The chain IS canceled. The bridge hook attempted to project
+        // Cancelled onto the task, but it is best-effort and may have
+        // failed (CAS contention etc.). Ensure idempotently: try the
+        // transition; if it is already `Canceled` (hook fired) the
+        // engine surfaces `Validation(IllegalTransition)`, which we
+        // treat as success and re-fetch the canonical row to return.
+        return match engine
+            .transition_task(scope, &params.id, TaskState::Canceled, None)
+            .await
+        {
+            Ok(t) => Ok(t),
+            Err(TaskEngineError::Validation(_)) => engine
+                .get_task(scope, &params.id)
+                .await?
+                .ok_or_else(|| A2aError::task_not_found(&params.id)),
+            Err(e) => Err(e.into()),
+        };
     }
     Ok(engine
         .transition_task(scope, &params.id, TaskState::Canceled, None)

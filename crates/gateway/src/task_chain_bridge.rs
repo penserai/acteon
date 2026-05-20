@@ -20,10 +20,12 @@
 //! through the chain API.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use tracing::warn;
+use tokio::time::sleep;
+use tracing::error;
 
-use acteon_core::{ChainState, ChainStatus, TaskState};
+use acteon_core::{ChainState, ChainStatus, TaskMessage, TaskRole, TaskState};
 use acteon_state::{CasResult, KeyKind, StateError, StateKey, StateStore};
 
 use crate::task_engine::{MAX_CAS_RETRY_ATTEMPTS, TaskEngine, TaskEngineError, TaskScope};
@@ -81,12 +83,38 @@ pub async fn link_task_to_chain(
         .link_to_chain(scope, task_id, Some(chain_id.to_string()))
         .await?;
     if let Err(e) = set_chain_task_id(state, scope, chain_id, Some(task_id.to_string())).await {
-        if let Err(rb) = engine.link_to_chain(scope, task_id, None).await {
-            warn!(
+        // Roll back Task.chain_id so a failed link doesn't leave a
+        // dangling one-sided pointer (the bridge's chain→task
+        // projection keys off `ChainState.task_id`, so a dangling
+        // `Task.chain_id` is invisible to the auto-hook). Retry the
+        // rollback a few times with backoff for transient failures;
+        // if it permanently fails we log loudly so an operator can
+        // unlink manually, and the stale-task reaper eventually
+        // settles the task at its TTL as the ultimate backstop.
+        let mut rollback_err: Option<TaskEngineError> = None;
+        for attempt in 0u64..3 {
+            match engine.link_to_chain(scope, task_id, None).await {
+                Ok(_) => {
+                    rollback_err = None;
+                    break;
+                }
+                Err(rb) => {
+                    rollback_err = Some(rb);
+                    if attempt < 2 {
+                        sleep(Duration::from_millis(50 * (attempt + 1))).await;
+                    }
+                }
+            }
+        }
+        if let Some(rb) = rollback_err {
+            error!(
                 task_id = %task_id,
                 chain_id = %chain_id,
-                error = %rb,
-                "bridge: failed to roll back Task.chain_id after chain-side link failed",
+                rollback_error = %rb,
+                link_error = %e,
+                "bridge: link_task_to_chain rollback failed — Task.chain_id is dangling; \
+                 operator may want to manually unlink. The stale-task reaper will settle \
+                 the task at its TTL as a backstop.",
             );
         }
         return Err(e);
@@ -150,10 +178,45 @@ pub async fn project_chain_to_linked_task(
     if task.status.state == target || task.status.state.is_terminal() {
         return Ok(());
     }
+    // Attach a brief synthetic agent message for terminal projections
+    // so an A2A client sees *why* the task ended — "chain timed out",
+    // the operator's cancel reason, and so on — instead of an opaque
+    // Failed. In-flight projections (→ Working) carry no message;
+    // Working is the steady state and a message every advance would
+    // spam history.
+    let message = target
+        .is_terminal()
+        .then(|| build_projection_message(target, chain_state));
     engine
-        .transition_task(&scope, task_id, target, None)
+        .transition_task(&scope, task_id, target, message)
         .await?;
     Ok(())
+}
+
+/// Synthesize a brief agent message describing the chain transition
+/// that drove the projection. Surfaces the chain's cancel reason when
+/// present and distinguishes a timeout from a generic failure so an
+/// A2A client gets context the chain API would otherwise have to be
+/// queried for.
+fn build_projection_message(target: TaskState, chain: &ChainState) -> TaskMessage {
+    let text = match target {
+        TaskState::Canceled => match chain.cancel_reason.as_deref() {
+            Some(reason) => format!("Backing chain '{}' canceled: {reason}", chain.chain_id),
+            None => format!("Backing chain '{}' canceled", chain.chain_id),
+        },
+        TaskState::Failed if matches!(chain.status, ChainStatus::TimedOut) => {
+            format!("Backing chain '{}' timed out", chain.chain_id)
+        }
+        TaskState::Failed => format!("Backing chain '{}' failed", chain.chain_id),
+        TaskState::Completed => format!("Backing chain '{}' completed", chain.chain_id),
+        // Unreachable in practice — caller gates on `is_terminal` —
+        // but keep the match defensible.
+        _ => format!(
+            "Backing chain '{}' status: {:?}",
+            chain.chain_id, chain.status
+        ),
+    };
+    TaskMessage::text(uuid::Uuid::now_v7().to_string(), TaskRole::Agent, text)
 }
 
 #[cfg(test)]
@@ -380,5 +443,97 @@ mod tests {
         project_chain_to_linked_task(&engine, &chain).await.unwrap();
         let task = engine.get_task(&scope(), "t1").await.unwrap().unwrap();
         assert_eq!(task.status.state, TaskState::Canceled);
+    }
+
+    /// Set up a Working task linked to a chain with the given status
+    /// and an optional cancel reason, then project. Returns the
+    /// post-projection task.
+    async fn project_with_status_and_reason(
+        status: ChainStatus,
+        cancel_reason: Option<&str>,
+    ) -> acteon_core::Task {
+        let state = store();
+        let engine = engine(&state);
+        engine
+            .create_task(Task::new("t1", "agents", "demo"))
+            .await
+            .unwrap();
+        engine
+            .transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let mut chain = sample_chain("c1", status);
+        chain.task_id = Some("t1".into());
+        chain.cancel_reason = cancel_reason.map(str::to_string);
+        project_chain_to_linked_task(&engine, &chain).await.unwrap();
+        engine.get_task(&scope(), "t1").await.unwrap().unwrap()
+    }
+
+    /// Extract the synthetic-message text the projection attaches to
+    /// the task's status — the user-facing "why" of a terminal
+    /// transition.
+    fn projection_message_text(task: &acteon_core::Task) -> String {
+        let msg = task
+            .status
+            .message
+            .as_ref()
+            .expect("terminal projection attaches a status message");
+        msg.parts
+            .first()
+            .and_then(|p| p.text.clone())
+            .expect("synthetic message carries a text part")
+    }
+
+    #[tokio::test]
+    async fn project_failed_attaches_synthetic_message_naming_chain() {
+        let task = project_with_status_and_reason(ChainStatus::Failed, None).await;
+        assert_eq!(task.status.state, TaskState::Failed);
+        let text = projection_message_text(&task);
+        assert!(text.contains("c1"), "should name the chain; got {text:?}");
+        assert!(text.contains("failed"), "should say 'failed'; got {text:?}");
+    }
+
+    #[tokio::test]
+    async fn project_timed_out_is_distinguishable_from_failed() {
+        let task = project_with_status_and_reason(ChainStatus::TimedOut, None).await;
+        assert_eq!(task.status.state, TaskState::Failed);
+        let text = projection_message_text(&task);
+        // Timeout has no separate A2A state, but the message must let
+        // a client tell timeout from generic failure.
+        assert!(
+            text.contains("timed out"),
+            "timeout should be distinguishable; got {text:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn project_canceled_includes_cancel_reason_when_present() {
+        let task =
+            project_with_status_and_reason(ChainStatus::Cancelled, Some("operator requested"))
+                .await;
+        assert_eq!(task.status.state, TaskState::Canceled);
+        let text = projection_message_text(&task);
+        assert!(
+            text.contains("operator requested"),
+            "should surface cancel_reason; got {text:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn project_working_attaches_no_message() {
+        // In-flight projections (→ Working) carry no message — Working
+        // is the steady state.
+        let state = store();
+        let engine = engine(&state);
+        engine
+            .create_task(Task::new("t1", "agents", "demo"))
+            .await
+            .unwrap();
+        let mut chain = sample_chain("c1", ChainStatus::Running);
+        chain.task_id = Some("t1".into());
+        project_chain_to_linked_task(&engine, &chain).await.unwrap();
+        let task = engine.get_task(&scope(), "t1").await.unwrap().unwrap();
+        assert_eq!(task.status.state, TaskState::Working);
+        assert!(task.status.message.is_none());
     }
 }
