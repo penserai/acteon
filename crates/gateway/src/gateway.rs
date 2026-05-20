@@ -20,6 +20,8 @@ use acteon_provider::ProviderRegistry;
 use acteon_rules::{EvalContext, RuleEngine, RuleVerdict};
 use acteon_state::{DistributedLock, KeyKind, StateKey, StateStore};
 
+use crate::task_engine::TaskEngine;
+
 use serde::{Deserialize, Serialize};
 
 use crate::circuit_breaker::CircuitBreakerRegistry;
@@ -2334,6 +2336,7 @@ impl Gateway {
             parent_chain_id: None,
             parent_step_index: None,
             child_chain_ids: Vec::new(),
+            task_id: None,
             parallel_state: None,
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0; total_steps],
@@ -3471,6 +3474,11 @@ impl Gateway {
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
+        // A2A bridge: if this chain backs an A2A Task, project the
+        // chain's current status onto the task. Best-effort.
+        self.project_chain_to_task(namespace, tenant, chain_id)
+            .await;
+
         Ok(())
     }
 
@@ -4362,6 +4370,7 @@ impl Gateway {
             parent_chain_id: Some(parent.chain_id.clone()),
             parent_step_index: Some(step_idx),
             child_chain_ids: Vec::new(),
+            task_id: None,
             parallel_state: None,
             parallel_sub_results: HashMap::new(),
             step_attempts: vec![0; total_steps],
@@ -5261,6 +5270,10 @@ impl Gateway {
             }
         }
 
+        // A2A bridge: project the cancel onto a linked task, if any.
+        self.project_chain_to_task(namespace, tenant, chain_id)
+            .await;
+
         Ok(chain_state)
     }
 
@@ -5765,6 +5778,43 @@ impl Gateway {
     /// action records.
     pub fn audit_store(&self) -> Option<Arc<dyn AuditStore>> {
         self.audit.clone()
+    }
+
+    /// Best-effort A2A bridge hook: if the named chain has a linked
+    /// A2A Task (`ChainState.task_id`), project the chain's current
+    /// status onto the task's state via the
+    /// [`task_chain_bridge`](crate::task_chain_bridge). Logged on
+    /// failure but never propagated — the chain row is authoritative
+    /// and a projection hiccup must not unwind the chain mutation
+    /// that just succeeded.
+    async fn project_chain_to_task(&self, namespace: &str, tenant: &str, chain_id: &str) {
+        let key = StateKey::new(namespace, tenant, KeyKind::Chain, chain_id);
+        let chain: ChainState = match self.state.get(&key).await {
+            Ok(Some(raw)) => match serde_json::from_str(&raw) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(chain_id = %chain_id, error = %e, "bridge: chain row not deserializable for projection");
+                    return;
+                }
+            },
+            Ok(None) => return,
+            Err(e) => {
+                warn!(chain_id = %chain_id, error = %e, "bridge: chain row load failed for projection");
+                return;
+            }
+        };
+        if chain.task_id.is_none() {
+            return;
+        }
+        let mut engine = TaskEngine::new(self.state.clone());
+        if let Some(audit) = &self.audit {
+            engine = engine.with_audit(audit.clone());
+        }
+        if let Err(e) =
+            crate::task_chain_bridge::project_chain_to_linked_task(&engine, &chain).await
+        {
+            warn!(chain_id = %chain.chain_id, task_id = ?chain.task_id, error = %e, "bridge: chain → task projection failed");
+        }
     }
 
     /// Get a clone of the broadcast sender for SSE event streaming.

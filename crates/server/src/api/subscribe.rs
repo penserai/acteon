@@ -850,6 +850,7 @@ mod tests {
             parent_chain_id: None,
             parent_step_index: None,
             child_chain_ids: Vec::new(),
+            task_id: None,
             parallel_state: None,
             parallel_sub_results: std::collections::HashMap::new(),
             step_attempts: vec![],

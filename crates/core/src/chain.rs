@@ -913,6 +913,12 @@ pub struct ChainState {
     /// IDs of child chains spawned by sub-chain steps in this chain.
     #[serde(default)]
     pub child_chain_ids: Vec<String>,
+    /// If this chain backs an A2A Task, the task's id. Set together
+    /// with `Task.chain_id` by the A2A↔Chain bridge so the chain
+    /// engine's `advance_chain` / `cancel_chain` hooks can project
+    /// chain status onto the linked Task without a reverse index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     /// Runtime state of a currently-executing parallel step group.
     #[serde(default)]
     pub parallel_state: Option<ParallelExecutionState>,

@@ -11,6 +11,7 @@ pub mod group_manager;
 pub mod metrics;
 mod quota_enforcement;
 mod silence_enforcement;
+pub mod task_chain_bridge;
 pub mod task_engine;
 pub mod template_engine;
 mod template_management;
@@ -30,6 +31,10 @@ pub use gateway::{ApprovalKey, ApprovalKeySet, ApprovalRecord, ApprovalStatus, G
 pub use group_manager::GroupManager;
 pub use metrics::{GatewayMetrics, MetricsSnapshot, ProviderMetrics, ProviderStatsSnapshot};
 pub use silence_enforcement::CachedSilence;
+pub use task_chain_bridge::{
+    BridgeError as TaskChainBridgeError, link_task_to_chain, project_chain_status_to_task_state,
+    project_chain_to_linked_task,
+};
 pub use task_engine::{
     MAX_CAS_RETRY_ATTEMPTS as A2A_MAX_CAS_RETRY_ATTEMPTS,
     MESSAGE_DEDUP_TTL as A2A_MESSAGE_DEDUP_TTL, ScopedTaskEngine, TaskEngine, TaskEngineError,
