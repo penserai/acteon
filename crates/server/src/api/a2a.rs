@@ -241,11 +241,15 @@ struct TaskIdParams {
 /// task transitions land on the same hash chain as action records.
 async fn task_engine(state: &AppState) -> TaskEngine {
     let gw = state.gateway.read().await;
-    let engine = TaskEngine::new(gw.state_store().clone());
-    match gw.audit_store() {
-        Some(audit) => engine.with_audit(audit),
-        None => engine,
+    let mut engine = TaskEngine::new(gw.state_store().clone());
+    if let Some(audit) = gw.audit_store() {
+        engine = engine.with_audit(audit);
     }
+    // Wire the gateway's SSE broadcast so Task transitions land on the
+    // same channel as the rest of the gateway's stream events; an A2A
+    // subscriber can then filter for `action_type = "a2a.task"`.
+    engine = engine.with_stream_tx(gw.stream_tx().clone());
+    engine
 }
 
 /// `message/send` — send a message to an agent.
@@ -269,7 +273,7 @@ async fn method_message_send(
         // Mint a new task with this message as its first history entry.
         let task_id = uuid::Uuid::now_v7().to_string();
         let mut task = Task::new(&task_id, &scope.namespace, &scope.tenant);
-        task.context_id = message.context_id.clone();
+        task.context_id.clone_from(&message.context_id);
         // Bind the message to the task it now belongs to.
         message.task_id = Some(task_id);
         task.append_history(message)

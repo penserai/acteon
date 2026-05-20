@@ -124,6 +124,37 @@ pub enum StreamEventType {
         /// The decision: `"approved"` or `"rejected"`.
         decision: String,
     },
+    /// An A2A Task transitioned to a new state. The transition's
+    /// driving message (if any) is on the task's status row, not
+    /// duplicated on the event — SSE consumers fetch the task to see
+    /// the message body.
+    TaskTransitioned {
+        /// The task that transitioned.
+        task_id: String,
+        /// State before the transition.
+        from: crate::TaskState,
+        /// State after the transition.
+        to: crate::TaskState,
+    },
+    /// An A2A Task got a new message appended to its history.
+    TaskHistoryAppended {
+        /// The task that received the message.
+        task_id: String,
+        /// The appended message's id.
+        message_id: String,
+    },
+    /// An A2A Task artifact was updated (created, appended to, or
+    /// closed). `last_chunk = true` marks the artifact's final chunk;
+    /// the artifact-stream gatekeeper guarantees no further updates
+    /// follow.
+    TaskArtifactUpdated {
+        /// The task that owns the artifact.
+        task_id: String,
+        /// The artifact's id.
+        artifact_id: String,
+        /// True if this is the final chunk for the artifact.
+        last_chunk: bool,
+    },
     /// Unknown event type (forward compatibility catch-all).
     ///
     /// Older clients that encounter a new event type they don't recognize

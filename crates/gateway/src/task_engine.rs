@@ -167,6 +167,13 @@ pub struct TaskEngine {
     /// entirely (the engine still functions; transitions just aren't
     /// projected into the audit trail).
     audit: Option<Arc<dyn AuditStore>>,
+    /// Optional SSE event broadcast sender. When set, every successful
+    /// mutation emits a [`StreamEvent`] with the Task-specific event
+    /// type, so an A2A streaming subscriber (e.g. `tasks/resubscribe`)
+    /// observes the change. `None` disables stream emission — the
+    /// engine still functions; transitions just don't surface to SSE
+    /// consumers.
+    stream_tx: Option<tokio::sync::broadcast::Sender<acteon_core::StreamEvent>>,
 }
 
 impl std::fmt::Debug for TaskEngine {
@@ -181,7 +188,11 @@ impl TaskEngine {
     /// attach an audit sink.
     #[must_use]
     pub fn new(state: Arc<dyn StateStore>) -> Self {
-        Self { state, audit: None }
+        Self {
+            state,
+            audit: None,
+            stream_tx: None,
+        }
     }
 
     /// Attach an audit sink so every successful mutation emits an A2A
@@ -192,6 +203,46 @@ impl TaskEngine {
     pub fn with_audit(mut self, audit: Arc<dyn AuditStore>) -> Self {
         self.audit = Some(audit);
         self
+    }
+
+    /// Attach an SSE event broadcast sender so every successful
+    /// mutation emits an A2A Task stream event. Pass the same channel
+    /// the gateway uses (`Gateway::stream_tx()`) so SSE subscribers
+    /// share one bus with the rest of the system.
+    #[must_use]
+    pub fn with_stream_tx(
+        mut self,
+        tx: tokio::sync::broadcast::Sender<acteon_core::StreamEvent>,
+    ) -> Self {
+        self.stream_tx = Some(tx);
+        self
+    }
+
+    /// Emit a best-effort A2A Task stream event. `broadcast::send`
+    /// returns `Err` only when there are no subscribers — that's a
+    /// no-op for us, never an error to surface. The event carries
+    /// `action_type = "a2a.task"` so SSE filtering can route by type;
+    /// `action_id` is the task id so a per-task subscriber filters
+    /// precisely.
+    fn emit_stream(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        task_id: &str,
+        event_type: acteon_core::StreamEventType,
+    ) {
+        if let Some(tx) = &self.stream_tx {
+            let evt = acteon_core::StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: Utc::now(),
+                event_type,
+                namespace: namespace.to_string(),
+                tenant: tenant.to_string(),
+                action_type: Some("a2a.task".to_string()),
+                action_id: Some(task_id.to_string()),
+            };
+            let _ = tx.send(evt);
+        }
     }
 
     /// Emit a best-effort A2A task-transition audit record. A write
@@ -281,11 +332,34 @@ impl TaskEngine {
         message: Option<TaskMessage>,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "transition", move |task: &mut Task| {
-            task.transition_to(next, message.clone())?;
-            Ok(())
-        })
-        .await
+        // Capture the pre-mutation state for the SSE emission. This is
+        // a small extra read on top of `cas_mutate`'s own; only fired
+        // when a stream sink is attached, and only used after a
+        // successful transition.
+        let from_state = if self.stream_tx.is_some() {
+            self.get_task(scope, task_id).await?.map(|t| t.status.state)
+        } else {
+            None
+        };
+        let task = self
+            .cas_mutate(&key, task_id, "transition", move |task: &mut Task| {
+                task.transition_to(next, message.clone())?;
+                Ok(())
+            })
+            .await?;
+        if let Some(from) = from_state {
+            self.emit_stream(
+                &scope.namespace,
+                &scope.tenant,
+                task_id,
+                acteon_core::StreamEventType::TaskTransitioned {
+                    task_id: task_id.to_string(),
+                    from,
+                    to: task.status.state,
+                },
+            );
+        }
+        Ok(task)
     }
 
     /// Transition a task to [`TaskState::Failed`] **iff** it is still
@@ -1952,5 +2026,64 @@ mod tests {
             .unwrap();
         assert_eq!(task.status.state, TaskState::AuthRequired);
         assert_eq!(approval.kind, PauseKind::UserAuth);
+    }
+
+    // --- SSE event emission (Phase 3.2.a) ---
+
+    #[tokio::test]
+    async fn transition_emits_a_task_transitioned_event_when_sink_attached() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<acteon_core::StreamEvent>(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx);
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("emission within the timeout")
+            .expect("broadcast receive ok");
+        assert_eq!(evt.namespace, "agents");
+        assert_eq!(evt.tenant, "demo");
+        assert_eq!(evt.action_type.as_deref(), Some("a2a.task"));
+        assert_eq!(evt.action_id.as_deref(), Some("t1"));
+        match evt.event_type {
+            acteon_core::StreamEventType::TaskTransitioned { task_id, from, to } => {
+                assert_eq!(task_id, "t1");
+                assert_eq!(from, TaskState::Submitted);
+                assert_eq!(to, TaskState::Working);
+            }
+            other => panic!("expected TaskTransitioned, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn transition_without_sink_is_a_noop() {
+        // Without a stream sink, the engine still functions and
+        // doesn't pay for the pre-mutation read.
+        let e = engine();
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        // Nothing observable to assert beyond "didn't error".
+    }
+
+    #[tokio::test]
+    async fn transition_no_emission_on_illegal_transition() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<acteon_core::StreamEvent>(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx);
+        e.create_task(sample_task("t1")).await.unwrap();
+        // Submitted → InputRequired is illegal (only Working allows it).
+        let err = e
+            .transition_task(&scope(), "t1", TaskState::InputRequired, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TaskEngineError::Validation(_)));
+        // No event emitted for a failed transition.
+        let recv = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await;
+        assert!(
+            recv.is_err(),
+            "no event should be emitted on failed transition"
+        );
     }
 }

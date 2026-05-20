@@ -374,6 +374,9 @@ fn event_type_label(event_type: &StreamEventType) -> &'static str {
         StreamEventType::GroupEventAdded { .. } => "group_event",
         StreamEventType::GroupResolved { .. } => "group_resolved",
         StreamEventType::ApprovalResolved { .. } => "approval_resolved",
+        StreamEventType::TaskTransitioned { .. } => "task_transitioned",
+        StreamEventType::TaskHistoryAppended { .. } => "task_history_appended",
+        StreamEventType::TaskArtifactUpdated { .. } => "task_artifact_updated",
         StreamEventType::Unknown => "unknown",
     }
 }
