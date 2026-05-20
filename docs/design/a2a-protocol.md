@@ -101,9 +101,9 @@ The Core-First posture imports A2A's complexity into Acteon's substrate. Each ri
   - [x] `working_ttl_ms` / `last_progress_at` / `is_stale_at(now)` for shadow-state defense (default 30-minute TTL).
   - [x] `pending_approval_id: Option<String>` to point any paused Task at exactly one BusApproval row.
   - [x] Artifact `chunk_index` / `total_chunks` for streaming race-safety.
-- [ ] **Artifact Streaming:** Update `bus_stream.rs` to include `append` and `last_chunk` metadata for native A2A artifact support.
-- [ ] **Agent Evolution:** Extend `Agent` in `bus_agent.rs` with `has_agent_card: bool` flag; store the full `AgentCard` (skills, interfaces, security schemes) at a separate `KeyKind::BusAgentCard` so the hot heartbeat/list/route path stays lean.
-- [ ] **Converged Envelopes:** Align `bus_conversation.rs` message parts with A2A `Message`/`Part` semantics.
+- [x] **Artifact Streaming:** `bus_stream.rs::TaskArtifactUpdateEvent` carries native A2A `append` + `lastChunk` (camelCase serde) alongside the Acteon-side `chunk_index` / `total_chunks` for streaming race-safety. The cross-delivery invariants (no updates after close, strictly in-order chunks, completeness on `totalChunks`) are enforced by the artifact-stream gatekeeper (#164).
+- [x] **Agent Evolution:** `Agent` in `bus_agent.rs` carries a lean `has_agent_card: bool` flag; the full A2A `AgentCard` (skills, interfaces, security schemes, extensions) lives in `bus_agent_card.rs` and `KeyKind::BusAgentCard` is reserved for storing it at a separate row, so the hot heartbeat / list / route path stays small. The Discovery endpoint that surfaces the card publicly (`/.well-known/agent.json`) is Phase 3.
+- [x] **Converged Envelopes:** `bus_conversation.rs::ConversationMessage` wraps an A2A `TaskMessage` directly (`message: TaskMessage` — role + parts + reference task ids); the bus conversation envelope and an A2A message share one wire shape, so an A2A client deserializes the inner message without translation.
 - [x] Unit tests for state transitions, validation, serde round-trips, and the defensive validations above.
 
 ### Phase 2: Gateway Integration (`crates/gateway`) — ~6 days
