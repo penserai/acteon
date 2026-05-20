@@ -616,6 +616,25 @@ impl TaskEngine {
         }
     }
 
+    /// Set the linked Acteon Chain id on a Task. Pass `Some(chain_id)`
+    /// to link the task to an executing chain, or `None` to unlink.
+    /// The matching `ChainState.task_id` is set separately by
+    /// [`crate::task_chain_bridge::link_task_to_chain`], which
+    /// coordinates both sides of the link.
+    pub async fn link_to_chain(
+        &self,
+        scope: &TaskScope,
+        task_id: &str,
+        chain_id: Option<String>,
+    ) -> Result<Task, TaskEngineError> {
+        let key = scope.task_key(task_id);
+        self.cas_mutate(&key, task_id, "link_chain", move |task: &mut Task| {
+            task.chain_id.clone_from(&chain_id);
+            Ok(())
+        })
+        .await
+    }
+
     /// Direct artifact upsert (e.g. from a non-streaming producer).
     /// `apply_artifact_update` is the preferred entry; this is a
     /// convenience for callers that aren't producing wire events.
@@ -959,6 +978,16 @@ impl ScopedTaskEngine {
     ) -> Result<(Task, BusApproval), TaskEngineError> {
         self.engine
             .pause_for_human(&self.scope, task_id, kind, reason, ttl)
+            .await
+    }
+
+    pub async fn link_to_chain(
+        &self,
+        task_id: &str,
+        chain_id: Option<String>,
+    ) -> Result<Task, TaskEngineError> {
+        self.engine
+            .link_to_chain(&self.scope, task_id, chain_id)
             .await
     }
 }

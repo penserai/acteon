@@ -677,6 +677,15 @@ pub struct Task {
     /// trail has a single source of truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval_id: Option<String>,
+    /// If this task is backed by an Acteon Chain execution, the
+    /// chain's id. Set by the A2A↔Chain bridge
+    /// (`TaskEngine::link_to_chain`); chain status transitions then
+    /// project onto this task via the bridge's `advance_chain` /
+    /// `cancel_chain` hooks. The matching `ChainState.task_id`
+    /// closes the loop so the chain side can find the linked Task
+    /// without a reverse index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_id: Option<String>,
     /// Acteon-side: per-artifact streaming state for the
     /// artifact-stream gatekeeper, keyed by `artifactId`. Empty for
     /// tasks with no streamed artifacts. See [`ArtifactStream`].
@@ -711,6 +720,7 @@ impl Task {
             last_progress_at: Some(now),
             working_ttl_ms: DEFAULT_WORKING_TTL_MS,
             pending_approval_id: None,
+            chain_id: None,
             artifact_streams: HashMap::new(),
         }
     }

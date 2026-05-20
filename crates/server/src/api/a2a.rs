@@ -299,7 +299,15 @@ async fn method_tasks_get(
 
 /// `tasks/cancel` — cancel a task. A task already in a terminal state
 /// yields [`TASK_NOT_CANCELABLE`].
+///
+/// If the task is bridge-backed (`Task.chain_id` set) **and** an
+/// [`AppState`] is provided, the cancel propagates to the linked
+/// Acteon Chain via `Gateway::cancel_chain`; the chain-side bridge
+/// hook then projects `Cancelled` back onto the task and we re-fetch
+/// the result. With no `AppState` (e.g. unit tests) cancel goes
+/// engine-only.
 async fn method_tasks_cancel(
+    state: Option<&AppState>,
     engine: &TaskEngine,
     scope: &TaskScope,
     params: TaskIdParams,
@@ -310,6 +318,44 @@ async fn method_tasks_cancel(
         .ok_or_else(|| A2aError::task_not_found(&params.id))?;
     if task.status.state.is_terminal() {
         return Err(A2aError::task_not_cancelable(&params.id));
+    }
+    if let (Some(chain_id), Some(app)) = (task.chain_id.clone(), state) {
+        let gw = app.gateway.read().await;
+        if let Err(e) = gw
+            .cancel_chain(
+                &scope.namespace,
+                &scope.tenant,
+                &chain_id,
+                Some("a2a tasks/cancel".into()),
+                None,
+            )
+            .await
+        {
+            tracing::error!(
+                chain_id = %chain_id,
+                error = %e,
+                "a2a tasks/cancel: chain cancel failed",
+            );
+            return Err(A2aError::internal("internal error"));
+        }
+        drop(gw);
+        // The chain IS canceled. The bridge hook attempted to project
+        // Cancelled onto the task, but it is best-effort and may have
+        // failed (CAS contention etc.). Ensure idempotently: try the
+        // transition; if it is already `Canceled` (hook fired) the
+        // engine surfaces `Validation(IllegalTransition)`, which we
+        // treat as success and re-fetch the canonical row to return.
+        return match engine
+            .transition_task(scope, &params.id, TaskState::Canceled, None)
+            .await
+        {
+            Ok(t) => Ok(t),
+            Err(TaskEngineError::Validation(_)) => engine
+                .get_task(scope, &params.id)
+                .await?
+                .ok_or_else(|| A2aError::task_not_found(&params.id)),
+            Err(e) => Err(e.into()),
+        };
     }
     Ok(engine
         .transition_task(scope, &params.id, TaskState::Canceled, None)
@@ -411,8 +457,11 @@ enum RpcReply {
     Empty,
 }
 
-/// Route an A2A method to its implementation.
+/// Route an A2A method to its implementation. `state` is the
+/// production hook for `tasks/cancel`'s chain-cancel propagation;
+/// tests pass `None` for engine-only behavior.
 async fn dispatch_method(
+    state: Option<&AppState>,
     engine: &TaskEngine,
     scope: &TaskScope,
     method: &str,
@@ -432,7 +481,7 @@ async fn dispatch_method(
         "tasks/cancel" => {
             let p = serde_json::from_value::<TaskIdParams>(params)
                 .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            method_tasks_cancel(engine, scope, p).await
+            method_tasks_cancel(state, engine, scope, p).await
         }
         other => Err(A2aError::new(
             METHOD_NOT_FOUND,
@@ -448,6 +497,7 @@ async fn dispatch_method(
 /// the server MUST NOT answer it (even if it is otherwise malformed).
 /// Returns `Some(response)` for an id-bearing request.
 async fn dispatch_rpc_value(
+    state: Option<&AppState>,
     engine: &TaskEngine,
     scope: &TaskScope,
     value: &Value,
@@ -482,7 +532,7 @@ async fn dispatch_rpc_value(
         });
     };
     let params = obj.get("params").cloned().unwrap_or(Value::Null);
-    let outcome = dispatch_method(engine, scope, method, params).await;
+    let outcome = dispatch_method(state, engine, scope, method, params).await;
     if is_notification {
         // Processed; a notification is answered with nothing.
         return None;
@@ -498,7 +548,12 @@ async fn dispatch_rpc_value(
 
 /// Process a parsed JSON-RPC payload — a single request object or a
 /// batch array.
-async fn handle_rpc_payload(engine: &TaskEngine, scope: &TaskScope, parsed: Value) -> RpcReply {
+async fn handle_rpc_payload(
+    state: Option<&AppState>,
+    engine: &TaskEngine,
+    scope: &TaskScope,
+    parsed: Value,
+) -> RpcReply {
     match parsed {
         Value::Array(items) => {
             if items.is_empty() {
@@ -509,7 +564,7 @@ async fn handle_rpc_payload(engine: &TaskEngine, scope: &TaskScope, parsed: Valu
             }
             let mut responses = Vec::new();
             for item in &items {
-                if let Some(resp) = dispatch_rpc_value(engine, scope, item).await {
+                if let Some(resp) = dispatch_rpc_value(state, engine, scope, item).await {
                     responses.push(resp);
                 }
             }
@@ -520,7 +575,7 @@ async fn handle_rpc_payload(engine: &TaskEngine, scope: &TaskScope, parsed: Valu
                 RpcReply::Batch(responses)
             }
         }
-        obj @ Value::Object(_) => match dispatch_rpc_value(engine, scope, &obj).await {
+        obj @ Value::Object(_) => match dispatch_rpc_value(state, engine, scope, &obj).await {
             Some(resp) => RpcReply::Single(resp),
             None => RpcReply::Empty,
         },
@@ -560,7 +615,7 @@ pub async fn a2a_rpc(
     };
     let scope = TaskScope::new(&namespace, &tenant);
     let engine = task_engine(&state).await;
-    match handle_rpc_payload(&engine, &scope, parsed).await {
+    match handle_rpc_payload(Some(&state), &engine, &scope, parsed).await {
         RpcReply::Single(resp) => (StatusCode::OK, version_header(), Json(resp)).into_response(),
         RpcReply::Batch(resps) => (StatusCode::OK, version_header(), Json(resps)).into_response(),
         // Notification(s) only — JSON-RPC 2.0 says answer with no body.
@@ -669,6 +724,7 @@ pub async fn a2a_rest_task_cancel(
     let engine = task_engine(&state).await;
     rest_result(
         method_tasks_cancel(
+            Some(&state),
             &engine,
             &scope,
             TaskIdParams {
@@ -824,7 +880,7 @@ mod tests {
     async fn tasks_cancel_cancels_a_live_task() {
         let e = engine();
         let id = seed_task(&e).await;
-        let canceled = method_tasks_cancel(&e, &scope(), TaskIdParams { id: id.clone() })
+        let canceled = method_tasks_cancel(None, &e, &scope(), TaskIdParams { id: id.clone() })
             .await
             .unwrap();
         assert_eq!(canceled.status.state, TaskState::Canceled);
@@ -834,10 +890,10 @@ mod tests {
     async fn tasks_cancel_on_terminal_is_not_cancelable() {
         let e = engine();
         let id = seed_task(&e).await;
-        method_tasks_cancel(&e, &scope(), TaskIdParams { id: id.clone() })
+        method_tasks_cancel(None, &e, &scope(), TaskIdParams { id: id.clone() })
             .await
             .unwrap();
-        let err = method_tasks_cancel(&e, &scope(), TaskIdParams { id: id.clone() })
+        let err = method_tasks_cancel(None, &e, &scope(), TaskIdParams { id: id.clone() })
             .await
             .unwrap_err();
         assert_eq!(err.code, TASK_NOT_CANCELABLE);
@@ -882,7 +938,7 @@ mod tests {
             "method": "tasks/get",
             "params": { "id": id },
         });
-        let reply = handle_rpc_payload(&e, &scope(), payload).await;
+        let reply = handle_rpc_payload(None, &e, &scope(), payload).await;
         assert!(matches!(reply, RpcReply::Empty));
     }
 
@@ -897,7 +953,7 @@ mod tests {
             "params": { "id": id },
             "id": null,
         });
-        match handle_rpc_payload(&e, &scope(), payload).await {
+        match handle_rpc_payload(None, &e, &scope(), payload).await {
             RpcReply::Single(resp) => {
                 assert_eq!(resp.id, Value::Null);
                 assert!(resp.result.is_some());
@@ -916,7 +972,7 @@ mod tests {
             { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id} },
             { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id}, "id": 2 },
         ]);
-        match handle_rpc_payload(&e, &scope(), payload).await {
+        match handle_rpc_payload(None, &e, &scope(), payload).await {
             RpcReply::Batch(resps) => {
                 // Two id-bearing requests answered; the notification omitted.
                 assert_eq!(resps.len(), 2);
@@ -936,7 +992,7 @@ mod tests {
             { "jsonrpc": "2.0", "method": "tasks/get", "params": {"id": id} },
         ]);
         assert!(matches!(
-            handle_rpc_payload(&e, &scope(), payload).await,
+            handle_rpc_payload(None, &e, &scope(), payload).await,
             RpcReply::Empty
         ));
     }
@@ -944,7 +1000,7 @@ mod tests {
     #[tokio::test]
     async fn rpc_empty_batch_is_invalid_request() {
         let e = engine();
-        match handle_rpc_payload(&e, &scope(), json!([])).await {
+        match handle_rpc_payload(None, &e, &scope(), json!([])).await {
             RpcReply::Single(resp) => {
                 assert_eq!(resp.error.unwrap().code, INVALID_REQUEST);
             }
@@ -961,7 +1017,7 @@ mod tests {
             "params": {},
             "id": 9,
         });
-        match handle_rpc_payload(&e, &scope(), payload).await {
+        match handle_rpc_payload(None, &e, &scope(), payload).await {
             RpcReply::Single(resp) => {
                 assert_eq!(resp.error.unwrap().code, METHOD_NOT_FOUND);
             }
@@ -973,7 +1029,7 @@ mod tests {
     async fn rpc_bad_jsonrpc_version_is_invalid_request() {
         let e = engine();
         let payload = json!({ "jsonrpc": "1.0", "method": "tasks/get", "id": 1 });
-        match handle_rpc_payload(&e, &scope(), payload).await {
+        match handle_rpc_payload(None, &e, &scope(), payload).await {
             RpcReply::Single(resp) => {
                 assert_eq!(resp.error.unwrap().code, INVALID_REQUEST);
             }
