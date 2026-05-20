@@ -33,15 +33,18 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::sse::{KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
 use acteon_core::{Task, TaskMessage, TaskState};
 use acteon_gateway::{TaskEngine, TaskEngineError, TaskScope};
 
 use super::AppState;
 use super::schemas::ErrorResponse;
+use super::stream::{StreamQuery, make_event_stream};
 use crate::auth::identity::CallerIdentity;
 use crate::auth::role::Permission;
 
@@ -737,6 +740,107 @@ pub async fn a2a_rest_task_cancel(
         )
         .await,
     )
+}
+
+/// `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}/events` — SSE stream
+/// of task-lifecycle events.
+///
+/// Emits `TaskTransitioned`, `TaskHistoryAppended`, and
+/// `TaskArtifactUpdated` envelopes for a single task, by subscribing to
+/// the gateway-wide broadcast and filtering by `action_id == task_id`.
+///
+/// Per-tenant concurrent-connection caps come from the same
+/// `ConnectionRegistry` that backs `/v1/stream`, so a tenant cannot
+/// open more SSE connections via A2A than via the existing transport.
+/// Task events are not persisted to the audit store, so `Last-Event-ID`
+/// catch-up is intentionally not supported on this endpoint.
+pub async fn a2a_task_events(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, task_id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(e) = negotiate_version(&headers) {
+        return rest_result(Err(e));
+    }
+    if let Err((status, body)) = authorize(&identity, &namespace, &tenant) {
+        return (status, version_header(), body).into_response();
+    }
+
+    // 404 if the task does not exist — same semantics as the REST GET,
+    // so a probe-then-subscribe race can't trick the endpoint into
+    // returning an empty SSE stream for a non-existent task.
+    let scope = TaskScope::new(&namespace, &tenant);
+    let engine = task_engine(&state).await;
+    match engine.get_task(&scope, &task_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return rest_result(Err(A2aError::new(
+                TASK_NOT_FOUND,
+                format!("task '{task_id}' not found"),
+            )));
+        }
+        Err(e) => return rest_result(Err(e.into())),
+    }
+
+    // Per-tenant connection cap — reuses the registry that backs the
+    // long-standing `/v1/stream` endpoint. The bucket is keyed by
+    // namespace+tenant so an A2A streamer counts against the same
+    // shared budget as the rest of that tenant's SSE consumers.
+    let Some(conn_registry) = state.connection_registry.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            version_header(),
+            Json(ErrorResponse {
+                error: "SSE streaming is not enabled".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let bucket = format!("{namespace}:{tenant}");
+    let Some(guard) = conn_registry.try_acquire(&bucket).await else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            version_header(),
+            Json(ErrorResponse {
+                error: "too many concurrent SSE connections for this tenant".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Subscribe to the gateway broadcast BEFORE returning, so events
+    // emitted between the existence check and the subscribe call are
+    // not lost. `stream_tx().subscribe()` opens a new receiver per
+    // request — bounded by tokio's broadcast channel capacity.
+    let gateway = state.gateway.read().await;
+    let rx = gateway.stream_tx().subscribe();
+    drop(gateway);
+
+    // Filter is the same one `/v1/stream` understands: namespace +
+    // action_type + action_id pins the stream to events from *this*
+    // task only. Tenant isolation runs through the `allowed_tenants`
+    // arg, which `make_event_stream` enforces against `event.tenant`.
+    let allowed_tenants = Some(vec![tenant.clone()]);
+    let query = StreamQuery {
+        namespace: Some(namespace.clone()),
+        action_type: Some("a2a.task".to_string()),
+        outcome: None,
+        event_type: None,
+        chain_id: None,
+        group_id: None,
+        action_id: Some(task_id.clone()),
+    };
+
+    let event_stream = make_event_stream(rx, allowed_tenants, query, guard, None);
+
+    Sse::new(event_stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response()
 }
 
 #[cfg(test)]
