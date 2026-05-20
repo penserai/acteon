@@ -282,37 +282,47 @@ pub async fn discover_agent(
     State(state): State<AppState>,
     Path((namespace, tenant)): Path<(String, String)>,
 ) -> Response {
+    match resolve_tenant_card(&state, &namespace, &tenant).await {
+        Ok(Some(card)) => (StatusCode::OK, Json(card)).into_response(),
+        Ok(None) => not_found(format!(
+            "no agent registered with a published card under {namespace}/{tenant}",
+        )),
+        Err(e) => internal(format!("scan agent_cards: {e}")),
+    }
+}
+
+/// Load every `AgentCard` registered under (`namespace`, `tenant`) and
+/// reduce them to a single discovery card — verbatim when exactly one
+/// card is published, otherwise via [`aggregate_tenant_card`].
+///
+/// Returns `Ok(None)` when no card is published; the caller decides
+/// whether that is a 404 (REST) or a JSON-RPC `MethodNotFound`.
+/// Returns `Err(String)` only when the underlying state-store scan
+/// itself fails.
+pub(crate) async fn resolve_tenant_card(
+    state: &AppState,
+    namespace: &str,
+    tenant: &str,
+) -> Result<Option<AgentCard>, String> {
     let store: Arc<dyn StateStore> = {
         let gw = state.gateway.read().await;
         gw.state_store().clone()
     };
-    let entries = match store
-        .scan_keys(&namespace, &tenant, KeyKind::BusAgentCard, None)
+    let entries = store
+        .scan_keys(namespace, tenant, KeyKind::BusAgentCard, None)
         .await
-    {
-        Ok(e) => e,
-        Err(e) => return internal(format!("scan agent_cards: {e}")),
-    };
+        .map_err(|e| e.to_string())?;
     let mut cards: Vec<AgentCard> = Vec::with_capacity(entries.len());
     for (_, raw) in entries {
         if let Ok(card) = serde_json::from_str::<AgentCard>(&raw) {
             cards.push(card);
         }
     }
-    match cards.len() {
-        0 => not_found(format!(
-            "no agent registered with a published card under {namespace}/{tenant}",
-        )),
-        1 => {
-            let card = cards.into_iter().next().expect("len() == 1");
-            (StatusCode::OK, Json(card)).into_response()
-        }
-        _ => (
-            StatusCode::OK,
-            Json(aggregate_tenant_card(&namespace, &tenant, cards)),
-        )
-            .into_response(),
-    }
+    Ok(match cards.len() {
+        0 => None,
+        1 => Some(cards.into_iter().next().expect("len() == 1")),
+        _ => Some(aggregate_tenant_card(namespace, tenant, cards)),
+    })
 }
 
 /// Combine the skills, interfaces, and security schemes of several
