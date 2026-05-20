@@ -1,4 +1,5 @@
 pub mod a2a;
+pub mod a2a_discovery;
 pub mod analytics;
 pub mod approvals;
 pub mod audit;
@@ -145,6 +146,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/approvals/{namespace}/{tenant}/{id}",
             get(approvals::get_approval),
+        )
+        // A2A Discovery — public, unauthenticated per A2A spec
+        .route(
+            "/a2a/{namespace}/{tenant}/.well-known/agent.json",
+            get(a2a_discovery::discover_agent),
         );
 
     let protected = Router::new()
@@ -384,6 +390,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/heartbeat",
             post(bus::heartbeat_agent),
+        )
+        // A2A AgentCard CRUD — populates the discovery surface
+        // (`/a2a/{ns}/{tenant}/.well-known/agent.json`).
+        .route(
+            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/card",
+            put(a2a_discovery::put_agent_card)
+                .get(a2a_discovery::get_agent_card)
+                .delete(a2a_discovery::delete_agent_card),
         )
         .route(
             "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
