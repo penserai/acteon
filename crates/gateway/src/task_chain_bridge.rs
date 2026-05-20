@@ -140,7 +140,7 @@ async fn set_chain_task_id(
             return Err(BridgeError::ChainNotFound(chain_id.to_string()));
         };
         let mut chain: ChainState = serde_json::from_str(&raw)?;
-        chain.task_id = task_id.clone();
+        chain.task_id.clone_from(&task_id);
         let payload = serde_json::to_string(&chain)?;
         match state
             .compare_and_swap(&key, version, &payload, None)

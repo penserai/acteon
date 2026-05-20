@@ -273,7 +273,7 @@ async fn method_message_send(
         // Mint a new task with this message as its first history entry.
         let task_id = uuid::Uuid::now_v7().to_string();
         let mut task = Task::new(&task_id, &scope.namespace, &scope.tenant);
-        task.context_id = message.context_id.clone();
+        task.context_id.clone_from(&message.context_id);
         // Bind the message to the task it now belongs to.
         message.task_id = Some(task_id);
         task.append_history(message)
