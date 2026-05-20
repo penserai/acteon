@@ -241,11 +241,15 @@ struct TaskIdParams {
 /// task transitions land on the same hash chain as action records.
 async fn task_engine(state: &AppState) -> TaskEngine {
     let gw = state.gateway.read().await;
-    let engine = TaskEngine::new(gw.state_store().clone());
-    match gw.audit_store() {
-        Some(audit) => engine.with_audit(audit),
-        None => engine,
+    let mut engine = TaskEngine::new(gw.state_store().clone());
+    if let Some(audit) = gw.audit_store() {
+        engine = engine.with_audit(audit);
     }
+    // Wire the gateway's SSE broadcast so Task transitions land on the
+    // same channel as the rest of the gateway's stream events; an A2A
+    // subscriber can then filter for `action_type = "a2a.task"`.
+    engine = engine.with_stream_tx(gw.stream_tx().clone());
+    engine
 }
 
 /// `message/send` — send a message to an agent.
