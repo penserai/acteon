@@ -173,6 +173,13 @@ pub fn router(state: AppState) -> Router {
             "/a2a/{namespace}/{tenant}/v1/tasks/{id}",
             get(a2a::a2a_rest_task_get).post(a2a::a2a_rest_task_cancel),
         )
+        // SSE stream of task lifecycle events (Phase 3.2). No body
+        // limit needed — GET only — and the per-tenant connection cap
+        // is enforced inside the handler.
+        .route(
+            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/events",
+            get(a2a::a2a_task_events),
+        )
         // Rules management
         .route("/v1/rules", get(rules::list_rules))
         .route("/v1/rules/coverage", get(rules::rule_coverage))

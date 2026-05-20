@@ -414,6 +414,16 @@ impl TaskEngine {
                 CasResult::Ok => {
                     debug!(task_id = %task_id, "stale task reaped to Failed");
                     self.emit_audit(&task, "reap", Some(from_state)).await;
+                    self.emit_stream(
+                        &scope.namespace,
+                        &scope.tenant,
+                        task_id,
+                        acteon_core::StreamEventType::TaskTransitioned {
+                            task_id: task_id.to_string(),
+                            from: from_state,
+                            to: TaskState::Failed,
+                        },
+                    );
                     return Ok(Some(task));
                 }
                 CasResult::Conflict { .. } => {
@@ -480,11 +490,25 @@ impl TaskEngine {
                 .ok_or_else(|| TaskEngineError::NotFound(task_id.to_string()));
         }
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "append_history", move |task: &mut Task| {
-            task.append_history(message.clone())?;
-            Ok(())
-        })
-        .await
+        // Clone the message id for the post-commit stream emission;
+        // `message` itself is consumed by the closure.
+        let message_id_for_emit = message.message_id.clone();
+        let task = self
+            .cas_mutate(&key, task_id, "append_history", move |task: &mut Task| {
+                task.append_history(message.clone())?;
+                Ok(())
+            })
+            .await?;
+        self.emit_stream(
+            &scope.namespace,
+            &scope.tenant,
+            task_id,
+            acteon_core::StreamEventType::TaskHistoryAppended {
+                task_id: task_id.to_string(),
+                message_id: message_id_for_emit,
+            },
+        );
+        Ok(task)
     }
 
     /// Apply an artifact-update event from the streaming layer,
@@ -507,13 +531,29 @@ impl TaskEngine {
         let key = scope.task_key(&event.task_id);
         // `task_id` is cloned out before the closure: `cas_mutate`
         // borrows it for error reporting while the closure moves the
-        // whole `event` in to apply it.
+        // whole `event` in to apply it. Capture the artifact id and the
+        // `last_chunk` flag here too — they feed the post-commit stream
+        // emission and are otherwise lost into the moved `event`.
         let task_id = event.task_id.clone();
-        self.cas_mutate(&key, &task_id, "artifact_update", move |task: &mut Task| {
-            task.apply_artifact_event(&event)?;
-            Ok(())
-        })
-        .await
+        let artifact_id_for_emit = event.artifact.artifact_id.clone();
+        let last_chunk_for_emit = event.last_chunk;
+        let task = self
+            .cas_mutate(&key, &task_id, "artifact_update", move |task: &mut Task| {
+                task.apply_artifact_event(&event)?;
+                Ok(())
+            })
+            .await?;
+        self.emit_stream(
+            &scope.namespace,
+            &scope.tenant,
+            &task_id,
+            acteon_core::StreamEventType::TaskArtifactUpdated {
+                task_id: task_id.clone(),
+                artifact_id: artifact_id_for_emit,
+                last_chunk: last_chunk_for_emit,
+            },
+        );
+        Ok(task)
     }
 
     /// Record a liveness heartbeat. Bumps `last_progress_at` without
@@ -671,6 +711,20 @@ impl TaskEngine {
                     kind = kind.as_str(),
                     "task paused for human",
                 );
+                // A successful pause always transitions `Working ->
+                // target_state` (the gate inside `transition_to` rejects
+                // any other origin). Emit the transition for streaming
+                // subscribers; carries `from = Working` unconditionally.
+                self.emit_stream(
+                    &scope.namespace,
+                    &scope.tenant,
+                    task_id,
+                    acteon_core::StreamEventType::TaskTransitioned {
+                        task_id: task_id.to_string(),
+                        from: TaskState::Working,
+                        to: target_state,
+                    },
+                );
                 Ok((task, approval))
             }
             Err(e) => {
@@ -720,11 +774,29 @@ impl TaskEngine {
         append: bool,
     ) -> Result<Task, TaskEngineError> {
         let key = scope.task_key(task_id);
-        self.cas_mutate(&key, task_id, "artifact_upsert", move |task: &mut Task| {
-            task.upsert_artifact(artifact.clone(), append)?;
-            Ok(())
-        })
-        .await
+        // Capture the artifact id before the closure consumes
+        // `artifact`. Non-stream callers don't carry a `last_chunk`
+        // signal; `false` is the safe default — a subscriber treats it
+        // as "more may follow," and a follow-up `apply_artifact_update`
+        // is the only path that can flip it to `true`.
+        let artifact_id_for_emit = artifact.artifact_id.clone();
+        let task = self
+            .cas_mutate(&key, task_id, "artifact_upsert", move |task: &mut Task| {
+                task.upsert_artifact(artifact.clone(), append)?;
+                Ok(())
+            })
+            .await?;
+        self.emit_stream(
+            &scope.namespace,
+            &scope.tenant,
+            task_id,
+            acteon_core::StreamEventType::TaskArtifactUpdated {
+                task_id: task_id.to_string(),
+                artifact_id: artifact_id_for_emit,
+                last_chunk: false,
+            },
+        );
+        Ok(task)
     }
 
     /// Atomically read-modify-write the task at `key` via CAS retry.
@@ -2054,6 +2126,160 @@ mod tests {
             }
             other => panic!("expected TaskTransitioned, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn append_history_emits_a_task_history_appended_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<acteon_core::StreamEvent>(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx);
+        e.create_task(sample_task("t1")).await.unwrap();
+        // Drain the create-emission (which is none — create does not emit).
+        // First emission comes from the append.
+        let msg = user_msg_in_task("m-1", "t1");
+        e.append_history(&scope(), "t1", msg).await.unwrap();
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("emission within timeout")
+            .expect("broadcast ok");
+        assert_eq!(evt.action_id.as_deref(), Some("t1"));
+        match evt.event_type {
+            acteon_core::StreamEventType::TaskHistoryAppended {
+                task_id,
+                message_id,
+            } => {
+                assert_eq!(task_id, "t1");
+                assert_eq!(message_id, "m-1");
+            }
+            other => panic!("expected TaskHistoryAppended, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_artifact_update_emits_a_task_artifact_updated_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<acteon_core::StreamEvent>(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx);
+        e.create_task(sample_task("t1")).await.unwrap();
+        let ev = TaskArtifactUpdateEvent::single_shot(
+            "t1",
+            Artifact::new("art-1", vec![Part::text("ok")]),
+        );
+        // `single_shot` flips `last_chunk` to true — assert it carries through.
+        e.apply_artifact_update(&scope(), ev).await.unwrap();
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("emission within timeout")
+            .expect("broadcast ok");
+        assert_eq!(evt.action_id.as_deref(), Some("t1"));
+        match evt.event_type {
+            acteon_core::StreamEventType::TaskArtifactUpdated {
+                task_id,
+                artifact_id,
+                last_chunk,
+            } => {
+                assert_eq!(task_id, "t1");
+                assert_eq!(artifact_id, "art-1");
+                assert!(last_chunk, "single_shot must propagate last_chunk = true");
+            }
+            other => panic!("expected TaskArtifactUpdated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn upsert_artifact_emits_a_task_artifact_updated_event_with_last_chunk_false() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<acteon_core::StreamEvent>(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx);
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.upsert_artifact(
+            &scope(),
+            "t1",
+            Artifact::new("art-9", vec![Part::text("direct")]),
+            false,
+        )
+        .await
+        .unwrap();
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("emission within timeout")
+            .expect("broadcast ok");
+        match evt.event_type {
+            acteon_core::StreamEventType::TaskArtifactUpdated {
+                task_id,
+                artifact_id,
+                last_chunk,
+            } => {
+                assert_eq!(task_id, "t1");
+                assert_eq!(artifact_id, "art-9");
+                assert!(!last_chunk, "upsert path defaults last_chunk = false");
+            }
+            other => panic!("expected TaskArtifactUpdated, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pause_for_human_emits_a_task_transitioned_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<acteon_core::StreamEvent>(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx);
+        e.create_task(sample_task("t1")).await.unwrap();
+        // Drain the Submitted → Working emission from the transition.
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        let _ = rx.recv().await.unwrap();
+        // Now pause: emits Working → AuthRequired.
+        e.pause_for_human(&scope(), "t1", PauseKind::UserAuth, None, None)
+            .await
+            .unwrap();
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("emission within timeout")
+            .expect("broadcast ok");
+        match evt.event_type {
+            acteon_core::StreamEventType::TaskTransitioned { from, to, .. } => {
+                assert_eq!(from, TaskState::Working);
+                assert_eq!(to, TaskState::AuthRequired);
+            }
+            other => panic!("expected TaskTransitioned, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn fail_if_stale_emits_a_task_transitioned_to_failed_event() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<acteon_core::StreamEvent>(16);
+        let e = TaskEngine::new(Arc::new(MemoryStateStore::new())).with_stream_tx(tx);
+        e.create_task(sample_task("t1")).await.unwrap();
+        e.transition_task(&scope(), "t1", TaskState::Working, None)
+            .await
+            .unwrap();
+        // Drain the two earlier emissions (create has none; transition has one).
+        let _ = rx.recv().await.unwrap();
+        // Default `working_ttl_ms` is 30 minutes; jump an hour ahead to
+        // make the task indisputably stale to the reaper.
+        let future = Utc::now() + chrono::Duration::hours(1);
+        let reaped = e
+            .fail_if_stale(&scope(), "t1", future)
+            .await
+            .unwrap()
+            .expect("task should be reaped");
+        assert_eq!(reaped.status.state, TaskState::Failed);
+        let evt = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+            .await
+            .expect("emission within timeout")
+            .expect("broadcast ok");
+        match evt.event_type {
+            acteon_core::StreamEventType::TaskTransitioned { from, to, .. } => {
+                assert_eq!(from, TaskState::Working);
+                assert_eq!(to, TaskState::Failed);
+            }
+            other => panic!("expected TaskTransitioned, got {other:?}"),
+        }
+    }
+
+    /// Build a user message scoped to a parent task — needed because
+    /// `append_history` runs `validate_in_task` against the parent id.
+    fn user_msg_in_task(message_id: &str, task_id: &str) -> TaskMessage {
+        let mut m = TaskMessage::text(message_id.to_string(), acteon_core::TaskRole::User, "hi");
+        m.task_id = Some(task_id.to_string());
+        m
     }
 
     #[tokio::test]
