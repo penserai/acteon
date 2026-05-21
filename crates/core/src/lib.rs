@@ -31,6 +31,7 @@ pub mod retention;
 pub mod silence;
 pub mod state_machine;
 pub mod stream;
+pub mod task_push;
 pub mod template;
 pub mod time_interval;
 pub mod types;
@@ -117,6 +118,11 @@ pub use state_machine::{StateMachineConfig, TimeoutConfig, TransitionConfig, Tra
 pub use stream::{
     StreamEvent, StreamEventType, outcome_category, reconstruct_outcome, sanitize_outcome,
     timestamp_from_event_id,
+};
+pub use task_push::{
+    MAX_PUSH_SCHEME_ALIAS_BYTES, MAX_PUSH_SCHEMES_PER_CONFIG, MAX_PUSH_TOKEN_BYTES,
+    MAX_PUSH_URL_BYTES, PushAuthentication, TaskPushConfigValidationError,
+    TaskPushNotificationConfig,
 };
 pub use template::{
     Template, TemplateProfile, TemplateProfileField, validate_template_content,
