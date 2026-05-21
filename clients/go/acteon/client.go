@@ -113,6 +113,33 @@ func NewClient(baseURL string, opts ...ClientOption) *Client {
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body any) (*http.Response, error) {
+	return c.doRequestExt(ctx, method, path, body, requestOpts{})
+}
+
+// requestOpts carries the optional request-shaping flags that
+// `doRequestExt` honours on top of the base auth + content-type
+// behaviour. Used by the A2A surface to attach `A2A-Version` on
+// authenticated calls and to issue the unauthenticated discovery
+// endpoint.
+type requestOpts struct {
+	// extraHeaders are merged on top of the default headers
+	// (caller wins on collision).
+	extraHeaders map[string]string
+	// skipAuth suppresses the Authorization header even when an
+	// API key is configured on the client.
+	skipAuth bool
+}
+
+// doRequestExt is the request workhorse with hook points for
+// per-request header overrides. `doRequest` is the thin
+// default-opts wrapper that pre-existing callers keep using
+// unchanged.
+func (c *Client) doRequestExt(
+	ctx context.Context,
+	method, path string,
+	body any,
+	opts requestOpts,
+) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -128,8 +155,11 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any) (
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if c.apiKey != "" {
+	if !opts.skipAuth && c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	for k, v := range opts.extraHeaders {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := c.httpClient.Do(req)
