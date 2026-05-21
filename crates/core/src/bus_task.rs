@@ -1280,6 +1280,58 @@ mod tests {
         assert_eq!(p.validate(), Err(TaskValidationError::PartRawTooLong));
     }
 
+    // --- Adversarial Phase 5: exact-boundary part bloat ---
+
+    /// A part holding *exactly* `MAX_PART_TEXT_BYTES` bytes must be
+    /// accepted. The cap is strictly-greater-than, not
+    /// greater-than-or-equal — make sure that contract is honoured at
+    /// the off-by-one boundary.
+    #[test]
+    fn part_text_exactly_at_cap_accepted() {
+        let mut p = Part::text("x");
+        p.text = Some("x".repeat(MAX_PART_TEXT_BYTES));
+        assert!(
+            p.validate().is_ok(),
+            "{MAX_PART_TEXT_BYTES}-byte text must be accepted"
+        );
+    }
+
+    /// One byte over the cap must be rejected. Pairs with the
+    /// at-cap test above to pin the boundary precisely.
+    #[test]
+    fn part_text_one_byte_over_cap_rejected() {
+        let mut p = Part::text("x");
+        p.text = Some("x".repeat(MAX_PART_TEXT_BYTES + 1));
+        assert_eq!(p.validate(), Err(TaskValidationError::PartTextTooLong));
+    }
+
+    /// Same boundary check for the raw-base64 path.
+    #[test]
+    fn part_raw_exactly_at_cap_accepted() {
+        let mut p = Part::raw_base64("Zg==");
+        p.raw = Some("x".repeat(MAX_PART_RAW_BYTES));
+        assert!(p.validate().is_ok());
+    }
+
+    /// And for the data (JSON) path — the cap is measured against the
+    /// serialized JSON, so a string of length `cap - 2` exactly hits
+    /// the limit (quotes contribute 2 bytes).
+    #[test]
+    fn part_data_exactly_at_cap_accepted() {
+        let payload = "x".repeat(MAX_PART_DATA_BYTES - 2);
+        let p = Part::data(serde_json::Value::String(payload));
+        assert!(p.validate().is_ok());
+    }
+
+    #[test]
+    fn part_data_one_byte_over_cap_rejected() {
+        // String length `cap - 1` serializes to `cap + 1` bytes
+        // (two quotes), past the cap.
+        let payload = "x".repeat(MAX_PART_DATA_BYTES - 1);
+        let p = Part::data(serde_json::Value::String(payload));
+        assert_eq!(p.validate(), Err(TaskValidationError::PartDataTooLong));
+    }
+
     // --- Message ---
 
     #[test]
