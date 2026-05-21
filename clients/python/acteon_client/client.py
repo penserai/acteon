@@ -102,10 +102,11 @@ from .models import (
 )
 
 
+from .a2a import _A2AClientMixin, _AsyncA2AClientMixin
 from .bus import _AsyncBusClientMixin, _BusClientMixin
 
 
-class ActeonClient(_BusClientMixin):
+class ActeonClient(_A2AClientMixin, _BusClientMixin):
     """HTTP client for the Acteon action gateway.
 
     Example:
@@ -179,16 +180,27 @@ class ActeonClient(_BusClientMixin):
         *,
         json: Optional[dict] = None,
         params: Optional[dict] = None,
+        extra_headers: Optional[dict[str, str]] = None,
+        skip_auth: bool = False,
     ) -> httpx.Response:
-        """Make an HTTP request."""
+        """Make an HTTP request.
+
+        ``extra_headers`` are merged on top of the auth headers (caller
+        overrides win). ``skip_auth=True`` suppresses the
+        ``Authorization`` / API-key headers — used by A2A's unauthenticated
+        ``.well-known/agent.json`` discovery endpoint.
+        """
         url = f"{self.base_url}{path}"
+        headers = {"Content-Type": "application/json"} if skip_auth else self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             response = self._client.request(
                 method,
                 url,
                 json=json,
                 params=params,
-                headers=self._headers(),
+                headers=headers,
             )
             return response
         except httpx.ConnectError as e:
@@ -2596,7 +2608,7 @@ class ActeonClient(_BusClientMixin):
         raise HttpError(response.status_code, "Failed to cancel swarm run")
 
 
-class AsyncActeonClient(_AsyncBusClientMixin):
+class AsyncActeonClient(_AsyncA2AClientMixin, _AsyncBusClientMixin):
     """Async HTTP client for the Acteon action gateway.
 
     Example:
@@ -2661,15 +2673,25 @@ class AsyncActeonClient(_AsyncBusClientMixin):
         *,
         json: Optional[dict] = None,
         params: Optional[dict] = None,
+        extra_headers: Optional[dict[str, str]] = None,
+        skip_auth: bool = False,
     ) -> httpx.Response:
+        """Async counterpart of the sync ``_request``.
+
+        See the sync version's docstring for the ``extra_headers`` /
+        ``skip_auth`` semantics.
+        """
         url = f"{self.base_url}{path}"
+        headers = {"Content-Type": "application/json"} if skip_auth else self._headers()
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             response = await self._client.request(
                 method,
                 url,
                 json=json,
                 params=params,
-                headers=self._headers(),
+                headers=headers,
             )
             return response
         except httpx.ConnectError as e:

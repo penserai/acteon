@@ -122,11 +122,25 @@ from .models import (
     CoverageQuery,
     CoverageReport,
 )
+from .a2a import (
+    A2A_PROTOCOL_VERSION,
+    make_message,
+    make_part_data,
+    make_part_text,
+    make_part_url,
+    make_push_config,
+)
 
 __version__ = "0.1.0"
 __all__ = [
     "ActeonClient",
     "AsyncActeonClient",
+    "A2A_PROTOCOL_VERSION",
+    "make_message",
+    "make_part_data",
+    "make_part_text",
+    "make_part_url",
+    "make_push_config",
     "ActeonError",
     "ConnectionError",
     "ApiError",
