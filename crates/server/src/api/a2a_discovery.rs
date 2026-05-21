@@ -28,7 +28,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
-use acteon_core::{Agent, AgentCard, AgentCardValidationError};
+use acteon_core::{Agent, AgentCard, AgentCardValidationError, SecurityScheme};
 use acteon_state::{CasResult, KeyKind, StateKey, StateStore};
 
 use super::AppState;
@@ -318,11 +318,71 @@ pub(crate) async fn resolve_tenant_card(
             cards.push(card);
         }
     }
-    Ok(match cards.len() {
-        0 => None,
-        1 => Some(cards.into_iter().next().expect("len() == 1")),
-        _ => Some(aggregate_tenant_card(namespace, tenant, cards)),
-    })
+    let mut card = match cards.len() {
+        0 => return Ok(None),
+        1 => cards.into_iter().next().expect("len() == 1"),
+        _ => aggregate_tenant_card(namespace, tenant, cards),
+    };
+    // Layer in the gateway's intrinsic security schemes so a client
+    // reading this card knows how to authenticate to Acteon itself.
+    // User-published aliases win on collision (the entry-API path is
+    // `or_insert`, not `insert`), so a tenant that explicitly
+    // documents its own scheme under `acteon.bearer` is not
+    // overwritten.
+    enrich_with_intrinsic_schemes(&mut card, state.auth.is_some());
+    Ok(Some(card))
+}
+
+/// Reserved alias of the gateway's intrinsic `Authorization: Bearer`
+/// scheme. The middleware accepts both JWT and raw API-key tokens on
+/// this header, so the wire shape is plain Bearer regardless.
+const INTRINSIC_BEARER_ALIAS: &str = "acteon.bearer";
+
+/// Reserved alias of the gateway's intrinsic `X-API-Key` header
+/// scheme — the second auth path the middleware recognizes.
+const INTRINSIC_API_KEY_ALIAS: &str = "acteon.apiKey";
+
+/// Build the set of intrinsic security schemes the gateway itself
+/// implements. Returns an empty list when auth is disabled — the
+/// discovery card honestly reflects "no scheme required" in that
+/// case rather than advertising a Bearer the server will accept any
+/// token for.
+///
+/// Split out from [`enrich_with_intrinsic_schemes`] so the scheme set
+/// is unit-testable without an `AppState`.
+fn intrinsic_security_schemes(auth_enabled: bool) -> Vec<(&'static str, SecurityScheme)> {
+    if !auth_enabled {
+        return Vec::new();
+    }
+    vec![
+        (
+            INTRINSIC_BEARER_ALIAS,
+            SecurityScheme::HttpAuth {
+                scheme_name: "bearer".to_string(),
+                bearer_format: None,
+            },
+        ),
+        (
+            INTRINSIC_API_KEY_ALIAS,
+            SecurityScheme::ApiKey {
+                name: "X-API-Key".to_string(),
+                location: "header".to_string(),
+            },
+        ),
+    ]
+}
+
+/// Layer the gateway's intrinsic security schemes into the card
+/// returned by `resolve_tenant_card`. Uses `entry().or_insert(…)`
+/// semantics so a user-published alias under the reserved
+/// `acteon.bearer` / `acteon.apiKey` keys is preserved verbatim
+/// (the user is unambiguously documenting their own scheme).
+fn enrich_with_intrinsic_schemes(card: &mut AgentCard, auth_enabled: bool) {
+    for (alias, scheme) in intrinsic_security_schemes(auth_enabled) {
+        card.security_schemes
+            .entry(alias.to_string())
+            .or_insert(scheme);
+    }
 }
 
 /// Combine the skills, interfaces, and security schemes of several
@@ -501,5 +561,87 @@ mod tests {
         assert_eq!(uris.len(), 2);
         assert!(uris.contains(&"x://shared"));
         assert!(uris.contains(&"x://b-only"));
+    }
+
+    // --- Intrinsic security schemes (Phase 4.3) ---
+
+    #[test]
+    fn intrinsic_schemes_empty_when_auth_disabled() {
+        // An auth-disabled server has no scheme to advertise — the
+        // discovery card must not lie about a Bearer it would accept
+        // any token for.
+        assert!(intrinsic_security_schemes(false).is_empty());
+    }
+
+    #[test]
+    fn intrinsic_schemes_lists_bearer_and_api_key_when_auth_enabled() {
+        let schemes = intrinsic_security_schemes(true);
+        let aliases: Vec<&str> = schemes.iter().map(|(a, _)| *a).collect();
+        assert_eq!(
+            aliases,
+            vec![INTRINSIC_BEARER_ALIAS, INTRINSIC_API_KEY_ALIAS]
+        );
+        // Sanity on the scheme shape — Bearer carries no format hint.
+        match &schemes[0].1 {
+            SecurityScheme::HttpAuth {
+                scheme_name,
+                bearer_format,
+            } => {
+                assert_eq!(scheme_name, "bearer");
+                assert!(bearer_format.is_none());
+            }
+            other => panic!("expected HttpAuth Bearer, got {other:?}"),
+        }
+        // API-key scheme reads from the `X-API-Key` header — the
+        // exact header the middleware looks for.
+        match &schemes[1].1 {
+            SecurityScheme::ApiKey { name, location } => {
+                assert_eq!(name, "X-API-Key");
+                assert_eq!(location, "header");
+            }
+            other => panic!("expected ApiKey scheme, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enrich_with_intrinsic_schemes_is_a_noop_when_auth_disabled() {
+        let mut card = sample_card("a-1");
+        let before = card.security_schemes.len();
+        enrich_with_intrinsic_schemes(&mut card, false);
+        assert_eq!(card.security_schemes.len(), before);
+    }
+
+    #[test]
+    fn enrich_with_intrinsic_schemes_adds_under_reserved_aliases() {
+        let mut card = sample_card("a-1");
+        enrich_with_intrinsic_schemes(&mut card, true);
+        assert!(card.security_schemes.contains_key(INTRINSIC_BEARER_ALIAS));
+        assert!(card.security_schemes.contains_key(INTRINSIC_API_KEY_ALIAS));
+    }
+
+    #[test]
+    fn enrich_with_intrinsic_schemes_preserves_user_published_aliases() {
+        let mut card = sample_card("a-1");
+        // User explicitly publishes their own bearer under the reserved
+        // alias. The enrichment must not clobber it.
+        let user_scheme = SecurityScheme::HttpAuth {
+            scheme_name: "bearer".into(),
+            bearer_format: Some("user-JWT-format".into()),
+        };
+        card.security_schemes
+            .insert(INTRINSIC_BEARER_ALIAS.into(), user_scheme);
+        enrich_with_intrinsic_schemes(&mut card, true);
+        match card.security_schemes.get(INTRINSIC_BEARER_ALIAS) {
+            Some(SecurityScheme::HttpAuth { bearer_format, .. }) => {
+                assert_eq!(
+                    bearer_format.as_deref(),
+                    Some("user-JWT-format"),
+                    "user-published scheme must not be clobbered by intrinsic enrichment"
+                );
+            }
+            other => panic!("expected user scheme to survive, got {other:?}"),
+        }
+        // The other intrinsic alias (apiKey) was absent, so it WAS added.
+        assert!(card.security_schemes.contains_key(INTRINSIC_API_KEY_ALIAS));
     }
 }
