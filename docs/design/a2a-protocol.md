@@ -143,7 +143,7 @@ The Core-First posture imports A2A's complexity into Acteon's substrate. Each ri
 
 ### Phase 6: SDK & Simulation — ~5 days
 - [ ] Update all polyglot SDKs (Rust, Python, Node, Go, Java) to support the native A2A Task primitives.
-- [ ] Add `a2a_core_simulation.rs` demonstrating a Task pipeline through all 8 states (including `InputRequired` and `AuthRequired` interrupts).
+- [x] Add `a2a_core_simulation.rs` demonstrating a Task pipeline through all 8 states (including `InputRequired` and `AuthRequired` interrupts). In-process simulation runs in ~200ms with no external dependencies; eleven scenarios cover every reachable `TaskState`, both pause-for-human kinds, the artifact-stream gatekeeper across two chunks, and an end-to-end push-notification delivery to a mock HTTP receiver (with the worker's metrics snapshot printed). A background event tailer prints every emitted `StreamEvent` so engine actions and observer events line up by id.
 - [ ] `docs/book/features/a2a.md` user-facing guide; promote this design doc to `docs/architecture/a2a.md` once shipped.
 - [ ] CHANGELOG entry + README feature-matrix update.
 
