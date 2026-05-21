@@ -122,6 +122,7 @@ nav:
     - Event Grouping: features/event-grouping.md
     - State Machines: features/state-machines.md
     - Human Approvals: features/approvals.md
+    - Agent2Agent (A2A) Protocol: features/a2a.md
     - Task Chains: features/chains.md
     - Sub-Chains: features/sub-chains.md
     - LLM Guardrails: features/llm-guardrails.md
