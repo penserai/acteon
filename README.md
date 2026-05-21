@@ -41,6 +41,17 @@ Acteon is the force that manages this transformation. It serves as an Action Gat
 - **State Storage** — Memory, Redis, PostgreSQL, or DynamoDB for distributed locks and deduplication state
 - **Audit Trail** — Memory, PostgreSQL, ClickHouse, or Elasticsearch for searchable action history with configurable retention
 
+### Agent Interop ([A2A Protocol v1.0](https://a2aprotocol.org))
+
+- **Task Engine** — 8-state Task lifecycle (`Submitted`, `Working`, `InputRequired`, `AuthRequired`, `Completed`, `Canceled`, `Failed`, `Rejected`) with CAS-retried atomic transitions, multi-hop reference-graph cycle detection, and the stale-task reaper as a backstop
+- **Two Transports, One Engine** — JSON-RPC 2.0 (`message/send`, `tasks/get`, `tasks/cancel`, push-config CRUD, `agent/getAuthenticatedExtendedCard`) and the spec §11 REST binding share the same method implementations
+- **Pause-for-Human** — `InputRequired` and `AuthRequired` interrupts pair a Task transition with a `BusApproval` row in one atomic step
+- **Artifact Streaming Gatekeeper** — Enforces strict `chunk_index` order, no-updates-after-`lastChunk`, and `totalChunks` completeness across multi-chunk artifact deliveries
+- **SSE Events** — `GET /a2a/{ns}/{tenant}/v1/tasks/{id}/events` re-uses the gateway broadcast and the same per-tenant connection caps as `/v1/stream`
+- **Push Notifications** — Per-task webhook configs (CRUD over JSON-RPC + REST) plus a background delivery worker with bounded concurrent dispatch, short-TTL config cache, and refined retry classification (`408`/`425`/`429` transient, other `4xx` terminal)
+- **Discovery** — Public unauthenticated `.well-known/agent.json` with single-card-verbatim vs. tenant-aggregated semantics, enriched with the gateway's intrinsic security schemes (`acteon.bearer`, `acteon.apiKey`)
+- **Multi-tenant** — Every A2A endpoint scoped by `/a2a/{namespace}/{tenant}/…` with full grant-level authorization
+
 ### Enterprise Ready
 
 - **Multi-Tenant** — Namespace and tenant isolation with per-tenant rate limiting
