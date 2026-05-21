@@ -57,6 +57,7 @@
 //!     .unwrap();
 //! ```
 
+pub mod a2a;
 pub mod aws;
 pub mod azure;
 mod error;
