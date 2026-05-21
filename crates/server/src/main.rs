@@ -1625,6 +1625,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // counters are AtomicU64 — no lock needed once we hold the Arc.
     let gateway_metrics = gateway.read().await.metrics_arc();
 
+    // A2A push-notification delivery worker (Phase 4.2). Subscribes
+    // to the gateway's stream broadcast and POSTs every A2A task
+    // event to each registered `TaskPushNotificationConfig`. Spawn
+    // here, after the gateway is wrapped but before any handlers can
+    // emit events, so the subscriber misses nothing.
+    let _a2a_push_worker = {
+        let state_store = gateway.read().await.state_store().clone();
+        let rx = gateway.read().await.stream_tx().subscribe();
+        let worker = acteon_server::api::a2a_push_worker::PushDeliveryWorker::new(
+            state_store,
+            shared_http_client.clone(),
+            rx,
+        );
+        tokio::spawn(worker.run())
+    };
+
     // Spawn background processor for group flushing and timeout processing.
     // This must be after gateway Arc is created so handlers can dispatch notifications.
     let _background_shutdown_tx = if config.background.enabled {
