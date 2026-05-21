@@ -26,10 +26,14 @@
 //!   treats `408`, `425`, and `429` as transient — they are exactly
 //!   the codes a well-behaved server uses to ask the client to back
 //!   off, so retrying is correct.
-//! - No DLQ in this slice — terminal and exhausted failures are
-//!   counted in `PushDeliveryMetrics` and logged with `error!`. A
-//!   persistent DLQ can layer on later without touching the
-//!   broadcast subscriber.
+//! - Terminal and exhausted failures land in a persistent Dead
+//!   Letter Queue (`KeyKind::A2aPushDlq`) keyed
+//!   `{task_id}:{entry_id}`, with the failing event payload
+//!   truncated to `MAX_DLQ_EVENT_BYTES`. The DLQ write is
+//!   best-effort: a state-store failure is logged with `warn!` and
+//!   counted in `dlq_write_failures` but does not block the
+//!   worker's hot path. Operator CRUD lives at
+//!   `/v1/a2a/{ns}/{tenant}/push-dlq[/{id}]` (see `a2a_push.rs`).
 //!
 //! The HTTP client is provided by the caller — typically the shared
 //! `reqwest::Client` `main.rs` builds once and threads through every
@@ -41,8 +45,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use acteon_core::{StreamEvent, TaskPushNotificationConfig};
-use acteon_state::{KeyKind, StateStore};
+use acteon_core::{DlqFailureKind, PushDeliveryDlqEntry, StreamEvent, TaskPushNotificationConfig};
+use acteon_state::{KeyKind, StateKey, StateStore};
 use tokio::sync::{Mutex, Semaphore, broadcast};
 use tracing::{debug, error, warn};
 
@@ -110,12 +114,22 @@ pub struct PushDeliveryMetrics {
     /// transient set). The retry loop stops on these.
     pub deliveries_terminal: AtomicU64,
     /// Deliveries that exhausted the per-call retry budget without
-    /// succeeding. Candidates for the future DLQ.
+    /// succeeding. Each one writes a DLQ entry — see
+    /// [`Self::dlq_writes`].
     pub deliveries_exhausted: AtomicU64,
     /// `scan_keys` calls actually issued to the state store after
     /// the config-cache check. The cache hit rate is
     /// `1 - state_store_scans / events_dispatched` (approximately).
     pub state_store_scans: AtomicU64,
+    /// DLQ entries successfully written to the state store. Lower
+    /// than `deliveries_terminal + deliveries_exhausted` when the
+    /// state store itself rejects a DLQ write — see
+    /// [`Self::dlq_write_failures`].
+    pub dlq_writes: AtomicU64,
+    /// DLQ entries the worker tried to write but failed (state
+    /// store error, serialization error). Logged with `warn!` so an
+    /// operator can investigate.
+    pub dlq_write_failures: AtomicU64,
 }
 
 impl PushDeliveryMetrics {
@@ -132,6 +146,8 @@ impl PushDeliveryMetrics {
             deliveries_terminal: self.deliveries_terminal.load(Ordering::Relaxed),
             deliveries_exhausted: self.deliveries_exhausted.load(Ordering::Relaxed),
             state_store_scans: self.state_store_scans.load(Ordering::Relaxed),
+            dlq_writes: self.dlq_writes.load(Ordering::Relaxed),
+            dlq_write_failures: self.dlq_write_failures.load(Ordering::Relaxed),
         }
     }
 }
@@ -147,6 +163,8 @@ pub struct PushDeliveryMetricsSnapshot {
     pub deliveries_terminal: u64,
     pub deliveries_exhausted: u64,
     pub state_store_scans: u64,
+    pub dlq_writes: u64,
+    pub dlq_write_failures: u64,
 }
 
 /// Internal state held behind an `Arc` and shared across every
@@ -417,6 +435,21 @@ impl Shared {
                         reason = %reason,
                         "A2A push permanently rejected; not retrying",
                     );
+                    // Persist a DLQ entry so the operator-facing
+                    // surface (`GET /v1/a2a/.../push-dlq`) can
+                    // surface the failure and so a manual cleanup is
+                    // possible. Best-effort — a DLQ write failure
+                    // is logged with `warn!` but does not block the
+                    // worker's hot path.
+                    let attempts_so_far = u32::try_from(attempt + 1).unwrap_or(u32::MAX);
+                    self.write_dlq_entry(
+                        &config,
+                        &event,
+                        DlqFailureKind::Terminal,
+                        &reason,
+                        attempts_so_far,
+                    )
+                    .await;
                     return;
                 }
                 Err(DeliveryError::Transient(reason)) => {
@@ -433,6 +466,16 @@ impl Shared {
                             reason = %reason,
                             "A2A push exhausted retries",
                         );
+                        let attempts_so_far =
+                            u32::try_from(MAX_DELIVERY_ATTEMPTS).unwrap_or(u32::MAX);
+                        self.write_dlq_entry(
+                            &config,
+                            &event,
+                            DlqFailureKind::Exhausted,
+                            &reason,
+                            attempts_so_far,
+                        )
+                        .await;
                         return;
                     }
                     let delay = backoff(attempt);
@@ -447,6 +490,94 @@ impl Shared {
                     );
                     tokio::time::sleep(delay).await;
                 }
+            }
+        }
+    }
+
+    /// Persist a Dead-Letter-Queue entry for a delivery that failed
+    /// terminally or exhausted its retry budget. Best-effort: a
+    /// failure to write the DLQ row is logged with `warn!` and
+    /// counted in `dlq_write_failures` but does not block the
+    /// worker's hot path. The event payload is serialized + the
+    /// core type truncates it to `MAX_DLQ_EVENT_BYTES` so a single
+    /// oversized event can't blow up the DLQ row.
+    async fn write_dlq_entry(
+        &self,
+        config: &TaskPushNotificationConfig,
+        event: &StreamEvent,
+        failure_kind: DlqFailureKind,
+        last_error: &str,
+        attempts: u32,
+    ) {
+        let event_json = match serde_json::to_string(event) {
+            Ok(s) => s,
+            Err(e) => {
+                self.metrics
+                    .dlq_write_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    config_id = %config.id,
+                    task_id = %config.task_id,
+                    error = %e,
+                    "A2A push worker: DLQ event serialization failed; skipping DLQ write"
+                );
+                return;
+            }
+        };
+        let entry_id = uuid::Uuid::now_v7().to_string();
+        let entry = PushDeliveryDlqEntry::new(
+            &entry_id,
+            &config.id,
+            &config.task_id,
+            &config.namespace,
+            &config.tenant,
+            &config.url,
+            failure_kind,
+            last_error,
+            attempts,
+            event_json,
+        );
+        let key = StateKey::new(
+            config.namespace.clone(),
+            config.tenant.clone(),
+            KeyKind::A2aPushDlq,
+            entry.storage_id(),
+        );
+        let payload = match serde_json::to_string(&entry) {
+            Ok(s) => s,
+            Err(e) => {
+                self.metrics
+                    .dlq_write_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    config_id = %config.id,
+                    task_id = %config.task_id,
+                    error = %e,
+                    "A2A push worker: DLQ entry serialization failed; skipping DLQ write"
+                );
+                return;
+            }
+        };
+        match self.state.set(&key, &payload, None).await {
+            Ok(()) => {
+                self.metrics.dlq_writes.fetch_add(1, Ordering::Relaxed);
+                debug!(
+                    config_id = %config.id,
+                    task_id = %config.task_id,
+                    entry_id = %entry_id,
+                    "A2A push DLQ entry written",
+                );
+            }
+            Err(e) => {
+                self.metrics
+                    .dlq_write_failures
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    config_id = %config.id,
+                    task_id = %config.task_id,
+                    error = %e,
+                    "A2A push worker: DLQ state write failed"
+                );
             }
         }
     }
@@ -746,7 +877,8 @@ mod tests {
         save_config(&store, &cfg).await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics));
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics));
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
@@ -760,6 +892,29 @@ mod tests {
         let snap = metrics.snapshot();
         assert_eq!(snap.deliveries_terminal, 1);
         assert_eq!(snap.deliveries_succeeded, 0);
+        // A terminal failure must land a DLQ entry so an operator
+        // can observe it through `/v1/a2a/.../push-dlq`.
+        assert_eq!(snap.dlq_writes, 1);
+        assert_eq!(snap.dlq_write_failures, 0);
+        let dlq_entries = store
+            .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+            .await
+            .unwrap();
+        assert_eq!(dlq_entries.len(), 1, "expected one DLQ row on disk");
+        let (_, raw) = &dlq_entries[0];
+        let row: PushDeliveryDlqEntry = serde_json::from_str(raw).unwrap();
+        assert_eq!(row.failure_kind, DlqFailureKind::Terminal);
+        assert_eq!(row.config_id, "cfg-1");
+        assert_eq!(row.task_id, "task-1");
+        // Attempts is the count of `post_once` calls — exactly 1 on
+        // a terminal classification (no retry).
+        assert_eq!(row.attempts, 1);
+        // `last_error` carries the HTTP status snapshot.
+        assert!(
+            row.last_error.contains("404"),
+            "last_error should carry the status: {}",
+            row.last_error
+        );
     }
 
     /// Adversarial review #3: a 429 must be retried, not terminally
@@ -790,6 +945,57 @@ mod tests {
         let snap = metrics.snapshot();
         assert_eq!(snap.deliveries_succeeded, 1);
         assert_eq!(snap.deliveries_terminal, 0);
+    }
+
+    /// Exhausted transient retries (MAX_DELIVERY_ATTEMPTS of 5xx)
+    /// must land a DLQ entry tagged `Exhausted` with the full
+    /// attempt count. Polls the state store rather than sleeping
+    /// the full ~3s retry cycle to keep the test fast on success.
+    #[tokio::test(flavor = "current_thread", start_paused = false)]
+    async fn exhausted_retries_write_a_dlq_entry() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let http = reqwest::Client::new();
+        let hits = Arc::new(AtomicUsize::new(0));
+        // Every request returns 503 (transient) — the worker burns
+        // through all retries and gives up.
+        let url = start_mock(503, Arc::clone(&hits)).await;
+        let cfg = TaskPushNotificationConfig::new("cfg-x", "task-x", "agents", "demo", &url);
+        save_config(&store, &cfg).await;
+        let metrics = Arc::new(PushDeliveryMetrics::default());
+        let (tx, rx) = broadcast::channel::<StreamEvent>(8);
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics));
+        let handle = tokio::spawn(worker.run());
+        tx.send(mk_event("task-x")).unwrap();
+        // Poll for the DLQ row. The retry cycle is 3 attempts +
+        // (1s + 2s) backoff, so allow up to ~5s.
+        let dlq_row = loop {
+            let entries = store
+                .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+                .await
+                .unwrap();
+            if !entries.is_empty() {
+                break entries.into_iter().next().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if metrics.snapshot().deliveries_exhausted > 0 {
+                // Worker is done but DLQ row not yet visible —
+                // give it one more tick to flush.
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        drop(tx);
+        let _ = handle.await;
+        let row: PushDeliveryDlqEntry = serde_json::from_str(&dlq_row.1).unwrap();
+        assert_eq!(row.failure_kind, DlqFailureKind::Exhausted);
+        assert_eq!(row.config_id, "cfg-x");
+        assert_eq!(row.task_id, "task-x");
+        // Exhausted entries record the full attempt count.
+        assert_eq!(row.attempts, MAX_DELIVERY_ATTEMPTS as u32);
+        let snap = metrics.snapshot();
+        assert_eq!(snap.deliveries_exhausted, 1);
+        assert_eq!(snap.dlq_writes, 1);
+        assert_eq!(snap.dlq_write_failures, 0);
     }
 
     /// Adversarial review #1: a slow webhook on one tenant must not

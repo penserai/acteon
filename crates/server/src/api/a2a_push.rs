@@ -432,6 +432,171 @@ fn render_rest_error(err: &PushConfigError) -> Response {
     }
 }
 
+// ---------------------------------------------------------------------
+// Dead-Letter Queue (operator surface)
+//
+// The DLQ is *not* part of the A2A protocol — it lives at
+// `/v1/a2a/{ns}/{tenant}/push-dlq[/{id}]` under Acteon's operator
+// namespace and uses the same Dispatch-permission + `(ns, tenant,
+// a2a, dlq)` grant check as the rest of the operator surface. The
+// REST list returns the most recent entries sorted descending by
+// `last_failed_at` so a fresh failure surfaces first.
+// ---------------------------------------------------------------------
+
+/// Hard cap on the number of DLQ entries one list call returns.
+/// Operator tooling that needs more should narrow the scope with
+/// per-task listing once that's wired (follow-up).
+const MAX_DLQ_LIST: usize = 500;
+
+/// Storage key for one DLQ row.
+fn dlq_key(scope: &TaskScope, task_id: &str, entry_id: &str) -> StateKey {
+    StateKey::new(
+        scope.namespace.clone(),
+        scope.tenant.clone(),
+        KeyKind::A2aPushDlq,
+        format!("{task_id}:{entry_id}"),
+    )
+}
+
+/// List every DLQ entry under (`namespace`, `tenant`), capped at
+/// [`MAX_DLQ_LIST`]. The cap is enforced *after* the scan but
+/// *before* sort so a tenant with > [`MAX_DLQ_LIST`] entries gets a
+/// deterministic suffix rather than a random sample.
+pub(crate) async fn list_dlq(
+    state: &AppState,
+    scope: &TaskScope,
+) -> Result<Vec<acteon_core::PushDeliveryDlqEntry>, PushConfigError> {
+    let store: Arc<dyn StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    let entries = store
+        .scan_keys(&scope.namespace, &scope.tenant, KeyKind::A2aPushDlq, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "push-dlq: scan failed");
+            PushConfigError::Internal
+        })?;
+    let mut out: Vec<acteon_core::PushDeliveryDlqEntry> = Vec::with_capacity(entries.len());
+    for (_, raw) in entries {
+        if let Ok(e) = serde_json::from_str::<acteon_core::PushDeliveryDlqEntry>(&raw) {
+            out.push(e);
+        }
+    }
+    // Most-recent-failure first — the operator-friendly default.
+    // `sort_by_key` with a reverse-ordered key keeps clippy happy
+    // without an explicit comparator closure.
+    out.sort_by_key(|e| std::cmp::Reverse(e.last_failed_at));
+    out.truncate(MAX_DLQ_LIST);
+    Ok(out)
+}
+
+/// Load one DLQ entry by id. Walks the full prefix-scan because the
+/// `{task_id}:{entry_id}` key shape requires the `task_id` to address
+/// the row directly; the operator endpoint only takes `entry_id` so
+/// it can identify rows by UUID alone.
+pub(crate) async fn load_dlq_entry(
+    state: &AppState,
+    scope: &TaskScope,
+    entry_id: &str,
+) -> Result<acteon_core::PushDeliveryDlqEntry, PushConfigError> {
+    let store: Arc<dyn StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    let entries = store
+        .scan_keys(&scope.namespace, &scope.tenant, KeyKind::A2aPushDlq, None)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "push-dlq: scan failed");
+            PushConfigError::Internal
+        })?;
+    let suffix = format!(":{entry_id}");
+    for (key_id, raw) in entries {
+        // Keys are stored as `{task_id}:{entry_id}`, so a suffix
+        // match on `:entry_id` is unambiguous (entry ids are
+        // UUIDv7 which don't contain `:`).
+        if key_id.ends_with(&suffix)
+            && let Ok(e) = serde_json::from_str::<acteon_core::PushDeliveryDlqEntry>(&raw)
+        {
+            return Ok(e);
+        }
+    }
+    Err(PushConfigError::ConfigNotFound {
+        task_id: String::new(),
+        config_id: entry_id.to_string(),
+    })
+}
+
+/// Delete one DLQ entry. Loads first to learn the `task_id` (the
+/// caller only gave us `entry_id`); a missing entry yields
+/// `ConfigNotFound` rather than a silent no-op.
+pub(crate) async fn delete_dlq_entry(
+    state: &AppState,
+    scope: &TaskScope,
+    entry_id: &str,
+) -> Result<(), PushConfigError> {
+    let row = load_dlq_entry(state, scope, entry_id).await?;
+    let key = dlq_key(scope, &row.task_id, entry_id);
+    let store: Arc<dyn StateStore> = {
+        let gw = state.gateway.read().await;
+        gw.state_store().clone()
+    };
+    store.delete(&key).await.map_err(|e| {
+        tracing::warn!(error = %e, "push-dlq: delete failed");
+        PushConfigError::Internal
+    })?;
+    Ok(())
+}
+
+/// `GET /v1/a2a/{namespace}/{tenant}/push-dlq` — list DLQ entries.
+pub async fn rest_list_push_dlq(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant)): Path<(String, String)>,
+) -> Response {
+    if let Some(resp) = guard(&identity, &namespace, &tenant) {
+        return resp;
+    }
+    let scope = TaskScope::new(&namespace, &tenant);
+    match list_dlq(&state, &scope).await {
+        Ok(rows) => (StatusCode::OK, Json(rows)).into_response(),
+        Err(e) => render_rest_error(&e),
+    }
+}
+
+/// `GET /v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}` — read one.
+pub async fn rest_get_push_dlq(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, entry_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Some(resp) = guard(&identity, &namespace, &tenant) {
+        return resp;
+    }
+    let scope = TaskScope::new(&namespace, &tenant);
+    match load_dlq_entry(&state, &scope, &entry_id).await {
+        Ok(row) => (StatusCode::OK, Json(row)).into_response(),
+        Err(e) => render_rest_error(&e),
+    }
+}
+
+/// `DELETE /v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}`.
+pub async fn rest_delete_push_dlq(
+    State(state): State<AppState>,
+    axum::Extension(identity): axum::Extension<CallerIdentity>,
+    Path((namespace, tenant, entry_id)): Path<(String, String, String)>,
+) -> Response {
+    if let Some(resp) = guard(&identity, &namespace, &tenant) {
+        return resp;
+    }
+    let scope = TaskScope::new(&namespace, &tenant);
+    match delete_dlq_entry(&state, &scope, &entry_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => render_rest_error(&e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +615,13 @@ mod tests {
         // UUIDv7s parse and have the version-7 nibble in the right place.
         let parsed = uuid::Uuid::parse_str(&id).expect("uuid parse");
         assert_eq!(parsed.get_version_num(), 7, "UUIDv7 expected");
+    }
+
+    #[test]
+    fn dlq_key_uses_task_then_entry_id_format() {
+        let s = TaskScope::new("agents", "demo");
+        let k = dlq_key(&s, "task-1", "entry-a");
+        assert_eq!(k.id, "task-1:entry-a");
+        assert_eq!(k.kind, KeyKind::A2aPushDlq);
     }
 }

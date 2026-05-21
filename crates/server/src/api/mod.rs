@@ -199,6 +199,17 @@ pub fn router(state: AppState) -> Router {
             "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
             get(a2a_push::rest_get_push_config).delete(a2a_push::rest_delete_push_config),
         )
+        // A2A push delivery DLQ (operator surface). Not part of the
+        // A2A protocol — lives under /v1/a2a/... and uses the
+        // standard A2A dispatch grant.
+        .route(
+            "/v1/a2a/{namespace}/{tenant}/push-dlq",
+            get(a2a_push::rest_list_push_dlq),
+        )
+        .route(
+            "/v1/a2a/{namespace}/{tenant}/push-dlq/{entryId}",
+            get(a2a_push::rest_get_push_dlq).delete(a2a_push::rest_delete_push_dlq),
+        )
         // Rules management
         .route("/v1/rules", get(rules::list_rules))
         .route("/v1/rules/coverage", get(rules::rule_coverage))

@@ -27,6 +27,169 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Hard cap on the size of a single DLQ entry's serialized event
+/// payload. The worker uses the cap to truncate oversized events
+/// rather than blocking writes — a truncated payload is still
+/// useful for diagnostics.
+pub const MAX_DLQ_EVENT_BYTES: usize = 32 * 1024;
+
+/// Hard cap on the size of a single DLQ entry's `last_error`
+/// message. A misbehaving server can return arbitrarily long error
+/// bodies; the cap keeps the DLQ row bounded.
+pub const MAX_DLQ_ERROR_BYTES: usize = 4 * 1024;
+
+/// Why a delivery landed in the DLQ. Used to drive operator
+/// remediation: `Terminal` means the URL is permanently rejecting
+/// the payload (configuration problem), `Exhausted` means the URL
+/// is intermittently failing (capacity / network problem).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub enum DlqFailureKind {
+    /// HTTP 4xx outside the transient set — the URL is permanently
+    /// rejecting the payload. Operator should fix the config and
+    /// delete + re-create.
+    Terminal,
+    /// The transient retry budget was exhausted without success.
+    /// Operator can replay the entry once the underlying service is
+    /// healthy.
+    Exhausted,
+}
+
+/// One Dead-Letter-Queue entry recorded when a push-notification
+/// delivery exhausts its retry budget or is permanently rejected by
+/// the receiver. Persisted at `KeyKind::A2aPushDlq` keyed
+/// `{task_id}:{entry_id}` so a prefix-scan by task id lists every
+/// failed delivery for one task.
+///
+/// The `Debug` impl redacts both `event_json` and `last_error`
+/// because each can carry tenant payload bytes a log consumer wasn't
+/// authorized to see.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct PushDeliveryDlqEntry {
+    /// DLQ-entry identifier (`UUIDv7` by convention).
+    pub id: String,
+    /// The push config whose delivery failed.
+    pub config_id: String,
+    /// The Task the event was scoped to.
+    pub task_id: String,
+    /// Namespace + tenant of the task. Stored on the row so a
+    /// cross-tenant DLQ scan stays self-describing.
+    pub namespace: String,
+    /// Tenant of the task.
+    pub tenant: String,
+    /// URL the worker tried to POST to at the moment of failure.
+    /// Snapshotted because the live config may have been edited
+    /// since.
+    pub url: String,
+    /// Whether the failure is terminal or just exhausted.
+    pub failure_kind: DlqFailureKind,
+    /// Last error observed (HTTP status + reason or network
+    /// description). Capped at [`MAX_DLQ_ERROR_BYTES`].
+    pub last_error: String,
+    /// Number of attempts the worker made before giving up.
+    pub attempts: u32,
+    /// Wall-clock time of the first failed attempt.
+    pub first_failed_at: DateTime<Utc>,
+    /// Wall-clock time of the last failed attempt (i.e., when the
+    /// row was written).
+    pub last_failed_at: DateTime<Utc>,
+    /// Serialized `StreamEvent` envelope. Truncated to
+    /// [`MAX_DLQ_EVENT_BYTES`]; truncated entries get a marker
+    /// suffix so consumers can detect it.
+    pub event_json: String,
+}
+
+impl fmt::Debug for PushDeliveryDlqEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PushDeliveryDlqEntry")
+            .field("id", &self.id)
+            .field("config_id", &self.config_id)
+            .field("task_id", &self.task_id)
+            .field("namespace", &self.namespace)
+            .field("tenant", &self.tenant)
+            .field("url", &self.url)
+            .field("failure_kind", &self.failure_kind)
+            .field(
+                "last_error",
+                &format!("[REDACTED {} bytes]", self.last_error.len()),
+            )
+            .field("attempts", &self.attempts)
+            .field("first_failed_at", &self.first_failed_at)
+            .field("last_failed_at", &self.last_failed_at)
+            .field(
+                "event_json",
+                &format!("[REDACTED {} bytes]", self.event_json.len()),
+            )
+            .finish()
+    }
+}
+
+impl PushDeliveryDlqEntry {
+    /// Build a new DLQ entry. `event_json` and `last_error` are
+    /// truncated to their respective caps so a misbehaving event
+    /// or error body can't blow up the DLQ row size.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)] // 1:1 with the persisted row
+    pub fn new(
+        id: impl Into<String>,
+        config_id: impl Into<String>,
+        task_id: impl Into<String>,
+        namespace: impl Into<String>,
+        tenant: impl Into<String>,
+        url: impl Into<String>,
+        failure_kind: DlqFailureKind,
+        last_error: impl Into<String>,
+        attempts: u32,
+        event_json: String,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            id: id.into(),
+            config_id: config_id.into(),
+            task_id: task_id.into(),
+            namespace: namespace.into(),
+            tenant: tenant.into(),
+            url: url.into(),
+            failure_kind,
+            last_error: truncate(last_error.into(), MAX_DLQ_ERROR_BYTES),
+            attempts,
+            first_failed_at: now,
+            last_failed_at: now,
+            event_json: truncate(event_json, MAX_DLQ_EVENT_BYTES),
+        }
+    }
+
+    /// Storage key shape: `{task_id}:{entry_id}`. The `task_id`
+    /// prefix lets operator tooling list every DLQ entry for one
+    /// task in a single `scan_keys` call.
+    #[must_use]
+    pub fn storage_id(&self) -> String {
+        format!("{}:{}", self.task_id, self.id)
+    }
+}
+
+/// Truncate `s` to at most `cap` bytes, appending a marker suffix
+/// when truncation actually happened. Splits on a char boundary so
+/// a multi-byte UTF-8 codepoint at the boundary isn't sliced in
+/// half.
+fn truncate(mut s: String, cap: usize) -> String {
+    if s.len() <= cap {
+        return s;
+    }
+    // Walk back to a char boundary; UTF-8 codepoints are at most 4
+    // bytes so the walk is bounded.
+    let mut end = cap;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s.truncate(end);
+    s.push_str("…[truncated]");
+    s
+}
+
 /// Maximum length of a push-notification URL. A generous cap that
 /// still bounds the storage row — webhook URLs longer than this in
 /// the wild are almost always misconfiguration.
@@ -377,5 +540,33 @@ mod tests {
         assert!(!s.contains("super-secret-bearer"));
         assert!(!s.contains("never-leak-this"));
         assert!(s.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn dlq_entry_serializes_camelcase_and_redacts_event_in_debug() {
+        let entry = PushDeliveryDlqEntry::new(
+            "entry-1",
+            "cfg-1",
+            "task-1",
+            "agents",
+            "demo",
+            "https://h",
+            DlqFailureKind::Exhausted,
+            "HTTP 503",
+            3,
+            r#"{"id":"evt"}"#.to_string(),
+        );
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["configId"], "cfg-1");
+        assert_eq!(json["taskId"], "task-1");
+        assert_eq!(json["failureKind"], "exhausted");
+        assert_eq!(json["attempts"], 3);
+        assert_eq!(json["eventJson"], r#"{"id":"evt"}"#);
+        // Debug must NOT print the event JSON or last_error body —
+        // both can carry tenant payload data the operator log
+        // wasn't authorized to see.
+        let dbg = format!("{entry:?}");
+        assert!(!dbg.contains(r#""id":"evt""#));
+        assert!(dbg.contains("[REDACTED"));
     }
 }
