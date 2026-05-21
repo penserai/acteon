@@ -120,9 +120,9 @@ pub use stream::{
     timestamp_from_event_id,
 };
 pub use task_push::{
-    MAX_PUSH_SCHEME_ALIAS_BYTES, MAX_PUSH_SCHEMES_PER_CONFIG, MAX_PUSH_TOKEN_BYTES,
-    MAX_PUSH_URL_BYTES, PushAuthentication, TaskPushConfigValidationError,
-    TaskPushNotificationConfig,
+    DlqFailureKind, MAX_DLQ_ERROR_BYTES, MAX_DLQ_EVENT_BYTES, MAX_PUSH_SCHEME_ALIAS_BYTES,
+    MAX_PUSH_SCHEMES_PER_CONFIG, MAX_PUSH_TOKEN_BYTES, MAX_PUSH_URL_BYTES, PushAuthentication,
+    PushDeliveryDlqEntry, TaskPushConfigValidationError, TaskPushNotificationConfig,
 };
 pub use template::{
     Template, TemplateProfile, TemplateProfileField, validate_template_content,

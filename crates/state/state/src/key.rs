@@ -81,6 +81,12 @@ pub enum KeyKind {
     /// namespace + tenant so a `scan_keys` with a `task_id:` prefix
     /// lists every config bound to a single task.
     A2aTaskPushConfig,
+    /// A2A Push-Delivery Dead Letter Queue entry. Written by the
+    /// push-delivery worker when a delivery exhausts its retry
+    /// budget or is permanently rejected. Keyed
+    /// `{task_id}:{entry_id}` so a prefix-scan by task id lists
+    /// every failed delivery for one task.
+    A2aPushDlq,
     Custom(String),
 }
 
@@ -128,6 +134,7 @@ impl KeyKind {
             Self::A2aMessageDedup => "a2a_message_dedup",
             Self::BusAgentCard => "bus_agent_card",
             Self::A2aTaskPushConfig => "a2a_task_push_config",
+            Self::A2aPushDlq => "a2a_push_dlq",
             Self::Custom(s) => s.as_str(),
         }
     }
