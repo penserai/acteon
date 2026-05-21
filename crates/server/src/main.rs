@@ -2370,6 +2370,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|b| Arc::clone(b) as Arc<dyn acteon_rules::EmbeddingEvalSupport>),
         embedding_metrics: embedding_bridge.as_ref().map(|b| b.metrics()),
         connection_registry: Some(connection_registry),
+        a2a_discovery_cache: Arc::new(
+            acteon_server::api::a2a_discovery_cache::DiscoveryCache::new(),
+        ),
         dispatch_semaphore,
         config: config_snapshot,
         ui_path: Some(config.ui.dist_path.clone()),

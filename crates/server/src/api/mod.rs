@@ -1,5 +1,6 @@
 pub mod a2a;
 pub mod a2a_discovery;
+pub mod a2a_discovery_cache;
 pub mod a2a_push;
 pub mod a2a_push_worker;
 pub mod analytics;
@@ -91,6 +92,11 @@ pub struct AppState {
     pub embedding_metrics: Option<Arc<EmbeddingMetrics>>,
     /// Per-tenant SSE connection limit registry.
     pub connection_registry: Option<Arc<ConnectionRegistry>>,
+    /// Short-TTL cache in front of `.well-known/agent.json` and the
+    /// authenticated extended-card lookup. Caches the resolved
+    /// tenant card so a tenant with thousands of registered agents
+    /// doesn't pay for a full `scan_keys` on every discovery call.
+    pub a2a_discovery_cache: Arc<a2a_discovery_cache::DiscoveryCache>,
     /// Semaphore for limiting concurrent dispatch operations.
     pub dispatch_semaphore: Arc<tokio::sync::Semaphore>,
     /// Sanitized configuration snapshot (secrets masked).

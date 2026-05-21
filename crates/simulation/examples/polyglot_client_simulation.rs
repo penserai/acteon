@@ -68,6 +68,9 @@ impl TestServer {
             embedding: None,
             embedding_metrics: None,
             connection_registry: None,
+            a2a_discovery_cache: std::sync::Arc::new(
+                acteon_server::api::a2a_discovery_cache::DiscoveryCache::new(),
+            ),
             dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
             config: acteon_server::config::ConfigSnapshot::default(),
             ui_path: None,

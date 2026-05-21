@@ -44,6 +44,9 @@ async fn ui_serves_index_html() {
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        a2a_discovery_cache: Arc::new(
+            acteon_server::api::a2a_discovery_cache::DiscoveryCache::new(),
+        ),
         dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
         config: ConfigSnapshot::default(),
         ui_path: Some(ui_config.dist_path.clone()),
