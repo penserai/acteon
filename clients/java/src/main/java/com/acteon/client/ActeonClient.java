@@ -18,6 +18,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -103,6 +104,32 @@ public class ActeonClient implements AutoCloseable {
             builder.header("Authorization", "Bearer " + apiKey);
         }
 
+        return builder;
+    }
+
+    /**
+     * A2A request builder. Lets callers attach extra headers (used
+     * by the A2A surface to set {@code A2A-Version}) and optionally
+     * suppress the {@code Authorization} header (used by the
+     * unauthenticated discovery endpoint).
+     */
+    private HttpRequest.Builder a2aRequestBuilder(
+        String path,
+        java.util.Map<String, String> extraHeaders,
+        boolean skipAuth
+    ) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+            .uri(URI.create(baseUrl + path))
+            .header("Content-Type", "application/json");
+
+        if (!skipAuth && apiKey != null && !apiKey.isEmpty()) {
+            builder.header("Authorization", "Bearer " + apiKey);
+        }
+        if (extraHeaders != null) {
+            for (java.util.Map.Entry<String, String> e : extraHeaders.entrySet()) {
+                builder.header(e.getKey(), e.getValue());
+            }
+        }
         return builder;
     }
 
@@ -3673,5 +3700,216 @@ public class ActeonClient implements AutoCloseable {
         return busSend("POST",
             "/v1/bus/approvals/" + busSeg(namespace) + "/" + busSeg(tenant) + "/" + busSeg(approvalId) + "/reject",
             decision, Bus.BusApprovalDecisionResponse.class);
+    }
+
+    // =========================================================================
+    // A2A protocol surface — mirrors the Rust/Python/Node/Go SDKs.
+    // =========================================================================
+
+    /**
+     * Common A2A request-send path: build a request, send, and
+     * dispatch the response either into the typed body or to the
+     * structured-error path.
+     *
+     * @param method  HTTP method
+     * @param path    URL path (already segment-encoded by caller)
+     * @param body    request body to JSON-encode, or null for no body
+     * @param skipAuth suppress the Authorization header
+     */
+    private <T> T a2aSend(
+        String method,
+        String path,
+        Object body,
+        Class<T> responseType,
+        boolean skipAuth
+    ) throws ActeonException {
+        try {
+            HttpRequest.Builder builder = a2aRequestBuilder(
+                path, A2A.defaultHeaders(), skipAuth);
+            HttpRequest.BodyPublisher publisher = (body == null)
+                ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofString(
+                    objectMapper.writeValueAsString(body));
+            HttpRequest request = builder.method(method, publisher).build();
+            HttpResponse<String> response = httpClient.send(
+                request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                if (responseType == Void.class
+                    || response.body() == null
+                    || response.body().isEmpty()) {
+                    return null;
+                }
+                return objectMapper.readValue(response.body(), responseType);
+            }
+            // The A2A REST binding uses the standard
+            // {"error": "..."} envelope. Map to ApiException so
+            // callers can branch on it.
+            String code = "A2A";
+            String message = "a2a error (status " + response.statusCode() + ")";
+            try {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> err = objectMapper.readValue(
+                    response.body(), Map.class);
+                Object e = err.get("error");
+                Object m = err.get("message");
+                if (e instanceof String) message = (String) e;
+                else if (m instanceof String) message = (String) m;
+                Object c = err.get("code");
+                if (c instanceof String) code = (String) c;
+            } catch (IOException ignored) {
+                /* fall through with raw status */
+            }
+            boolean retryable = response.statusCode() == 408
+                || response.statusCode() == 425
+                || response.statusCode() == 429
+                || response.statusCode() >= 500;
+            throw new ApiException(code, message, retryable);
+        } catch (IOException e) {
+            throw new ConnectionException(e.getMessage(), e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionException("Request interrupted", e);
+        }
+    }
+
+    /** Overload of {@link #a2aSend} for the {@code Map<String, Object>}
+     *  return type — the default A2A response shape. */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> a2aSendMap(
+        String method, String path, Object body, boolean skipAuth
+    ) throws ActeonException {
+        return (Map<String, Object>) a2aSend(method, path, body, Map.class, skipAuth);
+    }
+
+    /** {@code POST /a2a/{namespace}/{tenant}/v1/message:send} —
+     *  start a new A2A Task or continue an existing one. */
+    public Map<String, Object> a2aSendMessage(
+        String namespace, String tenant, Map<String, Object> message
+    ) throws ActeonException {
+        Map<String, Object> body = new HashMap<>();
+        body.put("message", message);
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/message:send";
+        return a2aSendMap("POST", path, body, false);
+    }
+
+    /** {@code GET /a2a/{namespace}/{tenant}/v1/tasks/{id}} — read
+     *  a Task by id. Throws {@code ApiException} with HTTP 404 when
+     *  the task does not exist for the caller. */
+    public Map<String, Object> a2aGetTask(
+        String namespace, String tenant, String taskId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId);
+        return a2aSendMap("GET", path, null, false);
+    }
+
+    /** {@code POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel}.
+     *  The {@code :cancel} verb is part of the URL (spec §11) —
+     *  the server splits it off in-handler. */
+    public Map<String, Object> a2aCancelTask(
+        String namespace, String tenant, String taskId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/"
+            + A2A.segment(taskId) + ":cancel";
+        return a2aSendMap("POST", path, null, false);
+    }
+
+    /** {@code POST .../v1/tasks/{id}/pushNotificationConfigs} —
+     *  register or upsert a push-notification webhook for a Task. */
+    public Map<String, Object> a2aSetPushConfig(
+        String namespace, String tenant, String taskId, Map<String, Object> config
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs";
+        return a2aSendMap("POST", path, config, false);
+    }
+
+    /** {@code GET .../v1/tasks/{id}/pushNotificationConfigs} —
+     *  list every config registered for the task. */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> a2aListPushConfigs(
+        String namespace, String tenant, String taskId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs";
+        return (List<Map<String, Object>>) a2aSend(
+            "GET", path, null, List.class, false);
+    }
+
+    /** {@code GET …/pushNotificationConfigs/{cfgId}} — read one
+     *  config. */
+    public Map<String, Object> a2aGetPushConfig(
+        String namespace, String tenant, String taskId, String configId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs/" + A2A.segment(configId);
+        return a2aSendMap("GET", path, null, false);
+    }
+
+    /** {@code DELETE …/pushNotificationConfigs/{cfgId}}. Throws
+     *  {@code ApiException} with HTTP 404 when the config doesn't
+     *  exist — the server never silently no-ops. */
+    public void a2aDeletePushConfig(
+        String namespace, String tenant, String taskId, String configId
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/v1/tasks/" + A2A.segment(taskId)
+            + "/pushNotificationConfigs/" + A2A.segment(configId);
+        a2aSend("DELETE", path, null, Void.class, false);
+    }
+
+    /** {@code GET /a2a/{namespace}/{tenant}/.well-known/agent.json}.
+     *  Unauthenticated discovery endpoint — issued *without* the
+     *  Authorization header per the A2A spec. */
+    public Map<String, Object> a2aDiscoverAgent(
+        String namespace, String tenant
+    ) throws ActeonException {
+        String path = "/a2a/" + A2A.segment(namespace) + "/"
+            + A2A.segment(tenant) + "/.well-known/agent.json";
+        return a2aSendMap("GET", path, null, true);
+    }
+
+    /** JSON-RPC {@code agent/getAuthenticatedExtendedCard} —
+     *  authenticated discovery variant. Issued through the JSON-RPC
+     *  envelope against {@code POST /a2a/{ns}/{tenant}} (the A2A
+     *  spec defines no REST counterpart). The returned card has
+     *  {@code capabilities.extendedAgentCard = true}. */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> a2aGetAuthenticatedExtendedCard(
+        String namespace, String tenant
+    ) throws ActeonException {
+        Map<String, Object> envelope = new HashMap<>();
+        envelope.put("jsonrpc", "2.0");
+        envelope.put("id", 1);
+        envelope.put("method", "agent/getAuthenticatedExtendedCard");
+        String path = "/a2a/" + A2A.segment(namespace) + "/" + A2A.segment(tenant);
+        Map<String, Object> reply = a2aSendMap("POST", path, envelope, false);
+        // Unwrap the JSON-RPC envelope: error wins; missing result is
+        // an error too.
+        Object error = reply.get("error");
+        if (error instanceof Map) {
+            Map<String, Object> err = (Map<String, Object>) error;
+            Object code = err.get("code");
+            Object message = err.get("message");
+            throw new ApiException(
+                code != null ? code.toString() : "JSONRPC",
+                message != null ? message.toString() : "JSON-RPC error",
+                false
+            );
+        }
+        Object result = reply.get("result");
+        if (!(result instanceof Map)) {
+            throw new ApiException(
+                "JSONRPC",
+                "JSON-RPC reply had neither result nor error",
+                false
+            );
+        }
+        return (Map<String, Object>) result;
     }
 }
