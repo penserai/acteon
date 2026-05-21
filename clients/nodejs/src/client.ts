@@ -163,6 +163,12 @@ import {
   parseSigningKeysResponse,
 } from "./models.js";
 import { ActeonError, ApiError, ConnectionError, HttpError } from "./errors.js";
+import {
+  A2A_HEADERS,
+  a2aSegment,
+  unwrapJsonRpc,
+  type JsonRpcReply,
+} from "./a2a.js";
 import { readFileSync } from "node:fs";
 import { Agent as HttpsAgent } from "node:https";
 import {
@@ -355,6 +361,13 @@ export class ActeonClient {
     options?: {
       body?: unknown;
       params?: URLSearchParams;
+      extraHeaders?: Record<string, string>;
+      /**
+       * When true, suppress the `Authorization` header. Used by the
+       * A2A unauthenticated discovery endpoint
+       * (`/.well-known/agent.json`), which per spec is anonymous.
+       */
+      skipAuth?: boolean;
     }
   ): Promise<Response> {
     let url = `${this.baseUrl}${path}`;
@@ -366,9 +379,16 @@ export class ActeonClient {
     const timeoutId = setTimeout(() => controller.abort(), this.timeout);
 
     try {
+      const baseHeaders = options?.skipAuth
+        ? { "Content-Type": "application/json" }
+        : this.headers();
+      const headers: Record<string, string> = {
+        ...baseHeaders,
+        ...(options?.extraHeaders ?? {}),
+      };
       const fetchOptions: RequestInit & { dispatcher?: unknown } = {
         method,
-        headers: this.headers(),
+        headers,
         body: options?.body ? JSON.stringify(options.body) : undefined,
         signal: controller.signal,
       };
@@ -3036,5 +3056,195 @@ export class ActeonClient {
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusApprovalDecisionResponse((await response.json()) as Record<string, unknown>);
+  }
+
+  // ===========================================================================
+  // A2A protocol surface
+  //
+  // Mirrors the Rust + Python SDKs method-for-method. Every authenticated
+  // call sends `A2A-Version: 1.0`; the discovery call is intentionally
+  // unauthenticated per spec.
+  // ===========================================================================
+
+  /** Translate an A2A error response into an `ApiError`. The A2A
+   *  surface uses the same `{ "error": "..." }` envelope as the rest
+   *  of the Acteon REST API. */
+  private async a2aThrowFromResponse(response: Response): Promise<never> {
+    let payload: Record<string, unknown> = {};
+    try {
+      payload = (await response.json()) as Record<string, unknown>;
+    } catch {
+      /* fall through with empty payload */
+    }
+    const message =
+      (payload.error as string | undefined) ??
+      (payload.message as string | undefined) ??
+      `a2a error (status ${response.status})`;
+    const retryable =
+      response.status === 408 ||
+      response.status === 425 ||
+      response.status === 429 ||
+      response.status >= 500;
+    throw new ApiError(
+      (payload.code as string | undefined) ?? "A2A",
+      message,
+      retryable,
+    );
+  }
+
+  /** `POST /a2a/{namespace}/{tenant}/v1/message:send`. */
+  async a2aSendMessage(
+    namespace: string,
+    tenant: string,
+    message: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/message:send`,
+      { body: { message }, extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `GET /a2a/{namespace}/{tenant}/v1/tasks/{id}`. */
+  async a2aGetTask(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `POST /a2a/{namespace}/{tenant}/v1/tasks/{id}:cancel`. The
+   *  `:cancel` verb is part of the URL (spec §11) — the server
+   *  splits it off in-handler. */
+  async a2aCancelTask(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}:cancel`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `POST .../v1/tasks/{id}/pushNotificationConfigs` — register or
+   *  upsert a push-notification webhook for a Task. Use
+   *  {@link makePushConfig} to build `config`. */
+  async a2aSetPushConfig(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+    config: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
+      { body: config, extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `GET .../v1/tasks/{id}/pushNotificationConfigs` — list every
+   *  config registered for the task. */
+  async a2aListPushConfigs(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+  ): Promise<Record<string, unknown>[]> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>[];
+  }
+
+  /** `GET …/pushNotificationConfigs/{cfgId}` — read one config. */
+  async a2aGetPushConfig(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+    configId: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** `DELETE …/pushNotificationConfigs/{cfgId}`. Throws an
+   *  `ApiError` with HTTP 404 when the config doesn't exist — the
+   *  server never silently no-ops. */
+  async a2aDeletePushConfig(
+    namespace: string,
+    tenant: string,
+    taskId: string,
+    configId: string,
+  ): Promise<void> {
+    const response = await this.request(
+      "DELETE",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/v1/tasks/${a2aSegment(taskId)}/pushNotificationConfigs/${a2aSegment(configId)}`,
+      { extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+  }
+
+  /** `GET /a2a/{namespace}/{tenant}/.well-known/agent.json` — the
+   *  unauthenticated discovery endpoint. Issued **without** the
+   *  Authorization header per A2A spec. */
+  async a2aDiscoverAgent(
+    namespace: string,
+    tenant: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.request(
+      "GET",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}/.well-known/agent.json`,
+      { skipAuth: true },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    return (await response.json()) as Record<string, unknown>;
+  }
+
+  /** JSON-RPC `agent/getAuthenticatedExtendedCard` — authenticated
+   *  discovery variant. Issued through the JSON-RPC envelope against
+   *  `POST /a2a/{ns}/{tenant}` (the A2A spec defines no REST
+   *  counterpart). The returned card has
+   *  `capabilities.extendedAgentCard = true`. */
+  async a2aGetAuthenticatedExtendedCard(
+    namespace: string,
+    tenant: string,
+  ): Promise<Record<string, unknown>> {
+    const envelope = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "agent/getAuthenticatedExtendedCard",
+    };
+    const response = await this.request(
+      "POST",
+      `/a2a/${a2aSegment(namespace)}/${a2aSegment(tenant)}`,
+      { body: envelope, extraHeaders: { ...A2A_HEADERS } },
+    );
+    if (!response.ok) await this.a2aThrowFromResponse(response);
+    const body = (await response.json()) as JsonRpcReply<Record<string, unknown>>;
+    return unwrapJsonRpc(body, (code, message) => {
+      throw new ApiError(code, message, false);
+    });
   }
 }

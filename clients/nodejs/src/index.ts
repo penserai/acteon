@@ -166,3 +166,15 @@ export {
   type StreamEndEnvelope,
   type StreamEndEnvelopeStatus,
 } from "./bus_models.js";
+export {
+  A2A_PROTOCOL_VERSION,
+  A2A_VERSION_HEADER,
+  A2A_HEADERS,
+  makeMessage,
+  makePartData,
+  makePartText,
+  makePartUrl,
+  makePushConfig,
+  type MakeMessageOptions,
+  type MakePushConfigOptions,
+} from "./a2a.js";
