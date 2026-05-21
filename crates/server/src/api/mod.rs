@@ -1,5 +1,6 @@
 pub mod a2a;
 pub mod a2a_discovery;
+pub mod a2a_push;
 pub mod analytics;
 pub mod approvals;
 pub mod audit;
@@ -179,6 +180,17 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/a2a/{namespace}/{tenant}/v1/tasks/{id}/events",
             get(a2a::a2a_task_events),
+        )
+        // Push-notification config CRUD (Phase 4.1). The collection
+        // endpoint registers `POST` (set) + `GET` (list); the item
+        // endpoint registers `GET` (get) + `DELETE` (delete).
+        .route(
+            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs",
+            post(a2a_push::rest_set_push_config).get(a2a_push::rest_list_push_configs),
+        )
+        .route(
+            "/a2a/{namespace}/{tenant}/v1/tasks/{id}/pushNotificationConfigs/{cfgId}",
+            get(a2a_push::rest_get_push_config).delete(a2a_push::rest_delete_push_config),
         )
         // Rules management
         .route("/v1/rules", get(rules::list_rules))

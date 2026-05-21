@@ -412,6 +412,108 @@ fn mark_extended(mut card: AgentCard) -> AgentCard {
 }
 
 // ---------------------------------------------------------------------
+// Push-notification config methods (Phase 4.1)
+// ---------------------------------------------------------------------
+
+/// JSON-RPC params for `tasks/pushNotificationConfig/set`. The inner
+/// `push_notification_config` body matches the spec's
+/// `PushNotificationConfig` shape (`id` optional) and is delegated to
+/// the shared `SetPushConfigInput` in `a2a_push`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushConfigSetParams {
+    task_id: String,
+    push_notification_config: super::a2a_push::SetPushConfigInput,
+}
+
+/// JSON-RPC params for `tasks/pushNotificationConfig/{get, delete}`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushConfigIdParams {
+    task_id: String,
+    push_notification_config_id: String,
+}
+
+/// JSON-RPC params for `tasks/pushNotificationConfig/list`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushConfigListParams {
+    task_id: String,
+}
+
+async fn method_push_config_set(
+    state: &AppState,
+    scope: &TaskScope,
+    params: PushConfigSetParams,
+) -> Result<acteon_core::TaskPushNotificationConfig, A2aError> {
+    super::a2a_push::save_config(
+        state,
+        scope,
+        &params.task_id,
+        params.push_notification_config,
+    )
+    .await
+    .map_err(push_err_to_a2a)
+}
+
+async fn method_push_config_get(
+    state: &AppState,
+    scope: &TaskScope,
+    params: PushConfigIdParams,
+) -> Result<acteon_core::TaskPushNotificationConfig, A2aError> {
+    super::a2a_push::load_config(
+        state,
+        scope,
+        &params.task_id,
+        &params.push_notification_config_id,
+    )
+    .await
+    .map_err(push_err_to_a2a)
+}
+
+async fn method_push_config_list(
+    state: &AppState,
+    scope: &TaskScope,
+    params: PushConfigListParams,
+) -> Result<Vec<acteon_core::TaskPushNotificationConfig>, A2aError> {
+    super::a2a_push::list_configs(state, scope, &params.task_id)
+        .await
+        .map_err(push_err_to_a2a)
+}
+
+async fn method_push_config_delete(
+    state: &AppState,
+    scope: &TaskScope,
+    params: PushConfigIdParams,
+) -> Result<(), A2aError> {
+    super::a2a_push::delete_config(
+        state,
+        scope,
+        &params.task_id,
+        &params.push_notification_config_id,
+    )
+    .await
+    .map_err(push_err_to_a2a)
+}
+
+/// Translate the helper's typed error into the JSON-RPC error model.
+/// `ConfigNotFound` re-uses `TASK_NOT_FOUND` (-32001) — A2A does not
+/// define a separate code for a missing sub-resource, and a sentinel
+/// "resource missing" code is the closest fit.
+fn push_err_to_a2a(e: super::a2a_push::PushConfigError) -> A2aError {
+    use super::a2a_push::PushConfigError;
+    match e {
+        PushConfigError::TaskNotFound(id) => A2aError::task_not_found(&id),
+        PushConfigError::ConfigNotFound { task_id, config_id } => A2aError::new(
+            TASK_NOT_FOUND,
+            format!("push config '{config_id}' not found on task '{task_id}'"),
+        ),
+        PushConfigError::Invalid(msg) => A2aError::invalid_params(msg),
+        PushConfigError::Internal => A2aError::internal("internal error"),
+    }
+}
+
+// ---------------------------------------------------------------------
 // Shared request plumbing
 // ---------------------------------------------------------------------
 
@@ -550,11 +652,52 @@ async fn dispatch_method(
             };
             to_value(&method_agent_get_authenticated_extended_card(s, scope).await?)
         }
+        "tasks/pushNotificationConfig/set" => {
+            // Param validation runs before `require_state` so a
+            // malformed body reports INVALID_PARAMS even when the
+            // dispatcher is wired without an `AppState` (in tests).
+            let p = serde_json::from_value::<PushConfigSetParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            let s = require_state(state)?;
+            to_value(&method_push_config_set(s, scope, p).await?)
+        }
+        "tasks/pushNotificationConfig/get" => {
+            let p = serde_json::from_value::<PushConfigIdParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            let s = require_state(state)?;
+            to_value(&method_push_config_get(s, scope, p).await?)
+        }
+        "tasks/pushNotificationConfig/list" => {
+            let p = serde_json::from_value::<PushConfigListParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            let s = require_state(state)?;
+            to_value(&method_push_config_list(s, scope, p).await?)
+        }
+        "tasks/pushNotificationConfig/delete" => {
+            let p = serde_json::from_value::<PushConfigIdParams>(params)
+                .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
+            let s = require_state(state)?;
+            method_push_config_delete(s, scope, p).await?;
+            Ok(Value::Null)
+        }
         other => Err(A2aError::new(
             METHOD_NOT_FOUND,
             format!("method '{other}' is not supported"),
         )),
     }
+}
+
+/// Methods that touch the state store directly (push-config CRUD,
+/// extended card) need the `AppState`. In tests that pass `None` we
+/// answer with a honest `InternalError` rather than acting on a
+/// fabricated empty store.
+fn require_state(state: Option<&AppState>) -> Result<&AppState, A2aError> {
+    state.ok_or_else(|| {
+        A2aError::new(
+            INTERNAL_ERROR,
+            "this method is unavailable in the dispatcher (no AppState)",
+        )
+    })
 }
 
 /// Serialize a method result for the JSON-RPC envelope. A failure here
@@ -1238,6 +1381,66 @@ mod tests {
             marked.capabilities.extended_agent_card,
             "mark_extended must flip the capability flag on the returned card"
         );
+    }
+
+    #[tokio::test]
+    async fn rpc_push_config_methods_without_app_state_are_internal_error() {
+        // Each of the four push-config methods needs the `AppState`'s
+        // state store. With `state = None` the dispatcher must surface
+        // `InternalError` — never a silent no-op.
+        let e = engine();
+        for (method, params) in &[
+            (
+                "tasks/pushNotificationConfig/set",
+                json!({"taskId": "t1", "pushNotificationConfig": {"url": "https://x"}}),
+            ),
+            (
+                "tasks/pushNotificationConfig/get",
+                json!({"taskId": "t1", "pushNotificationConfigId": "c1"}),
+            ),
+            ("tasks/pushNotificationConfig/list", json!({"taskId": "t1"})),
+            (
+                "tasks/pushNotificationConfig/delete",
+                json!({"taskId": "t1", "pushNotificationConfigId": "c1"}),
+            ),
+        ] {
+            let payload = json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+                "id": 1,
+            });
+            let RpcReply::Single(resp) = handle_rpc_payload(None, &e, &scope(), payload).await
+            else {
+                panic!("expected a single response for {method}");
+            };
+            let err = resp.error.unwrap_or_else(|| {
+                panic!("{method}: expected an error envelope, got a success");
+            });
+            assert_eq!(
+                err.code, INTERNAL_ERROR,
+                "{method}: expected INTERNAL_ERROR for no-AppState path"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rpc_push_config_set_invalid_params_is_invalid_params() {
+        // The DTO requires `taskId` + `pushNotificationConfig`. A
+        // payload missing `taskId` is caught at serde_from_value time
+        // before the dispatcher reaches the state-store path, so the
+        // error reports INVALID_PARAMS regardless of state availability.
+        let e = engine();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "tasks/pushNotificationConfig/set",
+            "params": {"pushNotificationConfig": {"url": "https://x"}},
+            "id": 1,
+        });
+        let RpcReply::Single(resp) = handle_rpc_payload(None, &e, &scope(), payload).await else {
+            panic!("expected a single response");
+        };
+        assert_eq!(resp.error.unwrap().code, INVALID_PARAMS);
     }
 
     #[tokio::test]

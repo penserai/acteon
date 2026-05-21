@@ -76,6 +76,11 @@ pub enum KeyKind {
     A2aMessageDedup,
     /// Full `AgentCard` record (separate from `BusAgent` hot path).
     BusAgentCard,
+    /// A2A `TaskPushNotificationConfig` row (Phase 4 of the A2A
+    /// protocol). Keyed `{task_id}:{config_id}` under the task's
+    /// namespace + tenant so a `scan_keys` with a `task_id:` prefix
+    /// lists every config bound to a single task.
+    A2aTaskPushConfig,
     Custom(String),
 }
 
@@ -122,6 +127,7 @@ impl KeyKind {
             Self::A2aTask => "a2a_task",
             Self::A2aMessageDedup => "a2a_message_dedup",
             Self::BusAgentCard => "bus_agent_card",
+            Self::A2aTaskPushConfig => "a2a_task_push_config",
             Self::Custom(s) => s.as_str(),
         }
     }
