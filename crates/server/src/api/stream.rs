@@ -1106,13 +1106,15 @@ mod tests {
     #[tokio::test]
     async fn replay_skips_last_event_id() {
         let store = MemoryAuditStore::new();
-        let now = Utc::now();
 
-        // Create two records. UUID v7 embeds a millisecond
-        // timestamp and sorts by it, so two IDs generated in the
-        // same tick can end up mis-ordered relative to our
-        // expectation. A brief pause guarantees strictly
-        // increasing IDs regardless of how fast CI runs.
+        // Two records, each tagged with a dispatched_at chosen
+        // relative to its OWN UUIDv7 generation time — not a single
+        // up-front `now` shared between both. The replay path
+        // filters records by `dispatched_at >= timestamp(id1)`, so a
+        // record2 dispatched_at chosen before id1 was actually
+        // generated would be silently skipped on a CI runner where
+        // UUID generation slips past the captured `now` (this was
+        // the 1.88 flake mode).
         let id1 = uuid::Uuid::now_v7().to_string();
         let record1 = mk_audit_record(
             &id1,
@@ -1121,9 +1123,9 @@ mod tests {
             "a",
             "executed",
             serde_json::json!({"status": "Success"}),
-            now - chrono::Duration::seconds(1),
+            Utc::now() - chrono::Duration::seconds(1),
         );
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
         let id2 = uuid::Uuid::now_v7().to_string();
         let record2 = mk_audit_record(
@@ -1133,7 +1135,9 @@ mod tests {
             "a",
             "executed",
             serde_json::json!({"status": "Success"}),
-            now,
+            // Picked AFTER id1's UUIDv7 time so the replay filter
+            // (`dispatched_at >= ts(id1)`) is unambiguously satisfied.
+            Utc::now() + chrono::Duration::seconds(1),
         );
 
         store.record(record1).await.unwrap();
