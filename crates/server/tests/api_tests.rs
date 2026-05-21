@@ -111,6 +111,9 @@ fn build_test_state_with_audit_and_analytics(
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        a2a_discovery_cache: Arc::new(
+            acteon_server::api::a2a_discovery_cache::DiscoveryCache::new(),
+        ),
         dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
         config: ConfigSnapshot::default(),
         ui_path: None,
@@ -1184,6 +1187,9 @@ fn build_approval_state_with_providers(
         embedding: None,
         embedding_metrics: None,
         connection_registry: None,
+        a2a_discovery_cache: Arc::new(
+            acteon_server::api::a2a_discovery_cache::DiscoveryCache::new(),
+        ),
         dispatch_semaphore: Arc::new(tokio::sync::Semaphore::new(1000)),
         config: ConfigSnapshot::default(),
         ui_path: None,

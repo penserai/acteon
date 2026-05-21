@@ -218,6 +218,13 @@ pub async fn put_agent_card(
         }
         Err(e) => return internal(format!("set has_agent_card flag: {e}")),
     }
+    // A successful card mutation invalidates the discovery cache so
+    // the next read paints the fresh state instead of serving a
+    // stale entry for up to one TTL.
+    state
+        .a2a_discovery_cache
+        .invalidate(&namespace, &tenant)
+        .await;
     (StatusCode::OK, Json(card)).into_response()
 }
 
@@ -263,6 +270,12 @@ pub async fn delete_agent_card(
     // Best-effort flag flip — if the agent is gone (already deleted),
     // there's nothing to update.
     let _ = set_agent_card_flag(&store, &namespace, &tenant, &agent_id, false).await;
+    // Drop the cached aggregated card; the next discovery hit will
+    // observe the removal immediately.
+    state
+        .a2a_discovery_cache
+        .invalidate(&namespace, &tenant)
+        .await;
     StatusCode::NO_CONTENT.into_response()
 }
 
@@ -304,6 +317,15 @@ pub(crate) async fn resolve_tenant_card(
     namespace: &str,
     tenant: &str,
 ) -> Result<Option<AgentCard>, String> {
+    // Cache hit short-circuits the entire scan + aggregation + enrich
+    // pipeline. The cached value is the **post-enrich** card, so both
+    // the public discovery endpoint and the authenticated extended
+    // card consumer use the same shape (the extended-card consumer
+    // marks `capabilities.extendedAgentCard = true` after retrieval,
+    // which is safe to apply to a clone of the cached card).
+    if let Some(cached) = state.a2a_discovery_cache.get(namespace, tenant).await {
+        return Ok(Some((*cached).clone()));
+    }
     let store: Arc<dyn StateStore> = {
         let gw = state.gateway.read().await;
         gw.state_store().clone()
@@ -330,6 +352,12 @@ pub(crate) async fn resolve_tenant_card(
     // documents its own scheme under `acteon.bearer` is not
     // overwritten.
     enrich_with_intrinsic_schemes(&mut card, state.auth.is_some());
+    // Memoize the resolved card. The next discovery hit for the same
+    // tenant inside the TTL window pays only the cache lookup.
+    state
+        .a2a_discovery_cache
+        .insert(namespace, tenant, card.clone())
+        .await;
     Ok(Some(card))
 }
 
