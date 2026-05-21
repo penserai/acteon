@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-use acteon_core::{Task, TaskMessage, TaskState};
+use acteon_core::{AgentCard, Task, TaskMessage, TaskState};
 use acteon_gateway::{TaskEngine, TaskEngineError, TaskScope};
 
 use super::AppState;
@@ -369,6 +369,48 @@ async fn method_tasks_cancel(
         .await?)
 }
 
+/// `agent/getAuthenticatedExtendedCard` — JSON-RPC counterpart to the
+/// public well-known card.
+///
+/// Loads every `AgentCard` published under the caller's namespace and
+/// tenant via the shared discovery helper, returning a single tenant
+/// card (verbatim if exactly one is registered, aggregated if several).
+/// The returned card's `capabilities.extended_agent_card` is set to
+/// `true` so a client can confirm the method was reached.
+///
+/// The endpoint requires the standard A2A `Dispatch` permission grant
+/// (enforced at the JSON-RPC entrypoint), so an unauthenticated caller
+/// never reaches this method.
+///
+/// Returns `TaskNotFound` (-32001) when no card is registered for the
+/// tenant — the closest spec-defined error for "no resource matches".
+/// `InternalError` only on a state-store read failure.
+async fn method_agent_get_authenticated_extended_card(
+    state: &AppState,
+    scope: &TaskScope,
+) -> Result<AgentCard, A2aError> {
+    use super::a2a_discovery::resolve_tenant_card;
+    match resolve_tenant_card(state, &scope.namespace, &scope.tenant).await {
+        Ok(Some(card)) => Ok(mark_extended(card)),
+        Ok(None) => Err(A2aError::new(
+            TASK_NOT_FOUND,
+            format!(
+                "no agent card published under {}/{}",
+                scope.namespace, scope.tenant,
+            ),
+        )),
+        Err(_) => Err(A2aError::internal("internal error")),
+    }
+}
+
+/// Flag a resolved card as the extended variant before returning it
+/// over `agent/getAuthenticatedExtendedCard`. Split out so the
+/// capability-flag flip is unit-testable without an `AppState`.
+fn mark_extended(mut card: AgentCard) -> AgentCard {
+    card.capabilities.extended_agent_card = true;
+    card
+}
+
 // ---------------------------------------------------------------------
 // Shared request plumbing
 // ---------------------------------------------------------------------
@@ -465,36 +507,62 @@ enum RpcReply {
 }
 
 /// Route an A2A method to its implementation. `state` is the
-/// production hook for `tasks/cancel`'s chain-cancel propagation;
+/// production hook for `tasks/cancel`'s chain-cancel propagation and
+/// for the discovery-store reads behind `agent/getAuthenticatedExtendedCard`;
 /// tests pass `None` for engine-only behavior.
+///
+/// Returns the method's result already serialized to a JSON `Value` so
+/// the dispatcher can carry differently-typed results (`Task`,
+/// `AgentCard`) through one signature.
 async fn dispatch_method(
     state: Option<&AppState>,
     engine: &TaskEngine,
     scope: &TaskScope,
     method: &str,
     params: Value,
-) -> Result<Task, A2aError> {
+) -> Result<Value, A2aError> {
     match method {
         "message/send" => {
             let p = serde_json::from_value::<MessageSendParams>(params)
                 .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            method_message_send(engine, scope, p).await
+            to_value(&method_message_send(engine, scope, p).await?)
         }
         "tasks/get" => {
             let p = serde_json::from_value::<TaskQueryParams>(params)
                 .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            method_tasks_get(engine, scope, p).await
+            to_value(&method_tasks_get(engine, scope, p).await?)
         }
         "tasks/cancel" => {
             let p = serde_json::from_value::<TaskIdParams>(params)
                 .map_err(|e| A2aError::invalid_params(format!("invalid params: {e}")))?;
-            method_tasks_cancel(state, engine, scope, p).await
+            to_value(&method_tasks_cancel(state, engine, scope, p).await?)
+        }
+        "agent/getAuthenticatedExtendedCard" => {
+            // The discovery store hangs off `AppState`; without it the
+            // method has no card source. In tests that pass `None` the
+            // method is unavailable — an honest error rather than a
+            // fabricated empty card.
+            let Some(s) = state else {
+                return Err(A2aError::new(
+                    INTERNAL_ERROR,
+                    "extended-card discovery is unavailable in this dispatcher",
+                ));
+            };
+            to_value(&method_agent_get_authenticated_extended_card(s, scope).await?)
         }
         other => Err(A2aError::new(
             METHOD_NOT_FOUND,
             format!("method '{other}' is not supported"),
         )),
     }
+}
+
+/// Serialize a method result for the JSON-RPC envelope. A failure here
+/// is a server-internal bug (every method's return type is `Serialize`),
+/// so it is mapped to JSON-RPC `-32603 InternalError` with a generic
+/// message — never leaking the underlying serde diagnostic.
+fn to_value<T: Serialize>(value: &T) -> Result<Value, A2aError> {
+    serde_json::to_value(value).map_err(|_| A2aError::internal("internal error"))
 }
 
 /// Dispatch one JSON-RPC request object.
@@ -545,10 +613,7 @@ async fn dispatch_rpc_value(
         return None;
     }
     Some(match outcome {
-        Ok(task) => match serde_json::to_value(&task) {
-            Ok(v) => success_response(id, v),
-            Err(_) => error_response(id, &A2aError::internal("internal error")),
-        },
+        Ok(value) => success_response(id, value),
         Err(e) => error_response(id, &e),
     })
 }
@@ -1131,6 +1196,48 @@ mod tests {
             }
             other => panic!("expected a single error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn rpc_extended_card_without_app_state_is_internal_error() {
+        // The method needs an `AppState` for the discovery store. With
+        // `state = None` the dispatcher must surface an honest
+        // InternalError, not a fabricated empty card.
+        let e = engine();
+        let payload = json!({
+            "jsonrpc": "2.0",
+            "method": "agent/getAuthenticatedExtendedCard",
+            "id": 1,
+        });
+        match handle_rpc_payload(None, &e, &scope(), payload).await {
+            RpcReply::Single(resp) => {
+                let err = resp.error.expect("error envelope");
+                assert_eq!(err.code, INTERNAL_ERROR);
+                // The message must NOT echo serde details or stack
+                // info — see [`engine_error_maps_to_a2a_error`].
+                assert!(
+                    !err.message.contains("AppState"),
+                    "error message should not leak internal type names: {}",
+                    err.message
+                );
+            }
+            other => panic!("expected a single error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mark_extended_sets_capability_flag() {
+        use acteon_core::AgentCard;
+        let card = AgentCard::new("a1", "agents", "demo", "Card", "1.0");
+        assert!(
+            !card.capabilities.extended_agent_card,
+            "default card must not advertise the extended capability"
+        );
+        let marked = mark_extended(card);
+        assert!(
+            marked.capabilities.extended_agent_card,
+            "mark_extended must flip the capability flag on the returned card"
+        );
     }
 
     #[tokio::test]
