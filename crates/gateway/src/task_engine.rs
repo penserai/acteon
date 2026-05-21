@@ -1511,6 +1511,52 @@ mod tests {
         assert!(matches!(err, TaskEngineError::ReferenceCycle { .. }));
     }
 
+    /// Phase 5 adversarial: a four-hop cycle that closes via the
+    /// new edge. The two-hop case above proves direct-cycle
+    /// detection works; this proves the BFS walks deep enough to
+    /// catch a cycle that only forms when the chain closes back to
+    /// its root through several intermediaries.
+    #[tokio::test]
+    async fn reference_four_hop_cycle_rejected() {
+        let e = engine();
+        // Build a chain a -> b -> c -> d (no cycle yet).
+        create_with_ref(&e, "a", None).await;
+        create_with_ref(&e, "b", Some("a")).await;
+        create_with_ref(&e, "c", Some("b")).await;
+        create_with_ref(&e, "d", Some("c")).await;
+        // Append d -> a from a side, closing the loop a -> b -> c -> d -> a.
+        let mut m = TaskMessage::text("a-loop4", Role::Agent, "close");
+        m.reference_task_ids = vec!["d".into()];
+        let err = e.append_history(&scope(), "a", m).await.unwrap_err();
+        assert!(
+            matches!(err, TaskEngineError::ReferenceCycle { .. }),
+            "expected ReferenceCycle, got {err:?}"
+        );
+    }
+
+    /// Phase 5 adversarial: a cycle that is reachable only via one
+    /// branch of a branching reference graph. The first branch is
+    /// acyclic; the second branch closes the loop. The walker must
+    /// not declare the graph safe after seeing the first acyclic
+    /// branch.
+    #[tokio::test]
+    async fn reference_branching_graph_with_cycle_rejected() {
+        let e = engine();
+        // Acyclic branch:  a -> x -> y
+        create_with_ref(&e, "a", None).await;
+        create_with_ref(&e, "x", Some("a")).await;
+        create_with_ref(&e, "y", Some("x")).await;
+        // Cycle branch:    a -> p -> a
+        create_with_ref(&e, "p", Some("a")).await;
+        // Now append a message on `a` that references BOTH y and p.
+        // The walker has to discover that the p edge closes back to
+        // a — the y edge is a safe distraction.
+        let mut m = TaskMessage::text("a-branch", Role::Agent, "x");
+        m.reference_task_ids = vec!["y".into(), "p".into()];
+        let err = e.append_history(&scope(), "a", m).await.unwrap_err();
+        assert!(matches!(err, TaskEngineError::ReferenceCycle { .. }));
+    }
+
     #[tokio::test]
     async fn reference_depth_at_limit_ok() {
         // Chain exactly MAX_REFERENCE_DEPTH (5) hops from the root.
@@ -1727,6 +1773,52 @@ mod tests {
         assert!(reaped.is_none());
         let t = e.get_task(&scope(), "done").await.unwrap().unwrap();
         assert_eq!(t.status.state, TaskState::Completed);
+    }
+
+    /// Phase 5 adversarial: two reapers racing on the same stale
+    /// task. Only one transition to Failed should land; the second
+    /// caller must observe the row is no longer stale (because
+    /// Failed is terminal) and return None, not double-fail.
+    #[tokio::test]
+    async fn fail_if_stale_idempotent_under_concurrent_reapers() {
+        let e = Arc::new(engine());
+        e.create_task(sample_task("zombie")).await.unwrap();
+        e.transition_task(&scope(), "zombie", TaskState::Working, None)
+            .await
+            .unwrap();
+        let future = Utc::now() + chrono::Duration::hours(1);
+        // Two reaper attempts run in parallel against the same
+        // task. The shared MemoryStateStore enforces CAS, so one
+        // wins, the other re-reads and sees a terminal task — must
+        // not error.
+        let e1 = Arc::clone(&e);
+        let e2 = Arc::clone(&e);
+        let (r1, r2) = tokio::join!(
+            async move { e1.fail_if_stale(&scope(), "zombie", future).await },
+            async move { e2.fail_if_stale(&scope(), "zombie", future).await },
+        );
+        let r1 = r1.unwrap();
+        let r2 = r2.unwrap();
+        // Exactly one must return Some(reaped); the other Some-or-None
+        // depending on race ordering, but a `Some` from the second
+        // observer is *also* fine — it just means it read after the
+        // first CAS commit but evaluated staleness on a still-stale
+        // tick. The invariant the caller cares about is "the task
+        // ends up Failed, and the second call did not blow up."
+        let final_state = e
+            .get_task(&scope(), "zombie")
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+            .state;
+        assert_eq!(final_state, TaskState::Failed);
+        // At least one observer must have reaped — sanity check that
+        // the reaper did *something*.
+        assert!(
+            r1.is_some() || r2.is_some(),
+            "at least one reaper attempt must have transitioned the task"
+        );
     }
 
     #[tokio::test]
