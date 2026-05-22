@@ -3,6 +3,7 @@ pub mod a2a_discovery;
 pub mod a2a_discovery_cache;
 pub mod a2a_push;
 pub mod a2a_push_worker;
+pub mod a2a_ssrf;
 pub mod analytics;
 pub mod approvals;
 pub mod audit;

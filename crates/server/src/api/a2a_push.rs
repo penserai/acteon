@@ -153,6 +153,15 @@ pub(crate) async fn save_config(
     config
         .validate()
         .map_err(|e| PushConfigError::Invalid(e.to_string()))?;
+    // SSRF guard at registration: reject a config that literally
+    // names an internal target (a private/loopback IP, a
+    // cloud-metadata address, a `localhost`-style hostname) before
+    // it is ever stored. The delivery worker re-checks with DNS
+    // resolution — that is the authoritative guard against a
+    // hostname that *resolves* into a blocked range — but rejecting
+    // the obvious cases here gives the caller immediate feedback.
+    super::a2a_ssrf::check_url_literal(&config.url)
+        .map_err(|e| PushConfigError::Invalid(format!("push url rejected: {e}")))?;
 
     let payload = serde_json::to_string(&config).map_err(|e| {
         tracing::error!(error = %e, "push-config: serialize failed");
