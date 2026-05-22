@@ -306,6 +306,7 @@ criterion = { version = "0.5", features = ["async_tokio"] }
 
 # Testing
 axum-test = "16"
+proptest = "1"
 
 # ---------------------------------------------------------------------------
 # Build profiles

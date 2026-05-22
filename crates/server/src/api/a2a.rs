@@ -1454,4 +1454,152 @@ mod tests {
             other => panic!("expected a single error, got {other:?}"),
         }
     }
+
+    // -----------------------------------------------------------------
+    // Codec fuzzing (Phase 5)
+    //
+    // Property tests guaranteeing the JSON-RPC + REST codec layers
+    // never panic on malformed input — generated `serde_json::Value`
+    // trees, raw arbitrary strings, and arbitrary param-struct
+    // payloads. "No panic" is the whole contract: a malformed A2A
+    // request must always degrade into a structured error, never
+    // crash the worker thread.
+    // -----------------------------------------------------------------
+    mod fuzz {
+        use super::*;
+        use proptest::prelude::*;
+
+        /// Recursive arbitrary `serde_json::Value`. Leaf values
+        /// deliberately include JSON-RPC-meaningful strings (method
+        /// names, envelope keys) so a fraction of the generated trees
+        /// look like real envelopes and exercise the *dispatch* path
+        /// rather than only the `InvalidRequest` reject.
+        fn arb_json() -> impl Strategy<Value = serde_json::Value> {
+            let leaf = prop_oneof![
+                Just(serde_json::Value::Null),
+                any::<bool>().prop_map(serde_json::Value::Bool),
+                any::<i64>().prop_map(|n| serde_json::json!(n)),
+                // f64 must stay finite — NaN / ±Inf aren't valid JSON
+                // and `serde_json::json!` would refuse to build them.
+                any::<f64>()
+                    .prop_filter("finite", |f| f.is_finite())
+                    .prop_map(|f| serde_json::json!(f)),
+                // `\PC` = any non-control char; arbitrary free strings.
+                "\\PC*".prop_map(serde_json::Value::String),
+                // Biased toward strings that mean something to the
+                // codec so the dispatcher's real branches get hit.
+                prop::sample::select(vec![
+                    "2.0",
+                    "1.0",
+                    "jsonrpc",
+                    "method",
+                    "params",
+                    "id",
+                    "message/send",
+                    "tasks/get",
+                    "tasks/cancel",
+                    "tasks/pushNotificationConfig/set",
+                    "tasks/pushNotificationConfig/list",
+                    "agent/getAuthenticatedExtendedCard",
+                    "message",
+                    "messageId",
+                    "taskId",
+                    "role",
+                    "user",
+                    "pushNotificationConfig",
+                ])
+                .prop_map(|s| serde_json::Value::String(s.to_string())),
+            ];
+            // Depth 4, up to 48 total nodes, up to 6 children each —
+            // deep enough to exercise nested params, bounded enough
+            // that 256 cases stay fast.
+            leaf.prop_recursive(4, 48, 6, |inner| {
+                prop_oneof![
+                    prop::collection::vec(inner.clone(), 0..6).prop_map(serde_json::Value::Array),
+                    prop::collection::vec(("\\PC*", inner), 0..6)
+                        .prop_map(|kvs| { serde_json::Value::Object(kvs.into_iter().collect()) }),
+                ]
+            })
+        }
+
+        /// proptest bodies are synchronous; the codec is async. A
+        /// fresh current-thread runtime per case keeps the cases
+        /// fully isolated and costs sub-millisecond to build.
+        fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("build current-thread runtime")
+                .block_on(fut)
+        }
+
+        proptest! {
+            /// The JSON-RPC codec must never panic on an arbitrary
+            /// parsed `Value`. Every input — object, array (batch),
+            /// scalar, deeply nested — must map to an `RpcReply`.
+            #[test]
+            fn handle_rpc_payload_never_panics(v in arb_json()) {
+                block_on(async {
+                    let e = engine();
+                    // state = None: the AppState-backed methods take
+                    // their honest-error branch; message/send,
+                    // tasks/get, tasks/cancel run against the empty
+                    // engine. Either way the call must return.
+                    let _reply = handle_rpc_payload(None, &e, &scope(), v).await;
+                });
+            }
+
+            /// The raw-string entry path the HTTP handler uses:
+            /// arbitrary bytes → `serde_json::from_str` → dispatch.
+            /// Covers the `PARSE_ERROR` branch and whatever input
+            /// happens to parse into a `Value`.
+            #[test]
+            fn raw_string_parse_then_dispatch_never_panics(s in "\\PC*") {
+                block_on(async {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                        let e = engine();
+                        let _ = handle_rpc_payload(None, &e, &scope(), v).await;
+                    }
+                });
+            }
+
+            /// Every JSON-RPC / REST param struct's `Deserialize`
+            /// must be total — an arbitrary `Value` yields `Ok` or
+            /// `Err`, never a panic. A panic here would be reachable
+            /// straight from an unauthenticated request body.
+            #[test]
+            fn param_struct_deserialization_never_panics(v in arb_json()) {
+                let _ = serde_json::from_value::<MessageSendParams>(v.clone());
+                let _ = serde_json::from_value::<TaskQueryParams>(v.clone());
+                let _ = serde_json::from_value::<TaskIdParams>(v.clone());
+                let _ = serde_json::from_value::<PushConfigSetParams>(v.clone());
+                let _ = serde_json::from_value::<PushConfigIdParams>(v.clone());
+                let _ = serde_json::from_value::<PushConfigListParams>(v);
+            }
+
+            /// A non-array, non-object `Value` is structurally
+            /// incapable of being a valid JSON-RPC request, so the
+            /// codec must answer with exactly one `Single` error —
+            /// never a `Batch`, never `Empty`. Pins the "scalars are
+            /// Invalid Request" contract under fuzzing.
+            #[test]
+            fn scalar_payloads_yield_a_single_error(
+                v in prop_oneof![
+                    Just(serde_json::Value::Null),
+                    any::<bool>().prop_map(serde_json::Value::Bool),
+                    any::<i64>().prop_map(|n| serde_json::json!(n)),
+                    "\\PC*".prop_map(serde_json::Value::String),
+                ]
+            ) {
+                block_on(async {
+                    let e = engine();
+                    let reply = handle_rpc_payload(None, &e, &scope(), v).await;
+                    prop_assert!(
+                        matches!(reply, RpcReply::Single(_)),
+                        "a scalar payload must yield a single error reply, got {reply:?}",
+                    );
+                    Ok(())
+                })?;
+            }
+        }
+    }
 }
