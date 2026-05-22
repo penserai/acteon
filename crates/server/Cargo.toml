@@ -136,6 +136,7 @@ uuid = { workspace = true }
 acteon-audit = { workspace = true }
 acteon-audit-memory = { workspace = true }
 axum-test = { workspace = true }
+proptest = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
