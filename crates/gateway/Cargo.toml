@@ -56,6 +56,10 @@ uuid = { workspace = true }
 name = "dispatch"
 harness = false
 
+[[bench]]
+name = "a2a_task_lifecycle"
+harness = false
+
 [[example]]
 name = "basic"
 required-features = []
