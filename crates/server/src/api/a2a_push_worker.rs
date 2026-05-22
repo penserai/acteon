@@ -42,7 +42,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use acteon_core::{DlqFailureKind, PushDeliveryDlqEntry, StreamEvent, TaskPushNotificationConfig};
@@ -130,6 +130,12 @@ pub struct PushDeliveryMetrics {
     /// store error, serialization error). Logged with `warn!` so an
     /// operator can investigate.
     pub dlq_write_failures: AtomicU64,
+    /// Deliveries refused by the SSRF guard because the config URL
+    /// resolved to a blocked (loopback / private / metadata)
+    /// address. A subset of `deliveries_terminal` — a non-zero rate
+    /// here means a tenant is probing the internal network and is
+    /// worth alerting on.
+    pub deliveries_ssrf_blocked: AtomicU64,
 }
 
 impl PushDeliveryMetrics {
@@ -148,6 +154,7 @@ impl PushDeliveryMetrics {
             state_store_scans: self.state_store_scans.load(Ordering::Relaxed),
             dlq_writes: self.dlq_writes.load(Ordering::Relaxed),
             dlq_write_failures: self.dlq_write_failures.load(Ordering::Relaxed),
+            deliveries_ssrf_blocked: self.deliveries_ssrf_blocked.load(Ordering::Relaxed),
         }
     }
 }
@@ -165,6 +172,7 @@ pub struct PushDeliveryMetricsSnapshot {
     pub state_store_scans: u64,
     pub dlq_writes: u64,
     pub dlq_write_failures: u64,
+    pub deliveries_ssrf_blocked: u64,
 }
 
 /// Internal state held behind an `Arc` and shared across every
@@ -175,6 +183,13 @@ struct Shared {
     delivery_permits: Arc<Semaphore>,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
     metrics: Arc<PushDeliveryMetrics>,
+    /// When `true` (the production default), every delivery URL is
+    /// run through the DNS-resolving SSRF guard before the POST.
+    /// Tests and the in-process simulation flip it off because they
+    /// deliver to `127.0.0.1` mock servers. An `AtomicBool` so the
+    /// `with_ssrf_enforcement` builder can flip it through the
+    /// already-`Arc`'d `Shared`.
+    enforce_ssrf: AtomicBool,
 }
 
 type CacheKey = (String, String, String);
@@ -221,9 +236,23 @@ impl PushDeliveryWorker {
                 delivery_permits: Arc::new(Semaphore::new(MAX_INFLIGHT_DELIVERIES)),
                 cache: Mutex::new(HashMap::new()),
                 metrics,
+                // Secure by default — the production worker built in
+                // `main.rs` keeps this on.
+                enforce_ssrf: AtomicBool::new(true),
             }),
             rx,
         }
+    }
+
+    /// Builder: turn the SSRF guard off. Used by the worker's own
+    /// tests and the in-process simulation, both of which deliver to
+    /// `127.0.0.1` mock servers the guard would otherwise (correctly)
+    /// reject. **Never call this in production** — a delivery URL is
+    /// attacker-controlled.
+    #[must_use]
+    pub fn with_ssrf_enforcement(self, enforce: bool) -> Self {
+        self.shared.enforce_ssrf.store(enforce, Ordering::Relaxed);
+        self
     }
 
     /// Borrow the metrics handle. Useful from tests and from the
@@ -587,11 +616,28 @@ impl Shared {
     /// transient; HTTP 429 / 408 / 425 are transient (per spec and
     /// convention — these are the codes a server uses to ask for a
     /// retry); other 4xx are terminal; everything 5xx is transient.
+    ///
+    /// Before any of that, the SSRF guard re-checks the URL with DNS
+    /// resolution. A config can be edited (or a hostname can be
+    /// re-pointed) after registration, so the delivery-time check is
+    /// the authoritative one. A blocked URL is a `Terminal` failure:
+    /// it will not become un-blocked, so retrying is pointless, and
+    /// the DLQ entry records exactly why it was refused.
     async fn post_once(
         &self,
         config: &TaskPushNotificationConfig,
         event: &StreamEvent,
     ) -> Result<(), DeliveryError> {
+        if self.enforce_ssrf.load(Ordering::Relaxed)
+            && let Err(reason) = super::a2a_ssrf::check_url_resolved(&config.url).await
+        {
+            self.metrics
+                .deliveries_ssrf_blocked
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(DeliveryError::Terminal(format!(
+                "SSRF guard refused delivery URL: {reason}"
+            )));
+        }
         let mut req = self
             .http
             .post(&config.url)
@@ -788,7 +834,7 @@ mod tests {
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
         save_config(&store, &cfg).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::new(store, http, rx);
+        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -806,7 +852,7 @@ mod tests {
         let cfg = TaskPushNotificationConfig::new("cfg-1", "task-1", "agents", "demo", &url);
         save_config(&store, &cfg).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::new(store, http, rx);
+        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         let mut ev = mk_event("task-1");
         ev.action_type = Some("webhook".to_string());
@@ -828,7 +874,7 @@ mod tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let _url = start_mock(200, Arc::clone(&hits)).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::new(store, http, rx);
+        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -854,7 +900,7 @@ mod tests {
             save_config(&store, &cfg).await;
         }
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::new(store, http, rx);
+        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -878,7 +924,8 @@ mod tests {
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
         let worker =
-            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics));
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
+                .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
@@ -929,7 +976,8 @@ mod tests {
         save_config(&store, &cfg).await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics));
+        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
+            .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
         // First attempt 429, BASE_BACKOFF=1s, then success. Give it
@@ -964,7 +1012,8 @@ mod tests {
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
         let worker =
-            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics));
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics))
+                .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-x")).unwrap();
         // Poll for the DLQ row. The retry cycle is 3 attempts +
@@ -998,6 +1047,59 @@ mod tests {
         assert_eq!(snap.dlq_write_failures, 0);
     }
 
+    /// Security review (Phase 5): with SSRF enforcement ON (the
+    /// production default), a config pointing at a loopback address
+    /// must be refused *before* any HTTP request is made — no POST
+    /// reaches the mock, the failure is terminal (not retried), and
+    /// a DLQ entry records the SSRF refusal.
+    #[tokio::test(flavor = "current_thread", start_paused = false)]
+    async fn ssrf_guard_refuses_loopback_delivery_url() {
+        let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+        let http = reqwest::Client::new();
+        let hits = Arc::new(AtomicUsize::new(0));
+        // The mock binds 127.0.0.1; a config pointing at it is
+        // exactly the internal-target an SSRF guard must block.
+        let url = start_mock(200, Arc::clone(&hits)).await;
+        let cfg = TaskPushNotificationConfig::new("cfg-s", "task-s", "agents", "demo", &url);
+        save_config(&store, &cfg).await;
+        let metrics = Arc::new(PushDeliveryMetrics::default());
+        let (tx, rx) = broadcast::channel::<StreamEvent>(8);
+        // NOTE: no `.with_ssrf_enforcement(false)` — this test runs
+        // the worker in its secure, production-default mode.
+        let worker =
+            PushDeliveryWorker::with_metrics(Arc::clone(&store), http, rx, Arc::clone(&metrics));
+        let handle = tokio::spawn(worker.run());
+        tx.send(mk_event("task-s")).unwrap();
+        // 800ms is well past a single delivery attempt; if the guard
+        // weren't refusing, the mock would have been hit by now.
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        drop(tx);
+        let _ = handle.await;
+        assert_eq!(
+            hits.load(Ordering::Relaxed),
+            0,
+            "the SSRF guard must refuse the URL before any POST is sent"
+        );
+        let snap = metrics.snapshot();
+        assert_eq!(snap.deliveries_ssrf_blocked, 1);
+        // An SSRF refusal is terminal (a blocked URL won't unblock).
+        assert_eq!(snap.deliveries_terminal, 1);
+        assert_eq!(snap.deliveries_exhausted, 0);
+        // ...and lands a DLQ entry that names the SSRF guard.
+        let dlq = store
+            .scan_keys("agents", "demo", KeyKind::A2aPushDlq, None)
+            .await
+            .unwrap();
+        assert_eq!(dlq.len(), 1, "the refused delivery must land in the DLQ");
+        let row: PushDeliveryDlqEntry = serde_json::from_str(&dlq[0].1).unwrap();
+        assert_eq!(row.failure_kind, DlqFailureKind::Terminal);
+        assert!(
+            row.last_error.contains("SSRF"),
+            "DLQ entry should name the SSRF guard: {}",
+            row.last_error
+        );
+    }
+
     /// Adversarial review #1: a slow webhook on one tenant must not
     /// block deliveries on another tenant. Two events fire roughly
     /// at the same time; the fast one must complete long before the
@@ -1019,7 +1121,7 @@ mod tests {
         save_config(&store, &slow_cfg).await;
         save_config(&store, &fast_cfg).await;
         let (tx, rx) = broadcast::channel::<StreamEvent>(16);
-        let worker = PushDeliveryWorker::new(store, http, rx);
+        let worker = PushDeliveryWorker::new(store, http, rx).with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         // Slow event first, fast event right behind. A sequential
         // worker would only reach the fast event after the slow
@@ -1057,7 +1159,8 @@ mod tests {
         save_config(&store, &cfg).await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(64);
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics));
+        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
+            .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         // Fire 20 events for the same task in a tight burst (well
         // inside CONFIG_CACHE_TTL = 500ms).
@@ -1094,7 +1197,8 @@ mod tests {
         save_config(&store, &cfg).await;
         let metrics = Arc::new(PushDeliveryMetrics::default());
         let (tx, rx) = broadcast::channel::<StreamEvent>(8);
-        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics));
+        let worker = PushDeliveryWorker::with_metrics(store, http, rx, Arc::clone(&metrics))
+            .with_ssrf_enforcement(false);
         let handle = tokio::spawn(worker.run());
         tx.send(mk_event("task-1")).unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;

@@ -308,11 +308,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Spin up the delivery worker on its own broadcast subscription.
+    // SSRF enforcement is turned OFF here: this simulation delivers
+    // to an in-process mock on `127.0.0.1`, which the guard would
+    // (correctly) reject in production. Never disable it in a real
+    // deployment — the delivery URL is attacker-controlled.
     let worker = acteon_server::api::a2a_push_worker::PushDeliveryWorker::new(
         Arc::clone(&store),
         reqwest::Client::new(),
         tx.subscribe(),
-    );
+    )
+    .with_ssrf_enforcement(false);
     let worker_metrics = worker.metrics();
     let _worker_handle = tokio::spawn(worker.run());
 
