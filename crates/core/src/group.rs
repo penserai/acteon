@@ -21,6 +21,19 @@ pub struct EventGroup {
     /// Key used to group events (hash of `group_by` field values).
     pub group_key: String,
 
+    /// Namespace the group lives in. Populated at creation /
+    /// recovery time so the flush-time SSE emission knows the
+    /// tenant scope without re-reading from the state store.
+    /// `#[serde(default)]` so groups persisted before this field
+    /// existed deserialize as empty.
+    #[serde(default)]
+    pub namespace: String,
+
+    /// Tenant the group lives in. Same back-compat note as
+    /// [`Self::namespace`].
+    #[serde(default)]
+    pub tenant: String,
+
     /// Common labels shared by all events in the group.
     #[serde(default)]
     pub labels: HashMap<String, String>,
@@ -59,6 +72,8 @@ impl EventGroup {
         Self {
             group_id: group_id.into(),
             group_key: group_key.into(),
+            namespace: String::new(),
+            tenant: String::new(),
             labels: HashMap::new(),
             events: Vec::new(),
             notify_at,

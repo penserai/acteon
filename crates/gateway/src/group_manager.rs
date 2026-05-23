@@ -77,6 +77,11 @@ impl GroupManager {
                 // Only recover if not already in memory
                 if !groups.contains_key(&group_key) {
                     let mut group = EventGroup::new(&group_id, &group_key, notify_at);
+                    // Restore scope so flush-time SSE emission can
+                    // tag the broadcast event with the right
+                    // tenant. Available from the scan arguments.
+                    group.namespace = namespace.to_string();
+                    group.tenant = tenant.to_string();
                     group.trace_context = trace_context;
                     groups.insert(group_key.clone(), group);
                     recovered += 1;
@@ -135,6 +140,11 @@ impl GroupManager {
                 #[allow(clippy::cast_possible_wrap)]
                 let notify_at = Utc::now() + chrono::Duration::seconds(group_wait_seconds as i64);
                 let mut group = EventGroup::new(&group_id, &group_key, notify_at);
+                // Stamp scope from the originating action so the
+                // background flush can emit a tenant-scoped
+                // `GroupResolved` over the SSE broadcast.
+                group.namespace = action.namespace.as_str().to_string();
+                group.tenant = action.tenant.as_str().to_string();
 
                 // Capture trace context from the first event in the group
                 group.trace_context.clone_from(&action.trace_context);

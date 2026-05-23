@@ -9,11 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::interval;
 use tracing::{debug, error, info, warn};
 
-use acteon_core::{EventGroup, StateMachineConfig};
+use acteon_core::{EventGroup, StateMachineConfig, StreamEvent, StreamEventType};
 use acteon_state::{KeyKind, StateKey, StateStore};
 
 use crate::gateway::ApprovalRecord;
@@ -155,6 +155,12 @@ pub struct BackgroundProcessor {
     chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
     /// Channel to send scheduled action due events.
     scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
+    /// SSE broadcast channel for real-time `StreamEvent`s. When set,
+    /// the processor emits `GroupResolved` after a flush and
+    /// `ActionStatusChanged` after a timeout-driven state transition
+    /// so subscribers to `/v1/subscribe/...` see the same lifecycle
+    /// events the inline gateway emits.
+    stream_tx: Option<broadcast::Sender<StreamEvent>>,
 }
 
 impl BackgroundProcessor {
@@ -177,6 +183,7 @@ impl BackgroundProcessor {
             approval_retry_tx: None,
             chain_advance_tx: None,
             scheduled_action_tx: None,
+            stream_tx: None,
         }
     }
 
@@ -216,6 +223,47 @@ impl BackgroundProcessor {
     ) -> Self {
         self.scheduled_action_tx = Some(tx);
         self
+    }
+
+    /// Attach the gateway's SSE broadcast so background-emitted
+    /// lifecycle events (group resolution, state-machine timeout
+    /// transitions) reach `/v1/stream` and `/v1/subscribe/...`
+    /// subscribers in real time.
+    ///
+    /// Without this, the background processor would silently
+    /// mutate state without observers — the gap security review
+    /// finding #2 calls out.
+    #[must_use]
+    pub fn with_stream_tx(mut self, tx: broadcast::Sender<StreamEvent>) -> Self {
+        self.stream_tx = Some(tx);
+        self
+    }
+
+    /// Best-effort emit on the SSE broadcast. A `send` failure
+    /// means there are no live subscribers; that's normal, not an
+    /// error — silently drop it. The hot path here is the
+    /// background processor's tick, so we don't want a missing
+    /// subscriber to log on every flush.
+    fn emit_stream_event(
+        &self,
+        namespace: &str,
+        tenant: &str,
+        event_type: StreamEventType,
+        action_id: Option<String>,
+    ) {
+        let Some(tx) = self.stream_tx.as_ref() else {
+            return;
+        };
+        let event = StreamEvent {
+            id: uuid::Uuid::now_v7().to_string(),
+            timestamp: Utc::now(),
+            event_type,
+            namespace: namespace.to_string(),
+            tenant: tenant.to_string(),
+            action_type: None,
+            action_id,
+        };
+        let _ = tx.send(event);
     }
 
     /// Run the background processor until shutdown is signaled.
@@ -304,6 +352,26 @@ impl BackgroundProcessor {
                     }
                 }
 
+                // Emit GroupResolved on the SSE broadcast so
+                // `/v1/subscribe/group/{id}` subscribers see the
+                // flush and the subscription auto-closes per
+                // design §2.5. Best-effort: missing scope (legacy
+                // group rows without ns/tenant) means subscribers
+                // can't filter to this event, but the data flow
+                // through the existing mpsc channel above is
+                // unaffected.
+                if !flushed_group.namespace.is_empty() && !flushed_group.tenant.is_empty() {
+                    self.emit_stream_event(
+                        &flushed_group.namespace,
+                        &flushed_group.tenant,
+                        StreamEventType::GroupResolved {
+                            group_id: flushed_group.group_id.clone(),
+                            group_key: group_key.clone(),
+                        },
+                        None,
+                    );
+                }
+
                 // Remove the group from memory after processing
                 self.group_manager.remove_group(&group_key);
             }
@@ -316,6 +384,7 @@ impl BackgroundProcessor {
     ///
     /// Uses an indexed approach to efficiently find expired timeouts in O(log N + M)
     /// where M is the number of expired entries, instead of scanning all timeout keys.
+    #[allow(clippy::too_many_lines)]
     async fn process_timeouts(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now();
         let now_ms = now.timestamp_millis();
@@ -416,6 +485,44 @@ impl BackgroundProcessor {
             // Delete the processed timeout entry and remove from index
             self.state.delete(&timeout_key).await?;
             self.state.remove_timeout_index(&timeout_key).await?;
+
+            // Emit ActionStatusChanged on the SSE broadcast so
+            // `/v1/subscribe/action/{id}` (and `/v1/stream`)
+            // subscribers see the timeout-driven transition. The
+            // existing `Timeout` event has been emitted by the
+            // inline gateway transition path historically, but the
+            // background-driven timeout did not — that's the gap
+            // security review #2 calls out.
+            //
+            // Both `ActionStatusChanged` (new variant) and the
+            // old `Timeout` event are emitted: ActionStatusChanged
+            // is the design doc's name for state-machine
+            // transitions; Timeout stays for back-compat with the
+            // existing /v1/stream consumers. They carry the same
+            // semantic information at different abstraction levels.
+            self.emit_stream_event(
+                &namespace,
+                &tenant,
+                StreamEventType::ActionStatusChanged {
+                    action_id: fingerprint.clone(),
+                    fingerprint: fingerprint.clone(),
+                    state_machine: state_machine_name.clone(),
+                    previous_status: current_state.clone(),
+                    new_status: transition_to.clone(),
+                },
+                Some(fingerprint.clone()),
+            );
+            self.emit_stream_event(
+                &namespace,
+                &tenant,
+                StreamEventType::Timeout {
+                    fingerprint: fingerprint.clone(),
+                    state_machine: state_machine_name.clone(),
+                    previous_state: current_state.clone(),
+                    new_state: transition_to.clone(),
+                },
+                None,
+            );
 
             // Send timeout event if channel is configured
             if let Some(ref tx) = self.timeout_tx {
@@ -693,6 +800,7 @@ pub struct BackgroundProcessorBuilder {
     approval_retry_tx: Option<mpsc::Sender<ApprovalRetryEvent>>,
     chain_advance_tx: Option<mpsc::Sender<ChainAdvanceEvent>>,
     scheduled_action_tx: Option<mpsc::Sender<ScheduledActionDueEvent>>,
+    stream_tx: Option<broadcast::Sender<StreamEvent>>,
 }
 
 impl BackgroundProcessorBuilder {
@@ -709,6 +817,7 @@ impl BackgroundProcessorBuilder {
             approval_retry_tx: None,
             chain_advance_tx: None,
             scheduled_action_tx: None,
+            stream_tx: None,
         }
     }
 
@@ -775,6 +884,16 @@ impl BackgroundProcessorBuilder {
         self
     }
 
+    /// Attach the gateway's SSE broadcast sender. When set, the
+    /// background processor emits `GroupResolved` after a flush
+    /// and `ActionStatusChanged` (+ legacy `Timeout`) after a
+    /// timeout-driven state transition.
+    #[must_use]
+    pub fn stream_tx(mut self, tx: broadcast::Sender<StreamEvent>) -> Self {
+        self.stream_tx = Some(tx);
+        self
+    }
+
     /// Build the background processor.
     ///
     /// Returns the processor and a shutdown sender.
@@ -810,6 +929,10 @@ impl BackgroundProcessorBuilder {
 
         if let Some(tx) = self.scheduled_action_tx {
             processor = processor.with_scheduled_action_channel(tx);
+        }
+
+        if let Some(tx) = self.stream_tx {
+            processor = processor.with_stream_tx(tx);
         }
 
         Ok((processor, shutdown_tx))
@@ -1185,5 +1308,140 @@ mod tests {
 
         // Group should be removed after flush
         assert_eq!(group_manager.active_group_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn background_processor_emits_group_resolved_on_flush() {
+        // Security-review #2: the background processor was emitting
+        // group flushes only via the mpsc channel, never on the
+        // SSE broadcast. /v1/subscribe/group/{id} subscribers
+        // therefore never saw the GroupResolved event needed to
+        // auto-close. This test pins the new broadcast emission.
+        let group_manager = Arc::new(GroupManager::new());
+        let state = Arc::new(MemoryStateStore::new());
+
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let mut group = EventGroup::new("group-2", "key-2", past);
+        // Stamp scope so the emit can tag the SSE event with the
+        // right tenant. Without this, the emit is skipped (legacy
+        // group rows).
+        group.namespace = "test".to_string();
+        group.tenant = "test-tenant".to_string();
+        group.add_event(acteon_core::GroupedEvent::new(
+            acteon_core::types::ActionId::new("action-1".to_string()),
+            serde_json::json!({"x": 1}),
+        ));
+        group_manager
+            .groups
+            .write()
+            .insert("key-2".to_string(), group);
+
+        let (stream_tx, mut stream_rx) = broadcast::channel::<StreamEvent>(16);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                group_flush_interval: Duration::from_millis(50),
+                timeout_check_interval: Duration::from_secs(100),
+                cleanup_interval: Duration::from_secs(100),
+                enable_group_flush: true,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                chain_check_interval: Duration::from_secs(5),
+                enable_scheduled_actions: false,
+                scheduled_check_interval: Duration::from_secs(5),
+                namespace: "test".to_string(),
+                tenant: "test-tenant".to_string(),
+            })
+            .group_manager(Arc::clone(&group_manager))
+            .state(state)
+            .stream_tx(stream_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Wait up to 1s for the GroupResolved broadcast event.
+        let ev = tokio::time::timeout(Duration::from_secs(1), stream_rx.recv()).await;
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+
+        let ev = ev
+            .expect("broadcast should receive event before timeout")
+            .expect("broadcast send succeeded");
+        match ev.event_type {
+            StreamEventType::GroupResolved {
+                group_id,
+                group_key,
+            } => {
+                assert_eq!(group_id, "group-2");
+                assert_eq!(group_key, "key-2");
+            }
+            other => panic!("expected GroupResolved, got {other:?}"),
+        }
+        // Tenant scope must be set so /v1/subscribe filters pass.
+        assert_eq!(ev.namespace, "test");
+        assert_eq!(ev.tenant, "test-tenant");
+    }
+
+    #[tokio::test]
+    async fn background_processor_skips_group_emit_when_scope_missing() {
+        // Legacy groups (recovered from a pre-namespace/tenant
+        // persistence) have empty ns/tenant; the emit is guarded
+        // and silently skipped — better than firing with an empty
+        // tenant that would silently fail every subscriber filter.
+        let group_manager = Arc::new(GroupManager::new());
+        let state = Arc::new(MemoryStateStore::new());
+
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let mut group = EventGroup::new("group-legacy", "key-legacy", past);
+        // namespace + tenant intentionally left empty.
+        group.add_event(acteon_core::GroupedEvent::new(
+            acteon_core::types::ActionId::new("action-1".to_string()),
+            serde_json::json!({}),
+        ));
+        group_manager
+            .groups
+            .write()
+            .insert("key-legacy".to_string(), group);
+
+        let (stream_tx, mut stream_rx) = broadcast::channel::<StreamEvent>(8);
+
+        let (mut processor, shutdown_tx) = BackgroundProcessorBuilder::new()
+            .config(BackgroundConfig {
+                group_flush_interval: Duration::from_millis(50),
+                timeout_check_interval: Duration::from_secs(100),
+                cleanup_interval: Duration::from_secs(100),
+                enable_group_flush: true,
+                enable_timeout_processing: false,
+                enable_approval_retry: false,
+                enable_chain_advancement: false,
+                chain_check_interval: Duration::from_secs(5),
+                enable_scheduled_actions: false,
+                scheduled_check_interval: Duration::from_secs(5),
+                namespace: "test".to_string(),
+                tenant: "test-tenant".to_string(),
+            })
+            .group_manager(Arc::clone(&group_manager))
+            .state(state)
+            .stream_tx(stream_tx)
+            .build()
+            .unwrap();
+
+        let handle = tokio::spawn(async move {
+            processor.run().await;
+        });
+
+        // Confirm no broadcast event arrives within 300ms (the
+        // flush has fired by then, the guard suppressed the emit).
+        let ev = tokio::time::timeout(Duration::from_millis(300), stream_rx.recv()).await;
+        let _ = shutdown_tx.send(()).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        assert!(
+            ev.is_err(),
+            "no GroupResolved emit when ns/tenant are unset on the group"
+        );
     }
 }
