@@ -34,6 +34,7 @@ from .bus_models import (
     PublishReceipt,
     RegisterBusAgent,
     RegisterBusSchema,
+    SetBusAgentAdminState,
 )
 from .models import (
     Action,
@@ -262,4 +263,5 @@ __all__ = [
     "PublishReceipt",
     "RegisterBusAgent",
     "RegisterBusSchema",
+    "SetBusAgentAdminState",
 ]

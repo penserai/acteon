@@ -7,7 +7,7 @@
 // `EventStream` infra the rest of the UI uses.
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiGet, apiPost, apiDelete } from '../client'
+import { apiGet, apiPost, apiPut, apiDelete } from '../client'
 
 // --------------- Topics ---------------
 
@@ -179,6 +179,13 @@ export interface BusAgent {
   labels?: Record<string, string>
   created_at: string
   updated_at: string
+  // Operator lifecycle state — defaults to "active" when a server
+  // pre-dating the field returns the agent without it.
+  admin_state?: string
+  admin_reason?: string | null
+  admin_set_by?: string | null
+  admin_set_at?: string | null
+  admin_expires_at?: string | null
 }
 
 export interface ListBusAgentsResponse {
@@ -186,7 +193,9 @@ export interface ListBusAgentsResponse {
   count: number
 }
 
-export function useBusAgents(filter: { namespace?: string; tenant?: string } = {}) {
+export function useBusAgents(
+  filter: { namespace?: string; tenant?: string; status?: string; admin_state?: string } = {},
+) {
   return useQuery({
     queryKey: ['bus', 'agents', filter],
     queryFn: async () => {
@@ -206,6 +215,37 @@ export function useDeleteBusAgent() {
     mutationFn: ({ namespace, tenant, agentId }: { namespace: string; tenant: string; agentId: string }) =>
       apiDelete<void>(
         `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}`,
+      ),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['bus', 'agents'] }),
+  })
+}
+
+// Admin-state mutation. The server validates `expires_at` is only
+// supplied alongside `suspended`; this hook just shuttles the body
+// over the wire and invalidates the agent list on success.
+export interface SetBusAgentAdminState {
+  admin_state: 'active' | 'suspended' | 'banned'
+  reason?: string
+  expires_at?: string  // RFC-3339
+}
+
+export function useSetBusAgentAdminState() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      namespace,
+      tenant,
+      agentId,
+      body,
+    }: {
+      namespace: string
+      tenant: string
+      agentId: string
+      body: SetBusAgentAdminState
+    }) =>
+      apiPut<BusAgent>(
+        `/v1/bus/agents/${encodeURIComponent(namespace)}/${encodeURIComponent(tenant)}/${encodeURIComponent(agentId)}/admin-state`,
+        body,
       ),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['bus', 'agents'] }),
   })

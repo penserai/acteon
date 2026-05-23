@@ -203,6 +203,7 @@ import {
   type PublishReceipt,
   type RegisterBusAgent,
   type RegisterBusSchema,
+  type SetBusAgentAdminState,
   appendBusConversationMessageBody,
   busApprovalDecisionBody,
   busToolResultLookupParams,
@@ -233,6 +234,7 @@ import {
   publishBusMessageBody,
   registerBusAgentBody,
   registerBusSchemaBody,
+  setBusAgentAdminStateBody,
 } from "./bus_models.js";
 
 /**
@@ -2663,6 +2665,27 @@ export class ActeonClient {
     const response = await this.request(
       "PATCH",
       `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}/heartbeat`,
+    );
+    if (!response.ok) await this.busThrowFromResponse(response);
+    return parseBusAgent((await response.json()) as Record<string, unknown>);
+  }
+
+  /**
+   * Set the operator admin state on an agent (active / suspended /
+   * banned). Requires the standard `ManageAgent` permission. The
+   * server returns 400 if `req.expiresAt` is set on anything other
+   * than `"suspended"`.
+   */
+  async setBusAgentAdminState(
+    namespace: string,
+    tenant: string,
+    agentId: string,
+    req: SetBusAgentAdminState,
+  ): Promise<BusAgent> {
+    const response = await this.request(
+      "PUT",
+      `/v1/bus/agents/${this.busSeg(namespace)}/${this.busSeg(tenant)}/${this.busSeg(agentId)}/admin-state`,
+      { body: setBusAgentAdminStateBody(req) },
     );
     if (!response.ok) await this.busThrowFromResponse(response);
     return parseBusAgent((await response.json()) as Record<string, unknown>);

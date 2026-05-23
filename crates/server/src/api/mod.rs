@@ -441,6 +441,13 @@ pub fn router(state: AppState) -> Router {
             "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/send",
             post(bus::send_to_agent),
         )
+        // Agent admin lifecycle — operator sets Active / Suspended /
+        // Banned. Distinct from the derived liveness `status`; see
+        // `AgentAdminState`.
+        .route(
+            "/v1/bus/agents/{namespace}/{tenant}/{agent_id}/admin-state",
+            put(bus::set_agent_admin_state),
+        )
         // Phase 5: Conversations — multi-agent threads on a shared
         // events topic. Messages are keyed by conversation_id for
         // per-thread Kafka FIFO; replay filters on the

@@ -716,3 +716,79 @@ func TestBusErrorParsing(t *testing.T) {
 		t.Errorf("expected sender error; got %s", apiErr.Message)
 	}
 }
+
+func TestBusAgentAdminStateDefaultsToActiveWhenAbsent(t *testing.T) {
+	// A server that pre-dates the admin-state surface omits the
+	// field entirely. The custom UnmarshalJSON must default it to
+	// "active" so operator code never sees the empty string.
+	body := `{
+		"agent_id":"a1","namespace":"n","tenant":"t",
+		"capabilities":[],"inbox_topic":"n.t.agents-inbox",
+		"status":"online","heartbeat_ttl_ms":60000,
+		"created_at":"2026-05-22T00:00:00Z",
+		"updated_at":"2026-05-22T00:00:00Z"
+	}`
+	var a BusAgent
+	if err := json.Unmarshal([]byte(body), &a); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if a.AdminState != "active" {
+		t.Errorf("AdminState: got %q want %q", a.AdminState, "active")
+	}
+}
+
+func TestBusAgentAdminStateRoundTripsBanned(t *testing.T) {
+	body := `{
+		"agent_id":"a1","namespace":"n","tenant":"t",
+		"capabilities":[],"inbox_topic":"n.t.agents-inbox",
+		"status":"online","heartbeat_ttl_ms":60000,
+		"created_at":"2026-05-22T00:00:00Z",
+		"updated_at":"2026-05-22T00:00:00Z",
+		"admin_state":"banned",
+		"admin_reason":"exfiltration",
+		"admin_set_by":"op@acme.io"
+	}`
+	var a BusAgent
+	if err := json.Unmarshal([]byte(body), &a); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if a.AdminState != "banned" {
+		t.Errorf("AdminState: got %q", a.AdminState)
+	}
+	if a.AdminReason == nil || *a.AdminReason != "exfiltration" {
+		t.Errorf("AdminReason: got %v", a.AdminReason)
+	}
+	if a.AdminSetBy == nil || *a.AdminSetBy != "op@acme.io" {
+		t.Errorf("AdminSetBy: got %v", a.AdminSetBy)
+	}
+}
+
+func TestSetBusAgentAdminStateSerdeDropsOptional(t *testing.T) {
+	// Minimal: only admin_state appears on the wire.
+	raw, err := json.Marshal(&SetBusAgentAdminState{AdminState: "suspended"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got, want := string(raw), `{"admin_state":"suspended"}`; got != want {
+		t.Errorf("minimal: got %s want %s", got, want)
+	}
+
+	// Full: every field appears in the expected snake_case form.
+	reason := "flaky retries"
+	expiry := "2026-05-23T12:00:00Z"
+	raw, err = json.Marshal(&SetBusAgentAdminState{
+		AdminState: "suspended",
+		Reason:     &reason,
+		ExpiresAt:  &expiry,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if parsed["expires_at"] != expiry {
+		t.Errorf("expires_at: got %v", parsed["expires_at"])
+	}
+}

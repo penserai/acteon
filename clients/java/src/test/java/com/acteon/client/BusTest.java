@@ -538,4 +538,60 @@ class BusTest {
         assertTrue(kinds.contains(Bus.BusConsumeItem.Reconnected.class), kinds.toString());
         assertTrue(opens.get() >= 2, "opens=" + opens.get());
     }
+
+    @Test
+    void busAgentAdminStateDefaultsToActiveWhenAbsent() throws Exception {
+        // A server pre-dating the admin-state surface omits the
+        // field entirely. The custom `adminState()` accessor must
+        // default it to "active" so dashboards never render null.
+        String body = "{"
+            + "\"agent_id\":\"a1\",\"namespace\":\"n\",\"tenant\":\"t\","
+            + "\"capabilities\":[],\"inbox_topic\":\"n.t.agents-inbox\","
+            + "\"status\":\"online\",\"heartbeat_ttl_ms\":60000,"
+            + "\"created_at\":\"2026-05-22T00:00:00Z\","
+            + "\"updated_at\":\"2026-05-22T00:00:00Z\""
+            + "}";
+        Bus.BusAgent a = MAPPER.readValue(body, Bus.BusAgent.class);
+        assertEquals("active", a.adminState());
+        assertNull(a.adminStateRaw());
+        assertNull(a.adminReason());
+    }
+
+    @Test
+    void busAgentAdminStateRoundTripsBanned() throws Exception {
+        String body = "{"
+            + "\"agent_id\":\"a1\",\"namespace\":\"n\",\"tenant\":\"t\","
+            + "\"capabilities\":[],\"inbox_topic\":\"n.t.agents-inbox\","
+            + "\"status\":\"online\",\"heartbeat_ttl_ms\":60000,"
+            + "\"created_at\":\"2026-05-22T00:00:00Z\","
+            + "\"updated_at\":\"2026-05-22T00:00:00Z\","
+            + "\"admin_state\":\"banned\","
+            + "\"admin_reason\":\"exfiltration\","
+            + "\"admin_set_by\":\"op@acme.io\""
+            + "}";
+        Bus.BusAgent a = MAPPER.readValue(body, Bus.BusAgent.class);
+        assertEquals("banned", a.adminState());
+        assertEquals("exfiltration", a.adminReason());
+        assertEquals("op@acme.io", a.adminSetBy());
+    }
+
+    @Test
+    void setBusAgentAdminStateMinimalDropsOptionalFields() throws Exception {
+        // The minimal record constructor sets reason + expires_at
+        // to null; @JsonInclude(NON_NULL) on the record drops them
+        // from the wire form.
+        Bus.SetBusAgentAdminState req = new Bus.SetBusAgentAdminState("suspended");
+        String json = MAPPER.writeValueAsString(req);
+        assertEquals("{\"admin_state\":\"suspended\"}", json);
+    }
+
+    @Test
+    void setBusAgentAdminStateFullIncludesEveryField() throws Exception {
+        Bus.SetBusAgentAdminState req = new Bus.SetBusAgentAdminState(
+            "suspended", "flaky retries", "2026-05-23T12:00:00Z");
+        String json = MAPPER.writeValueAsString(req);
+        assertTrue(json.contains("\"admin_state\":\"suspended\""), json);
+        assertTrue(json.contains("\"reason\":\"flaky retries\""), json);
+        assertTrue(json.contains("\"expires_at\":\"2026-05-23T12:00:00Z\""), json);
+    }
 }

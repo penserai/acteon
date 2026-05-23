@@ -216,6 +216,54 @@ class TestResponseSerde(unittest.TestCase):
         self.assertIsNone(a.last_heartbeat_at)
         self.assertEqual(a.capabilities, [])
 
+    def test_agent_admin_state_defaults_to_active_when_field_absent(self):
+        # A server that pre-dates the admin-state surface omits the
+        # field entirely; the dataclass must default to "active" so
+        # operator dashboards don't render "None".
+        a = BusAgent.from_dict({
+            "agent_id": "a1", "namespace": "n", "tenant": "te",
+            "capabilities": [], "inbox_topic": "n.te.agents.a1",
+            "status": "registered", "heartbeat_ttl_ms": 30_000,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+        })
+        self.assertEqual(a.admin_state, "active")
+        self.assertIsNone(a.admin_reason)
+        self.assertIsNone(a.admin_set_by)
+
+    def test_agent_admin_state_round_trips_banned(self):
+        a = BusAgent.from_dict({
+            "agent_id": "a1", "namespace": "n", "tenant": "te",
+            "capabilities": [], "inbox_topic": "n.te.agents.a1",
+            "status": "online", "heartbeat_ttl_ms": 30_000,
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "admin_state": "banned",
+            "admin_reason": "exfiltration",
+            "admin_set_by": "op@acme.io",
+            "admin_set_at": "2026-05-23T10:00:00Z",
+        })
+        self.assertEqual(a.admin_state, "banned")
+        self.assertEqual(a.admin_reason, "exfiltration")
+        self.assertEqual(a.admin_set_by, "op@acme.io")
+
+    def test_set_admin_state_request_drops_optional_nones(self):
+        from acteon_client import SetBusAgentAdminState
+        # Minimal — only admin_state.
+        d = SetBusAgentAdminState(admin_state="suspended").to_dict()
+        self.assertEqual(d, {"admin_state": "suspended"})
+        # Full — every field appears.
+        d = SetBusAgentAdminState(
+            admin_state="suspended",
+            reason="flaky retries",
+            expires_at="2026-05-23T12:00:00Z",
+        ).to_dict()
+        self.assertEqual(d, {
+            "admin_state": "suspended",
+            "reason": "flaky retries",
+            "expires_at": "2026-05-23T12:00:00Z",
+        })
+
     def test_conversation_default_participants(self):
         c = BusConversation.from_dict({
             "conversation_id": "c1", "namespace": "n", "tenant": "te",

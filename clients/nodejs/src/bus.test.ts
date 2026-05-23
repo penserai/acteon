@@ -290,6 +290,67 @@ describe("bus response parsers", () => {
     assert.deepEqual(a.capabilities, []);
   });
 
+  it("agent — adminState defaults to 'active' when absent", () => {
+    // Server pre-dating the admin-state surface returns the agent
+    // without the field. parseBusAgent must default to "active"
+    // so operator dashboards don't render undefined.
+    const a = parseBusAgent({
+      agent_id: "a1",
+      namespace: "n",
+      tenant: "te",
+      capabilities: [],
+      inbox_topic: "n.te.agents.a1",
+      status: "registered",
+      heartbeat_ttl_ms: 30_000,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    });
+    assert.equal(a.adminState, "active");
+    assert.equal(a.adminReason, null);
+    assert.equal(a.adminSetBy, null);
+  });
+
+  it("agent — adminState round-trips banned + reason + set_by", () => {
+    const a = parseBusAgent({
+      agent_id: "a1",
+      namespace: "n",
+      tenant: "te",
+      capabilities: [],
+      inbox_topic: "n.te.agents.a1",
+      status: "online",
+      heartbeat_ttl_ms: 30_000,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      admin_state: "banned",
+      admin_reason: "exfiltration",
+      admin_set_by: "op@acme.io",
+      admin_set_at: "2026-05-23T10:00:00Z",
+    });
+    assert.equal(a.adminState, "banned");
+    assert.equal(a.adminReason, "exfiltration");
+    assert.equal(a.adminSetBy, "op@acme.io");
+  });
+
+  it("setBusAgentAdminStateBody — minimal drops optional fields", async () => {
+    const { setBusAgentAdminStateBody } = await import("./bus_models.js");
+    const body = setBusAgentAdminStateBody({ adminState: "suspended" });
+    assert.deepEqual(body, { admin_state: "suspended" });
+  });
+
+  it("setBusAgentAdminStateBody — full carries snake_case fields", async () => {
+    const { setBusAgentAdminStateBody } = await import("./bus_models.js");
+    const body = setBusAgentAdminStateBody({
+      adminState: "suspended",
+      reason: "flaky retries",
+      expiresAt: "2026-05-23T12:00:00Z",
+    });
+    assert.deepEqual(body, {
+      admin_state: "suspended",
+      reason: "flaky retries",
+      expires_at: "2026-05-23T12:00:00Z",
+    });
+  });
+
   it("conversation — open default", () => {
     const c = parseBusConversation({
       conversation_id: "c1",
