@@ -147,6 +147,8 @@ export interface ChainStepStatus {
 
 export interface ChainDetailResponse {
   chain_id: string
+  namespace: string
+  tenant: string
   chain_name: string
   status: string
   current_step: number

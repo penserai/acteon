@@ -999,6 +999,28 @@ impl Gateway {
             .await
             .map_err(|e| GatewayError::LockFailed(e.to_string()))?;
 
+        // Emit a top-level ActionStatusChanged so /v1/subscribe consumers
+        // see dispatch-driven transitions without parsing the nested
+        // ActionDispatched.outcome. Only fire on real transitions —
+        // no-ops (target == current) would be noise.
+        if current_state != new_state {
+            self.emit_stream_event(StreamEvent {
+                id: uuid::Uuid::now_v7().to_string(),
+                timestamp: Utc::now(),
+                event_type: StreamEventType::ActionStatusChanged {
+                    action_id: action.id.to_string(),
+                    fingerprint: fingerprint.clone(),
+                    state_machine: state_machine_name.to_string(),
+                    previous_status: current_state.clone(),
+                    new_status: new_state.clone(),
+                },
+                namespace: action.namespace.to_string(),
+                tenant: action.tenant.to_string(),
+                action_type: Some(action.action_type.clone()),
+                action_id: Some(action.id.to_string()),
+            });
+        }
+
         Ok(ActionOutcome::StateChanged {
             fingerprint,
             previous_state: current_state,
